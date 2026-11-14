@@ -45,6 +45,9 @@ struct MainWindow: View {
         .sheet(item: $model.pullDraft) { draft in
             PullSheet(model: model, draft: draft)
         }
+        .sheet(item: $model.videoRequest) { request in
+            VideoSaveSheet(model: model, request: request)
+        }
         .sheet(item: Binding(
             get: { app.walkthroughWindow === model ? app.walkthrough : nil },
             set: { app.walkthrough = $0 }

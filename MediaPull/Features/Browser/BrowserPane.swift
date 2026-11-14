@@ -128,6 +128,10 @@ struct BrowserBar: View {
             AddressField(model: model)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 4)
+            if VideoPage.isLikely(model.browser.url) {
+                Button { model.saveVideoFromPage() } label: { Image(systemName: "film.stack").frame(width: 24, height: 24) }
+                    .help("Save the video on this page, choosing its format and resolution")
+            }
             Button { model.showBrowsingPanel.toggle() } label: { Image(systemName: "book").frame(width: 24, height: 24) }
                 .help("Bookmarks and History (⌥⌘B, ⌘Y)")
                 .popover(isPresented: $model.showBrowsingPanel, arrowEdge: .bottom) {

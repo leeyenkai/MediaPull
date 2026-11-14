@@ -73,6 +73,9 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
             .disabled(window == nil)
+            Button("Save Video from This Page…") { window?.saveVideoFromPage() }
+                .keyboardShortcut("y", modifiers: [.command, .shift])
+                .disabled(window?.browser.url == nil)
             Button("Open PDF…") {
                 PDFPicker.choose(window: window?.hostWindow) { files in files.forEach { window?.extractPDF(local: $0) } }
             }

@@ -10,13 +10,21 @@ public struct SaveTarget: Sendable {
     public var autoSubfolders: Bool
     /// The Instagram account a pull was started for, which owns the folder (D-11).
     public var accountUsername: String?
+    /// Folders below `folder` for a pull that is not about one account, such as a hashtag (`Hashtags/<tag>`).
+    public var collectionPath: [String]?
 
-    public init(folder: URL, layout: SaveLayout, autoSubfolders: Bool, accountUsername: String? = nil) {
+    public init(folder: URL, layout: SaveLayout, autoSubfolders: Bool, accountUsername: String? = nil, collectionPath: [String]? = nil) {
         self.folder = folder
         self.layout = layout
         self.autoSubfolders = autoSubfolders
         self.accountUsername = accountUsername
+        self.collectionPath = collectionPath
     }
+
+    /// Folders that are not accounts. Instagram usernames cannot contain spaces, so these never clash with one (D-52).
+    public static let savedFolder = "Saved posts"
+    public static let tagsFolder = "Hashtags"
+    public static let accountDetailsFolder = "Account details"
 }
 
 public struct SaveSettings: Sendable {
@@ -24,7 +32,8 @@ public struct SaveSettings: Sendable {
     public var conflict: ConflictPolicy = .number
     public var setFileDates = true
     public var setWhereFroms = true
-    public var reelsSubfolder = false
+    /// Instagram media sorted into posts, reels and profile pictures folders (stories and highlights always are).
+    public var typeSubfolders = true
     public var archiveEngineTemplate = NameTemplate.archiveEngine
     public var archiveWebTemplate = NameTemplate.archiveWeb
     public var plainTemplate = NameTemplate.plain
@@ -68,9 +77,23 @@ public enum ArchivePlanner {
             let host = context.pageURL.isFileURL ? "PDF" : (context.pageURL.host ?? item.host)
             return target.folder.appendingPathComponent(FileNaming.safeTopFolder(host.isEmpty ? "web" : host), isDirectory: true)
         case let .engine(context):
-            let owner = target.accountUsername ?? (context.isInstagram ? context.username : nil)
+            if let path = target.collectionPath, !path.isEmpty {
+                return path.enumerated().reduce(target.folder) { folder, part in
+                    folder.appendingPathComponent(part.offset == 0 ? FileNaming.safeTopFolder(part.element)
+                        : FileNaming.sanitize(part.element, maxBytes: 80), isDirectory: true)
+                }
+            }
+            if context.isInstagram, ["saved", "collection"].contains(context.subcategory) {
+                return target.folder.appendingPathComponent(SaveTarget.savedFolder, isDirectory: true)
+            }
+            // Stories from followed accounts belong to each account, not to the account the pull started from.
+            let pinnedOwner = context.subcategory == "stories-tray" ? nil : target.accountUsername
+            let owner = pinnedOwner ?? (context.isInstagram ? context.username : nil)
                 ?? context.sourceURL?.host ?? context.category
             var folder = target.folder.appendingPathComponent(FileNaming.safeTopFolder(owner), isDirectory: true)
+            if context.isInstagram, ["tagged", "reposts"].contains(context.subcategory) {
+                return folder.appendingPathComponent(context.subcategory, isDirectory: true)
+            }
             if context.isInstagram {
                 switch context.instagramSection {
                 case "stories":
@@ -79,8 +102,12 @@ public enum ArchivePlanner {
                     folder.appendPathComponent("highlights", isDirectory: true)
                     folder.appendPathComponent(FileNaming.sanitize(context.highlightTitle ?? context.postID ?? "highlight", maxBytes: 80),
                                                isDirectory: true)
-                case "reels" where settings.reelsSubfolder:
+                case "reels" where settings.typeSubfolders:
                     folder.appendPathComponent("reels", isDirectory: true)
+                case "avatar" where settings.typeSubfolders:
+                    folder.appendPathComponent("profile pictures", isDirectory: true)
+                case "posts" where settings.typeSubfolders:
+                    folder.appendPathComponent("posts", isDirectory: true)
                 default:
                     break
                 }

@@ -17,7 +17,7 @@ final class Preferences {
     var animated: AnimatedPolicy { didSet { set(animated.rawValue, "animated") } }
     var video: VideoCodecPolicy { didSet { set(video.rawValue, "video") } }
     var pacing: PacingPreset { didSet { set(pacing.rawValue, "pacing") } }
-    var reelsSubfolder: Bool { didSet { set(reelsSubfolder, "reelsSubfolder") } }
+    var typeSubfolders: Bool { didSet { set(typeSubfolders, "instagramTypeSubfolders") } }
     var stopAfterKnown: Int { didSet { set(stopAfterKnown, "stopAfterKnown") } }
     var weeklyEngineCheck: Bool { didSet { set(weeklyEngineCheck, "weeklyEngineCheck") } }
     var lastEngineCheck: Date? { didSet { set(lastEngineCheck, "lastEngineCheck") } }
@@ -54,7 +54,7 @@ final class Preferences {
         animated = AnimatedPolicy(rawValue: d.string(forKey: "animated") ?? "") ?? .gif
         video = VideoCodecPolicy(rawValue: d.string(forKey: "video") ?? "") ?? .highestReencodeIfNeeded
         pacing = PacingPreset(rawValue: d.string(forKey: "pacing") ?? "") ?? .gentle
-        reelsSubfolder = d.bool(forKey: "reelsSubfolder")
+        typeSubfolders = d.object(forKey: "instagramTypeSubfolders") as? Bool ?? true
         stopAfterKnown = d.object(forKey: "stopAfterKnown") as? Int ?? 12
         weeklyEngineCheck = d.object(forKey: "weeklyEngineCheck") as? Bool ?? true
         lastEngineCheck = d.object(forKey: "lastEngineCheck") as? Date
@@ -65,7 +65,7 @@ final class Preferences {
         onboardingDone = d.bool(forKey: "onboardingDone")
         lastSaveFolder = d.string(forKey: "lastSaveFolder")
         let content = (d.array(forKey: "defaultContent") as? [String])?.compactMap(InstagramContent.init(rawValue:))
-        defaultContent = Set(content ?? [.posts, .reels, .avatar])
+        defaultContent = Set(content ?? Array(InstagramContent.defaults))
         autoProbe = d.object(forKey: "autoProbe") as? Bool ?? true
         verboseEngineLog = d.bool(forKey: "verboseEngineLog")
         saveConcurrency = d.object(forKey: "saveConcurrency") as? Int ?? 4
@@ -96,7 +96,7 @@ final class Preferences {
         settings.conflict = conflict
         settings.setFileDates = setFileDates
         settings.setWhereFroms = setWhereFroms
-        settings.reelsSubfolder = reelsSubfolder
+        settings.typeSubfolders = typeSubfolders
         let engine = NameTemplate(archiveEngineTemplate)
         settings.archiveEngineTemplate = engine.archiveProblems().isEmpty ? engine : .archiveEngine
         let web = NameTemplate(archiveWebTemplate)

@@ -163,7 +163,7 @@ final class SavePipelineTests: XCTestCase {
         let (outcome, _) = await pipeline.saveStaged(copy, item: item, target: target, settings: SaveSettings(), index: 1)
         let saved = try XCTUnwrap(outcome.url)
         XCTAssertEqual(saved.lastPathComponent, "2023-01-06_022210_CnAbCdEfGh_02.jpg")
-        XCTAssertEqual(saved.deletingLastPathComponent().lastPathComponent, "example.account")
+        XCTAssertEqual(saved.deletingLastPathComponent().pathComponents.suffix(2), ["example.account", "posts"])
         let sidecar = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: Sidecar.sidecarURL(for: saved))) as? [String: Any])
         XCTAssertEqual(sidecar["post_shortcode"] as? String, "CnAbCdEfGh")
         XCTAssertEqual(sidecar["count"] as? Int, 3)
@@ -319,5 +319,71 @@ final class HostileInputTests: XCTestCase {
         XCTAssertNotNil(VariantRanker.best([variant]))
         XCTAssertEqual(PixelSize(width: Int.max, height: 2).width, 1_000_000)
         XCTAssertNil(JSONValue.number(1e20).int)
+    }
+}
+
+final class InstagramContentTests: XCTestCase {
+    private func folder(_ subcategory: String, owner: String = "someone.else", target: SaveTarget) -> String {
+        var context = EngineContext(key: "ig:1", category: "instagram", subcategory: subcategory)
+        context.username = owner
+        context.highlightTitle = "Trips"
+        let item = EngineItemInput(context: context, kind: .image, engineURL: "https://example.invalid/a.jpg", thumbURL: nil, width: 10,
+                                   height: 10, isDash: false, fallbackURL: nil).makeItem(discoveryIndex: 0)
+        let url = ArchivePlanner.folder(for: item, target: target, settings: SaveSettings())
+        return String(url.path.dropFirst(target.folder.path.count))
+    }
+
+    func testFlatFoldersWhenSortingByTypeIsOff() {
+        var settings = SaveSettings()
+        settings.typeSubfolders = false
+        var context = EngineContext(key: "ig:1", category: "instagram", subcategory: "reels")
+        context.username = "acct"
+        let item = EngineItemInput(context: context, kind: .video, engineURL: "https://example.invalid/a.mp4", thumbURL: nil, width: 10,
+                                   height: 10, isDash: false, fallbackURL: nil).makeItem(discoveryIndex: 0)
+        let target = SaveTarget(folder: URL(fileURLWithPath: "/library"), layout: .archive, autoSubfolders: true, accountUsername: "acct")
+        XCTAssertEqual(ArchivePlanner.folder(for: item, target: target, settings: settings).path, "/library/acct")
+    }
+
+    func testDateWindows() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-14T12:00:00Z"))
+        let day = { (text: String) in try XCTUnwrap(ISO8601DateFormatter().date(from: text + "T09:30:00Z")) }
+        XCTAssertNil(InstagramDateWindow.allTime.bounds(now: now, from: now, to: now, calendar: calendar).from)
+        XCTAssertEqual(InstagramDateWindow.pastMonth.bounds(now: now, from: now, to: now, calendar: calendar).from,
+                       ISO8601DateFormatter().date(from: "2026-10-14T12:00:00Z"))
+        XCTAssertEqual(InstagramDateWindow.pastYear.bounds(now: now, from: now, to: now, calendar: calendar).from,
+                       ISO8601DateFormatter().date(from: "2025-11-14T12:00:00Z"))
+        let custom = InstagramDateWindow.custom.bounds(now: now, from: try day("2026-03-05"), to: try day("2026-03-01"), calendar: calendar)
+        XCTAssertEqual(custom.from, ISO8601DateFormatter().date(from: "2026-03-01T00:00:00Z"), "a reversed range is put in order")
+        XCTAssertEqual(custom.to, ISO8601DateFormatter().date(from: "2026-03-05T23:59:59Z"), "whole days are included")
+    }
+
+    func testDefaultsAndGroups() {
+        XCTAssertEqual(InstagramContent.defaults, [.posts, .reels, .stories, .highlights, .avatar])
+        XCTAssertTrue(InstagramContent.defaults.allSatisfy(\.isProfileMedia))
+        XCTAssertEqual(InstagramContent.highlightCovers.engineName, "highlights-covers")
+        XCTAssertEqual(InstagramContent.profileInfo.group, .details)
+        XCTAssertEqual(InstagramContent.storiesTray.group, .yours)
+    }
+
+    func testFoldersForEachKindOfContent() {
+        let root = URL(fileURLWithPath: "/library")
+        let account = SaveTarget(folder: root, layout: .archive, autoSubfolders: true, accountUsername: "acct")
+        XCTAssertEqual(folder("posts", target: account), "/acct/posts")
+        XCTAssertEqual(folder("reels", target: account), "/acct/reels")
+        XCTAssertEqual(folder("avatar", target: account), "/acct/profile pictures")
+        XCTAssertEqual(folder("tagged", target: account), "/acct/tagged")
+        XCTAssertEqual(folder("reposts", target: account), "/acct/reposts")
+        XCTAssertEqual(folder("stories", target: account), "/acct/stories")
+        XCTAssertEqual(folder("highlights-covers", target: account), "/acct/highlights/Trips")
+        XCTAssertEqual(folder("saved", target: account), "/Saved posts")
+        XCTAssertEqual(folder("stories-tray", target: account), "/someone.else/stories", "followed accounts keep their own folders")
+        let tag = SaveTarget(folder: root, layout: .archive, autoSubfolders: true, collectionPath: [SaveTarget.tagsFolder, "sunsets"])
+        XCTAssertEqual(folder("tag", target: tag), "/Hashtags/sunsets")
+
+        var tray = EngineContext(key: "k", category: "instagram", subcategory: "stories-tray")
+        tray.username = "x"
+        XCTAssertEqual(tray.instagramSection, "stories")
     }
 }

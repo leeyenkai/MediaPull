@@ -195,9 +195,14 @@ public final class SavePipeline: Sendable {
         return finish(.failed(lastError.localizedDescription))
     }
 
+    /// The formats the Archive layout's metadata files describe (SPEC R-1502).
+    static let archiveFormats: Set<MediaFormat> = [.jpeg, .png, .gif, .mp4, .mov]
+
     /// Saves a file an engine already downloaded (Instagram pulls, SPEC R-1106).
     @concurrent
-    public func saveStaged(_ file: URL, item: MediaItem, target: SaveTarget, settings: SaveSettings, index: Int) async -> (SaveOutcome, String?) {
+    public func saveStaged(_ file: URL, item: MediaItem, target: SaveTarget, settings: SaveSettings, index: Int,
+                           nameOverride: String? = nil) async -> (SaveOutcome, String?)
+    {
         let job = workDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: job, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: job) }
@@ -220,7 +225,7 @@ public final class SavePipeline: Sendable {
             return (.failed(error.localizedDescription), nil)
         }
         let result = await finalize(conversion, item: item, sourceURL: item.best?.url, lastModified: nil, target: target, settings: settings,
-                                    index: index, saveDate: Date())
+                                    index: index, saveDate: Date(), nameOverride: nameOverride)
         await self.index.persist()
         return result
     }
@@ -333,7 +338,9 @@ public final class SavePipeline: Sendable {
                   settings: SaveSettings, index: Int, saveDate: Date, nameOverride: String? = nil) async -> (SaveOutcome, String?)
     {
         let manager = FileManager.default
-        guard target.layout.allows(conversion.format) else {
+        // A video or audio format chosen by hand is kept (without a metadata file); everything else follows the layout.
+        let chosenByHand = settings.conversion.keepDownloadedMedia && [.video, .audio].contains(conversion.format.kind)
+        guard target.layout.allows(conversion.format) || chosenByHand else {
             return (.skipped("\(conversion.format.label) files are not kept in the Archive layout."), nil)
         }
         let sha: String
@@ -365,11 +372,13 @@ public final class SavePipeline: Sendable {
             info.originalName = sourceURL.flatMap { URLNormalizer.baseName(of: $0) }
         }
 
+        // Metadata files belong to the archive's formats only (R-1502); a WebM or audio file chosen by hand goes without one.
+        let writesSidecar = target.layout == .archive && Self.archiveFormats.contains(info.format)
         let scopeIsAccount = target.layout == .archive && target.autoSubfolders
         let scope = scopeIsAccount ? Self.accountFolder(folder, target: target) : folder
         func existingCopy() async -> (SaveOutcome, String?)? {
             guard let existing = await self.index.duplicate(sha256: sha, size: size, in: scope, recursive: scopeIsAccount) else { return nil }
-            if target.layout == .archive {
+            if writesSidecar {
                 let sidecarURL = Sidecar.sidecarURL(for: existing)
                 if !manager.fileExists(atPath: sidecarURL.path) {
                     let sidecar = ArchivePlanner.sidecar(for: item, info: info, target: target, settings: settings)
@@ -413,7 +422,11 @@ public final class SavePipeline: Sendable {
                 if let page = item.source.pageURL { froms.append(page.absoluteString) }
                 Self.setWhereFroms(froms, on: placed)
             }
-            if target.layout == .archive {
+            if target.layout == .archive, !writesSidecar {
+                await self.index.record(placed, sha256: sha)
+                return (.saved(placed), "Saved without a metadata file: \(info.format.label) is outside the archive's formats.")
+            }
+            if writesSidecar {
                 let sidecar = ArchivePlanner.sidecar(for: item, info: info, target: target, settings: settings)
                 do {
                     try sidecar.encoded().write(to: Sidecar.sidecarURL(for: placed), options: .atomic)

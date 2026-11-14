@@ -111,6 +111,21 @@ final class SelfTestRunner {
             let used = Self.cpuSeconds() - before
             note(String(format: "idle: app process used %.2f s of CPU in %.0f s (%.2f %%)", used, seconds, used / seconds * 100))
         }
+        if let page = Self.value(after: "--selftest-video-download").flatMap(URL.init(string:)) {
+            await exerciseVideoDownload(page: page, library: library, out: out)
+        }
+        if let account = Self.value(after: "--selftest-pullsheet") {
+            model.pullDraft = app.engines.draft(username: account)
+            try? await Task.sleep(for: .seconds(3))
+            if let sheet = model.hostWindow?.attachedSheet ?? NSApp.windows.first(where: { $0.isSheet && $0.isVisible }) {
+                print("SELFTEST-CAPTURE \(sheet.windowNumber) \(out.appendingPathComponent("pull-sheet.png").path)")
+                fflush(stdout)
+                try? await Task.sleep(for: .seconds(3))
+            }
+            else { note("pull sheet: no sheet window found") }
+            model.pullDraft = nil
+            note("pull sheet shown for @\(account)")
+        }
         if let second = Self.value(after: "--selftest-browser").flatMap(URL.init(string:)) {
             await exerciseBrowser(second: second, out: out)
         }
@@ -293,6 +308,41 @@ final class SelfTestRunner {
         }
         try? await Task.sleep(for: .seconds(2))
         snapshot(to: out.appendingPathComponent("window-duplicates.png"))
+    }
+
+    /// Looks up a video page's formats, shows the Save Video sheet, then saves it as 360p H.264 and as audio only.
+    private func exerciseVideoDownload(page: URL, library: URL, out: URL) async {
+        let app = AppModel.shared
+        guard case let .success(info) = await app.engines.videoInfo(for: page) else {
+            note("video download: lookup failed")
+            return
+        }
+        let heights = VideoDownloadFormat.allCases.map { "\($0.rawValue) \($0.heights(in: info.formats).map(String.init).joined(separator: "/"))" }
+        note("video download: \(info.title) by \(info.uploader ?? "?"), \(info.formats.count) formats; \(heights.joined(separator: "; "))")
+        model.videoRequest = VideoRequest(url: page)
+        try? await Task.sleep(for: .seconds(6))
+        if let sheet = model.hostWindow?.attachedSheet ?? NSApp.windows.first(where: { $0.isSheet && $0.isVisible }) {
+            print("SELFTEST-CAPTURE \(sheet.windowNumber) \(out.appendingPathComponent("video-sheet.png").path)")
+            fflush(stdout)
+            try? await Task.sleep(for: .seconds(3))
+        }
+        model.videoRequest = nil
+        guard let root = app.root(containing: library) else { return }
+        for (format, height) in [(VideoDownloadFormat.h264MP4, Optional(360)), (.audioM4A, nil)] {
+            let started = Date()
+            let job = app.engines.saveVideo(info, format: format, height: height, root: root, window: model)
+            await waitUntil(timeout: 600) { job.state.isFinished }
+            let file = job.destination
+            var facts = "\(format.rawValue): \(job.state.label) in \(Int(Date().timeIntervalSince(started))) s"
+            if let file, FileManager.default.fileExists(atPath: file.path) {
+                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                facts += ", \(file.lastPathComponent), \(Format.bytes(Int64(size)))"
+                facts += FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: file).path) ? ", with metadata" : ", no metadata"
+                facts += " in \(file.deletingLastPathComponent().path.replacingOccurrences(of: library.path, with: "library"))"
+            }
+            if !job.notes.isEmpty { facts += " (\(job.notes.joined(separator: "; ")))" }
+            note("video download \(facts)")
+        }
     }
 
     /// Makes a short clip in the library, then saves a frame and a trimmed copy through the video editor.

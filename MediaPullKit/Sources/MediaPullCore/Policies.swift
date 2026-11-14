@@ -74,22 +74,112 @@ public struct ConversionPolicy: Codable, Equatable, Sendable {
     public var animated: AnimatedPolicy = .gif
     public var rasterizeSVGInArchive = true
     public var video: VideoCodecPolicy = .highestReencodeIfNeeded
+    /// Keep a downloaded video or audio file exactly as it is, in its own container, because the person chose
+    /// that format (SPEC R-3502).
+    public var keepDownloadedMedia = false
 
     public init() {}
 }
 
+/// What to pull from Instagram (SPEC R-1105, R-1105a). Every choice needs a signed-in session.
 public enum InstagramContent: String, Codable, Sendable, CaseIterable, Hashable {
-    case posts, reels, avatar, stories, highlights
+    // Media from the account, in one listing.
+    case posts, reels, stories, highlights, avatar, tagged, reposts
+    case highlightCovers = "highlights-covers"
+    // Details about the account; no media.
+    case profileInfo = "info"
+    case followers, following
+    // From the signed-in person's own account.
+    case saved
+    case storiesTray = "stories-tray"
+
+    public enum Group: String, CaseIterable, Sendable {
+        case media, details, yours
+
+        public var title: String {
+            switch self {
+            case .media: "From the account"
+            case .details: "Account details"
+            case .yours: "From your own account"
+            }
+        }
+    }
+
+    public var group: Group {
+        switch self {
+        case .posts, .reels, .stories, .highlights, .avatar, .tagged, .reposts, .highlightCovers: .media
+        case .profileInfo, .followers, .following: .details
+        case .saved, .storiesTray: .yours
+        }
+    }
+
+    /// What a pull includes unless the person chooses otherwise.
+    public static let defaults: Set<InstagramContent> = [.posts, .reels, .stories, .highlights, .avatar]
 
     public var label: String {
         switch self {
         case .posts: "Posts and carousels"
         case .reels: "Reels"
-        case .avatar: "Profile picture"
         case .stories: "Current stories"
         case .highlights: "Highlights"
+        case .avatar: "Profile picture"
+        case .tagged: "Posts the account is tagged in"
+        case .reposts: "Reposts"
+        case .highlightCovers: "Highlight covers"
+        case .profileInfo: "Profile information"
+        case .followers: "Followers list"
+        case .following: "Following list"
+        case .saved: "Your saved posts and collections"
+        case .storiesTray: "Stories from accounts you follow"
         }
     }
 
+    public var detail: String? {
+        switch self {
+        case .tagged: "Posted by other accounts; saved in a tagged folder"
+        case .reposts: "Posts the account shared from others; saved in a reposts folder"
+        case .profileInfo: "Name, biography, links and counts, saved as JSON in Account details"
+        case .followers, .following: "Names only, saved as a CSV list in Account details; long lists take a while"
+        case .saved: "Saved in a Saved posts folder"
+        case .storiesTray: "Saved in each account's stories folder"
+        default: nil
+        }
+    }
+
+    /// The gallery-dl subcategory, used both for the profile's include list and as the page to open.
     public var engineName: String { rawValue }
+
+    /// Media listed through the account's profile page; the rest are pages of their own.
+    public var isProfileMedia: Bool { group == .media }
+}
+
+/// Which posts a pull includes by date (SPEC R-1105b).
+public enum InstagramDateWindow: String, Codable, Sendable, CaseIterable, Hashable {
+    case allTime, pastMonth, pastYear, custom
+
+    public var label: String {
+        switch self {
+        case .allTime: "All Time"
+        case .pastMonth: "Past Month"
+        case .pastYear: "Past Year"
+        case .custom: "Custom"
+        }
+    }
+
+    /// The earliest and latest dates to include; nil means no limit on that side. A custom range covers
+    /// whole days: from the start of `from` to the end of `to`.
+    public func bounds(now: Date = Date(), from: Date, to: Date, calendar: Calendar = .current) -> (from: Date?, to: Date?) {
+        switch self {
+        case .allTime:
+            return (nil, nil)
+        case .pastMonth:
+            return (calendar.date(byAdding: .month, value: -1, to: now), nil)
+        case .pastYear:
+            return (calendar.date(byAdding: .year, value: -1, to: now), nil)
+        case .custom:
+            let start = calendar.startOfDay(for: min(from, to))
+            let end = calendar.date(byAdding: DateComponents(day: 1, second: -1), to: calendar.startOfDay(for: max(from, to)))
+            return (start, end)
+        }
+    }
 }

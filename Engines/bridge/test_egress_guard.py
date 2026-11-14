@@ -51,6 +51,20 @@ class GuardTests:
             check("POST", "https://www.instagram.com/api/graphql", data={"fb_api_req_friendly_name": "AQuery"},
                   headers={"Content-Type": "multipart/form-data; boundary=x"})
 
+    def test_youtube_video_reads_are_allowed_and_nothing_else(self):
+        body = '{"context": {"client": {"clientName": "WEB"}}, "videoId": "aqz-KE-bpKQ"}'
+        check("POST", "https://www.youtube.com/youtubei/v1/player?prettyPrint=false", data=body)
+        check("POST", "https://youtubei.googleapis.com/youtubei/v1/next", data=body)
+        for url in ("https://www.youtube.com/youtubei/v1/like/like", "https://www.youtube.com/youtubei/v1/subscription/subscribe",
+                    "https://www.youtube.com/youtubei/v1/comment/create_comment", "https://www.youtube.com/upload",
+                    "https://youtube.com.evil.example/youtubei/v1/player"):
+            with self.assertRaises(PolicyViolation, msg=url):
+                check("POST", url, data=body)
+        with self.assertRaises(PolicyViolation):
+            check("POST", "https://www.youtube.com/youtubei/v1/player", data="x" * 20000)
+        with self.assertRaises(PolicyViolation):
+            check("POST", "https://www.youtube.com/youtubei/v1/player", data=b"\x00", headers={"Content-Type": "application/octet-stream"})
+
     def test_reads_never_carry_a_body(self):
         with self.assertRaises(PolicyViolation):
             check("GET", "https://example.com/", data="x" * 1000)

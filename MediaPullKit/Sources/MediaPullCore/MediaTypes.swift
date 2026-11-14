@@ -323,8 +323,8 @@ public struct EngineContext: Codable, Hashable, Sendable {
     /// "posts", "reels", "stories", "highlights" or "avatar" for Instagram.
     public var instagramSection: String {
         switch subcategory {
-        case "stories", "story": return "stories"
-        case "highlights", "highlight": return "highlights"
+        case "stories", "story", "stories-tray": return "stories"
+        case "highlights", "highlight", "highlights-covers": return "highlights"
         case "avatar": return "avatar"
         case "reels", "reel": return "reels"
         default:

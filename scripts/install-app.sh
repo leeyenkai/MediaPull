@@ -8,6 +8,9 @@ CACHE="${MEDIAPULL_ENGINE_CACHE:-$HOME/Library/Caches/MediaPullBuild}"
 if [[ ! -x "$CACHE/engines/python/bin/python3" ]]; then ./scripts/fetch-engines.sh; fi
 if [[ ! -x "$CACHE/engines/ffmpeg/ffmpeg" ]]; then ./scripts/build-ffmpeg.sh; fi
 
+# Start from a fresh bundle: when only engine or bridge files change, Xcode copies them again but does not
+# re-sign, and the signature check below would fail.
+rm -rf "$CACHE/DerivedData/Build/Products/Release/MediaPull.app"
 xcodebuild -project MediaPull.xcodeproj -scheme MediaPull -configuration Release -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$CACHE/DerivedData" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u
 

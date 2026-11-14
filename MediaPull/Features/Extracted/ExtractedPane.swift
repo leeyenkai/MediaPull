@@ -137,6 +137,8 @@ struct ExtractedHeader: View {
         Menu {
             Button(model.autoScrolling ? "Stop Scrolling" : "Scroll to End of Page") { model.toggleAutoScroll() }
             Button("Look for Media Again") { model.browser.rescan() }
+            Button("Save Video from This Page…") { model.saveVideoFromPage() }
+                .disabled(model.browser.url == nil)
             Divider()
             pdfCommands
             Divider()

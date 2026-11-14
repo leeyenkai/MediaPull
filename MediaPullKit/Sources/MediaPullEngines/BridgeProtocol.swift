@@ -126,6 +126,10 @@ public enum BridgeEvent: Sendable {
     case progress(received: Int64?, total: Int64?, speed: Double?)
     case wait(seconds: Double, reason: String)
     case cursor(subcategory: String, value: String)
+    /// The formats a video page offers (SPEC section 35).
+    case videoInfo(VideoInfo)
+    /// A non-media file written by the bridge in staging: a followers or following list, or the profile.
+    case document(kind: String, path: URL, count: Int)
     case checkpoint(kind: String, url: URL?, message: String)
     case error(code: String, message: String, key: String?, fatal: Bool)
     case policyViolation(method: String, host: String, path: String, reason: String)
@@ -184,6 +188,29 @@ public enum BridgeEvent: Sendable {
             return .wait(seconds: value["seconds"]?.double ?? 0, reason: string("reason") ?? "pacing")
         case "cursor":
             return .cursor(subcategory: string("subcategory") ?? "", value: string("value") ?? "")
+        case "video_info":
+            guard let page = string("webpage_url").flatMap(URL.init(string:)) else { return nil }
+            var formats: [VideoFormatInfo] = []
+            if case let .array(list) = value["formats"] ?? .null {
+                for entry in list {
+                    guard let id = entry["id"]?.string else { continue }
+                    formats.append(VideoFormatInfo(
+                        id: id, ext: entry["ext"]?.string ?? "", height: entry["height"]?.int, width: entry["width"]?.int,
+                        fps: entry["fps"]?.double, vcodec: entry["vcodec"]?.string ?? "none", acodec: entry["acodec"]?.string ?? "none",
+                        abr: entry["abr"]?.double, tbr: entry["tbr"]?.double, size: entry["size"]?.double.map { Int64($0) },
+                        drm: entry["drm"]?.bool ?? false
+                    ))
+                }
+            }
+            return .videoInfo(VideoInfo(
+                title: string("title") ?? "Video", uploader: string("uploader"), id: string("id"),
+                uploadDate: VideoInfo.date(uploadDate: string("upload_date"), timestamp: value["timestamp"]?.double), webpageURL: page,
+                extractor: string("extractor") ?? "", duration: value["duration"]?.double,
+                thumbnail: string("thumbnail").flatMap(URL.init(string:)), description: string("description"), formats: formats
+            ))
+        case "document":
+            guard let path = string("path") else { return nil }
+            return .document(kind: string("kind") ?? "document", path: URL(fileURLWithPath: path), count: value["count"]?.int ?? 0)
         case "checkpoint":
             return .checkpoint(kind: string("kind") ?? "challenge", url: string("url").flatMap(URL.init(string:)),
                                message: string("message") ?? "")
@@ -211,15 +238,19 @@ public struct BridgeRequest: Encodable, Sendable {
     public struct Video: Encodable, Sendable {
         public var format: String
         public var formatSort: [String]
+        /// The container yt-dlp merges video and audio into: "mp4" (default) or "webm".
+        public var merge: String?
 
         enum CodingKeys: String, CodingKey {
             case format
             case formatSort = "format_sort"
+            case merge
         }
 
-        public init(format: String, formatSort: [String]) {
+        public init(format: String, formatSort: [String], merge: String? = nil) {
             self.format = format
             self.formatSort = formatSort
+            self.merge = merge
         }
     }
 

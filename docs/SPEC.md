@@ -10,7 +10,7 @@ Conventions:
 - **D-nn** is a recorded decision (section 27). Decisions can be changed, but only by editing this spec.
 - "Verify in M0" marks a detail that depends on third-party behaviour and must be confirmed by the engine spike before it is built on.
 
-## Implementation status (version 1.4)
+## Implementation status (version 1.5)
 
 MediaPull is a personal tool for archiving and collecting media, not a public release. The app, its engines and the read-only contract are implemented. Some supporting pieces described here were deliberately not built for personal use: the `mediapull-test://` fixture pages and the extraction tests that would use them (section 25), `scripts/perf-budgets.json` and CI enforcement (section 22, budgets were measured by hand instead), `docs/PRIVACY.md`, `scripts/sign-helpers.sh`, Developer ID signing and notarization (section 26; the app is signed for this Mac only).
 
@@ -18,13 +18,14 @@ Verification so far:
 
 - **Automated** (`scripts/check.sh`): module-boundary and read-only lint, Swift tests (sidecar contract, forbidden names, CDN rules and image proxies, sniffing, request policy, ingestor, filters, conversion, save pipeline, pane arrangement, bookmarks and history, hostile inputs, duplicate detection, video frames and trimming, the real bundled engine and its event stream), 8 Python tests of the egress guard, an iOS Simulator build of the package and an app build.
 - **End to end** (`MediaPull --selftest-url <url> --selftest-out <folder>`, section 25): on the New York Times international front page, 204 items were found (135 of them only while scrolling) and all 190 shown items were saved (185 saved, 5 recognised as duplicates), with images at the newspaper's largest rendition (2048 px), WebP converted to JPEG or PNG, SVG converted to PNG, and videos saved as H.264 MP4. A Wikipedia page was also scanned with the site extractor (48 originals).
+- **Version 1.5 additions, verified end to end**: the Instagram content choices (section 11.5), date windows and folders by type; saving videos from video sites (section 35; `--selftest-video-download`: a YouTube video's 47 formats listed, saved as 360p H.264 MP4 with metadata in 7 s and as 128 kbps AAC M4A without metadata in 2 s).
 - **Version 1.4 additions, verified end to end**: duplicate detection in the Library (section 33; `--selftest-duplicates` found an identical copy in a subfolder and a resized, re-compressed copy, and kept colour versions of one product photo apart) and video frame grabs and trimming (section 34; `--selftest-video`: a 640×360 frame at 2.5 s saved as PNG, a 1–3 s selection saved as a 2.00 s copy without re-encoding, metadata files updated).
 - **Version 1.3 additions, verified end to end**: browser tabs, bookmarks in renamable folders, history with clearing, the walkthrough, the reworked icon and the narrow-pane fixes (`--selftest-browser`: two tabs, This Page 2 / 47 / 49 items, folder rename, history cleared, ⌘W bound to Close Tab). Measured: window ready 0.9 s after launch, idle CPU 0.17 % over 30 s, app memory peak 138–183 MB on the hard pages.
 - **Version 1.2 additions, verified end to end**: the Preview pane and movable panes (R-701a, section 10.3), themes (R-2010), the Liquid Glass app icon (section 26.1), image-proxy and lightbox originals (Appendix D), and fixes from a code review (D-39 to D-44). Hard pages tested: a product catalogue with script-resized thumbnails (55 items; colour-variant photos now saved at full size instead of 400 px thumbnails) and a large news front page (598 items, 495 of them only while scrolling, 519 saved in 12 s, app memory peak about 150 MB).
 - **Version 1.1 additions, verified end to end**: images inside a hosted PDF (the arXiv paper 2010.11929: 298 embedded images extracted in about 2 seconds and saved), the image editor, and the quick filter row with the resolution slider.
 - **Not yet exercised by a person**: drag and drop, Quick Look, the trim bar and frame stepping in the video editor, and Instagram pulls with a signed-in account.
 
-Decisions that changed during implementation are D-13 and D-24 to D-51 in section 27. Sections 31 (PDFs) and 32 (editing) and R-1006a (resolution slider) were added in version 1.1; the Preview pane, pane arrangement and themes in version 1.2.
+Decisions that changed during implementation are D-13 and D-24 to D-56 in section 27. Sections 31 (PDFs) and 32 (editing) and R-1006a (resolution slider) were added in version 1.1; the Preview pane, pane arrangement and themes in version 1.2.
 
 ---
 
@@ -64,6 +65,7 @@ Decisions that changed during implementation are D-13 and D-24 to D-51 in sectio
 32. Editing
 33. Duplicates in the Library
 34. Video frames and trimming
+35. Saving videos from video sites
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -130,7 +132,6 @@ MediaPull is a lightweight native macOS app for collecting media from the web in
 ### 2.2 Later (not version 1)
 
 - Several signed-in Instagram identities at once (D-08).
-- Tagged posts.
 - Scheduled background syncs.
 - yt-dlp page scans for video sites (open question Q-03).
 - iPad and iPhone versions (section 4.6).
@@ -271,7 +272,7 @@ The package builds for iOS from the first milestone so the port stays cheap. The
 
 Any blocked request raises inside the engine and is reported as a `policy_violation` event (Appendix A). The job stops.
 
-**R-506** Engines run with a configuration generated by MediaPull for each job (Appendix E). User and global configuration files for gallery-dl and yt-dlp are never read. The bridge never enables `exec`-type post-processors, never uses cookies read from the user's other browsers (`cookies-from-browser` is never set), and passes only cookies exported from MediaPull's own browser pane for the domains the job targets (section 11.3).
+**R-506** Engines run with a configuration generated by MediaPull for each job (Appendix E). User and global configuration files for gallery-dl and yt-dlp are never read. The bridge never enables `exec`-type post-processors, never uses cookies read from the user's other browsers (`cookies-from-browser` is never set), and passes only cookies exported from MediaPull's own browser pane for the domains the job targets (section 11.3). gallery-dl's cache (which holds Instagram tokens) and yt-dlp's cache are kept in memory, so nothing about a session outlives the job.
 
 **R-507** The bundled ffmpeg is built with networking disabled. It only reads and writes local files.
 
@@ -575,7 +576,7 @@ Instagram access runs through the bundled gallery-dl engine (D-04), driven by th
 
 ### 11.2 Sign-in
 
-**R-1101** Sign-in happens only in the browser pane. In 2026 Instagram effectively requires a signed-in session to list a profile's posts beyond the first few, and always for stories and highlights. The Pull sheet shows the sign-in state and offers "Sign In" when signed out. Pulling while signed out is allowed but warns that results will likely be limited.
+**R-1101** Sign-in happens only in the browser pane, and pulls need a signed-in session (D-53). Checked in November 2026 with the bundled gallery-dl 1.32.19 against a large public account, signed out: the profile page loads, but the GraphQL route fails because Instagram does not serve the profile query to signed-out visitors, the REST route reports the account as not found, and a single post redirects to the login page. The browser pane itself, signed out, shows about 12 recent posts at 640 px or less, profile pictures at 150 px and no stories; those can be collected like any web page, but that is preview quality, not an archive. The Pull sheet shows the sign-in state and offers "Sign In" when signed out.
 
 **R-1102** Private accounts are only pulled when the signed-in user already follows them. Otherwise the job stops with "This account is private".
 
@@ -592,14 +593,37 @@ Instagram access runs through the bundled gallery-dl engine (D-04), driven by th
 **R-1105** "Pull Account…" (⇧⌘P) opens a sheet with:
 
 - **Account card**: avatar, name, username, post count, private or public, followed state (from a quick `account` bridge call).
-- **Content**: Posts and carousels (on), Reels (on), Profile picture (on), Stories (off), Highlights (off). Each remembers its last value per account.
-- **Date range**: All, Since last pull (default when a previous pull exists), or a custom range.
+- **Input**: a username, @handle or profile link, or a `#hashtag` (or a hashtag page link), which pulls the hashtag's posts instead of an account.
+- **Content** (R-1105a), in three groups, each choice remembered per account and with defaults in Settings > Instagram.
+- **Dates** (R-1105b): All Time (default), Past Month, Past Year or Custom, plus "Only new posts since the last pull" (on when a previous pull exists).
 - **Destination**: a library root and folder (default `<root>/<username>/`).
 - **Layout**: Archive (default) or Plain.
 - **Mode**: Incremental (default) or Verify (walk everything, download only what is missing on disk).
 - **Pacing**: Gentle (default) or Standard.
 - **Estimate**: approximate requests and time, computed from the post count and pacing.
 - Buttons: **Scan Only** and **Pull**.
+
+**R-1105a** Content choices, mapped to the bundled gallery-dl's Instagram extractors:
+
+| Group | Choice | Default | Engine | Saved in |
+|---|---|---|---|---|
+| From the account | Posts and carousels | on | `posts` | `<account>/posts/` |
+| | Reels | on | `reels` | `<account>/reels/` |
+| | Current stories | on | `stories` | `<account>/stories/` |
+| | Highlights | on | `highlights` | `<account>/highlights/<title>/` |
+| | Profile picture | on | `avatar` | `<account>/profile pictures/` |
+| | Posts the account is tagged in | off | `tagged` | `<account>/tagged/` |
+| | Reposts | off | `reposts` | `<account>/reposts/` |
+| | Highlight covers | off | `highlights-covers` | `<account>/highlights/<title>/` |
+| Account details | Profile information | off | `info` | `<account>/Account details/<date>_profile.json` (the whole profile record) |
+| | Followers list, Following list | off | `followers`, `following` | `<account>/Account details/<date>_followers.csv` (username, full name, id, private, verified, profile link) |
+| From your own account (signed in) | Saved posts and collections | off | `saved` | `Saved posts/` |
+| | Stories from accounts you follow | off | `stories-tray` | `<owner>/stories/` |
+| Hashtag (input) | Posts with the hashtag | — | `tag` | `Hashtags/<tag>/` |
+
+Media is sorted into a folder per type by default (D-54); Settings > Instagram > "Sort into folders by type" off puts posts, Reels and profile pictures directly in `<account>/` (stories, highlights, tagged posts and reposts keep their folders). The "From the account" choices are listed through the profile in one listing; the others are pages of their own, run one after another in the same job. Follower and following lists record names only: the bridge never opens the accounts in them. The Instagram "user profile" page is the listing itself, and single post, Reel, story and collection links are pulled with the same sheet. Guides are not offered: Instagram retired them and the pinned gallery-dl has no extractor for them.
+
+**R-1105b** Dates: All Time, Past Month and Past Year count back from the moment the pull starts; Custom covers whole days from the start of the first to the end of the last (a reversed range is put in order). The bridge applies the window (D-38): pinned posts outside it are skipped rather than ending the listing, profile pictures are always included, and stories (at most a day old) and highlights keep their own dates.
 
 ### 11.6 Modes of operation
 
@@ -660,8 +684,7 @@ Which `fetch` method the bridge uses (reusing the engine's downloaders on scanne
             2025-07-20_101010_3412345678901234567_01.mp4
 ```
 
-- Posts and Reels share the account folder; `subcategory` in the sidecar tells them apart. A setting puts Reels in a `reels/` subfolder instead.
-- Stories go in `stories/`, highlights in `highlights/<highlight title>/`.
+- By default each type has its own folder: `posts/`, `reels/`, `stories/`, `highlights/<highlight title>/`, `profile pictures/`, `tagged/` and `reposts/` (D-54). With "Sort into folders by type" off, posts, Reels and the profile picture share the account folder and `subcategory` in the sidecar tells them apart.
 - The profile picture is named with the time of the pull and deduplicated by content, so it is only saved again when it changes.
 - Collab posts are saved in the folder of the account being pulled; the sidecar records `owner_username` (D-11).
 
@@ -779,7 +802,7 @@ The Archive layout is a **gallery-dl-compatible metadata archive**. It is design
 
 **R-1501** Each media file has a sidecar named `<full file name>.json` in the same folder (for `photo.jpg` the sidecar is `photo.jpg.json`).
 
-**R-1502** Only these media types are written: `.jpg`, `.png`, `.gif`, `.mp4`, `.mov`. Anything else is converted (section 16) or skipped with a reason (SVG, audio and protected streams are skipped, D-13).
+**R-1502** Only these media types are written: `.jpg`, `.png`, `.gif`, `.mp4`, `.mov`. Anything else is converted (section 16) or skipped with a reason (SVG, audio and protected streams are skipped, D-13). The one exception is a WebM or M4A file the person chooses in the Save Video sheet, which is saved without a metadata file (D-56).
 
 **R-1503** File names begin with a sortable timestamp (`YYYY-MM-DD_HHMMSS_…`) so that name order equals chronological order.
 
@@ -1113,6 +1136,11 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-49 | The app is renamed MediaPull (bundle id `com.yenkai.MediaPull`, modules `MediaPull*`, drag type `com.yenkai.mediapull.items`, test scheme `mediapull-test://`); the sidecar's informational key `instapull_version` becomes `mediapull_version`. No other sidecar key, the date format, naming rules or reserved names change, and importers ignore this key | The product name is MediaPull; the key names the app that wrote the file |
 | D-50 | Duplicates are found with checksums, two perceptual hashes and a colour grid, never with learned models, and are only marked, never removed automatically | Deterministic results that can be explained; the person decides what to delete |
 | D-51 | Frames and trimmed videos add the informational sidecar keys `frame_time` and `trimmed_from`; frames drop `num`, `count` and `duration`. No existing key, the date format or the naming rules change | Derived files keep their source's details without joining its carousel |
+| D-52 | New folders: `tagged/` and `reposts/` inside an account folder; `Saved posts/` and `Hashtags/<tag>/` at library level; `<account>/Account details/` for the profile JSON and follower CSVs (not media). Instagram usernames cannot contain spaces, so these names never clash with an account folder. Sidecar keys and subcategories are unchanged: tagged, reposted, saved and hashtag posts are `posts`; stories from followed accounts are `stories`; highlight covers are `highlights` | Every gallery-dl Instagram source has a predictable place in the archive |
+| D-53 | Instagram pulls require a signed-in session; no signed-out engine route | Tested signed out (R-1101): every engine route failed, and the browser shows only preview-size media |
+| D-54 | Instagram media is sorted into a folder per type by default (`posts/`, `reels/`, `profile pictures/`, alongside `stories/`, `highlights/`, `tagged/`, `reposts/`), with a setting for the old flat layout; this replaces the "Reels in a subfolder" setting | Requested: several content types in one account folder stay organised; sidecars and names are unchanged |
+| D-55 | The egress guard allows POST to YouTube's `/youtubei/v1/player` and `/youtubei/v1/next`, which read one video's details; writing actions live at other paths and stay blocked | Without it yt-dlp cannot read any YouTube video inside MediaPull |
+| D-56 | A video format chosen by hand in the Save Video sheet is kept exactly as downloaded; WebM and M4A are saved without a metadata file in Archive folders (an exception to R-1502 the person asks for) | Requested: choose the format of a saved video |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1206,6 +1234,26 @@ Riskiest work first. Each milestone ends with a check that can be demonstrated.
 **R-3403** Trim uses the player's trim bar to choose the part to keep. Trimming never re-encodes: the samples are copied (passthrough) and the cut points are kept exact with an edit list. A library video can be saved as a copy (`<name>_trimmed.mp4`) or replace the original, which goes to the Trash; an extracted video is saved trimmed to the library.
 
 **R-3404** A frame or trimmed copy of a library video gets a copy of the video's metadata file with updated fields: for frames `width`, `height`, `sha256`, `edited` and `frame_time` (seconds), without `num`, `count` and `duration` so the frame is not grouped into the post's carousel; for trimmed videos `duration`, `sha256`, `edited` and `trimmed_from` (start and end in seconds of the original). Names keep the date prefix of the video they came from, so the archive naming rules hold.
+
+## 35. Saving videos from video sites
+
+**R-3501** On a page holding a video, "Save Video…" (a button in the Browser pane's navigation bar on YouTube, Vimeo, Dailymotion, Twitch and TikTok video pages; File > Save Video from This Page, ⇧⌘Y, and the Extracted pane's actions menu on any page) opens a sheet. The bridge's `video_info` operation asks yt-dlp for the page's formats without downloading anything; the sheet shows the title, uploader, length, date and thumbnail.
+
+**R-3502** The person chooses:
+
+| Format | yt-dlp selection | Saved as |
+|---|---|---|
+| MP4, best quality (default) | best video and audio at or under the resolution | MP4; VP9 or AV1 converted to HEVC per the codec setting (section 16.3) |
+| MP4, H.264 (plays everywhere) | H.264 video and AAC audio only | MP4, never converted |
+| MP4, original codec | best video and audio, any codec | MP4 exactly as merged (often AV1 or VP9) |
+| WebM, original | WebM video and Opus audio | WebM exactly as sent |
+| Audio only, M4A | the best AAC track | M4A |
+
+and a resolution from the heights that format actually offers for this video (with 4K and 2K and frame rates over 30 marked), or "Best available". Protected (DRM) formats are never offered. The sheet estimates the size (reported size, or bitrate times length) and says when best quality will have to convert, which is slow at 4K.
+
+**R-3503** The download runs as a job with progress through the bridge's `stream` operation and the save pipeline. Files go to `<library>/<site>/<uploader>/`, named `<upload date>_<title>`. MP4 files get a metadata file (`category` the site, `subcategory` `video`, `username` the uploader, `post_id` the video id, `date` the upload date, `description` the title, `post_url` the page). WebM and M4A are kept exactly as chosen and saved without a metadata file, because the archive's metadata files describe only its formats (D-56).
+
+**R-3504** YouTube reads a video's details with a POST to its player API; the egress guard allows exactly `/youtubei/v1/player` and `/youtubei/v1/next` on YouTube's hosts and nothing else there (D-55). Checked in November 2026: the bundled yt-dlp lists YouTube formats from 144p to 2160p and downloads them, although without a JavaScript challenge solver it warns that some formats may be missing. If YouTube starts enforcing that challenge, the fix is to bundle yt-dlp's solver scripts and let it use a JavaScript runtime.
 
 ## Appendix A. Bridge protocol (version 1)
 

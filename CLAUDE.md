@@ -10,7 +10,7 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.4 implemented. Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull).
+Status: version 1.5 implemented. Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull).
 
 ## Stack
 
@@ -35,12 +35,12 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     App/                          MediaPullApp (scenes, commands), AppModel, WindowModel (tabs), BrowsingStore (bookmarks, history),
                                   Preferences, Theme, PaneMenu, Jobs, SelfTest
     Features/                     Browser (pane, TabStrip, BrowsingPanel), Extracted, Preview (pane, details, inline editor host), Library, Instagram (EngineService, PullSheet),
-                                  Editor (image and video editors), Jobs, Converter, Settings, Onboarding (WalkthroughView)
+                                  Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView)
     Platform/                     AppKit: ReadOnlyWebView, MediaGridView (NSCollectionView), PaneSplit (nested split views per arrangement),
                                   MediaPreviewViews (player, animated image), VideoStage (editor player, trim bar), DragSupport, QuickLook, SVGRasterizer
     Resources/                    Assets.xcassets (accent colour) and AppIcon.icon (Liquid Glass icon: icon.json + SVG layers)
   MediaPullKit/                   local Swift package (macOS 26, iOS 26)
-    Sources/MediaPullCore/        types, sniffing, URL rules, CDN rules, ranking, filters, naming, sidecar, ExtractionIngestor, PaneArrangement, BrowsingData
+    Sources/MediaPullCore/        types, sniffing, URL rules, CDN rules, ranking, filters, naming, sidecar, ExtractionIngestor, PaneArrangement, BrowsingData, VideoDownload
     Sources/MediaPullNet/         NetworkGate (GET and HEAD only), cookies, host limiter, hashing
     Sources/MediaPullMedia/       ImageIO conversion, thumbnails, image and MP4 probes, PDFImageExtractor, ImageEditing, PerceptualHash, VideoTools
     Sources/MediaPullEngines/     bridge protocol and client, cookie files, ffmpeg runner, engine manager
@@ -60,7 +60,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 - End to end without touching the UI: `MediaPull --selftest-url <url> --selftest-out <folder>` (SPEC section 25). Extra flags:
   `--selftest-edit`, `--selftest-site`, `--selftest-pdf-links`, `--selftest-theme <name>`, `--selftest-layout <preset index>`,
   `--selftest-browser <second url>` (tabs, bookmarks, history, panel, walkthrough), `--selftest-idle <seconds>` (idle CPU),
-  `--selftest-duplicates`, `--selftest-video`, `--selftest-zoom <points>`
+  `--selftest-duplicates`, `--selftest-video`, `--selftest-zoom <points>`, `--selftest-pullsheet <account>`,
+  `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio)
   (theme and layout are restored afterwards).
 
 ## Rules
@@ -89,6 +90,7 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `xcrun actool AppIcon.icon --compile <out> --platform macosx --minimum-deployment-target 26.0 --app-icon AppIcon --output-partial-info-plist <out>/p.plist`
   and `sips -s format png <out>/AppIcon.icns --out preview.png`.
 - Duplicate detection must stay deterministic (checksums, pHash, dHash, colour grid); no learned models (D-50).
+- The bundled Python runs with `-I`, so the bridge finds its modules only through the `paths` list in each request.
 - Video trimming must stay passthrough (no re-encode); frame grabs use zero time tolerance.
 - `model.browser` is the selected tab; per-page callbacks must use the tab they came from, not `model.browser`.
 - The inline editor must not use Return, Escape or bare-key shortcuts: they would fire while typing in the web page.

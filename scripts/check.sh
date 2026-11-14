@@ -38,6 +38,7 @@ echo "== Swift tests"
 echo "== Bridge tests"
 if [[ -x "$CACHE/engines/python/bin/python3" ]]; then
   "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_egress_guard.py "$CACHE/engines/site-packages" 2>&1 | tail -3 || FAILED=1
+  "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_bridge_details.py "$CACHE/engines/site-packages" 2>&1 | tail -1 || FAILED=1
 else
   echo "skipped: engines not installed (scripts/fetch-engines.sh)"
 fi

@@ -267,16 +267,23 @@ struct InstagramSettings: View {
                     .foregroundStyle(.secondary)
             }
             Section("Pulls") {
-                ForEach(InstagramContent.allCases, id: \.self) { content in
+                Text("Chosen for new pulls").font(.caption).foregroundStyle(.secondary)
+                ForEach(InstagramContent.allCases.filter { $0.group != .yours }, id: \.self) { content in
                     Toggle(content.label, isOn: Binding(
                         get: { preferences.defaultContent.contains(content) },
                         set: { on in if on { preferences.defaultContent.insert(content) } else { preferences.defaultContent.remove(content) } }
                     ))
                 }
+                Button("Restore Defaults") {
+                    preferences.defaultContent = preferences.defaultContent.filter { $0.group == .yours }.union(InstagramContent.defaults)
+                }
                 Picker("Pace", selection: $preferences.pacing) {
                     ForEach(PacingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                Toggle("Put Reels in a reels folder", isOn: $preferences.reelsSubfolder)
+                Toggle("Sort into folders by type", isOn: $preferences.typeSubfolders)
+                Text("posts, reels, stories, highlights and profile pictures folders inside each account folder. Stories and highlights always get their own folders.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Stepper("Stop a sync after \(preferences.stopAfterKnown) posts already saved", value: $preferences.stopAfterKnown, in: 3 ... 60)
             }
             Section {

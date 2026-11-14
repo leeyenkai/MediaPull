@@ -275,3 +275,55 @@ final class BrowsingDataTests: XCTestCase {
         XCTAssertTrue(history.entries.isEmpty)
     }
 }
+
+final class VideoDownloadTests: XCTestCase {
+    /// Shaped like a real listing: H.264 up to 1080p, VP9 and AV1 up to 2160p, AAC and Opus audio.
+    private let formats: [VideoFormatInfo] = [
+        VideoFormatInfo(id: "299", ext: "mp4", height: 1080, fps: 60, vcodec: "avc1.64002A", acodec: "none", tbr: 4500, size: 250_000_000),
+        VideoFormatInfo(id: "298", ext: "mp4", height: 720, fps: 60, vcodec: "avc1.4D4020", acodec: "none", tbr: 2500, size: 120_000_000),
+        VideoFormatInfo(id: "315", ext: "webm", height: 2160, fps: 60, vcodec: "vp9", acodec: "none", tbr: 20000, size: 1_500_000_000),
+        VideoFormatInfo(id: "401", ext: "mp4", height: 2160, fps: 60, vcodec: "av01.0.13M.0", acodec: "none", tbr: 18000),
+        VideoFormatInfo(id: "303", ext: "webm", height: 1080, fps: 60, vcodec: "vp9", acodec: "none", tbr: 4000, size: 220_000_000),
+        VideoFormatInfo(id: "140", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", abr: 129, size: 10_000_000),
+        VideoFormatInfo(id: "251", ext: "webm", vcodec: "none", acodec: "opus", abr: 129, size: 9_000_000),
+        VideoFormatInfo(id: "drm", ext: "mp4", height: 4320, vcodec: "avc1", acodec: "none", drm: true),
+    ]
+
+    func testResolutionsPerFormat() {
+        XCTAssertEqual(VideoDownloadFormat.bestMP4.heights(in: formats), [2160, 1080, 720])
+        XCTAssertEqual(VideoDownloadFormat.h264MP4.heights(in: formats), [1080, 720], "protected formats are never offered")
+        XCTAssertEqual(VideoDownloadFormat.webm.heights(in: formats), [2160, 1080])
+        XCTAssertEqual(VideoDownloadFormat.audioM4A.heights(in: formats), [])
+    }
+
+    func testSelectorsSizesAndConversion() {
+        XCTAssertEqual(VideoDownloadFormat.h264MP4.selector(height: 720).format, "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=720]")
+        XCTAssertEqual(VideoDownloadFormat.bestMP4.selector(height: nil).format, "bv*+ba/b")
+        XCTAssertEqual(VideoDownloadFormat.webm.selector(height: 1080).merge, "webm")
+        XCTAssertNil(VideoDownloadFormat.audioM4A.selector(height: nil).merge)
+        XCTAssertEqual(VideoDownloadFormat.h264MP4.estimatedBytes(in: formats, height: 1080), 260_000_000)
+        XCTAssertEqual(VideoDownloadFormat.webm.estimatedBytes(in: formats, height: nil), 1_509_000_000)
+        XCTAssertEqual(VideoDownloadFormat.audioM4A.estimatedBytes(in: formats, height: nil), 10_000_000)
+        let withoutVP9 = formats.filter { $0.id != "315" }
+        XCTAssertNil(VideoDownloadFormat.originalMP4.estimatedBytes(in: withoutVP9, height: nil), "the AV1 stream reports no size")
+        XCTAssertEqual(VideoDownloadFormat.originalMP4.estimatedBytes(in: withoutVP9, height: nil, duration: 100), 225_000_000 + 10_000_000,
+                       "18,000 kbit/s for 100 s, plus the audio")
+        XCTAssertTrue(VideoDownloadFormat.bestMP4.needsConversion(in: formats, height: 2160), "4K exists only as VP9 or AV1")
+        XCTAssertFalse(VideoDownloadFormat.bestMP4.needsConversion(in: formats, height: 1080), "1080p exists as H.264")
+        XCTAssertFalse(VideoDownloadFormat.originalMP4.needsConversion(in: formats, height: 2160))
+        XCTAssertFalse(VideoDownloadFormat.bestMP4.keepsDownloadedFile)
+        XCTAssertTrue(VideoDownloadFormat.webm.keepsDownloadedFile)
+    }
+
+    func testVideoPagesAndDates() throws {
+        for page in ["https://www.youtube.com/watch?v=aqz-KE-bpKQ", "https://youtu.be/aqz-KE-bpKQ", "https://www.youtube.com/shorts/abc",
+                     "https://vimeo.com/76979871", "https://www.dailymotion.com/video/x8abc"] {
+            XCTAssertTrue(VideoPage.isLikely(URL(string: page)), page)
+        }
+        for page in ["https://www.youtube.com/", "https://www.youtube.com/@Blender", "https://vimeo.com/channels/staffpicks", "https://example.com/watch"] {
+            XCTAssertFalse(VideoPage.isLikely(URL(string: page)), page)
+        }
+        let date = try XCTUnwrap(VideoInfo.date(uploadDate: "20141110", timestamp: nil))
+        XCTAssertEqual(ISO8601DateFormatter().string(from: date), "2014-11-10T00:00:00Z")
+    }
+}

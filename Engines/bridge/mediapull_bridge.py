@@ -200,6 +200,8 @@ def configure_gallery_dl(request, staging):
     from gallery_dl import config, output
 
     config.clear()
+    # Keep gallery-dl's cache (tokens and session details) in memory: no state outside the job (SPEC R-506).
+    config.set(("cache",), "file", None)
     pacing = request.get("pacing") or {}
     delay = pacing.get("request_delay") or [8.0, 15.0]
     extractor = {
@@ -210,7 +212,6 @@ def configure_gallery_dl(request, staging):
         "sleep-request": delay,
         "sleep-429": 120,
         "postprocessors": [],
-        "user-cache": "memory",
         "instagram": {
             "retries": 0,
             "sleep-429": 0,
@@ -241,6 +242,7 @@ def configure_gallery_dl(request, staging):
             "merge_output_format": "mp4",
             "format_sort": video.get("format_sort") or ["res", "vcodec:h265", "acodec:aac"],
             "ffmpeg_location": os.environ.get("MEDIAPULL_HELPERS") or None,
+            "cachedir": False,
             "quiet": True,
             "no_warnings": False,
             "noprogress": True,
@@ -564,6 +566,9 @@ def make_jobs(request):
                 EMITTER.emit("account", **account_fields(kwdict))
 
         def handle_queue(self, url, kwdict):
+            if self.extractor.subcategory in LIST_SUBCATEGORIES:
+                record_list_entry(self.extractor.subcategory, url, kwdict)
+                return
             if url in self.visited:
                 return
             self.visited.add(url)
@@ -607,8 +612,16 @@ def make_jobs(request):
         def handle_directory(self, kwdict):
             if self.extractor.subcategory == "info":
                 EMITTER.emit("account", **account_fields(kwdict))
+                DETAILS["profile"] = plain(kwdict)
                 return
             job.DownloadJob.handle_directory(self, kwdict)
+
+        def handle_queue(self, url, kwdict):
+            # Follower and following lists queue every account in them; record the names, never open them.
+            if self.extractor.subcategory in LIST_SUBCATEGORIES:
+                record_list_entry(self.extractor.subcategory, url, kwdict)
+                return
+            job.DownloadJob.handle_queue(self, url, kwdict)
 
         def handle_skip(self):
             pathfmt = self.pathfmt
@@ -645,6 +658,53 @@ def make_jobs(request):
             job.DownloadJob.handle_finalize(self)
 
     return ScanJob, PullJob
+
+
+# Account details collected during a pull (SPEC R-1105a): follower lists hold names only, and the
+# accounts in them are never opened; the profile is kept whole.
+DETAILS = {"lists": {}, "profile": None}
+LIST_SUBCATEGORIES = ("followers", "following")
+
+
+def record_list_entry(subcategory, url, kwdict):
+    rows = DETAILS["lists"].setdefault(subcategory, [])
+    user = kwdict or {}
+    rows.append({
+        "username": user.get("username") or url.rstrip("/").rsplit("/", 1)[-1],
+        "full_name": user.get("full_name") or "",
+        "id": str(user.get("pk") or user.get("id") or ""),
+        "is_private": bool(user.get("is_private")),
+        "is_verified": bool(user.get("is_verified")),
+        "profile_url": url,
+    })
+
+
+def plain(value):
+    """The JSON-safe part of a metadata value."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): plain(v) for k, v in value.items() if not str(k).startswith("_")}
+    if isinstance(value, (list, tuple)):
+        return [plain(v) for v in value]
+    return str(value)
+
+
+def write_details(staging):
+    """Writes collected lists and the profile into the staging folder and reports them."""
+    import csv
+    for subcategory, rows in DETAILS["lists"].items():
+        path = os.path.join(staging, subcategory + ".csv")
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["username", "full_name", "id", "is_private", "is_verified", "profile_url"])
+            writer.writeheader()
+            writer.writerows(rows)
+        EMITTER.emit("document", kind=subcategory, path=path, count=len(rows))
+    if DETAILS["profile"] is not None:
+        path = os.path.join(staging, "profile.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(DETAILS["profile"], handle, ensure_ascii=False, indent=2, sort_keys=True)
+        EMITTER.emit("document", kind="profile", path=path, count=1)
 
 
 def account_fields(kwdict):
@@ -708,6 +768,8 @@ def run_gallery_job(request, kind):
                 raise
         if STATE["checkpoint"] or STATE["violations"]:
             break
+    if kind != "scan":
+        write_details(staging)
     finish("completed" if status == 0 else "failed", {"status": status})
 
 
@@ -737,6 +799,70 @@ def op_supports(request):
         found = {"category": extr.category, "subcategory": extr.subcategory}
     EMITTER.emit("supports", url=url, supported=found is not None, **(found or {}))
     EMITTER.emit("done", status="completed", counts={})
+
+
+def video_meta(info):
+    """The details of a downloaded video that its metadata file and name are built from."""
+    return {
+        "title": info.get("title"), "width": info.get("width"), "height": info.get("height"), "vcodec": info.get("vcodec"),
+        "duration": info.get("duration"), "uploader": info.get("uploader") or info.get("channel"),
+        "uploader_id": info.get("uploader_id") or info.get("channel_id"), "id": info.get("id"),
+        "upload_date": info.get("upload_date"), "timestamp": info.get("timestamp"), "webpage_url": info.get("webpage_url"),
+        "extractor": (info.get("extractor_key") or info.get("extractor") or "").lower(), "description": (info.get("description") or "")[:2000],
+    }
+
+
+def op_video_info(request):
+    """Lists a page's video formats without downloading anything (SPEC section 35)."""
+    import yt_dlp
+
+    class Quiet:
+        def debug(self, message):
+            pass
+
+        def info(self, message):
+            pass
+
+        def warning(self, message):
+            EMITTER.emit("log", level="warning", logger="yt-dlp", message=_clean(message))
+
+        def error(self, message):
+            STATE["errors"].append(_clean(message))
+
+    options = {"quiet": True, "skip_download": True, "noplaylist": True, "cachedir": False, "logger": Quiet(),
+               "http_headers": {"User-Agent": request["user_agent"]} if request.get("user_agent") else {}}
+    if request.get("cookies"):
+        options["cookiefile"] = request["cookies"]
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(request["url"], download=False)
+    except Exception as exc:
+        EMITTER.emit("error", code="no_video", message=_clean(str(exc))[:300], fatal=True)
+        finish("failed")
+        return
+    if info and info.get("_type") == "playlist":
+        entries = [entry for entry in (info.get("entries") or []) if entry]
+        info = entries[0] if entries else None
+    if not info or not info.get("formats"):
+        EMITTER.emit("error", code="no_video", message="No downloadable video was found on this page.", fatal=True)
+        finish("failed")
+        return
+    formats = []
+    for fmt in info.get("formats") or []:
+        vcodec, acodec = fmt.get("vcodec") or "none", fmt.get("acodec") or "none"
+        if vcodec == "none" and acodec == "none":
+            continue
+        if (fmt.get("protocol") or "").startswith(("m3u8", "http_dash_segments")) and fmt.get("ext") not in ("mp4", "m4a", "webm"):
+            continue
+        formats.append({
+            "id": fmt.get("format_id"), "ext": fmt.get("ext"), "height": fmt.get("height"), "width": fmt.get("width"),
+            "fps": fmt.get("fps"), "vcodec": vcodec, "acodec": acodec, "abr": fmt.get("abr"), "tbr": fmt.get("tbr"),
+            "size": fmt.get("filesize") or fmt.get("filesize_approx"), "drm": bool(fmt.get("has_drm")),
+        })
+    meta = video_meta(info)
+    meta["thumbnail"] = info.get("thumbnail")
+    EMITTER.emit("video_info", formats=formats, **meta)
+    finish("completed")
 
 
 def op_stream(request):
@@ -781,7 +907,8 @@ def op_stream(request):
         "paths": {"home": staging, "temp": staging},
         "format": video.get("format") or "bv*+ba/b",
         "format_sort": video.get("format_sort") or ["res", "vcodec:h265", "acodec:aac"],
-        "merge_output_format": "mp4",
+        "merge_output_format": video.get("merge") or "mp4",
+        "cachedir": False,
         "noplaylist": True,
         "quiet": True,
         "noprogress": True,
@@ -806,9 +933,7 @@ def op_stream(request):
         path = path or info.get("filepath") or info.get("_filename")
     if path and os.path.isfile(path) and inside_staging(path):
         EMITTER.emit("file", key=request.get("key") or "stream", path=path, bytes=os.path.getsize(path),
-                     meta={"title": (info or {}).get("title"), "width": (info or {}).get("width"),
-                           "height": (info or {}).get("height"), "vcodec": (info or {}).get("vcodec"),
-                           "duration": (info or {}).get("duration")})
+                     meta=video_meta(info or {}))
         finish("completed")
     else:
         EMITTER.emit("error", code="download_failed", message="The stream could not be downloaded.", fatal=True)
@@ -917,6 +1042,8 @@ def main():
             run_gallery_job(request, "pull")
         elif op == "stream":
             op_stream(request)
+        elif op == "video_info":
+            op_video_info(request)
         elif op == "install_wheel":
             op_install_wheel(request)
         else:

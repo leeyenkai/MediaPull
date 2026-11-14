@@ -17,24 +17,31 @@ struct PullSheet: View {
     init(model: WindowModel, draft: PullDraft) {
         self.model = model
         _draft = State(initialValue: draft)
-        _usernameText = State(initialValue: draft.username)
+        _usernameText = State(initialValue: draft.hashtag.map { "#\($0)" } ?? draft.username)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Pull an Instagram Account").font(.title2.weight(.semibold))
+            Text("Pull from Instagram").font(.title2.weight(.semibold))
             HStack {
-                TextField("Username, @handle or profile link", text: $usernameText)
+                TextField("Username, @handle, profile link or #hashtag", text: $usernameText)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { lookUp() }
-                Button("Look Up") { lookUp() }
-                    .disabled(cleanUsername.isEmpty)
+                Button(hashtagInput == nil ? "Look Up" : "Use Hashtag") { lookUp() }
+                    .disabled(cleanUsername.isEmpty && hashtagInput == nil)
             }
-            AccountCard(username: draft.username)
+            if let tag = draft.hashtag {
+                Label("Posts tagged #\(tag), newest first, saved in \(SaveTarget.tagsFolder)/\(tag)", systemImage: "number")
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+            } else {
+                AccountCard(username: draft.username)
+            }
 
             if !app.engines.signedIn {
                 Banner(symbol: "key.fill", tint: .orange,
-                       text: "You are not signed in to Instagram. Instagram shows only a few posts, and no stories or highlights, without a signed-in session.") {
+                       text: "Pulling needs a signed-in Instagram session. Signed out, Instagram shows only about 12 recent posts at reduced size, which you can still collect from the browser.") {
                     Button("Sign In") {
                         model.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!)
                         dismiss()
@@ -44,26 +51,51 @@ struct PullSheet: View {
             }
 
             Form {
-                Section("Content") {
-                    ForEach(InstagramContent.allCases, id: \.self) { content in
-                        Toggle(content.label, isOn: Binding(
-                            get: { draft.content.contains(content) },
-                            set: { on in if on { draft.content.insert(content) } else { draft.content.remove(content) } }
-                        ))
+                if draft.hashtag == nil {
+                    ForEach(InstagramContent.Group.allCases, id: \.self) { group in
+                        Section {
+                            ForEach(InstagramContent.allCases.filter { $0.group == group }, id: \.self) { content in
+                                Toggle(isOn: Binding(
+                                    get: { draft.content.contains(content) },
+                                    set: { on in if on { draft.content.insert(content) } else { draft.content.remove(content) } }
+                                )) {
+                                    Text(content.label)
+                                    if let detail = content.detail { Text(detail) }
+                                }
+                                .disabled(group == .yours && !app.engines.signedIn || group != .yours && draft.username.isEmpty)
+                            }
+                        } header: {
+                            Text(group.title)
+                        } footer: {
+                            if group == .media {
+                                Button("Use Defaults") {
+                                    draft.content = draft.content.filter { $0.group != .media }.union(InstagramContent.defaults)
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                            }
+                        }
                     }
                 }
-                Section("Dates") {
-                    Toggle("Only since last pull", isOn: $draft.incremental)
-                    HStack {
-                        Toggle("From", isOn: $draft.useDateFrom)
-                        DatePicker("", selection: $draft.dateFrom, displayedComponents: .date)
-                            .labelsHidden()
-                            .disabled(!draft.useDateFrom)
-                        Toggle("To", isOn: $draft.useDateTo)
-                        DatePicker("", selection: $draft.dateTo, displayedComponents: .date)
-                            .labelsHidden()
-                            .disabled(!draft.useDateTo)
+                Section {
+                    Picker("Posted", selection: $draft.dateWindow) {
+                        ForEach(InstagramDateWindow.allCases, id: \.self) { Text($0.label).tag($0) }
                     }
+                    .pickerStyle(.segmented)
+                    if draft.dateWindow == .custom {
+                        HStack {
+                            DatePicker("From", selection: $draft.dateFrom, in: ...Date(), displayedComponents: .date)
+                            DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
+                        }
+                    }
+                    Toggle("Only new posts since the last pull", isOn: $draft.incremental)
+                        .disabled(draft.hashtag == nil && draft.username.isEmpty)
+                } header: {
+                    Text("Dates")
+                } footer: {
+                    Text("Profile pictures are always included. Stories are at most a day old; highlights keep their original dates.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Save to") {
                     Picker("Library folder", selection: $draft.rootID) {
@@ -97,14 +129,14 @@ struct PullSheet: View {
                     app.engines.startPull(scan, scanOnly: true, window: model)
                     dismiss()
                 }
-                .disabled(draft.username.isEmpty || draft.content.isEmpty)
+                .disabled(!canStart)
                 Button("Pull") {
                     app.engines.startPull(draft, scanOnly: false, window: model)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(draft.username.isEmpty || draft.content.isEmpty || draft.rootID == nil)
+                .disabled(!canStart || draft.rootID == nil)
             }
         }
         .padding(20)
@@ -120,6 +152,23 @@ struct PullSheet: View {
         .onDisappear { lookupTask?.cancel() }
     }
 
+    /// An account with something chosen, a hashtag, or only the person's own items.
+    private var canStart: Bool {
+        if draft.hashtag != nil { return true }
+        let chosen = draft.content.filter { $0.group == .yours ? app.engines.signedIn : !draft.username.isEmpty }
+        return !chosen.isEmpty
+    }
+
+    private var hashtagInput: String? {
+        let text = usernameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = text.range(of: #"instagram\.com/explore/tags/([^/?#]+)"#, options: .regularExpression) {
+            return String(text[range].split(separator: "/").last ?? "").nonEmpty
+        }
+        guard text.hasPrefix("#") else { return nil }
+        let tag = text.dropFirst().filter { $0.isLetter || $0.isNumber || $0 == "_" }
+        return tag.isEmpty ? nil : String(tag).lowercased()
+    }
+
     private var cleanUsername: String {
         let text = usernameText.trimmingCharacters(in: .whitespacesAndNewlines)
         if let name = AddressInput.parse(text.hasPrefix("@") || text.contains(".com") ? text : "@" + text).instagramUsername { return name }
@@ -127,6 +176,14 @@ struct PullSheet: View {
     }
 
     private func lookUp() {
+        if let tag = hashtagInput {
+            draft.hashtag = tag
+            draft.username = ""
+            draft.folderName = tag
+            draft.incremental = false
+            return
+        }
+        draft.hashtag = nil
         let name = cleanUsername
         guard !name.isEmpty else { return }
         draft.username = name
@@ -141,6 +198,9 @@ struct PullSheet: View {
     }
 
     private var estimate: String {
+        if draft.hashtag != nil {
+            return "Popular hashtags have far more posts than one account; use the date range to keep a pull short."
+        }
         guard let account = app.engines.accounts[draft.username], let posts = account.postCount, posts > 0 else {
             return "MediaPull waits between requests so the account is not flagged. Large accounts take a while."
         }

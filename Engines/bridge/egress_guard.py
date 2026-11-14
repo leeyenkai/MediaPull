@@ -4,8 +4,9 @@ Installed before any engine code runs. Every HTTP request made by gallery-dl (th
 requests.Session) or yt-dlp (through YoutubeDL.urlopen) is checked here first:
 
 - GET and HEAD to http and https URLs are allowed, without a body.
-- POST is allowed only for Instagram's GraphQL read endpoints: no files, no multipart or binary
-  body, a small body, and an operation name that is a query and names no write action.
+- POST is allowed only for Instagram's GraphQL read endpoints (an operation name that is a query and
+  names no write action) and YouTube's player and next endpoints, which read a video's details. Never
+  files, multipart or binary bodies, or a large body.
 - Everything else raises PolicyViolation before any byte leaves the machine.
 """
 
@@ -22,6 +23,9 @@ DENIED_WORDS = re.compile(
 )
 POST_HOSTS = ("instagram.com",)
 POST_PATHS = ("/graphql/query", "/api/graphql")
+# YouTube's read endpoints for one video (D-55). Writing actions (like, subscribe, comment) live at other paths.
+YOUTUBE_HOSTS = ("youtube.com", "youtubei.googleapis.com")
+YOUTUBE_PATHS = ("/youtubei/v1/player", "/youtubei/v1/next")
 BODY_TYPES_DENIED = ("multipart/", "application/octet-stream", "image/", "video/", "audio/")
 
 _reporter = None
@@ -102,7 +106,7 @@ def check(method, url, data=None, headers=None, files=None):
             raise PolicyViolation(method, url, "reads never carry a body")
         return
     if method != "POST":
-        raise PolicyViolation(method, url, "only GET, HEAD and GraphQL read queries are allowed")
+        raise PolicyViolation(method, url, "only GET, HEAD and read-only POST requests are allowed")
     if files:
         raise PolicyViolation(method, url, "file bodies are never sent")
     if hasattr(data, "read") or (data is not None and not isinstance(data, (dict, bytes, bytearray, str))):
@@ -111,12 +115,14 @@ def check(method, url, data=None, headers=None, files=None):
         raise PolicyViolation(method, url, "body too large for a read query")
     host = (parts.hostname or "").lower()
     path = parts.path.rstrip("/").lower()
-    if not any(host == h or host.endswith("." + h) for h in POST_HOSTS) or path not in POST_PATHS:
-        raise PolicyViolation(method, url, "POST is only allowed for Instagram GraphQL read queries")
     if headers:
         for key, value in dict(headers).items():
             if str(key).lower() == "content-type" and str(value).lower().startswith(BODY_TYPES_DENIED):
                 raise PolicyViolation(method, url, "binary and multipart bodies are never sent")
+    if any(host == h or host.endswith("." + h) for h in YOUTUBE_HOSTS) and path in YOUTUBE_PATHS:
+        return
+    if not any(host == h or host.endswith("." + h) for h in POST_HOSTS) or path not in POST_PATHS:
+        raise PolicyViolation(method, url, "POST is only allowed for Instagram GraphQL and YouTube player read requests")
     names = _operation_names(data, headers)
     if not names:
         raise PolicyViolation(method, url, "GraphQL request without an operation name")

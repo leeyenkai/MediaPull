@@ -76,6 +76,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// Bumped by ⌘D so the address field's star opens its editor.
     var bookmarkRequest = 0
     var pullDraft: PullDraft?
+    /// The page whose video the Save Video sheet is for (SPEC section 35).
+    var videoRequest: VideoRequest?
+
+    func saveVideoFromPage() {
+        guard let url = browser.url else { return }
+        videoRequest = VideoRequest(url: url)
+    }
     var engineScan: Job?
     var documents: [URL] = []
     var extractedDocuments = Set<String>()

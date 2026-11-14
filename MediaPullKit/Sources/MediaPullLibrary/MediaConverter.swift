@@ -52,6 +52,12 @@ public struct MediaConverter: Sendable {
         guard let format = sniff.format else {
             throw sniff.isMarkup ? ConversionIssue.notMedia : ConversionIssue.unknownFormat
         }
+        if policy.keepDownloadedMedia, format.kind == .video || format.kind == .audio {
+            // M4A audio and MP4 video share their first bytes; the extension the engine gave the file tells them apart.
+            let named = MediaFormat.fromExtension(file.pathExtension)
+            let kept = named.map { $0.kind == .video || $0.kind == .audio } == true ? named! : format
+            return ConversionResult(url: file, format: kept, converted: false)
+        }
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         switch format.kind {
         case .image, .animatedImage:

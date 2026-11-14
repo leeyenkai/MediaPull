@@ -13,16 +13,21 @@ struct PullDraft: Identifiable, Equatable {
     var id = UUID()
     var username: String
     var postURL: URL?
+    /// A hashtag to pull instead of an account (without "#").
+    var hashtag: String?
     var content: Set<InstagramContent>
-    var useDateFrom = false
+    var dateWindow: InstagramDateWindow = .allTime
     var dateFrom = Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date()
-    var useDateTo = false
     var dateTo = Date()
     var rootID: UUID?
     var folderName: String
     var layout: SaveLayout
     var incremental = true
     var pacing: PacingPreset
+}
+
+struct VideoLookupError: Error, Equatable {
+    var message: String
 }
 
 enum InstagramGateState: Equatable {
@@ -190,9 +195,11 @@ final class EngineService {
     func startPull(_ draft: PullDraft, scanOnly: Bool, window: WindowModel?) -> Job? {
         guard let bridge else { return nil }
         let isPost = draft.postURL != nil
-        let title = isPost ? "Instagram post" : (scanOnly ? "Scanning @\(draft.username)" : "Pulling @\(draft.username)")
+        let subject = draft.hashtag.map { "#\($0)" } ?? (draft.username.isEmpty ? "your account" : "@\(draft.username)")
+        let title = isPost ? "Instagram post" : (scanOnly ? "Scanning \(subject)" : "Pulling \(subject)")
         let job = Job(kind: scanOnly ? .scan : .pull, title: title)
-        job.subtitle = draft.content.sorted { $0.rawValue < $1.rawValue }.map(\.label).joined(separator: ", ")
+        job.subtitle = draft.hashtag != nil ? "Posts with this hashtag"
+            : InstagramContent.allCases.filter { draft.content.contains($0) }.map(\.label).joined(separator: ", ")
         app.jobs.add(job)
         let root = app.roots.first { $0.id == draft.rootID } ?? app.defaultRoot
         if !scanOnly, root == nil {
@@ -200,9 +207,14 @@ final class EngineService {
             return job
         }
         if !scanOnly, let root {
-            job.destination = draft.postURL == nil
-                ? root.url.appendingPathComponent(FileNaming.safeTopFolder(draft.folderName.nonEmpty ?? draft.username), isDirectory: true)
-                : root.url
+            if let tag = draft.hashtag {
+                job.destination = root.url.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true).appendingPathComponent(tag)
+            } else if draft.postURL == nil, !draft.username.isEmpty {
+                job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(draft.folderName.nonEmpty ?? draft.username),
+                                                                  isDirectory: true)
+            } else {
+                job.destination = root.url
+            }
         }
         job.resume = { [weak self, weak job, weak window] in
             guard let self, let job else { return }
@@ -220,7 +232,7 @@ final class EngineService {
             guard let job else { return }
             await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
         }
-        if !scanOnly {
+        if !scanOnly, draft.hashtag == nil, !draft.username.isEmpty {
             Task {
                 await app.store?.updateAccount(draft.username, options: PullOptions(content: draft.content, layout: draft.layout,
                                                                                     rootID: root?.id, pacing: draft.pacing))
@@ -277,20 +289,43 @@ final class EngineService {
             return
         }
 
-        let account = draft.username.lowercased()
+        // Archive bookkeeping key: the account, the hashtag, or the signed-in person's own items.
+        let account = draft.hashtag.map { "#\($0.lowercased())" } ?? (draft.username.isEmpty ? "_self" : draft.username.lowercased())
+        let isAccount = draft.hashtag == nil && !draft.username.isEmpty
         let stored = await app.store?.account(account)
         var request = BridgeRequest(op: scanOnly ? "scan" : "pull")
         let profileURL = URL(string: "https://www.instagram.com/\(account)/")!
-        request.url = draft.postURL?.absoluteString ?? profileURL.absoluteString
-        request.include = InstagramContent.allCases.filter { draft.content.contains($0) }.map(\.engineName)
+        if let postURL = draft.postURL {
+            request.url = postURL.absoluteString
+        } else if let tag = draft.hashtag {
+            request.url = "https://www.instagram.com/explore/tags/\(tag)/"
+        } else {
+            // The profile lists the account's media; details and the person's own items are pages of their own.
+            var urls: [String] = []
+            let media = InstagramContent.allCases.filter { draft.content.contains($0) && $0.isProfileMedia }
+            if isAccount, !media.isEmpty {
+                urls.append(profileURL.absoluteString)
+                request.include = media.map(\.engineName)
+            }
+            if isAccount {
+                for detail in [InstagramContent.profileInfo, .followers, .following] where draft.content.contains(detail) {
+                    urls.append(profileURL.absoluteString + detail.engineName + "/")
+                }
+            }
+            if draft.content.contains(.saved) { urls.append("https://www.instagram.com/\(isAccount ? account : "me")/saved/") }
+            if draft.content.contains(.storiesTray) { urls.append("https://www.instagram.com/stories/me/") }
+            request.urls = urls
+            request.url = urls.first ?? profileURL.absoluteString
+        }
         request.cookies = cookieFile.path
         request.staging = staging.path
         request.setPacing(draft.pacing.delay)
         let selector = app.preferences.video.selector(av1Decodable: FFmpeg.canDecodeAV1)
         request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort)
-        if draft.useDateFrom { request.dateFrom = ISO8601DateFormatter().string(from: draft.dateFrom) }
-        if draft.useDateTo { request.dateTo = ISO8601DateFormatter().string(from: draft.dateTo) }
-        if (draft.incremental || resuming), draft.postURL == nil, !scanOnly {
+        let dates = draft.dateWindow.bounds(from: draft.dateFrom, to: draft.dateTo)
+        if let from = dates.from { request.dateFrom = ISO8601DateFormatter().string(from: from) }
+        if let to = dates.to { request.dateTo = ISO8601DateFormatter().string(from: to) }
+        if (draft.incremental || resuming), draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
             let known = await app.store?.knownKeys(account: account) ?? []
             let knownFile = staging.appendingPathComponent("known.json")
             if let data = try? JSONEncoder().encode(Array(known)) { try? data.write(to: knownFile) }
@@ -301,7 +336,10 @@ final class EngineService {
         if resuming, let cursor = stored?.resumeCursor, draft.postURL == nil, !scanOnly { request.cursor = cursor }
 
         let target: SaveTarget? = root.map { root in
-            draft.postURL == nil
+            if let tag = draft.hashtag {
+                return SaveTarget(folder: root.url, layout: draft.layout, autoSubfolders: true, collectionPath: [SaveTarget.tagsFolder, tag])
+            }
+            return draft.postURL == nil && isAccount
                 ? SaveTarget(folder: root.url, layout: draft.layout, autoSubfolders: true, accountUsername: draft.folderName.nonEmpty ?? account)
                 : SaveTarget(folder: root.url, layout: draft.layout, autoSubfolders: true)
         }
@@ -319,7 +357,7 @@ final class EngineService {
                 if Task.isCancelled || job.state == .cancelled { break }
                 switch event {
                 case let .account(info):
-                    await app.store?.updateAccount(account, userID: info.userID, fullName: info.fullName)
+                    if isAccount { await app.store?.updateAccount(account, userID: info.userID, fullName: info.fullName) }
                     accounts[account] = info
                 case let .item(item):
                     job.found += 1
@@ -360,6 +398,14 @@ final class EngineService {
                         job.failures.append((file.key, reason))
                     }
                     if let note, job.notes.count < 30 { job.notes.append(note) }
+                case let .document(kind, path, count):
+                    guard !scanOnly, let root, isAccount, path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/") else {
+                        continue
+                    }
+                    if let saved = fileAccountDocument(path, kind: kind, root: root, folder: draft.folderName.nonEmpty ?? account) {
+                        let what = kind == "profile" ? "profile information" : "\(kind) list (\(count) accounts)"
+                        if job.notes.count < 30 { job.notes.append("Saved the \(what) as \(saved.lastPathComponent)") }
+                    }
                 case .skip:
                     job.skipped += 1
                 case let .wait(seconds, reason):
@@ -367,7 +413,7 @@ final class EngineService {
                 case let .progress(received, total, _):
                     if let received, let total, total > 0 { job.fraction = nil; job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))" }
                 case let .cursor(subcategory, value):
-                    if subcategory == "posts", !scanOnly { await app.store?.updateAccount(account, resumeCursor: .some(value)) }
+                    if subcategory == "posts", !scanOnly, isAccount { await app.store?.updateAccount(account, resumeCursor: .some(value)) }
                 case let .checkpoint(kind, url, message):
                     blocked = true
                     handleCheckpoint(kind: kind, url: url, message: message)
@@ -407,14 +453,14 @@ final class EngineService {
         // Only a pull that reached the end may forget its place: an incremental pull stops at the
         // first run of known posts, so a gap left by a failed page would never be filled.
         if let fatal, !finishedCleanly || job.failed > 0 {
-            if !scanOnly, draft.postURL == nil {
+            if !scanOnly, draft.postURL == nil, isAccount {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: fatal)
             }
             app.jobs.finish(job, .failed("Stopped part way: \(fatal) Pull again to continue from where it stopped."))
             return
         }
         if let fatal { job.notes.append(fatal) }
-        if !scanOnly, draft.postURL == nil {
+        if !scanOnly, draft.postURL == nil, isAccount {
             if finishedCleanly {
                 await app.store?.updateAccount(account, newestSavedDate: newest, resumeCursor: .some(nil), lastResult: job.summary, pulledNow: true)
             } else {
@@ -422,6 +468,171 @@ final class EngineService {
             }
         }
         cooldownLevel = max(0, cooldownLevel - 1)
+        app.jobs.finish(job, .completed)
+    }
+
+    /// Moves a followers or following list, or the profile, into `<account>/Account details/` with the date in its name.
+    private func fileAccountDocument(_ file: URL, kind: String, root: LibraryRootInfo, folder: String) -> URL? {
+        let directory = root.url.appendingPathComponent(FileNaming.safeTopFolder(folder), isDirectory: true)
+            .appendingPathComponent(SaveTarget.accountDetailsFolder, isDirectory: true)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        let name = FileNaming.fileName(stem: "\(formatter.string(from: Date()))_\(kind)", ext: file.pathExtension)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let target = LibraryModel.uniqueURL(directory.appendingPathComponent(name))
+            try FileManager.default.moveItem(at: file, to: target)
+            return target
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: Videos (SPEC section 35)
+
+    /// Lists the formats of the video on a page, without downloading it.
+    func videoInfo(for url: URL) async -> Result<VideoInfo, VideoLookupError> {
+        guard let bridge else { return .failure(VideoLookupError(message: "The download engine is not available.")) }
+        var request = BridgeRequest(op: "video_info")
+        request.url = url.absoluteString
+        request.userAgent = app.userAgent
+        var message = "No downloadable video was found on this page."
+        do {
+            for try await event in bridge.run(request) {
+                switch event {
+                case let .videoInfo(info): return .success(info)
+                case let .error(_, text, _, _): message = text
+                case let .policyViolation(method, host, _, reason): message = "MediaPull blocked a \(method) request to \(host): \(reason)"
+                default: break
+                }
+            }
+        } catch {
+            message = error.localizedDescription
+        }
+        return .failure(VideoLookupError(message: message))
+    }
+
+    /// Downloads a video in the chosen format and resolution into `<root>/<site>/<uploader>/`.
+    @discardableResult
+    func saveVideo(_ info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: LibraryRootInfo, window: WindowModel?) -> Job {
+        let job = Job(kind: .stream, title: info.title)
+        job.subtitle = format.label + (format.isAudioOnly ? "" : ", " + (height.map { "\($0)p" } ?? "best resolution"))
+        let site = info.webpageURL.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? info.extractor
+        let channel = info.uploader?.nonEmpty ?? "Videos"
+        job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(site), isDirectory: true)
+            .appendingPathComponent(FileNaming.sanitize(channel, maxBytes: 80), isDirectory: true)
+        app.jobs.add(job)
+        job.task = Task { [weak self, weak job] in
+            guard let self, let job else { return }
+            await self.runVideo(job: job, info: info, format: format, height: height, root: root, site: site, channel: channel, window: window)
+        }
+        job.retry = { [weak self, weak job, weak window] in
+            guard let self, let job else { return }
+            job.failed = 0
+            job.failures = []
+            job.finishedAt = nil
+            job.task = Task { [weak self, weak job] in
+                guard let self, let job else { return }
+                await self.runVideo(job: job, info: info, format: format, height: height, root: root, site: site, channel: channel,
+                                    window: window)
+            }
+        }
+        return job
+    }
+
+    private func runVideo(job: Job, info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: LibraryRootInfo, site: String,
+                          channel: String, window: WindowModel?) async
+    {
+        guard let bridge, let stagingRoot = app.enginePaths?.staging else {
+            app.jobs.finish(job, .failed("The download engine is not available."))
+            return
+        }
+        job.state = .running
+        let staging = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var request = BridgeRequest(op: "stream")
+        request.url = info.webpageURL.absoluteString
+        request.staging = staging.path
+        request.userAgent = app.userAgent
+        request.key = "video:\(info.extractor):\(info.id ?? info.webpageURL.absoluteString)"
+        let selector = format.selector(height: height)
+        request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort, merge: selector.merge)
+
+        var file: BridgeFile?
+        var failure: String?
+        do {
+            for try await event in bridge.run(request, workingDirectory: staging) {
+                if Task.isCancelled { break }
+                switch event {
+                case let .progress(received, total, _):
+                    if let received, let total, total > 0 {
+                        job.fraction = Double(received) / Double(total)
+                        job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))"
+                    }
+                case let .file(found) where found.isInside(staging):
+                    file = found
+                case let .error(_, message, _, fatal):
+                    if fatal || failure == nil { failure = message }
+                case let .policyViolation(method, host, _, reason):
+                    failure = "MediaPull blocked a \(method) request to \(host): \(reason)"
+                default:
+                    break
+                }
+            }
+        } catch {
+            failure = error.localizedDescription
+        }
+        if Task.isCancelled || job.state == .cancelled {
+            app.jobs.finish(job, .cancelled)
+            return
+        }
+        guard let file else {
+            app.jobs.finish(job, .failed(failure ?? "The video could not be downloaded."))
+            return
+        }
+        job.fraction = nil
+        job.currentItem = format.needsConversion(in: info.formats, height: height) ? "Converting to HEVC" : "Saving"
+        var context = EngineContext(key: request.key ?? "video", category: info.extractor.nonEmpty ?? site,
+                                    subcategory: format.isAudioOnly ? "audio" : "video")
+        context.username = info.uploader
+        context.postID = info.id
+        context.shortcode = info.id
+        context.date = info.uploadDate
+        context.title = info.title
+        context.description = info.title
+        context.postURL = info.webpageURL
+        context.sourceURL = info.webpageURL
+        let input = EngineItemInput(context: context, kind: format.isAudioOnly ? .audio : .video, engineURL: info.webpageURL.absoluteString,
+                                    thumbURL: info.thumbnail, width: file.meta["width"]?.int, height: file.meta["height"]?.int,
+                                    isDash: false, fallbackURL: nil)
+        let item = input.makeItem(discoveryIndex: 0)
+        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true,
+                                collectionPath: [site, FileNaming.sanitize(channel, maxBytes: 80)])
+        var settings = app.saveSettings
+        settings.conversion.keepDownloadedMedia = format.keepsDownloadedFile
+        let (outcome, note) = await app.pipeline().saveStaged(file.path, item: item, target: target, settings: settings, index: 1,
+                                                              nameOverride: info.title)
+        if let note { job.notes.append(note) }
+        switch outcome {
+        case let .saved(url):
+            job.saved = 1
+            job.destination = url
+        case let .duplicate(url):
+            job.duplicates = 1
+            job.destination = url
+        case let .skipped(reason):
+            job.skipped = 1
+            app.jobs.finish(job, .failed(reason))
+            return
+        case let .failed(reason):
+            job.failed = 1
+            app.jobs.finish(job, .failed(reason))
+            return
+        }
+        app.libraryRevision += 1
         app.jobs.finish(job, .completed)
     }
 
