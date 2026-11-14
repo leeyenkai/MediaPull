@@ -95,6 +95,13 @@ struct GeneralSettings: View {
                     Button("Show Walkthrough") { app.showWalkthrough(.tour) }
                 }
             }
+            Section("Duplicates") {
+                DuplicateCommands(library: nil)
+                Text("Duplicates are found with checksums and perceptual hashes of each picture, on this Mac, within each library folder. "
+                    + "Orange frames mark identical files; purple frames mark the same or a similar picture saved differently.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Browser") {
                 Toggle("Remember browsing history", isOn: $preferences.rememberHistory)
                 HStack {

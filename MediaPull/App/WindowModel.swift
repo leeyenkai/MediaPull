@@ -668,6 +668,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
         openEditor(EditorRequest(subject: .item(id)))
     }
 
+    /// Videos open the video editor (frames and trimming); everything else the image editor.
+    func isVideo(_ subject: EditorRequest.Subject) -> Bool {
+        switch subject {
+        case let .file(url): MediaFormat.fromExtension(url.pathExtension)?.kind == .video
+        case let .item(id): itemsByID[id].map { $0.kind == .video || $0.kind == .stream } ?? false
+        }
+    }
+
     func openEditor(_ request: EditorRequest) {
         switch request.subject {
         case let .item(id): previewSubject = .item(id)
@@ -876,7 +884,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 menu.addItem(ActionMenuItem("Open Source Page") { [weak self] in self?.browser.load(page) })
             }
             menu.addItem(ActionMenuItem("Show in Preview") { [weak self] in self?.gridActivate(item.id) })
-            menu.addItem(ActionMenuItem(item.kind == .image ? "Edit…" : "Rename…") { [weak self] in self?.edit(item.id) })
+            menu.addItem(ActionMenuItem(item.kind == .image ? "Edit…" : (item.kind == .video ? "Edit Video…" : "Rename…")) { [weak self] in self?.edit(item.id) })
             if let saved = states[item.id]?.savedURL {
                 menu.addItem(ActionMenuItem("Show Saved File in Finder") { NSWorkspace.shared.activateFileViewerSelecting([saved]) })
             }

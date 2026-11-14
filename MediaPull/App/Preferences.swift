@@ -33,6 +33,8 @@ final class Preferences {
     var saveConcurrency: Int { didSet { set(saveConcurrency, "saveConcurrency") } }
     var paneArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(paneArrangement), "paneArrangement") } }
     var rememberHistory: Bool { didSet { set(rememberHistory, "rememberHistory") } }
+    var highlightDuplicates: Bool { didSet { set(highlightDuplicates, "highlightDuplicates") } }
+    var duplicateSensitivity: DuplicateSensitivity { didSet { set(duplicateSensitivity.rawValue, "duplicateSensitivity") } }
     var thumbnailSize: CGFloat { didSet { set(Double(thumbnailSize), "thumbnailSize") } }
     var theme: AppTheme {
         didSet {
@@ -69,6 +71,8 @@ final class Preferences {
         saveConcurrency = d.object(forKey: "saveConcurrency") as? Int ?? 4
         paneArrangement = d.data(forKey: "paneArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) } ?? .standard
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true
+        highlightDuplicates = d.object(forKey: "highlightDuplicates") as? Bool ?? true
+        duplicateSensitivity = DuplicateSensitivity(rawValue: d.string(forKey: "duplicateSensitivity") ?? "") ?? .nearIdentical
         thumbnailSize = CGFloat(d.object(forKey: "thumbnailSize") as? Double ?? 150)
         theme = AppTheme(rawValue: d.string(forKey: "theme") ?? "") ?? .system
         AppTheme.currentAccent = theme.nsAccent

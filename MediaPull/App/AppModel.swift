@@ -35,6 +35,8 @@ final class AppModel {
     /// The walkthrough (SPEC 7.2): on first run with the setup steps, or the tour alone from Settings or Help.
     var walkthrough: WalkthroughMode?
     let browsing = BrowsingStore(persistent: !SelfTestRunner.isActive)
+    /// Duplicate detection for the Library pane (SPEC section 33); hashes are cached between launches.
+    let duplicates: DuplicateFinder
     var libraryRevision = 0
     @ObservationIgnored private var windowRefs: [UUID: WeakWindow] = [:]
     @ObservationIgnored lazy var engines = EngineService(app: self)
@@ -50,6 +52,7 @@ final class AppModel {
         ffmpeg = paths.map { FFmpeg(paths: $0) }
         let support = EnginePaths.defaultSupport
         index = FingerprintIndex(storeURL: support.appendingPathComponent("fingerprints.json"))
+        duplicates = DuplicateFinder(storeURL: SelfTestRunner.isActive ? nil : support.appendingPathComponent("duplicates.json"))
         prober = MediaProber(gate: .shared)
         thumbnails = ThumbnailLoader(gate: .shared)
         jobs.notify = { [weak preferences] in preferences?.notifyWhenDone ?? false }

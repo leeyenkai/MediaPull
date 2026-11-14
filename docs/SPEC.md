@@ -10,19 +10,21 @@ Conventions:
 - **D-nn** is a recorded decision (section 27). Decisions can be changed, but only by editing this spec.
 - "Verify in M0" marks a detail that depends on third-party behaviour and must be confirmed by the engine spike before it is built on.
 
-## Implementation status (version 1.3)
+## Implementation status (version 1.4)
 
-Everything in this specification is implemented in the repository. Verification so far:
+MediaPull is a personal tool for archiving and collecting media, not a public release. The app, its engines and the read-only contract are implemented. Some supporting pieces described here were deliberately not built for personal use: the `mediapull-test://` fixture pages and the extraction tests that would use them (section 25), `scripts/perf-budgets.json` and CI enforcement (section 22, budgets were measured by hand instead), `docs/PRIVACY.md`, `scripts/sign-helpers.sh`, Developer ID signing and notarization (section 26; the app is signed for this Mac only).
 
-- **Automated** (`scripts/check.sh`): module-boundary and read-only lint, 21 Swift tests (sidecar contract, forbidden names, CDN rules, sniffing, request policy, ingestor, filters, conversion, save pipeline with duplicates and no-overwrite, the real bundled engine and its event stream), 6 Python tests of the egress guard, and an app build.
+Verification so far:
+
+- **Automated** (`scripts/check.sh`): module-boundary and read-only lint, Swift tests (sidecar contract, forbidden names, CDN rules and image proxies, sniffing, request policy, ingestor, filters, conversion, save pipeline, pane arrangement, bookmarks and history, hostile inputs, duplicate detection, video frames and trimming, the real bundled engine and its event stream), 8 Python tests of the egress guard, an iOS Simulator build of the package and an app build.
 - **End to end** (`MediaPull --selftest-url <url> --selftest-out <folder>`, section 25): on the New York Times international front page, 204 items were found (135 of them only while scrolling) and all 190 shown items were saved (185 saved, 5 recognised as duplicates), with images at the newspaper's largest rendition (2048 px), WebP converted to JPEG or PNG, SVG converted to PNG, and videos saved as H.264 MP4. A Wikipedia page was also scanned with the site extractor (48 originals).
-- **Version 1.1 additions, verified end to end**: images inside a hosted PDF (the arXiv paper 2010.11929: 298 embedded images extracted in about 2 seconds and saved), the editor (rotate, square crop, rename and Save as Copy on a saved image, with the sidecar updated), and the quick filter row with the resolution slider.
-- **Not yet exercised by a person**: drag and drop, Quick Look, and Instagram pulls with a signed-in account. Instagram requires signing in in the browser pane; without a session, lookups report that sign-in is needed.
-
+- **Version 1.4 additions, verified end to end**: duplicate detection in the Library (section 33; `--selftest-duplicates` found an identical copy in a subfolder and a resized, re-compressed copy, and kept colour versions of one product photo apart) and video frame grabs and trimming (section 34; `--selftest-video`: a 640×360 frame at 2.5 s saved as PNG, a 1–3 s selection saved as a 2.00 s copy without re-encoding, metadata files updated).
 - **Version 1.3 additions, verified end to end**: browser tabs, bookmarks in renamable folders, history with clearing, the walkthrough, the reworked icon and the narrow-pane fixes (`--selftest-browser`: two tabs, This Page 2 / 47 / 49 items, folder rename, history cleared, ⌘W bound to Close Tab). Measured: window ready 0.9 s after launch, idle CPU 0.17 % over 30 s, app memory peak 138–183 MB on the hard pages.
 - **Version 1.2 additions, verified end to end**: the Preview pane and movable panes (R-701a, section 10.3), themes (R-2010), the Liquid Glass app icon (section 26.1), image-proxy and lightbox originals (Appendix D), and fixes from a code review (D-39 to D-44). Hard pages tested: a product catalogue with script-resized thumbnails (55 items; colour-variant photos now saved at full size instead of 400 px thumbnails) and a large news front page (598 items, 495 of them only while scrolling, 519 saved in 12 s, app memory peak about 150 MB).
+- **Version 1.1 additions, verified end to end**: images inside a hosted PDF (the arXiv paper 2010.11929: 298 embedded images extracted in about 2 seconds and saved), the image editor, and the quick filter row with the resolution slider.
+- **Not yet exercised by a person**: drag and drop, Quick Look, the trim bar and frame stepping in the video editor, and Instagram pulls with a signed-in account.
 
-Decisions that changed during implementation are D-13 and D-24 to D-44 in section 27. Sections 31 (PDFs) and 32 (editing) and R-1006a (resolution slider) were added in version 1.1; the Preview pane, pane arrangement and themes in version 1.2.
+Decisions that changed during implementation are D-13 and D-24 to D-51 in section 27. Sections 31 (PDFs) and 32 (editing) and R-1006a (resolution slider) were added in version 1.1; the Preview pane, pane arrangement and themes in version 1.2.
 
 ---
 
@@ -60,6 +62,8 @@ Decisions that changed during implementation are D-13 and D-24 to D-44 in sectio
 30. Open questions
 31. Images inside PDFs
 32. Editing
+33. Duplicates in the Library
+34. Video frames and trimming
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -1107,6 +1111,8 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-47 | The inline editor has no Return, Escape or bare-key shortcuts; rotation is ⌥⌘[ and ⌥⌘] | Keys typed into a web page or the address field must never save, cancel or rotate an edit |
 | D-48 | Browser controls (navigation, address field, bookmarks, history) live in the Browser pane; the window toolbar is compact and holds only app-wide actions | More room for content; browsing controls stay with the pane wherever it is placed |
 | D-49 | The app is renamed MediaPull (bundle id `com.yenkai.MediaPull`, modules `MediaPull*`, drag type `com.yenkai.mediapull.items`, test scheme `mediapull-test://`); the sidecar's informational key `instapull_version` becomes `mediapull_version`. No other sidecar key, the date format, naming rules or reserved names change, and importers ignore this key | The product name is MediaPull; the key names the app that wrote the file |
+| D-50 | Duplicates are found with checksums, two perceptual hashes and a colour grid, never with learned models, and are only marked, never removed automatically | Deterministic results that can be explained; the person decides what to delete |
+| D-51 | Frames and trimmed videos add the informational sidecar keys `frame_time` and `trimmed_from`; frames drop `num`, `count` and `duration`. No existing key, the date format or the naming rules change | Derived files keep their source's details without joining its carousel |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1175,6 +1181,31 @@ Riskiest work first. Each milestone ends with a check that can be demonstrated.
 **R-3202** For a **library file**: Save replaces the file and moves the original to the Trash; Save as Copy writes a new file next to it. The sidecar follows the file and records the new width, height, checksum and `"edited": true`. A rename without edits only renames (file and sidecar). Videos and animated images can be renamed only.
 
 **R-3203** For an **extracted item** (not saved yet): Save to Library or Save to… writes the edited image through the normal save pipeline with its source metadata; "Keep Name Only" stores a custom name that every later save uses (D-35).
+
+## 33. Duplicates in the Library
+
+**R-3301** The Library pane marks files under the same library folder that are copies of each other: an orange frame and badge for a file with a byte-for-byte identical twin, a purple frame and badge for one that only looks the same. A bar under the folder title shows progress while checking, how many shown files have matches, a colour key and an "Only Duplicates" toggle, which lists just the matched files with copies side by side. Each matched file's context menu has "Copies and Look-alikes", and the Preview pane lists the other copies with their paths; choosing one opens its folder and selects it.
+
+**R-3302** Detection is deterministic, with no learned models:
+
+- Identical: SHA-256 checksums, computed only for files that share a size.
+- Same or similar picture: two 64-bit perceptual hashes of a small greyscale copy (pHash, the signs of the 63 lowest-frequency DCT coefficients of a 32×32 copy against their median; dHash, brightness differences across a 9×8 copy), plus the average colour of each cell of an 8×8 grid, because the hashes see only brightness. Two pictures match when both hashes are within the threshold and the colours agree.
+- Nearly flat pictures (a blank frame, a solid colour) get no perceptual hash and are only ever matched as identical files.
+- Candidate pairs come from eight 8-bit bands of the pHash (two hashes within 7 bits of each other share at least one band), so large libraries are not compared pair by pair; matches are joined into groups.
+
+**R-3303** Settings (Library menu and Settings > General > Duplicates): "Highlight Duplicates" (on by default) and what counts as a duplicate: Identical Files Only; Same Picture (resized or re-saved: hashes within 4 bits, every colour cell within 14 of 255; the default); Similar Pictures (light edits such as a small crop or a watermark: hashes within 7 bits, three quarters of the colour cells within 20). The same product photographed in another colour is not a duplicate at any setting.
+
+**R-3304** Checksums and fingerprints are cached in `~/Library/Application Support/MediaPull/duplicates.json` by path, size and modification date, so only new or changed files are read again; the folder is re-checked whenever its contents change. Hashing runs off the main actor, four files at a time. Nothing is deleted or moved automatically.
+
+## 34. Video frames and trimming
+
+**R-3401** Editing a video (⌘E, the edit button in the Preview pane's title bar, "Edit Video" in the item details and context menus) opens the video editor in the Preview pane: the system player with frame stepping, Save Frame, Trim, the rename field and the length. Extracted videos are downloaded through the gate first; streams must be saved before they can be edited.
+
+**R-3402** Save Frame writes the frame being shown, exactly (no time tolerance), at the video's full resolution with its rotation applied, as a lossless PNG named `<video name>_frame_<MM>m<SS-mmm>s.png`. Library videos get the frame next to them; extracted videos send it to the library through the save pipeline.
+
+**R-3403** Trim uses the player's trim bar to choose the part to keep. Trimming never re-encodes: the samples are copied (passthrough) and the cut points are kept exact with an edit list. A library video can be saved as a copy (`<name>_trimmed.mp4`) or replace the original, which goes to the Trash; an extracted video is saved trimmed to the library.
+
+**R-3404** A frame or trimmed copy of a library video gets a copy of the video's metadata file with updated fields: for frames `width`, `height`, `sha256`, `edited` and `frame_time` (seconds), without `num`, `count` and `duration` so the frame is not grouped into the post's carousel; for trimmed videos `duration`, `sha256`, `edited` and `trimmed_from` (start and end in seconds of the original). Names keep the date prefix of the video they came from, so the archive naming rules hold.
 
 ## Appendix A. Bridge protocol (version 1)
 

@@ -7,6 +7,8 @@ A native macOS app that collects images and videos from the web into your own fo
 - **Filters.** Type chips and a resolution slider are always at hand; More Filters adds format, file size, shape, source and domain.
 - **Preview pane.** Select any item or saved file to see it full size, play videos and GIFs, and read its details, including every version found and the name it will be saved under.
 - **Quick edits.** Crop (free or fixed ratios), rotate, flip and rename right in the Preview pane, for saved files and for items before you save them (⌘E).
+- **Duplicates.** The Library marks identical files and the same picture saved at another size or quality, anywhere in a library folder, using checksums and perceptual hashes on this Mac. Toggle the highlight, choose how strict it is, or show only the duplicates.
+- **Video frames and trimming.** Save any frame of a video as a full-resolution PNG, and trim videos without re-encoding.
 - **Your layout.** Resize every pane, and move or stack them however you like from each pane's arrange button or View > Arrange Panes. By default the browser is on the left, Extracted Media in the middle with the Preview below it, and the Library on the right.
 - **Walkthrough.** A short optional tour on first launch; open it again from Settings or Help.
 - **Themes.** Settings > Appearance offers Ocean, Sunset, Forest, Lavender, Graphite, Rose Gold, Aurora and a full-spectrum theme, or your system accent colour.

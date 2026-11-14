@@ -47,7 +47,7 @@ struct ItemDetails: View {
                     Button("Save to Library") { model.saveToLibrary([item]) }
                         .buttonStyle(.borderedProminent)
                     Button("Save to…") { model.saveTo([item]) }
-                    Button(item.kind == .image ? "Edit" : "Rename") { model.edit(item.id) }
+                    Button(item.kind == .image ? "Edit" : (item.kind == .video ? "Edit Video" : "Rename")) { model.edit(item.id) }
                 }
                 .controlSize(.small)
                 HStack {

@@ -49,8 +49,13 @@ struct PreviewPane: View {
     @ViewBuilder
     private var content: some View {
         if let request = model.editorRequest {
-            EditorView(request: request, window: model) { model.editorRequest = nil }
-                .id(request.id)
+            if model.isVideo(request.subject) {
+                VideoEditorView(request: request, window: model) { model.editorRequest = nil }
+                    .id(request.id)
+            } else {
+                EditorView(request: request, window: model) { model.editorRequest = nil }
+                    .id(request.id)
+            }
         } else {
             switch model.previewSubject {
             case let .item(id):
@@ -285,6 +290,29 @@ struct FileDetails: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 InfoGrid(rows: rows)
+                if let group = model.library.duplicateGroup(for: file), let report = model.library.duplicates {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Copies and look-alikes")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(group.members.filter { $0 != file.standardizedFileURL }, id: \.self) { other in
+                            let identical = report.areIdentical(file, other)
+                            Button {
+                                model.library.reveal(other)
+                            } label: {
+                                Label(String(other.path.dropFirst(report.root.standardizedFileURL.path.count))
+                                    .trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                                    systemImage: identical ? "doc.on.doc.fill" : "square.on.square")
+                            }
+                            .foregroundStyle(identical ? Color.orange : Color.purple)
+                            .buttonStyle(.link)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help("Show this copy in the Library")
+                        }
+                    }
+                }
                 if let caption {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Caption").font(.caption.weight(.semibold)).foregroundStyle(.secondary)

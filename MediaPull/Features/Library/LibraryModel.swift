@@ -74,8 +74,82 @@ final class LibraryModel: MediaGridOwner {
 
     var app: AppModel { .shared }
 
+    /// Duplicates found under the library folder that holds the selected folder (SPEC section 33).
+    var duplicates: DuplicateFinder.Report?
+    var duplicateProgress: (done: Int, total: Int)?
+    var showOnlyDuplicates = false {
+        didSet { revision += 1 }
+    }
+    @ObservationIgnored private var duplicateTask: Task<Void, Never>?
+
+    var shownFiles: [LibraryFile] {
+        guard showOnlyDuplicates, let duplicates else { return files }
+        // Copies sit next to each other.
+        return files.filter { duplicates.group(for: $0.url) != nil }
+            .sorted { (duplicates.groupOf[$0.url.standardizedFileURL.path] ?? 0, $0.name) < (duplicates.groupOf[$1.url.standardizedFileURL.path] ?? 0, $1.name) }
+    }
+
     var sections: [GridSection] {
-        [GridSection(id: "files", title: "", ids: files.map(\.id))]
+        [GridSection(id: "files", title: "", ids: shownFiles.map(\.id))]
+    }
+
+    func duplicateGroup(for file: URL) -> DuplicateFinder.Group? {
+        guard app.preferences.highlightDuplicates else { return nil }
+        return duplicates?.group(for: file)
+    }
+
+    /// Duplicates in the folder being shown.
+    var duplicatesHere: Int {
+        guard let duplicates else { return 0 }
+        return files.count { duplicates.group(for: $0.url) != nil }
+    }
+
+    @ObservationIgnored private var pendingReveal: URL?
+
+    /// Shows a file in this pane: selects it, opening its folder first when needed.
+    func reveal(_ url: URL) {
+        let folder = url.deletingLastPathComponent().standardizedFileURL
+        if selectedFolder?.standardizedFileURL == folder {
+            selectRevealed(url)
+        } else {
+            pendingReveal = url
+            selectedFolder = folder
+        }
+    }
+
+    private func selectRevealed(_ url: URL) {
+        guard let file = files.first(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) else { return }
+        if showOnlyDuplicates, duplicates?.group(for: url) == nil { showOnlyDuplicates = false }
+        selection = [file.id]
+        revision += 1
+        window?.showInPreview(.file(file.url))
+    }
+
+    func scanDuplicates() {
+        duplicateTask?.cancel()
+        guard app.preferences.highlightDuplicates, let folder = selectedFolder, let root = app.root(containing: folder)?.url else {
+            duplicates = nil
+            duplicateProgress = nil
+            showOnlyDuplicates = false
+            revision += 1
+            return
+        }
+        let finder = app.duplicates
+        let sensitivity = app.preferences.duplicateSensitivity
+        duplicateTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            let report = await finder.scan(root: root, sensitivity: sensitivity) { done, total in
+                Task { @MainActor in
+                    guard let self, !Task.isCancelled else { return }
+                    self.duplicateProgress = total > 30 && done < total ? (done, total) : nil
+                }
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.duplicates = report
+            self.duplicateProgress = nil
+            self.revision += 1
+        }
     }
 
     func reload() {
@@ -91,6 +165,11 @@ final class LibraryModel: MediaGridOwner {
             self.subfolderCount = folders
             self.selection = self.selection.intersection(Set(loaded.map(\.id)))
             self.revision += 1
+            if let pending = self.pendingReveal {
+                self.pendingReveal = nil
+                self.selectRevealed(pending)
+            }
+            self.scanDuplicates()
         }
     }
 
@@ -313,6 +392,14 @@ final class LibraryModel: MediaGridOwner {
             info.stateSymbol = "text.badge.checkmark"
             info.stateColor = .secondaryLabelColor
         }
+        if let group = duplicateGroup(for: file.url), let duplicates {
+            let identical = duplicates.isIdentical(file.url)
+            let color: NSColor = identical ? .systemOrange : .systemPurple
+            info.highlight = color
+            info.stateSymbol = identical ? "doc.on.doc.fill" : "square.on.square"
+            info.stateColor = color
+            info.secondary += " · \(group.members.count - 1) other\(group.members.count == 2 ? "" : "s")"
+        }
         return info
     }
 
@@ -361,8 +448,23 @@ final class LibraryModel: MediaGridOwner {
         menu.addItem(ActionMenuItem("Open") { chosen.forEach { NSWorkspace.shared.open($0.url) } })
         menu.addItem(ActionMenuItem("Quick Look") { [weak self] in self?.gridQuickLook() })
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen.map(\.url)) })
+        if chosen.count == 1, let file = chosen.first, let group = duplicateGroup(for: file.url),
+           let root = duplicates?.root
+        {
+            let copies = NSMenu()
+            for other in group.members where other != file.url.standardizedFileURL {
+                let relative = String(other.path.dropFirst(root.standardizedFileURL.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let kind = duplicates?.areIdentical(file.url, other) == true ? "Identical" : "Looks alike"
+                copies.addItem(ActionMenuItem("\(relative.isEmpty ? other.lastPathComponent : relative) (\(kind))") { [weak self] in
+                    self?.reveal(other)
+                })
+            }
+            let item = NSMenuItem(title: "Copies and Look-alikes", action: nil, keyEquivalent: "")
+            item.submenu = copies
+            menu.addItem(item)
+        }
         if chosen.count == 1, let file = chosen.first {
-            menu.addItem(ActionMenuItem(file.format?.kind == .image ? "Edit…" : "Rename…") { [weak self] in
+            menu.addItem(ActionMenuItem(file.format?.kind == .image ? "Edit…" : (file.format?.kind == .video ? "Edit Video…" : "Rename…")) { [weak self] in
                 self?.window?.openEditor(EditorRequest(subject: .file(file.url)))
             })
             if file.hasSidecar {

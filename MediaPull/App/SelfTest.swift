@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import Foundation
 import MediaPullCore
@@ -178,6 +179,8 @@ final class SelfTestRunner {
         snapshot(to: out.appendingPathComponent("window-saved.png"))
 
         if CommandLine.arguments.contains("--selftest-edit") { await exerciseEditor(library: library, out: out) }
+        if CommandLine.arguments.contains("--selftest-duplicates") { await exerciseDuplicates(library: library, out: out) }
+        if CommandLine.arguments.contains("--selftest-video") { await exerciseVideo(library: library, out: out) }
         writeReport(to: out, url: url, initial: initial, afterScroll: afterScroll, job: job, library: library)
         note("report written")
         try? await Task.sleep(for: .milliseconds(500))
@@ -248,6 +251,129 @@ final class SelfTestRunner {
         try? await Task.sleep(for: .seconds(1))
         model.closeTab(tab.id)
         note("after closing: \(model.tabs.count) tab, can reopen: \(model.canReopenClosedTab)")
+    }
+
+    /// Plants an identical copy and a resized copy of a saved picture, then checks the Library pane finds both.
+    private func exerciseDuplicates(library: URL, out: URL) async {
+        let images = (FileManager.default.enumerator(at: library, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
+            .filter { ["jpg", "png"].contains($0.pathExtension.lowercased()) }
+            .sorted { (ImageConversion.analyze($0)?.width ?? 0) > (ImageConversion.analyze($1)?.width ?? 0) }
+        guard let source = images.first, let image = ImageEditing.loadOriented(source) else {
+            note("duplicates: no saved picture to copy")
+            return
+        }
+        let folder = source.deletingLastPathComponent()
+        let copies = folder.appendingPathComponent("copies", isDirectory: true)
+        try? FileManager.default.createDirectory(at: copies, withIntermediateDirectories: true)
+        try? FileManager.default.copyItem(at: source, to: copies.appendingPathComponent("identical copy." + source.pathExtension))
+        let small = ImageEditing.cropped(image, to: CGRect(x: 0, y: 0, width: 1, height: 1)).flatMap { full -> CGImage? in
+            let width = max(64, full.width / 3), height = max(64, full.height / 3)
+            guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+            else { return nil }
+            context.interpolationQuality = .high
+            context.draw(full, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return context.makeImage()
+        }
+        if let small { try? ImageEditing.write(small, format: .jpeg, metadataFrom: nil, to: folder.appendingPathComponent("resized copy.jpg")) }
+        model.library.selectedFolder = folder
+        model.library.reload()
+        await waitUntil(timeout: 120) { self.model.library.duplicates != nil && self.model.library.duplicateProgress == nil }
+        try? await Task.sleep(for: .seconds(1))
+        let report = model.library.duplicates
+        let summary = report?.groups.map { group in
+            "\(group.identical ? "identical" : "similar"): " + group.members.map(\.lastPathComponent).joined(separator: ", ")
+        }.joined(separator: " | ") ?? "none"
+        note("duplicates: \(report?.filesChecked ?? 0) files checked, \(report?.groups.count ?? 0) groups: \(summary)")
+        note("duplicates here: \(model.library.duplicatesHere)")
+        if let first = model.library.files.first(where: { $0.name == "resized copy.jpg" }) {
+            model.library.selection = [first.id]
+            model.library.revision += 1
+            model.showInPreview(.file(first.url))
+        }
+        try? await Task.sleep(for: .seconds(2))
+        snapshot(to: out.appendingPathComponent("window-duplicates.png"))
+    }
+
+    /// Makes a short clip in the library, then saves a frame and a trimmed copy through the video editor.
+    private func exerciseVideo(library: URL, out: URL) async {
+        let clip = library.appendingPathComponent("2026-01-01_120000_0001_test clip.mp4")
+        do {
+            try await Self.writeTestClip(to: clip)
+        } catch {
+            note("video: could not make a test clip: \(error.localizedDescription)")
+            return
+        }
+        try? Data(#"{"category":"example.com","date":"2026-01-01 12:00:00","duration":4.0,"num":1,"count":2,"subcategory":"page","username":"example.com"}"#.utf8)
+            .write(to: Sidecar.sidecarURL(for: clip))
+        model.library.selectedFolder = library
+        let request = EditorRequest(subject: .file(clip))
+        model.openEditor(request)
+        try? await Task.sleep(for: .seconds(3))
+        snapshot(to: out.appendingPathComponent("window-video-editor.png"))
+        model.editorRequest = nil
+
+        let editor = VideoEditorModel(request: request, window: model)
+        await editor.load()
+        guard let stage = editor.stage else {
+            note("video: editor did not load: \(editor.message ?? "")")
+            return
+        }
+        await stage.player.seek(to: CMTime(seconds: 2.5, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        await editor.saveFrame()
+        note("video: \(editor.message ?? "no message")")
+        editor.selection = 1.0 ... 3.0
+        await editor.saveTrim(replacing: false)
+        let files = (try? FileManager.default.contentsOfDirectory(at: library, includingPropertiesForKeys: nil)) ?? []
+        for file in files.sorted(by: { $0.path < $1.path }) where file.lastPathComponent.contains("test clip") && file.pathExtension != "json" {
+            var facts = file.lastPathComponent
+            if file.pathExtension == "png", let image = ImageConversion.analyze(file) { facts += " \(image.width)x\(image.height)" }
+            if file.pathExtension == "mp4" { facts += String(format: " %.2f s", await VideoTools.duration(of: file) ?? 0) }
+            if let data = try? Data(contentsOf: Sidecar.sidecarURL(for: file)),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            {
+                facts += " sidecar: " + ["frame_time", "trimmed_from", "duration", "num", "width", "edited"]
+                    .compactMap { key in object[key].map { "\(key)=\($0)" } }.joined(separator: " ")
+            }
+            note("video file: \(facts)")
+        }
+        stage.stop()
+    }
+
+    /// A 4-second 640×360 H.264 clip with a moving square.
+    static func writeTestClip(to url: URL) async throws {
+        try? FileManager.default.removeItem(at: url)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 640, AVVideoHeightKey: 360,
+        ])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 640,
+            kCVPixelBufferHeightKey as String: 360,
+        ])
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0 ..< 100 {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &buffer)
+            guard let pixels = buffer else { continue }
+            CVPixelBufferLockBaseAddress(pixels, [])
+            if let context = CGContext(data: CVPixelBufferGetBaseAddress(pixels), width: 640, height: 360, bitsPerComponent: 8,
+                                       bytesPerRow: CVPixelBufferGetBytesPerRow(pixels), space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+            {
+                context.setFillColor(red: 0.1, green: 0.12, blue: 0.2 + Double(frame) / 200, alpha: 1)
+                context.fill(CGRect(x: 0, y: 0, width: 640, height: 360))
+                context.setFillColor(red: 0.95, green: 0.6, blue: 0.3, alpha: 1)
+                context.fill(CGRect(x: 40 + frame * 5, y: 120, width: 120, height: 120))
+            }
+            CVPixelBufferUnlockBaseAddress(pixels, [])
+            adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: 25))
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
     }
 
     private func capturePopover(to file: URL) {

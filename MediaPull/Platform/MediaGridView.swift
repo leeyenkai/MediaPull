@@ -13,6 +13,8 @@ struct GridCellInfo: Equatable {
     var progress: Double?
     var placeholderSymbol = "photo"
     var dimmed = false
+    /// A coloured frame drawn when the cell is not selected, such as the duplicate highlight.
+    var highlight: NSColor?
 }
 
 struct GridSection: Hashable {
@@ -416,7 +418,11 @@ final class MediaCellView: NSView {
     private var fullDetail = ""
     private var fullSecondary = ""
 
+    private var highlight: NSColor?
+
     func apply(_ info: GridCellInfo) {
+        highlight = info.highlight
+        updateSelection()
         fullDetail = info.title ?? info.detail
         fullSecondary = info.title == nil ? info.secondary : [info.detail, info.secondary].filter { !$0.isEmpty }.joined(separator: " · ")
         placeholder.image = NSImage(systemSymbolName: info.placeholderSymbol, accessibilityDescription: nil)
@@ -438,6 +444,12 @@ final class MediaCellView: NSView {
 
     private func updateSelection() {
         let selected = isSelected || isHighlighted
+        if !selected, let highlight {
+            frameLayer.borderWidth = 2
+            frameLayer.borderColor = highlight.cgColor
+            frameLayer.backgroundColor = highlight.withAlphaComponent(0.14).cgColor
+            return
+        }
         frameLayer.borderWidth = selected ? 3 : 0
         frameLayer.borderColor = AppTheme.currentAccent.cgColor
         frameLayer.backgroundColor = selected ? AppTheme.currentAccent.withAlphaComponent(0.18).cgColor

@@ -1,4 +1,5 @@
 import MediaPullCore
+import MediaPullLibrary
 import MediaPullStore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -21,6 +22,8 @@ struct LibraryPane: View {
                     }
                     Divider()
                     Button("Refresh") { library.refreshTree() }
+                    Divider()
+                    DuplicateCommands(library: library)
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -248,10 +251,19 @@ struct FolderContents: View {
             if let message = library.message {
                 Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12)
             }
+            if app.preferences.highlightDuplicates, library.selectedFolder != nil {
+                DuplicateBar(library: library)
+            }
             Divider()
             ZStack {
                 MediaGrid(sections: library.sections, selection: library.selection, cellSize: library.cellSize, revision: library.revision,
                           owner: library)
+                if library.showOnlyDuplicates, library.shownFiles.isEmpty, !library.files.isEmpty {
+                    Text("No duplicates in this folder.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .allowsHitTesting(false)
+                }
                 if library.files.isEmpty {
                     VStack(spacing: 6) {
                         Image(systemName: "tray.and.arrow.down").font(.title).foregroundStyle(.tertiary)
@@ -274,5 +286,116 @@ struct FolderContents: View {
         if library.subfolderCount > 0 { parts.append("\(library.subfolderCount) folder\(library.subfolderCount == 1 ? "" : "s")") }
         if let root = library.selectedFolder.flatMap({ app.root(containing: $0) }) { parts.append(root.layout.label) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Settings for duplicate detection, in the Library menu and Settings (SPEC R-3303).
+struct DuplicateCommands: View {
+    var library: LibraryModel?
+    @Bindable private var preferences = AppModel.shared.preferences
+    private var app: AppModel { .shared }
+
+    var body: some View {
+        Toggle("Highlight Duplicates", isOn: Binding(
+            get: { preferences.highlightDuplicates },
+            set: {
+                preferences.highlightDuplicates = $0
+                rescan()
+            }
+        ))
+        Picker("Count as Duplicates", selection: Binding(
+            get: { preferences.duplicateSensitivity },
+            set: {
+                preferences.duplicateSensitivity = $0
+                rescan()
+            }
+        )) {
+            ForEach(DuplicateSensitivity.allCases, id: \.self) { Text($0.label).tag($0) }
+        }
+        .disabled(!preferences.highlightDuplicates)
+        if let library {
+            Toggle("Show Only Duplicates", isOn: Binding(get: { library.showOnlyDuplicates }, set: { library.showOnlyDuplicates = $0 }))
+                .disabled(!preferences.highlightDuplicates || library.duplicates == nil)
+        }
+    }
+
+    private func rescan() {
+        for window in app.windows { window.library.scanDuplicates() }
+    }
+}
+
+/// Progress and counts for duplicate detection under the folder title.
+struct DuplicateBar: View {
+    @Bindable var library: LibraryModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let progress = library.duplicateProgress {
+                ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                    .progressViewStyle(.linear)
+                    .frame(width: 60)
+                Text("Checking for duplicates, \(progress.done) of \(progress.total)")
+                    .lineLimit(1)
+            } else if let report = library.duplicates {
+                let here = library.duplicatesHere
+                // One line when the pane is wide enough, two when it is narrow.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        summaryLabel(here: here, total: report.duplicateFileCount)
+                        Spacer(minLength: 4)
+                        if here > 0 { controls }
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        summaryLabel(here: here, total: report.duplicateFileCount)
+                        if here > 0 { HStack(spacing: 8) { controls } }
+                    }
+                }
+            } else {
+                Text("Checking for duplicates…")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 5)
+    }
+
+    private func summaryLabel(here: Int, total: Int) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: here > 0 ? "square.on.square" : "checkmark.circle")
+                .foregroundStyle(here > 0 ? Color.purple : Color.secondary)
+            Text(summary(here: here, total: total))
+                .lineLimit(1)
+                .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        Legend(color: .orange, label: "Identical")
+        Legend(color: .purple, label: "Look alike")
+        Toggle("Only Duplicates", isOn: $library.showOnlyDuplicates)
+            .toggleStyle(.button)
+            .controlSize(.mini)
+    }
+
+    private func summary(here: Int, total: Int) -> String {
+        if total == 0 { return "No duplicates in this library folder" }
+        if here == 0 { return "None here · \(total) elsewhere" }
+        return "\(here) here · \(total) in this library folder"
+    }
+}
+
+private struct Legend: View {
+    var color: Color
+    var label: String
+
+    var body: some View {
+        HStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 2).strokeBorder(color, lineWidth: 1.5).frame(width: 9, height: 9)
+            Text(label)
+        }
+        .fixedSize()
     }
 }
