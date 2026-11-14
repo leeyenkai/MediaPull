@@ -1,0 +1,8 @@
+#!/bin/bash
+# Refuses commits that include iCloud conflict copies such as "File 2.swift" (this folder is iCloud-synced).
+duplicates=$(git diff --cached --name-only --diff-filter=A | grep -E ' [0-9]+(\.[^/]+)?$' || true)
+if [ -n "$duplicates" ]; then
+  echo "These look like iCloud duplicate files; remove them before committing:" >&2
+  echo "$duplicates" >&2
+  exit 1
+fi

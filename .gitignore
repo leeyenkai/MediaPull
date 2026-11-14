@@ -1,0 +1,22 @@
+# macOS and iCloud
+.DS_Store
+*.icloud
+
+# Xcode and SwiftPM (builds go to ~/Library/Caches/MediaPullBuild)
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+.build/
+.swiftpm/
+MediaPullKit/.swiftpm/
+MediaPullKit/Package.resolved
+
+# Python
+__pycache__/
+*.pyc
+
+# Bundled engines are fetched by scripts/fetch-engines.sh, never committed
+Engines/python/
+Engines/site-packages/
+Engines/helpers/

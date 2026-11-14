@@ -1,0 +1,939 @@
+"""MediaPull engine bridge (protocol version 1, SPEC Appendix A).
+
+Reads one JSON request on stdin, drives gallery-dl or yt-dlp, and writes JSON Lines events to
+the original stdout. Anything the engines print goes to stderr instead, so the event stream
+can never be corrupted by engine output.
+"""
+
+import datetime
+import hashlib
+import json
+import logging
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import traceback
+
+PROTOCOL = 1
+VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "webm", "mkv"}
+NON_SITE_CATEGORIES = {"directlink", "generic", "recursive", "noop", "ytdl", "test"}
+
+
+class Emitter:
+    def __init__(self, stream):
+        self.stream = stream
+        self.seq = 0
+        self.lock = threading.Lock()
+
+    def emit(self, _event_type, **fields):
+        with self.lock:
+            self.seq += 1
+            event = {"v": PROTOCOL, "seq": self.seq, "type": _event_type}
+            event.update(fields)
+            try:
+                self.stream.write(json.dumps(event, default=_json_default, ensure_ascii=False) + "\n")
+                self.stream.flush()
+            except (BrokenPipeError, ValueError):
+                os._exit(0)
+
+
+def _json_default(value):
+    if isinstance(value, datetime.datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, (set, tuple)):
+        return list(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+EMITTER = None
+STATE = {"checkpoint": None, "errors": [], "private": False, "not_found": False, "outdated": False,
+         "violations": 0, "cursors": {}}
+
+
+# MARK: Logging and classification
+
+CHECKPOINT_PATTERNS = (
+    (re.compile(r"redirect to login page", re.I), "login"),
+    (re.compile(r"redirect to challenge page", re.I), "challenge"),
+    (re.compile(r"checkpoint_required|challenge_required", re.I), "challenge"),
+    (re.compile(r"feedback_required", re.I), "feedback"),
+    (re.compile(r"429 Too Many Requests", re.I), "rate_limit"),
+    (re.compile(r"401 Unauthorized.*(wait|few minutes)", re.I), "rate_limit"),
+)
+
+
+def _clean(text):
+    text = re.sub(r"(sessionid|csrftoken|ds_user_id|fb_dtsg|lsd)=[^&;\s]+", r"\1=REDACTED", text)
+    return text[:2000]
+
+
+class EventLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return
+        level = record.levelname.lower()
+        if record.levelno < logging.INFO:
+            return
+        if record.levelno >= logging.WARNING:
+            EMITTER.emit("log", level=level, logger=record.name, message=_clean(message))
+        lowered = message.lower()
+        for pattern, kind in CHECKPOINT_PATTERNS:
+            if pattern.search(message):
+                if kind == "rate_limit" and record.levelno < logging.ERROR and "waiting" in lowered:
+                    return
+                if STATE["checkpoint"] is None:
+                    url = None
+                    found = re.search(r"\((https?://[^)\s]+)\)", message)
+                    if found:
+                        url = found.group(1)
+                    if url is None and kind == "login":
+                        url = "https://www.instagram.com/accounts/login/"
+                    STATE["checkpoint"] = {"kind": kind, "url": url, "message": _clean(message)}
+                return
+        if "posts are private" in lowered or "this account is private" in lowered:
+            STATE["private"] = True
+        elif "could not be found" in lowered or "notfounderror" in lowered or "404 not found" in lowered:
+            if record.levelno >= logging.ERROR:
+                STATE["not_found"] = True
+        elif "failed to load api data" in lowered or "keyerror" in lowered or "unexpected error" in lowered:
+            STATE["outdated"] = True
+        if record.levelno >= logging.ERROR:
+            STATE["errors"].append(_clean(message))
+
+
+def install_logging():
+    handler = EventLogHandler()
+    handler.setLevel(logging.INFO)
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+
+
+# MARK: Request handling
+
+def read_request():
+    raw = sys.stdin.read()
+    return json.loads(raw) if raw.strip() else {}
+
+
+def configure_paths(request):
+    for path in reversed(request.get("paths") or []):
+        if path and path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def install_guard():
+    import egress_guard
+
+    def report(exc):
+        STATE["violations"] += 1
+        EMITTER.emit("policy_violation", method=exc.method, host=_host(exc.url), path=_path(exc.url),
+                     reason=exc.reason)
+
+    egress_guard.install(report)
+
+
+def _host(url):
+    from urllib.parse import urlsplit
+    return urlsplit(str(url)).netloc
+
+
+def _path(url):
+    from urllib.parse import urlsplit
+    return urlsplit(str(url)).path
+
+
+def versions():
+    info = {"python": sys.version.split()[0], "protocol": PROTOCOL}
+    try:
+        from gallery_dl import version as gdl_version
+        info["gallery_dl"] = gdl_version.__version__
+    except Exception as exc:
+        info["gallery_dl_error"] = str(exc)
+    try:
+        from yt_dlp import version as ytdlp_version
+        info["yt_dlp"] = ytdlp_version.__version__
+    except Exception as exc:
+        info["yt_dlp_error"] = str(exc)
+    ffmpeg = _which("ffmpeg")
+    if ffmpeg:
+        try:
+            out = subprocess.run([ffmpeg, "-hide_banner", "-version"], capture_output=True, text=True, timeout=10).stdout
+            info["ffmpeg"] = out.split()[2] if out else None
+        except Exception:
+            info["ffmpeg"] = None
+    return info
+
+
+def _which(name):
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(folder, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+# MARK: gallery-dl configuration
+
+STAGING = {"root": None}
+
+
+def inside_staging(path):
+    """Engines build paths from site metadata; only files inside the job's folder are reported."""
+    root = STAGING["root"]
+    if not root or not path:
+        return False
+    real_root = os.path.realpath(root)
+    return os.path.realpath(path).startswith(real_root.rstrip(os.sep) + os.sep)
+
+
+def configure_gallery_dl(request, staging):
+    STAGING["root"] = staging
+    from gallery_dl import config, output
+
+    config.clear()
+    pacing = request.get("pacing") or {}
+    delay = pacing.get("request_delay") or [8.0, 15.0]
+    extractor = {
+        "base-directory": staging,
+        "skip": True,
+        "retries": 2,
+        "timeout": 60,
+        "sleep-request": delay,
+        "sleep-429": 120,
+        "postprocessors": [],
+        "user-cache": "memory",
+        "instagram": {
+            "retries": 0,
+            "sleep-429": 0,
+            "include": request.get("include") or ["posts"],
+            "videos": True,
+            "previews": False,
+            "warn-videos": False,
+            "pinned": True,
+            "order-files": "asc",
+        },
+    }
+    if request.get("cookies"):
+        extractor["cookies"] = request["cookies"]
+        extractor["cookies-update"] = True
+    cursor = request.get("cursor")
+    if cursor:
+        extractor["instagram"]["posts"] = {"cursor": cursor}
+    if request.get("filter"):
+        extractor["image-filter"] = request["filter"]
+    config.set((), "extractor", extractor)
+
+    video = request.get("video") or {}
+    ytdl = {
+        "module": "yt_dlp",
+        "format": video.get("format") or "bv*+ba/b",
+        "forward-cookies": True,
+        "raw-options": {
+            "merge_output_format": "mp4",
+            "format_sort": video.get("format_sort") or ["res", "vcodec:h265", "acodec:aac"],
+            "ffmpeg_location": os.environ.get("MEDIAPULL_HELPERS") or None,
+            "quiet": True,
+            "no_warnings": False,
+            "noprogress": True,
+        },
+    }
+    config.set((), "downloader", {"part": True, "mtime": False, "ytdl": ytdl, "progress": None})
+    config.set((), "output", {"mode": "null", "progress": False, "log": None})
+    output.select = lambda: ProgressOutput()
+
+
+class ProgressOutput:
+    def __init__(self):
+        self.path = None
+        self.last = 0.0
+
+    def start(self, path):
+        self.path = path
+
+    def skip(self, path):
+        pass
+
+    def success(self, path):
+        pass
+
+    def progress(self, bytes_total, bytes_downloaded, bytes_per_second):
+        now = time.time()
+        if now - self.last < 0.5:
+            return
+        self.last = now
+        EMITTER.emit("progress", received=bytes_downloaded, total=bytes_total, speed=bytes_per_second)
+
+
+def patch_sleep():
+    from gallery_dl.extractor import common
+
+    original_sleep = common.Extractor.sleep
+
+    def sleep(self, seconds, reason):
+        if seconds and seconds > 0.5:
+            kind = "rate_limit" if "429" in str(reason) else "pacing"
+            EMITTER.emit("wait", seconds=round(float(seconds), 1), reason=kind)
+        return original_sleep(self, seconds, reason)
+
+    common.Extractor.sleep = sleep
+
+    original_wait = common.Extractor.wait
+
+    def wait(self, seconds=None, until=None, adjust=1.0, reason="rate limit"):
+        if seconds:
+            EMITTER.emit("wait", seconds=round(float(seconds), 1), reason="rate_limit")
+        elif until:
+            try:
+                remaining = (until.timestamp() if hasattr(until, "timestamp") else float(until)) - time.time()
+                EMITTER.emit("wait", seconds=round(max(remaining, 0), 1), reason="rate_limit")
+            except Exception:
+                pass
+        return original_wait(self, seconds, until, adjust, reason)
+
+    common.Extractor.wait = wait
+
+
+def patch_instagram():
+    """Reads Instagram's error bodies (gallery-dl only logs the status) so challenges, login
+    requests and rate limits become checkpoint events, and reports the cursor after every page."""
+    try:
+        from gallery_dl.extractor import instagram
+        from gallery_dl import exception
+    except Exception:
+        return
+    if getattr(instagram.InstagramExtractor.request, "_mediapull", False):
+        return
+    original_request = instagram.InstagramExtractor.request
+
+    def request(self, url, **kwargs):
+        try:
+            return original_request(self, url, **kwargs)
+        except exception.HttpError as exc:
+            classify_instagram_error(exc)
+            raise
+
+    request._mediapull = True
+    instagram.InstagramExtractor.request = request
+
+    original_cursor = instagram.InstagramExtractor._update_cursor
+
+    def update_cursor(self, cursor):
+        result = original_cursor(self, cursor)
+        if cursor:
+            EMITTER.emit("cursor", subcategory=self.subcategory, value=str(cursor))
+        return result
+
+    instagram.InstagramExtractor._update_cursor = update_cursor
+
+
+def classify_instagram_error(exc):
+    if STATE["checkpoint"] is not None:
+        return
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", 0) or 0
+    body = {}
+    try:
+        body = response.json() if response is not None else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    message = str(body.get("message") or "")
+    lowered = message.lower()
+    challenge = body.get("challenge") if isinstance(body.get("challenge"), dict) else {}
+    url = body.get("checkpoint_url") or challenge.get("url")
+    if url and str(url).startswith("/"):
+        url = "https://www.instagram.com" + str(url)
+    kind = None
+    if "checkpoint_required" in lowered or "challenge_required" in lowered or body.get("checkpoint_url"):
+        kind = "challenge"
+    elif "feedback_required" in lowered or body.get("feedback_required"):
+        kind = "feedback"
+    elif "login_required" in lowered or body.get("require_login"):
+        kind = "login"
+        url = url or "https://www.instagram.com/accounts/login/"
+    elif status == 429 or (status == 401 and "wait" in lowered):
+        kind = "rate_limit"
+    if kind:
+        STATE["checkpoint"] = {"kind": kind, "url": url, "message": _clean(message or f"HTTP {status}")}
+
+
+# MARK: Item metadata
+
+META_KEYS = ("category", "subcategory", "username", "fullname", "post_shortcode", "post_id", "num", "count",
+             "date", "post_date", "description", "post_url", "highlight_title", "media_id", "shortcode",
+             "width", "height", "width_original", "height_original", "extension", "filename", "title",
+             "type", "id", "author", "user", "owner_id")
+
+
+def item_meta(url, kwdict):
+    meta = {}
+    for key in META_KEYS:
+        if key not in kwdict:
+            continue
+        value = kwdict[key]
+        if key == "user":
+            if isinstance(value, dict):
+                name = value.get("username") or value.get("name") or value.get("screen_name")
+                if name:
+                    meta["user_name"] = str(name)
+            elif isinstance(value, str):
+                meta["user_name"] = value
+            continue
+        if key == "author":
+            if isinstance(value, dict):
+                value = value.get("username") or value.get("name") or value.get("nick")
+            if value is None:
+                continue
+            value = str(value)
+        if isinstance(value, datetime.datetime):
+            value = value.strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(value, (dict, list, tuple, set)):
+            continue
+        elif isinstance(value, bool) or value is None:
+            continue
+        elif isinstance(value, int) and key in ("post_id", "media_id", "id", "owner_id"):
+            value = str(value)
+        meta[key] = value
+    if kwdict.get("pinned"):
+        meta["pinned"] = True
+    for key in ("width_original", "height_original"):
+        if meta.get(key) == 0:
+            meta.pop(key)
+    return meta
+
+
+def item_key(kwdict, url):
+    category = kwdict.get("category") or "item"
+    if category == "instagram" and kwdict.get("media_id"):
+        return f"ig:{kwdict['media_id']}"
+    for field in ("media_id", "id", "post_id"):
+        value = kwdict.get(field)
+        if value not in (None, ""):
+            suffix = f":{kwdict.get('num')}" if field == "post_id" and kwdict.get("num") else ""
+            return f"{category}:{value}{suffix}"
+    return f"{category}:url:{hashlib.sha256(str(url).encode()).hexdigest()[:20]}"
+
+
+def item_event(url, kwdict):
+    meta = item_meta(url, kwdict)
+    extension = str(kwdict.get("extension") or "").lower()
+    is_video = url.startswith("ytdl:") or extension in VIDEO_EXTENSIONS or bool(kwdict.get("video_url") and kwdict.get("video_url") == url)
+    fallback = kwdict.get("_fallback")
+    fallback_url = None
+    if fallback:
+        try:
+            fallback_url = next(iter(fallback))
+        except Exception:
+            fallback_url = None
+    video = None
+    if is_video:
+        video = {"variant": "dash" if url.startswith("ytdl:") else "progressive"}
+        if fallback_url:
+            video["fallback_url"] = fallback_url
+    headers = kwdict.get("_http_headers")
+    return {
+        "key": item_key(kwdict, url),
+        "kind": "video" if is_video else "image",
+        "subcategory": kwdict.get("subcategory"),
+        "url": url,
+        "thumb_url": kwdict.get("display_url") if kwdict.get("category") == "instagram" else None,
+        "width": kwdict.get("width") or None,
+        "height": kwdict.get("height") or None,
+        "video": video,
+        "headers": dict(headers) if isinstance(headers, dict) else None,
+        "meta": meta,
+    }
+
+
+def _parse_date(text):
+    if not text:
+        return None
+    try:
+        value = datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+        return value.replace(tzinfo=None) if value.tzinfo is None else value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+class KnownTracker:
+    """Stops pagination after a run of fully known, non-pinned posts (SPEC R-1112), and applies
+    the date window without letting an old pinned post end the listing."""
+
+    date_from = None
+    date_to = None
+    chronological = {"posts", "reels", "post", "user", "tagged"}
+
+    def __init__(self, known, limit):
+        self.known = known
+        self.limit = limit
+        self.post = None
+        self.post_known = True
+        self.post_pinned = False
+        self.run = 0
+
+    def observe(self, kwdict, key):
+        from gallery_dl import exception
+
+        post = kwdict.get("post_id") or kwdict.get("post_shortcode") or key
+        if post != self.post:
+            self._close_post()
+            self.post = post
+            self.post_known = True
+            self.post_pinned = bool(kwdict.get("pinned"))
+        is_known = key in self.known
+        if not is_known:
+            self.post_known = False
+        if self.limit and self.run >= self.limit:
+            raise exception.StopExtraction()
+        return is_known
+
+    def outside_dates(self, kwdict, subcategory):
+        """True when the item is outside the date window; stops at the first old non-pinned post."""
+        from gallery_dl import exception
+
+        date = kwdict.get("post_date") or kwdict.get("date")
+        if not isinstance(date, datetime.datetime):
+            return False
+        date = date.replace(tzinfo=None) if date.tzinfo is None else date.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        if self.date_to and date > self.date_to:
+            return True
+        if self.date_from and date < self.date_from:
+            if not kwdict.get("pinned") and subcategory in self.chronological:
+                raise exception.StopExtraction()
+            return True
+        return False
+
+    def _close_post(self):
+        if self.post is None:
+            return
+        if self.post_known and not self.post_pinned:
+            self.run += 1
+        elif not self.post_known:
+            self.run = 0
+
+
+def load_known(request):
+    path = request.get("known_ids")
+    if not path:
+        return set()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return set(json.load(handle))
+    except Exception:
+        return set()
+
+
+# MARK: Jobs
+
+def make_jobs(request):
+    from gallery_dl import extractor as gdl_extractor, job
+
+    known = load_known(request)
+    limit = int(request.get("stop_after_known") or 0)
+    KnownTracker.date_from = _parse_date(request.get("date_from"))
+    KnownTracker.date_to = _parse_date(request.get("date_to"))
+
+    class ScanJob(job.Job):
+        def __init__(self, extr, parent=None):
+            job.Job.__init__(self, extr, parent)
+            self.tracker = KnownTracker(known, limit)
+            self.visited = parent.visited if parent is not None else set()
+
+        def handle_url(self, url, kwdict):
+            event = item_event(url, kwdict)
+            if self.tracker.outside_dates(kwdict, self.extractor.subcategory):
+                EMITTER.emit("skip", key=event["key"], reason="date")
+                return
+            if self.tracker.observe(kwdict, event["key"]):
+                EMITTER.emit("skip", key=event["key"], reason="known")
+                return
+            EMITTER.emit("item", **event)
+
+        def handle_directory(self, kwdict):
+            if self.extractor.subcategory == "info":
+                EMITTER.emit("account", **account_fields(kwdict))
+
+        def handle_queue(self, url, kwdict):
+            if url in self.visited:
+                return
+            self.visited.add(url)
+            cls = kwdict.get("_extractor")
+            extr = cls.from_url(url) if cls else gdl_extractor.find(url)
+            if extr:
+                ScanJob(extr, self).run()
+
+        def handle_finalize(self):
+            cursor = getattr(self.extractor, "_cursor", None)
+            if cursor:
+                EMITTER.emit("cursor", subcategory=self.extractor.subcategory, value=str(cursor))
+
+    class PullJob(job.DownloadJob):
+        def __init__(self, url, parent=None):
+            job.DownloadJob.__init__(self, url, parent)
+            self.tracker = KnownTracker(known, limit)
+
+        def initialize(self, kwdict=None):
+            job.DownloadJob.initialize(self, kwdict)
+            import collections
+            hooks = self.hooks if isinstance(self.hooks, dict) else collections.defaultdict(list)
+            if not isinstance(hooks, collections.defaultdict):
+                hooks = collections.defaultdict(list, hooks)
+            hooks["after"].append(self._file_done)
+            hooks["error"].append(self._file_failed)
+            self.hooks = hooks
+            self.out = ProgressOutput()
+
+        def handle_url(self, url, kwdict):
+            key = item_key(kwdict, url)
+            if self.tracker.outside_dates(kwdict, self.extractor.subcategory):
+                EMITTER.emit("skip", key=key, reason="date")
+                return
+            if self.tracker.observe(kwdict, key):
+                EMITTER.emit("skip", key=key, reason="known")
+                return
+            EMITTER.emit("item", **item_event(url, kwdict))
+            job.DownloadJob.handle_url(self, url, kwdict)
+
+        def handle_directory(self, kwdict):
+            if self.extractor.subcategory == "info":
+                EMITTER.emit("account", **account_fields(kwdict))
+                return
+            job.DownloadJob.handle_directory(self, kwdict)
+
+        def handle_skip(self):
+            pathfmt = self.pathfmt
+            if pathfmt is not None and pathfmt.kwdict:
+                path = pathfmt.path
+                if path and os.path.isfile(path):
+                    self._emit_file(path, pathfmt.kwdict)
+            job.DownloadJob.handle_skip(self)
+
+        def _file_done(self, pathfmt):
+            self._emit_file(pathfmt.path, pathfmt.kwdict)
+
+        def _file_failed(self, pathfmt):
+            kwdict = pathfmt.kwdict or {}
+            EMITTER.emit("error", code="download_failed", message="Failed to download a file",
+                         key=item_key(kwdict, kwdict.get("_url") or ""), fatal=False)
+
+        def _emit_file(self, path, kwdict):
+            url = kwdict.get("_url") or ""
+            if not inside_staging(path):
+                EMITTER.emit("error", code="unsafe_path", message="A file path left the working folder", fatal=False)
+                return
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = None
+            EMITTER.emit("file", key=item_key(kwdict, url), path=path, bytes=size,
+                         meta=item_meta(url, kwdict), subcategory=kwdict.get("subcategory"))
+
+        def handle_finalize(self):
+            cursor = getattr(self.extractor, "_cursor", None)
+            if cursor:
+                EMITTER.emit("cursor", subcategory=self.extractor.subcategory, value=str(cursor))
+            job.DownloadJob.handle_finalize(self)
+
+    return ScanJob, PullJob
+
+
+def account_fields(kwdict):
+    def count(value):
+        if isinstance(value, dict):
+            return value.get("count")
+        return value
+
+    hd = kwdict.get("hd_profile_pic_url_info")
+    avatar = (hd.get("url") if isinstance(hd, dict) else None) or kwdict.get("profile_pic_url_hd") or kwdict.get("profile_pic_url")
+    friendship = kwdict.get("friendship_status") if isinstance(kwdict.get("friendship_status"), dict) else {}
+    followed = friendship.get("following") if friendship else kwdict.get("followed_by_viewer")
+    return {
+        "username": kwdict.get("username"),
+        "full_name": kwdict.get("full_name") or kwdict.get("fullname"),
+        "user_id": str(kwdict.get("id") or kwdict.get("pk") or ""),
+        "is_private": bool(kwdict.get("is_private")),
+        "followed_by_viewer": bool(followed) if followed is not None else None,
+        "post_count": count(kwdict.get("media_count")) or count(kwdict.get("edge_owner_to_timeline_media")),
+        "avatar_url": avatar,
+        "biography": (kwdict.get("biography") or "")[:500],
+    }
+
+
+def finish(status, counts=None):
+    checkpoint = STATE["checkpoint"]
+    if checkpoint:
+        EMITTER.emit("checkpoint", **checkpoint)
+        status = "blocked"
+    elif STATE["violations"]:
+        status = "failed"
+    if STATE["private"]:
+        EMITTER.emit("error", code="private", message="This account is private.", fatal=True)
+    if STATE["not_found"]:
+        EMITTER.emit("error", code="not_found", message="Nothing was found at this address.", fatal=True)
+    if STATE["outdated"] and status != "completed":
+        EMITTER.emit("error", code="engine_outdated",
+                     message="The site may have changed. Check for engine updates.", fatal=False)
+    EMITTER.emit("done", status=status, counts=counts or {}, errors=STATE["errors"][-5:])
+
+
+def run_gallery_job(request, kind):
+    staging = request["staging"]
+    os.makedirs(staging, exist_ok=True)
+    configure_gallery_dl(request, staging)
+    patch_sleep()
+    patch_instagram()
+    ScanJob, PullJob = make_jobs(request)
+    urls = request.get("urls") or [request["url"]]
+    status = 0
+    for url in urls:
+        cls = ScanJob if kind == "scan" else PullJob
+        try:
+            status |= cls(url).run()
+        except Exception as exc:
+            from gallery_dl import exception
+            if isinstance(exc, exception.NoExtractorError):
+                EMITTER.emit("error", code="unsupported", message="This address is not supported.", fatal=True)
+                status |= 64
+            else:
+                raise
+        if STATE["checkpoint"] or STATE["violations"]:
+            break
+    finish("completed" if status == 0 else "failed", {"status": status})
+
+
+def op_account(request):
+    request = dict(request)
+    request["include"] = ["info"]
+    staging = request.get("staging") or os.getcwd()
+    configure_gallery_dl(request, staging)
+    patch_sleep()
+    patch_instagram()
+    ScanJob, _ = make_jobs(request)
+    username = request["username"].lstrip("@")
+    status = ScanJob(f"https://www.instagram.com/{username}/info/").run()
+    finish("completed" if status == 0 else "failed")
+
+
+def op_supports(request):
+    from gallery_dl import extractor as gdl_extractor
+
+    url = request.get("url") or ""
+    found = None
+    try:
+        extr = gdl_extractor.find(url)
+    except Exception:
+        extr = None
+    if extr is not None and extr.category not in NON_SITE_CATEGORIES:
+        found = {"category": extr.category, "subcategory": extr.subcategory}
+    EMITTER.emit("supports", url=url, supported=found is not None, **(found or {}))
+    EMITTER.emit("done", status="completed", counts={})
+
+
+def op_stream(request):
+    import yt_dlp
+
+    staging = request["staging"]
+    os.makedirs(staging, exist_ok=True)
+    STAGING["root"] = staging
+    video = request.get("video") or {}
+    headers = {}
+    if request.get("referer"):
+        headers["Referer"] = request["referer"]
+    if request.get("user_agent"):
+        headers["User-Agent"] = request["user_agent"]
+
+    class Logger:
+        def debug(self, message):
+            pass
+
+        def info(self, message):
+            pass
+
+        def warning(self, message):
+            EMITTER.emit("log", level="warning", logger="yt-dlp", message=_clean(message))
+
+        def error(self, message):
+            STATE["errors"].append(_clean(message))
+            EMITTER.emit("log", level="error", logger="yt-dlp", message=_clean(message))
+
+    last = {"t": 0.0}
+
+    def progress(info):
+        now = time.time()
+        if info.get("status") == "downloading" and now - last["t"] >= 0.5:
+            last["t"] = now
+            EMITTER.emit("progress", received=info.get("downloaded_bytes"),
+                         total=info.get("total_bytes") or info.get("total_bytes_estimate"),
+                         speed=info.get("speed"))
+
+    options = {
+        "outtmpl": {"default": "%(id).60s.%(ext)s"},
+        "paths": {"home": staging, "temp": staging},
+        "format": video.get("format") or "bv*+ba/b",
+        "format_sort": video.get("format_sort") or ["res", "vcodec:h265", "acodec:aac"],
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "noprogress": True,
+        "logger": Logger(),
+        "progress_hooks": [progress],
+        "http_headers": headers,
+        "ffmpeg_location": os.environ.get("MEDIAPULL_HELPERS") or None,
+        "allow_unplayable_formats": False,
+        "check_formats": False,
+        "retries": 3,
+        "fragment_retries": 5,
+    }
+    if request.get("cookies"):
+        options["cookiefile"] = request["cookies"]
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(request["url"], download=True)
+    path = None
+    if info:
+        downloads = info.get("requested_downloads") or []
+        if downloads:
+            path = downloads[0].get("filepath")
+        path = path or info.get("filepath") or info.get("_filename")
+    if path and os.path.isfile(path) and inside_staging(path):
+        EMITTER.emit("file", key=request.get("key") or "stream", path=path, bytes=os.path.getsize(path),
+                     meta={"title": (info or {}).get("title"), "width": (info or {}).get("width"),
+                           "height": (info or {}).get("height"), "vcodec": (info or {}).get("vcodec"),
+                           "duration": (info or {}).get("duration")})
+        finish("completed")
+    else:
+        EMITTER.emit("error", code="download_failed", message="The stream could not be downloaded.", fatal=True)
+        finish("failed")
+
+
+def op_install_wheel(request):
+    import zipfile
+
+    wheel = request["wheel"]
+    target = request["target"]
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        native = [n for n in names if n.endswith((".so", ".dylib", ".pyd", ".dll"))]
+        if native:
+            EMITTER.emit("error", code="native_code", message="The update contains native code and was refused.",
+                         fatal=True)
+            finish("failed")
+            return
+        for name in names:
+            if name.startswith("/") or ".." in name.split("/"):
+                EMITTER.emit("error", code="unsafe_path", message="The update contains unsafe paths.", fatal=True)
+                finish("failed")
+                return
+        os.makedirs(target, exist_ok=True)
+        archive.extractall(target)
+    import compileall
+    compileall.compile_dir(target, quiet=1, invalidation_mode=None)
+    finish("completed")
+
+
+def op_selftest(request):
+    info = versions()
+    problems = []
+    if "gallery_dl" not in info:
+        problems.append("gallery-dl could not be loaded")
+    if "yt_dlp" not in info:
+        problems.append("yt-dlp could not be loaded")
+    import egress_guard
+    try:
+        egress_guard.check("POST", "https://upload.example.invalid/upload", data=b"x", files={"f": b"x"})
+        problems.append("egress guard allowed an upload")
+    except egress_guard.PolicyViolation:
+        pass
+    try:
+        import requests
+        requests.Session().request("PUT", "https://example.invalid/", data=b"x")
+        problems.append("egress guard did not wrap requests")
+    except egress_guard.PolicyViolation:
+        pass
+    except Exception as exc:
+        problems.append(f"egress guard check failed: {exc}")
+    STATE["violations"] = 0
+    if not info.get("ffmpeg"):
+        problems.append("ffmpeg was not found")
+    EMITTER.emit("hello", **info)
+    if problems:
+        EMITTER.emit("error", code="selftest", message="; ".join(problems), fatal=True)
+        EMITTER.emit("done", status="failed", counts={})
+    else:
+        EMITTER.emit("done", status="completed", counts={})
+
+
+def main():
+    global EMITTER
+    events_fd = os.dup(1)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    EMITTER = Emitter(os.fdopen(events_fd, "w", buffering=1, encoding="utf-8"))
+
+    def on_signal(signum, frame):
+        EMITTER.emit("done", status="cancelled", counts={})
+        os._exit(130)
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+
+    try:
+        request = read_request()
+    except ValueError as exc:
+        EMITTER.emit("error", code="internal", message=f"Bad request: {exc}", fatal=True)
+        EMITTER.emit("done", status="failed", counts={})
+        return 2
+    if request.get("v", PROTOCOL) != PROTOCOL:
+        EMITTER.emit("error", code="protocol", message="Protocol version mismatch.", fatal=True)
+        EMITTER.emit("done", status="failed", counts={})
+        return 2
+
+    configure_paths(request)
+    install_logging()
+    op = request.get("op")
+    try:
+        install_guard()
+        if op == "hello":
+            EMITTER.emit("hello", **versions())
+            EMITTER.emit("done", status="completed", counts={})
+        elif op == "selftest":
+            op_selftest(request)
+        elif op == "supports":
+            op_supports(request)
+        elif op == "account":
+            op_account(request)
+        elif op in ("scan", "pull"):
+            run_gallery_job(request, op)
+        elif op == "fetch":
+            run_gallery_job(request, "pull")
+        elif op == "stream":
+            op_stream(request)
+        elif op == "install_wheel":
+            op_install_wheel(request)
+        else:
+            EMITTER.emit("error", code="internal", message=f"Unknown operation {op}", fatal=True)
+            EMITTER.emit("done", status="failed", counts={})
+            return 2
+    except Exception as exc:
+        name = exc.__class__.__name__
+        if name == "PolicyViolation":
+            finish("failed")
+            return 1
+        traceback.print_exc()
+        EMITTER.emit("error", code="internal", message=_clean(f"{name}: {exc}"), fatal=True)
+        EMITTER.emit("done", status="failed", counts={})
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

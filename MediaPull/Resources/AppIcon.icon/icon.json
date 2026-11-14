@@ -1,0 +1,132 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "srgb:0.16471,0.20000,0.32157,1.00000",
+          "srgb:0.04706,0.06275,0.12549,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0.0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1.0
+          }
+        }
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "srgb:0.10196,0.12549,0.21961,1.00000",
+          "srgb:0.02353,0.03137,0.05882,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0.0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1.0
+          }
+        }
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "wave.svg",
+          "name": "wave",
+          "opacity": 1.0
+        }
+      ],
+      "lighting": "combined",
+      "name": "Wave",
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.35
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.1
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "front.svg",
+          "name": "front",
+          "opacity": 1.0
+        }
+      ],
+      "lighting": "combined",
+      "name": "Front",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.45
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.2
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "middle.svg",
+          "name": "middle",
+          "opacity": 0.6
+        }
+      ],
+      "lighting": "combined",
+      "name": "Middle",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.45
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.45
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "back.svg",
+          "name": "back",
+          "opacity": 0.35
+        }
+      ],
+      "lighting": "combined",
+      "name": "Back",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.45
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
