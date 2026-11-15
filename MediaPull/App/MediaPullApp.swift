@@ -11,7 +11,7 @@ struct MediaPullApp: App {
             MainWindow()
         }
         .defaultSize(width: 1500, height: 920)
-        .windowToolbarStyle(.unifiedCompact(showsTitle: true))
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands { AppCommands() }
 
         Window("Activity", id: "activity") {
@@ -36,8 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
-        let running = AppModel.shared.jobs.jobs.filter { $0.state.isActive }
-        guard !running.isEmpty else { return .terminateNow }
+        // Analysis picks up where it stopped at the next launch, so only other jobs ask before quitting.
+        AppModel.shared.analysis.cancelScan()
+        let running = AppModel.shared.jobs.jobs.filter { $0.state.isActive && $0.kind != .analyse }
+        guard !running.isEmpty, !SelfTestRunner.isActive else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "\(running.count) job\(running.count == 1 ? " is" : "s are") still running"
         alert.informativeText = "Quitting stops them. Instagram pulls can be resumed later and continue where they stopped."
@@ -55,6 +57,12 @@ struct AppCommands: Commands {
     @FocusedValue(\.windowModel) private var window
     @Environment(\.openWindow) private var openWindow
 
+    private func paneToggle(_ pane: PaneID, key: Character) -> some View {
+        let showing = window?.isShowing(pane) ?? true
+        return Button(showing ? "Hide \(pane.title)" : "Show \(pane.title)") { window?.setShowing(pane, !showing) }
+            .keyboardShortcut(KeyEquivalent(key), modifiers: [.command, .option])
+    }
+
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("New Tab") { window?.newTab() }
@@ -69,18 +77,23 @@ struct AppCommands: Commands {
                 .disabled(!(window?.canReopenClosedTab ?? false))
             Divider()
             Button("Pull Instagram Account…") {
-                window?.pullDraft = AppModel.shared.engines.draft(username: window?.pageKind.instagramUsername ?? "")
+                window?.showDownloads(window?.pageKind.instagramUsername.map { "@\($0)" })
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
             .disabled(window == nil)
-            Button("Save Video from This Page…") { window?.saveVideoFromPage() }
+            Button("Save Video from This Page…") { window?.showDownloads(video: true) }
                 .keyboardShortcut("y", modifiers: [.command, .shift])
                 .disabled(window?.browser.url == nil)
-            Button("Open PDF…") {
-                PDFPicker.choose(window: window?.hostWindow) { files in files.forEach { window?.extractPDF(local: $0) } }
+            if window?.section == .organise {
+                Button("Open Folder to Organise…") { if let window { window.organise.chooseFolder(for: window.organise.source) } }
+                    .keyboardShortcut("o")
+            } else {
+                Button("Open PDF…") {
+                    PDFPicker.choose(window: window?.hostWindow) { files in files.forEach { window?.extractPDF(local: $0) } }
+                }
+                .keyboardShortcut("o")
+                .disabled(window == nil)
             }
-            .keyboardShortcut("o")
-            .disabled(window == nil)
             Divider()
             Button("Save to Library") { window?.saveToLibrary() }
                 .keyboardShortcut("s")
@@ -112,34 +125,49 @@ struct AppCommands: Commands {
                 .keyboardShortcut("a", modifiers: [.command, .shift])
         }
         CommandGroup(after: .sidebar) {
-            Button(window?.showBrowser ?? true ? "Hide Browser" : "Show Browser") { window?.setShowing(.source, !(window?.showBrowser ?? true)) }
-                .keyboardShortcut("1", modifiers: [.command, .option])
-            Button(window?.showExtracted ?? true ? "Hide Extracted Media" : "Show Extracted Media") {
-                window?.setShowing(.extracted, !(window?.showExtracted ?? true))
+            Button("Collect") { window?.section = .collect }
+                .keyboardShortcut("1", modifiers: [.command, .control])
+            Button("Organise") { window?.section = .organise }
+                .keyboardShortcut("2", modifiers: [.command, .control])
+            Divider()
+            if window?.section == .organise {
+                ForEach(Array(PaneID.panes(in: .organise).enumerated()), id: \.element) { index, pane in
+                    paneToggle(pane, key: Character("\(index + 1)"))
+                }
+            } else {
+                paneToggle(.source, key: "1")
+                paneToggle(.extracted, key: "2")
+                paneToggle(.library, key: "3")
+                paneToggle(.downloads, key: "4")
+                Button(window?.showPreview ?? true ? "Hide Preview" : "Show Preview") { window?.setShowing(.preview, !(window?.showPreview ?? true)) }
+                    .keyboardShortcut("i")
             }
-            .keyboardShortcut("2", modifiers: [.command, .option])
-            Button(window?.showPreview ?? true ? "Hide Preview" : "Show Preview") { window?.setShowing(.preview, !(window?.showPreview ?? true)) }
-                .keyboardShortcut("i")
-            Button(window?.showLibrary ?? true ? "Hide Library" : "Show Library") { window?.setShowing(.library, !(window?.showLibrary ?? true)) }
-                .keyboardShortcut("3", modifiers: [.command, .option])
             Menu("Arrange Panes") {
-                LayoutPresetCommands()
+                let group: PaneGroup = window?.section == .organise ? .organise : .collect
+                LayoutPresetCommands(group: group)
                 Divider()
-                ForEach(PaneID.allCases, id: \.self) { pane in
+                ForEach(PaneID.panes(in: group), id: \.self) { pane in
                     Menu(pane.title) { PaneMoveCommands(pane: pane, window: window) }
                 }
                 Divider()
                 Button("Reset Pane Sizes") { PaneSplitController.resetSavedSizes() }
             }
             Divider()
+            Button("Zoom In Page") { window?.browser.zoomIn() }
+                .keyboardShortcut("+")
+            Button("Zoom Out Page") { window?.browser.zoomOut() }
+                .keyboardShortcut("-")
+            Button("Actual Size") { window?.browser.resetZoom() }
+                .keyboardShortcut("0")
+            Button("Larger Thumbnails") { if let window { window.cellSize = min(WindowModel.zoomRange.upperBound, window.cellSize + 40) } }
+                .keyboardShortcut("+", modifiers: [.command, .option])
+            Button("Smaller Thumbnails") { if let window { window.cellSize = max(WindowModel.zoomRange.lowerBound, window.cellSize - 40) } }
+                .keyboardShortcut("-", modifiers: [.command, .option])
+            Divider()
             Button("Filters") { window?.showFilters.toggle() }
                 .keyboardShortcut("f")
             Button("Clear Extracted Media") { window?.clear() }
                 .keyboardShortcut("k")
-            Button("Zoom In") { if let window { window.cellSize = min(WindowModel.zoomRange.upperBound, window.cellSize + 40) } }
-                .keyboardShortcut("+")
-            Button("Zoom Out") { if let window { window.cellSize = max(WindowModel.zoomRange.lowerBound, window.cellSize - 40) } }
-                .keyboardShortcut("-")
             Divider()
         }
         CommandMenu("Go") {

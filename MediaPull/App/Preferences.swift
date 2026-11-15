@@ -32,10 +32,34 @@ final class Preferences {
     var verboseEngineLog: Bool { didSet { set(verboseEngineLog, "verboseEngineLog") } }
     var saveConcurrency: Int { didSet { set(saveConcurrency, "saveConcurrency") } }
     var paneArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(paneArrangement), "paneArrangement") } }
+    var organiseArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(organiseArrangement), "organiseArrangement") } }
+
+    func arrangement(for group: PaneGroup) -> PaneArrangement { group == .collect ? paneArrangement : organiseArrangement }
+
+    func setArrangement(_ arrangement: PaneArrangement) {
+        if arrangement.group == .collect { paneArrangement = arrangement } else { organiseArrangement = arrangement }
+    }
     var rememberHistory: Bool { didSet { set(rememberHistory, "rememberHistory") } }
     var highlightDuplicates: Bool { didSet { set(highlightDuplicates, "highlightDuplicates") } }
     var duplicateSensitivity: DuplicateSensitivity { didSet { set(duplicateSensitivity.rawValue, "duplicateSensitivity") } }
     var thumbnailSize: CGFloat { didSet { set(Double(thumbnailSize), "thumbnailSize") } }
+    // Analysis, Organise and faces (SPEC sections 36 to 39).
+    var analysisEnabled: Bool { didSet { set(analysisEnabled, "analysisEnabled") } }
+    var analysisPauseOnBattery: Bool { didSet { set(analysisPauseOnBattery, "analysisPauseOnBattery") } }
+    var analysisExcludedRoots: Set<String> { didSet { set(analysisExcludedRoots.sorted(), "analysisExcludedRoots") } }
+    var eventGapHours: Double { didSet { set(eventGapHours, "eventGapHours") } }
+    var subjectThreshold: Double { didSet { set(subjectThreshold, "subjectThreshold") } }
+    var customSubjects: [String] { didSet { set(customSubjects, "customSubjects") } }
+    var facesEnabled: Bool { didSet { set(facesEnabled, "facesEnabled") } }
+    /// Offset from the model's own match threshold; positive is stricter.
+    var faceMatchAdjustment: Double { didSet { set(faceMatchAdjustment, "faceMatchAdjustment") } }
+    var groupPhotoPlacement: GroupPhotoPlacement { didSet { set(groupPhotoPlacement.rawValue, "groupPhotoPlacement") } }
+    var sortUnnamedPeople: Bool { didSet { set(sortUnnamedPeople, "sortUnnamedPeople") } }
+    var organiseLayout: OrganiseLayout { didSet { set(organiseLayout.rawValue, "organiseLayout") } }
+    var undoHistoryDays: Int { didSet { set(undoHistoryDays, "undoHistoryDays") } }
+    var recentOrganiseFolders: [String] { didSet { set(recentOrganiseFolders, "recentOrganiseFolders") } }
+    var libraryQuery: LibraryQuery { didSet { set(try? JSONEncoder().encode(libraryQuery), "libraryQuery") } }
+    var libraryIncludeSubfolders: Bool { didSet { set(libraryIncludeSubfolders, "libraryIncludeSubfolders") } }
     var theme: AppTheme {
         didSet {
             set(theme.rawValue, "theme")
@@ -70,10 +94,27 @@ final class Preferences {
         verboseEngineLog = d.bool(forKey: "verboseEngineLog")
         saveConcurrency = d.object(forKey: "saveConcurrency") as? Int ?? 4
         paneArrangement = d.data(forKey: "paneArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) } ?? .standard
+        organiseArrangement = d.data(forKey: "organiseArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
+            .flatMap { $0.group == .organise ? $0 : nil } ?? .organiseStandard
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true
         highlightDuplicates = d.object(forKey: "highlightDuplicates") as? Bool ?? true
         duplicateSensitivity = DuplicateSensitivity(rawValue: d.string(forKey: "duplicateSensitivity") ?? "") ?? .nearIdentical
         thumbnailSize = CGFloat(d.object(forKey: "thumbnailSize") as? Double ?? 150)
+        analysisEnabled = d.object(forKey: "analysisEnabled") as? Bool ?? true
+        analysisPauseOnBattery = d.object(forKey: "analysisPauseOnBattery") as? Bool ?? true
+        analysisExcludedRoots = Set(d.array(forKey: "analysisExcludedRoots") as? [String] ?? [])
+        eventGapHours = d.object(forKey: "eventGapHours") as? Double ?? 3
+        subjectThreshold = d.object(forKey: "subjectThreshold") as? Double ?? 0.5
+        customSubjects = d.array(forKey: "customSubjects") as? [String] ?? []
+        facesEnabled = d.bool(forKey: "facesEnabled")
+        faceMatchAdjustment = d.object(forKey: "faceMatchAdjustment") as? Double ?? 0
+        groupPhotoPlacement = GroupPhotoPlacement(rawValue: d.string(forKey: "groupPhotoPlacement") ?? "") ?? .everyPerson
+        sortUnnamedPeople = d.bool(forKey: "sortUnnamedPeople")
+        organiseLayout = OrganiseLayout(rawValue: d.string(forKey: "organiseLayout") ?? "") ?? .inPlace
+        undoHistoryDays = d.object(forKey: "undoHistoryDays") as? Int ?? 30
+        recentOrganiseFolders = d.array(forKey: "recentOrganiseFolders") as? [String] ?? []
+        libraryQuery = d.data(forKey: "libraryQuery").flatMap { try? JSONDecoder().decode(LibraryQuery.self, from: $0) } ?? LibraryQuery()
+        libraryIncludeSubfolders = d.bool(forKey: "libraryIncludeSubfolders")
         theme = AppTheme(rawValue: d.string(forKey: "theme") ?? "") ?? .system
         AppTheme.currentAccent = theme.nsAccent
     }
@@ -106,4 +147,12 @@ final class Preferences {
         settings.extractorVersion = extractorVersion
         return settings
     }
+}
+
+/// The two layouts of the Organise section (R-3802).
+enum OrganiseLayout: String, CaseIterable {
+    case inPlace, sortInto
+
+    var label: String { self == .inPlace ? "In Place" : "Sort Into" }
+    var symbol: String { self == .inPlace ? "rectangle.grid.2x2" : "rectangle.split.2x1" }
 }

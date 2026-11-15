@@ -42,16 +42,16 @@ struct ExtractedHeader: View {
                 // Wide panes show every action; narrow ones keep sort and filters and fold the rest into a menu.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
+                        extractionButton
                         sortMenu
-                        filterButton
                         scrollButton
                         rescanButton
                         pdfMenu
                         clearButton
                     }
                     HStack(spacing: 8) {
+                        extractionButton
                         sortMenu
-                        filterButton
                         overflowMenu
                     }
                 }
@@ -84,14 +84,13 @@ struct ExtractedHeader: View {
         .help("Sort and zoom")
     }
 
-    private var filterButton: some View {
-        Button {
-            model.showFilters.toggle()
-        } label: {
-            Image(systemName: model.filter.activeCount > 0 ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+    /// Finding media on pages can be paused, for example while signing in.
+    private var extractionButton: some View {
+        Button { model.extractionEnabled.toggle() } label: {
+            Image(systemName: model.extractionEnabled ? "pause.circle" : "play.circle.fill")
         }
         .buttonStyle(.borderless)
-        .help("Filters (⌘F)")
+        .help(model.extractionEnabled ? "Pause finding media on pages" : "Paused. Click to find media on pages again.")
     }
 
     private var scrollButton: some View {
@@ -137,7 +136,7 @@ struct ExtractedHeader: View {
         Menu {
             Button(model.autoScrolling ? "Stop Scrolling" : "Scroll to End of Page") { model.toggleAutoScroll() }
             Button("Look for Media Again") { model.browser.rescan() }
-            Button("Save Video from This Page…") { model.saveVideoFromPage() }
+            Button("Save Video from This Page…") { model.showDownloads(video: true) }
                 .disabled(model.browser.url == nil)
             Divider()
             pdfCommands
@@ -169,39 +168,35 @@ struct ExtractedHeader: View {
                     }
                 }
                 .fixedSize()
-                Text("Lists the images inside linked PDFs.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .help("Lists the images inside PDFs linked from this page")
             }
             .controlSize(.small)
         }
         switch model.pageKind {
         case let .instagramProfile(name, _), let .instagramStories(name, _):
             HStack(spacing: 8) {
-                Button("Pull @\(name)…") { model.pullDraft = app.engines.draft(username: name) }
+                Button("Download @\(name)…") { model.showDownloads("@\(name)") }
                     .buttonStyle(.borderedProminent)
-                Button("Scan @\(name)") {
+                Button("List in Extracted Media") {
                     var draft = app.engines.draft(username: name)
                     draft.incremental = false
                     app.engines.startPull(draft, scanOnly: true, window: model)
                 }
                 if !app.engines.signedIn {
-                    Text("Sign in to Instagram first for full results.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "key.fill").foregroundStyle(.orange).help("Sign in to Instagram first for full results")
                 }
             }
             .controlSize(.small)
         case let .instagramPost(code, url):
             HStack(spacing: 8) {
-                Button("Save This Post") {
+                Button("Download This Post") {
                     var draft = app.engines.draft(username: "", postURL: url)
                     draft.folderName = ""
                     draft.incremental = false
                     app.engines.startPull(draft, scanOnly: false, window: model)
                 }
                 .buttonStyle(.borderedProminent)
-                Button("Scan Post") {
+                Button("List in Extracted Media") {
                     var draft = app.engines.draft(username: "", postURL: url)
                     draft.incremental = false
                     app.engines.startPull(draft, scanOnly: true, window: model)
@@ -212,11 +207,11 @@ struct ExtractedHeader: View {
         default:
             if let category = model.siteExtractorCategory, let url = model.browser.url {
                 HStack(spacing: 8) {
-                    Button("Scan with Site Extractor") { app.engines.startSiteScan(url: url, category: category, window: model) }
+                    Button("Get Original Files") { app.engines.startSiteScan(url: url, category: category, window: model) }
                         .buttonStyle(.borderedProminent)
-                    Text("Finds original-size files on \(category.capitalized) pages.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .help("Lists this \(category.capitalized) page's files at their original size, in Extracted Media")
+                    Button("Download All…") { model.showDownloads() }
+                        .help("Download everything at this address into a folder")
                 }
                 .controlSize(.small)
             }
@@ -266,7 +261,7 @@ struct ExtractedStatusBar: View {
                 .layoutPriority(-1)
             Spacer(minLength: 4)
             ZoomSlider(size: $model.cellSize)
-            if let job = app.jobs.jobs.first(where: { $0.state.isActive }) {
+            if let job = app.jobs.jobs.first(where: { $0.state.isActive && [.save, .scan, .pull, .stream].contains($0.kind) }) {
                 HStack(spacing: 6) {
                     ProgressView(value: job.progress ?? 0)
                         .progressViewStyle(.linear)

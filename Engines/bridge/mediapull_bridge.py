@@ -231,6 +231,9 @@ def configure_gallery_dl(request, staging):
         extractor["instagram"]["posts"] = {"cursor": cursor}
     if request.get("filter"):
         extractor["image-filter"] = request["filter"]
+    if request.get("range"):
+        # Which items of a gallery to download, such as "1-50" (gallery-dl's image-range).
+        extractor["image-range"] = request["range"]
     config.set((), "extractor", extractor)
 
     video = request.get("video") or {}
@@ -829,7 +832,7 @@ def op_video_info(request):
         def error(self, message):
             STATE["errors"].append(_clean(message))
 
-    options = {"quiet": True, "skip_download": True, "noplaylist": True, "cachedir": False, "logger": Quiet(),
+    options = {"quiet": True, "skip_download": True, "noplaylist": True, "playlist_items": "1", "cachedir": False, "logger": Quiet(),
                "http_headers": {"User-Agent": request["user_agent"]} if request.get("user_agent") else {}}
     if request.get("cookies"):
         options["cookiefile"] = request["cookies"]
@@ -865,18 +868,89 @@ def op_video_info(request):
     finish("completed")
 
 
-def op_stream(request):
+def stream_options(request, staging, logger, progress):
+    """yt-dlp options for a download: the chosen format plus the person's extra choices (SPEC R-3505)."""
     import yt_dlp
 
-    staging = request["staging"]
-    os.makedirs(staging, exist_ok=True)
-    STAGING["root"] = staging
     video = request.get("video") or {}
+    extras = request.get("extras") or {}
     headers = {}
     if request.get("referer"):
         headers["Referer"] = request["referer"]
     if request.get("user_agent"):
         headers["User-Agent"] = request["user_agent"]
+    options = {
+        "outtmpl": {"default": "%(id).60s.%(ext)s"},
+        "paths": {"home": staging, "temp": staging},
+        "format": video.get("format") or "bv*+ba/b",
+        "format_sort": video.get("format_sort") or ["res", "vcodec:h265", "acodec:aac"],
+        "merge_output_format": video.get("merge") or "mp4",
+        "cachedir": False,
+        "noplaylist": not extras.get("playlist"),
+        "quiet": True,
+        "noprogress": True,
+        "logger": logger,
+        "progress_hooks": [progress],
+        "http_headers": headers,
+        "ffmpeg_location": os.environ.get("MEDIAPULL_HELPERS") or None,
+        "allow_unplayable_formats": False,
+        "check_formats": False,
+        "retries": 3,
+        "fragment_retries": 5,
+        "ignoreerrors": bool(extras.get("playlist")),
+    }
+    if extras.get("playlist_items"):
+        options["playlist_items"] = extras["playlist_items"]
+    if extras.get("max_downloads"):
+        options["max_downloads"] = int(extras["max_downloads"])
+    if extras.get("date_after") or extras.get("date_before"):
+        options["daterange"] = yt_dlp.utils.DateRange(extras.get("date_after"), extras.get("date_before"))
+    if extras.get("rate_limit"):
+        options["ratelimit"] = int(extras["rate_limit"])
+    languages = extras.get("subtitles") or []
+    if languages:
+        options["writesubtitles"] = True
+        options["writeautomaticsub"] = bool(extras.get("auto_subtitles"))
+        options["subtitleslangs"] = languages
+        options["subtitlesformat"] = "vtt/srt/best"
+    if extras.get("thumbnail"):
+        options["writethumbnail"] = True
+    if extras.get("description"):
+        options["writedescription"] = True
+    if request.get("cookies"):
+        options["cookiefile"] = request["cookies"]
+    return options
+
+
+def emit_stream_files(info, base_key):
+    """Reports a finished video and the files written beside it (subtitles, thumbnail, description)."""
+    downloads = info.get("requested_downloads") or []
+    path = (downloads[0].get("filepath") if downloads else None) or info.get("filepath") or info.get("_filename")
+    if not path or not os.path.isfile(path) or not inside_staging(path):
+        return False
+    key = f"{base_key}:{info.get('id') or os.path.basename(path)}"
+    EMITTER.emit("file", key=key, path=path, bytes=os.path.getsize(path), meta=video_meta(info))
+    for language, subtitle in (info.get("requested_subtitles") or {}).items():
+        extra = (subtitle or {}).get("filepath")
+        if extra and os.path.isfile(extra) and inside_staging(extra):
+            EMITTER.emit("attachment", key=key, path=extra, kind=f"subtitles.{language}")
+    for thumbnail in info.get("thumbnails") or []:
+        extra = thumbnail.get("filepath")
+        if extra and os.path.isfile(extra) and inside_staging(extra):
+            EMITTER.emit("attachment", key=key, path=extra, kind="thumbnail")
+    description = os.path.splitext(path)[0] + ".description"
+    if os.path.isfile(description) and inside_staging(description):
+        EMITTER.emit("attachment", key=key, path=description, kind="description")
+    return True
+
+
+def op_stream(request):
+    import yt_dlp
+    from yt_dlp.postprocessor.common import PostProcessor
+
+    staging = request["staging"]
+    os.makedirs(staging, exist_ok=True)
+    STAGING["root"] = staging
 
     class Logger:
         def debug(self, message):
@@ -902,41 +976,28 @@ def op_stream(request):
                          total=info.get("total_bytes") or info.get("total_bytes_estimate"),
                          speed=info.get("speed"))
 
-    options = {
-        "outtmpl": {"default": "%(id).60s.%(ext)s"},
-        "paths": {"home": staging, "temp": staging},
-        "format": video.get("format") or "bv*+ba/b",
-        "format_sort": video.get("format_sort") or ["res", "vcodec:h265", "acodec:aac"],
-        "merge_output_format": video.get("merge") or "mp4",
-        "cachedir": False,
-        "noplaylist": True,
-        "quiet": True,
-        "noprogress": True,
-        "logger": Logger(),
-        "progress_hooks": [progress],
-        "http_headers": headers,
-        "ffmpeg_location": os.environ.get("MEDIAPULL_HELPERS") or None,
-        "allow_unplayable_formats": False,
-        "check_formats": False,
-        "retries": 3,
-        "fragment_retries": 5,
-    }
-    if request.get("cookies"):
-        options["cookiefile"] = request["cookies"]
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(request["url"], download=True)
-    path = None
-    if info:
-        downloads = info.get("requested_downloads") or []
-        if downloads:
-            path = downloads[0].get("filepath")
-        path = path or info.get("filepath") or info.get("_filename")
-    if path and os.path.isfile(path) and inside_staging(path):
-        EMITTER.emit("file", key=request.get("key") or "stream", path=path, bytes=os.path.getsize(path),
-                     meta=video_meta(info or {}))
-        finish("completed")
+    base_key = request.get("key") or "stream"
+    emitted = {"count": 0}
+
+    class Emit(PostProcessor):
+        # Runs after each video is complete, so playlists report every video as it finishes.
+        def run(self, info):
+            if emit_stream_files(info, base_key):
+                emitted["count"] += 1
+            return [], info
+
+    options = stream_options(request, staging, Logger(), progress)
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.add_post_processor(Emit(), when="after_move")
+            ydl.extract_info(request["url"], download=True)
+    except yt_dlp.utils.MaxDownloadsReached:
+        pass
+    if emitted["count"]:
+        finish("completed", {"files": emitted["count"]})
     else:
-        EMITTER.emit("error", code="download_failed", message="The stream could not be downloaded.", fatal=True)
+        message = STATE["errors"][-1] if STATE["errors"] else "The stream could not be downloaded."
+        EMITTER.emit("error", code="download_failed", message=message[:300], fatal=True)
         finish("failed")
 
 

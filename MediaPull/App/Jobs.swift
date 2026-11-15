@@ -11,6 +11,8 @@ enum JobKind: String {
     case stream = "Stream"
     case convert = "Convert"
     case engineUpdate = "Engine update"
+    case analyse = "Analyse"
+    case organise = "Organise"
 }
 
 enum JobState: Equatable {
@@ -100,7 +102,13 @@ final class Job: Identifiable {
         return min(1, Double(done) / Double(total))
     }
 
+    /// Replaces the save counts in the summary, for jobs that do not save (analysing, organising).
+    var summaryOverride: String?
+    /// Called by the Activity panel's Pause and Resume for jobs that can pause.
+    var pauseToggle: (() -> Void)?
+
     var summary: String {
+        if let summaryOverride { return summaryOverride }
         var parts: [String] = []
         if found > 0 { parts.append("\(found) found") }
         if saved > 0 { parts.append("\(saved) saved") }

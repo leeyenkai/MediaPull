@@ -1,6 +1,6 @@
 # MediaPull Specification
 
-Version 1.1 (implemented), 2026-11-14
+Version 1.6 (1.5 implemented; 1.6 specified), 2026-11-15
 
 This document is the source of truth for MediaPull. Code follows the spec; when a request or an implementation detail conflicts with it, the conflict is raised and the spec is updated first.
 
@@ -10,7 +10,7 @@ Conventions:
 - **D-nn** is a recorded decision (section 27). Decisions can be changed, but only by editing this spec.
 - "Verify in M0" marks a detail that depends on third-party behaviour and must be confirmed by the engine spike before it is built on.
 
-## Implementation status (version 1.5)
+## Implementation status (version 1.6)
 
 MediaPull is a personal tool for archiving and collecting media, not a public release. The app, its engines and the read-only contract are implemented. Some supporting pieces described here were deliberately not built for personal use: the `mediapull-test://` fixture pages and the extraction tests that would use them (section 25), `scripts/perf-budgets.json` and CI enforcement (section 22, budgets were measured by hand instead), `docs/PRIVACY.md`, `scripts/sign-helpers.sh`, Developer ID signing and notarization (section 26; the app is signed for this Mac only).
 
@@ -18,6 +18,7 @@ Verification so far:
 
 - **Automated** (`scripts/check.sh`): module-boundary and read-only lint, Swift tests (sidecar contract, forbidden names, CDN rules and image proxies, sniffing, request policy, ingestor, filters, conversion, save pipeline, pane arrangement, bookmarks and history, hostile inputs, duplicate detection, video frames and trimming, the real bundled engine and its event stream), 8 Python tests of the egress guard, an iOS Simulator build of the package and an app build.
 - **End to end** (`MediaPull --selftest-url <url> --selftest-out <folder>`, section 25): on the New York Times international front page, 204 items were found (135 of them only while scrolling) and all 190 shown items were saved (185 saved, 5 recognised as duplicates), with images at the newspaper's largest rendition (2048 px), WebP converted to JPEG or PNG, SVG converted to PNG, and videos saved as H.264 MP4. A Wikipedia page was also scanned with the site extractor (48 originals).
+- **Version 1.6, verified end to end** (`--selftest-analyse`): media analysis (section 36), Library sort, filter and search (section 37), the Organise section (section 38) and faces and people (section 39), decisions D-57 to D-67. On 96 test files (60 photos, 36 faces of three people): all analysed in 5.8 s with no network sockets opened, the three people found with 12 photos each and two named from their folders, a second scan analysing nothing, Sort by Subject previewed and run into 13 folders, and undo restoring every file exactly (checksums). The app is 696 MB with the models.
 - **Version 1.5 additions, verified end to end**: the Instagram content choices (section 11.5), date windows and folders by type; saving videos from video sites (section 35; `--selftest-video-download`: a YouTube video's 47 formats listed, saved as 360p H.264 MP4 with metadata in 7 s and as 128 kbps AAC M4A without metadata in 2 s).
 - **Version 1.4 additions, verified end to end**: duplicate detection in the Library (section 33; `--selftest-duplicates` found an identical copy in a subfolder and a resized, re-compressed copy, and kept colour versions of one product photo apart) and video frame grabs and trimming (section 34; `--selftest-video`: a 640×360 frame at 2.5 s saved as PNG, a 1–3 s selection saved as a 2.00 s copy without re-encoding, metadata files updated).
 - **Version 1.3 additions, verified end to end**: browser tabs, bookmarks in renamable folders, history with clearing, the walkthrough, the reworked icon and the narrow-pane fixes (`--selftest-browser`: two tabs, This Page 2 / 47 / 49 items, folder rename, history cleared, ⌘W bound to Close Tab). Measured: window ready 0.9 s after launch, idle CPU 0.17 % over 30 s, app memory peak 138–183 MB on the hard pages.
@@ -66,6 +67,10 @@ Decisions that changed during implementation are D-13 and D-24 to D-56 in sectio
 33. Duplicates in the Library
 34. Video frames and trimming
 35. Saving videos from video sites
+36. Media analysis
+37. Library sort, filter and search
+38. Organise
+39. Faces and people
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -187,12 +192,13 @@ The repository contains one Xcode project with a macOS app target `MediaPull` (s
 | `MediaPullLibrary` | Core, Net, Media, Engines | Save pipeline, layouts, deduplication index, atomic writer, location checks, converter jobs | Foundation |
 | `MediaPullStore` | Core | SwiftData models and `@ModelActor` repositories implementing Core's storage protocols | SwiftData |
 | `MediaPullBrowser` | Core, Net | WKWebView configuration factory, injected scripts (package resources), message ingestion, cookie bridge, checkpoint detection, content rules | WebKit |
+| `MediaPullAnalysis` | Core, Media | On-device analysis (section 36): content labels, recognised text, image and text embeddings, faces and face embeddings, technical facts, dominant colour, offline place names, similarity search | Vision, CoreML, Accelerate, ImageIO, CoreGraphics |
 
-The app target holds `App/` (entry point, window scenes, commands), `Features/` (Browser, Extracted, Library, Instagram, Jobs, Converter, Settings, Onboarding), `Platform/` (macOS-only views and bridges) and `Resources/`.
+The app target holds `App/` (entry point, window scenes, commands), `Features/` (Browser, Extracted, Library, Organise, People, Instagram, Jobs, Converter, Settings, Onboarding), `Platform/` (macOS-only views and bridges) and `Resources/`.
 
 ### 4.2 Dependency rule
 
-**R-401** Dependencies point only in the direction of the table. SwiftData appears only in `MediaPullStore`, WebKit only in `MediaPullBrowser`, `URLSession` and `URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`. A lint script enforces this (section 25).
+**R-401** Dependencies point only in the direction of the table. SwiftData appears only in `MediaPullStore`, WebKit only in `MediaPullBrowser`, `URLSession` and `URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`. No module uses Apple's geocoder (`CLGeocoder`), MapKit search, Vision asset downloads (`downloadAssets`) or Core ML model collections (`MLModelCollection`), all of which reach the network (D-59). A lint script enforces this (section 25).
 
 ### 4.3 Platform layer
 
@@ -295,6 +301,8 @@ Any blocked request raises inside the engine and is reported as a `policy_violat
 
 **R-512** Cookie files written for engines live in a private temporary folder (mode 0700), are created with mode 0600, and are deleted when the job ends, including after a crash (cleaned at next launch).
 
+**R-513** Media analysis (section 36) runs entirely on the Mac. Models are bundled (D-58); no request ever carries media, analysis results or face data; the `--selftest-analyse` run checks that the process opens no network sockets while it analyses.
+
 ---
 
 ## 6. Data model and persistence
@@ -359,22 +367,23 @@ Instagram identifiers are always stored as strings (they exceed 2^53).
 | In memory | Page sessions and their items, probe results (LRU), thumbnails, current filter state. |
 | `UserDefaults` / `@AppStorage` | Preferences (section 20), last-used filters and presets, pane widths. |
 | Application Support `~/Library/Application Support/MediaPull/` | `Engines/` (updated engine versions and `active.json`), `EngineHome/` (empty home folder for engine processes), `Staging/` (per-job download staging, cleaned at launch). |
+| Application Support `Analysis/` and `Organise/` | `Analysis.store` (SwiftData, separate from the main store) and memory-mapped vector files (section 36; face data in its own files, excluded from backups, D-61); Organise journals for undo (R-3806). |
 | Caches `~/Library/Caches/MediaPull/` | URL cache (256 MB disk), `Partial/` downloads (cleared at launch), preview files. |
-| Library roots | Media files and sidecars only. **R-601** MediaPull never writes hidden state files, databases or folders inside a library root. |
+| Library roots | Media files and sidecars only. **R-601** MediaPull never writes hidden state files, databases or folders inside a library root, including analysis results, face data and journals (D-60, D-63). |
 
 ---
 
 ## 7. Window and layout
 
-**R-701** The main window has four resizable, collapsible panes: **Browser**, **Extracted Media**, **Preview** and **Library**. By default the Browser is on the left, Extracted Media in the middle with the Preview below it, and the Library on the right, at roughly 42 / 36 / 22 of the width and 58 / 42 of the middle column's height. Minimum widths 360, 280, 240 and 200 points. Minimum window size 1100 × 700.
+**R-701** The main window has five resizable, collapsible panes: **Browser**, **Extracted Media**, **Preview**, **Library** and **Downloads** (below the Browser by default, section 11.11). By default the Browser is on the left, Extracted Media in the middle with the Preview below it, and the Library on the right, at roughly 42 / 36 / 22 of the width and 58 / 42 of the middle column's height. Minimum widths 360, 280, 240 and 200 points. Minimum window size 1100 × 700. These panes form the **Collect** section; the **Organise** section (section 38) shares the window (D-62).
 
 **R-701a** Panes can be arranged freely as columns, each holding one pane or a stack of panes. Each pane's title bar has an arrange menu (also under View > Arrange Panes, which covers the Browser) with Move Left and Move Right (a stacked pane moves out into its own column), Stack in Column on the Left or Right, Move Up and Move Down within a stack, and Hide. Presets: Standard, Preview in Its Own Column, Preview Below Browser, Preview Below Library, Mirrored. The arrangement is shared by all windows and kept between launches; divider positions are kept per arrangement, and Reset Pane Sizes restores the defaults. Moving panes never reloads the page in the Browser.
 
-**R-702** ⌥⌘1, ⌥⌘2 and ⌥⌘3 toggle the Browser, Extracted and Library panes and ⌘I toggles the Preview. At least one pane stays visible.
+**R-702** ⌥⌘1, ⌥⌘2 and ⌥⌘3 toggle the Browser, Extracted and Library panes and ⌘I toggles the Preview. At least one pane stays visible. ⌃⌘1 and ⌃⌘2 switch to the Collect and Organise sections.
 
 **R-703** ⌘N opens a new window with its own browser pane and page session. All windows share the website data store, the library roots and the job queue.
 
-**R-704** The window uses the compact unified toolbar: the page title, then an extraction on/off toggle, "Pull Account…", the Activity button with a badge for running jobs, and the Preview pane toggle. Everything that belongs to browsing lives in the Browser pane itself (R-802), so it moves with the pane.
+**R-704** The window uses the compact unified toolbar: the window title and the section tabs Collect · Organise (D-62), then, in Collect, Downloads (shows or hides the Downloads pane) and Activity (a popover listing every job, with a badge for running ones); in Organise, Undo and Activity. Pausing extraction is a button in the Extracted Media header. The Downloads pane appears when asked for and stays until closed. Both sections use the same pane headers, arrange menus and title bar (D-69). Everything that belongs to browsing lives in the Browser pane itself (R-802), so it moves with the pane.
 
 **R-705** A bottom status bar in the Extracted pane shows item counts (found, shown after filters, selected), the total size of the selection where known, and the current destination for "Save to Last Folder".
 
@@ -389,7 +398,7 @@ A sheet in one window:
 
 ### 7.2 Walkthrough
 
-**R-710** The tour has seven pages, each with a drawing of the window that picks out the pane it describes: browsing (tabs, bookmarks, history, handles), Extracted Media (lazy loading, Scroll to End, chips and the resolution slider), the Preview pane and editing, saving into Library folders, Instagram pulls, arranging panes and themes, and the read-only contract. It can be skipped at any page and reopened at any time from Settings > General > Show Walkthrough or Help > MediaPull Walkthrough (the tour alone, without the setup steps).
+**R-710** The tour has eight pages, each with a drawing of the window that picks out the pane it describes: browsing (tabs, bookmarks, history, handles), Extracted Media (lazy loading, Scroll to End, chips and the resolution slider), the Preview pane and editing, saving into Library folders, Instagram pulls, arranging panes and themes, searching and organising (sections 37 and 38), and the read-only contract. It can be skipped at any page and reopened at any time from Settings > General > Show Walkthrough or Help > MediaPull Walkthrough (the tour alone, without the setup steps).
 
 ---
 
@@ -398,6 +407,8 @@ A sheet in one window:
 **R-801** The browser pane is a `WKWebView` (`ReadOnlyWebView`) using one persistent `WKWebsiteDataStore` shared by all windows. Cookies, local storage and sign-ins persist across launches.
 
 **R-802** The Browser pane has, from the top: a navigation bar with back, forward, reload or stop, the address field (security or Instagram icon, load progress, bookmark star), the Bookmarks and History button and the pane's arrange menu; then the tab strip (R-805a). A long address fades out before the star instead of running into it, and shows in full while it is edited. ⌘L focuses the address field (showing the Browser pane if it was hidden). ⌘[ and ⌘] go back and forward.
+
+**R-802a** Pages can be zoomed: ⌘+ and ⌘- step through 50 % to 300 %, ⌘0 returns to actual size, and a trackpad pinch magnifies.
 
 **R-803** The address field accepts:
 
@@ -590,7 +601,7 @@ Instagram access runs through the bundled gallery-dl engine (D-04), driven by th
 
 ### 11.5 Pull sheet
 
-**R-1105** "Pull Account…" (⇧⌘P) opens a sheet with:
+**R-1105** "Pull Account…" (⇧⌘P), the toolbar's Downloads button, or typing an @account or #hashtag in the Downloads pane shows the Instagram options in that pane (section 11.11):
 
 - **Account card**: avatar, name, username, post count, private or public, followed state (from a quick `account` bridge call).
 - **Input**: a username, @handle or profile link, or a `#hashtag` (or a hashtag page link), which pulls the hashtag's posts instead of an account.
@@ -689,6 +700,16 @@ Which `fetch` method the bridge uses (reusing the engine's downloaders on scanne
 - Collab posts are saved in the folder of the account being pulled; the sidecar records `owner_username` (D-11).
 
 ---
+
+### 11.11 Downloads pane
+
+**R-1111a** The Downloads pane (D-69) replaces the pull and video sheets. It follows the page in the browser (or an address, @account or #hashtag typed into it) and shows the options for what is there:
+
+- **Instagram** accounts, posts and hashtags: the options of R-1105, with "Sort into folders by type" on by default (D-54).
+- **Videos** (YouTube, Vimeo and the other sites yt-dlp supports): the format and resolution of R-3502, plus the choices of R-3505.
+- **Galleries** on any site gallery-dl supports (section 12): everything at the address, or a range of items, between dates, only what is new since the last download; or "Show in Extracted Media" to pick by hand.
+
+Below the options it lists the downloads in progress and just finished. Downloads go into a library folder; "Other Folder…" makes any folder on the Mac a library folder.
 
 ## 12. Site extractor scans
 
@@ -903,7 +924,9 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1703** Folder operations: New Folder (⇧⌘N), Rename (Return), Move to Trash (⌘⌫). MediaPull never deletes permanently. Renaming or moving a media file renames or moves its sidecar with it. Moving to Trash moves the sidecar too.
 
-**R-1704** The pane updates live when files change on disk (FSEvents), including changes made in Finder.
+**R-1704** The pane updates live when files change on disk (FSEvents, recursive per library root), including changes made in Finder. Up to version 1.5 only the selected folder was watched; version 1.6 builds the FSEvents watch that analysis needs (R-3603).
+
+**R-1707** Sort, filter and search: section 37. Return renames and ⌘⌫ moves to the Trash in the grid as well as the tree (R-1703).
 
 **R-1705** Quick Look (Space), Reveal in Finder (⌘R), Open With default app, Copy (file URLs).
 
@@ -931,7 +954,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 ## 19. Jobs and activity
 
-**R-1901** Job kinds: Save, Pull, Scan, Stream Download, Convert, Engine Update.
+**R-1901** Job kinds: Save, Pull, Scan, Stream Download, Convert, Engine Update, Analyse, Organise.
 
 **R-1902** Job states: queued, running, paused, waiting (pacing or cooldown, with a countdown), blocked (checkpoint), completed, failed, cancelled.
 
@@ -953,6 +976,9 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | Instagram | Sign in, sign-in state, Clear Instagram Session; default content; pacing (Gentle, Standard); Reels in a subfolder (off); incremental stop count (12) |
 | Engines | Installed and active versions; Check for Updates; weekly check (on); Use Previous Version; Reset to Built-In Engines; licences and source links |
 | Browser | Clear All Website Data; allow pop-ups in new windows |
+| Analysis | On (default) or off; which library roots; pause on battery (on); event gap (3 hours); subject list and confidence threshold for Sort by Subject; Rebuild Analysis; Delete All Analysis Data (section 36) |
+| Faces | Off until opted in (R-3901); match threshold; group photos when sorting by person; Delete All Face Data |
+| Organise | Default layout (In Place, Sort Into); keep undo history for (30 days) |
 | Appearance | Theme (R-2010); pane arrangement presets with a diagram; Reset Pane Sizes |
 | Advanced | Download concurrency limits; allow insecure http media (on, D-21); Network activity log; Export Diagnostics; verbose engine logging (off) |
 
@@ -974,14 +1000,18 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | ⌘R in browser | Reload |
 | ⌘. | Stop loading or stop auto-scroll |
 | ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | Toggle Browser / Extracted / Library pane |
-| ⌘F | Filter bar |
+| ⌘F | Filter bar (Extracted) or search field (Library, Organise) |
+| ⌃⌘1 / ⌃⌘2 | Collect / Organise section |
+| ⇧⌘Y | Save Video from This Page… |
+| ⌘O in Organise | Open Folder… |
+| ⌘Z / ⇧⌘Z in Organise | Undo / Redo the last operation |
 | ⌘I | Show or hide the Preview pane |
 | ⌘K | Clear extracted media |
 | ⌘A / ⇧⌘A | Select all shown / deselect |
 | Space | Quick Look |
 | ⌘S | Save to… |
 | ⌥⌘S | Save to Last Folder |
-| ⇧⌘P | Pull Account… |
+| ⇧⌘P | Pull Account… (Downloads pane) |
 | ⌘O | Open PDF… (extract its images) |
 | ⌘E | Edit the selected item (crop, rotate, rename) |
 | ⇧⌘J | Activity |
@@ -989,7 +1019,9 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | ⇧⌘N | New Folder (Library) |
 | ⌘⌫ | Move to Trash (Library) |
 | ⌘R in Library | Reveal in Finder |
-| ⌘+ / ⌘- | Grid size |
+| ⌘+ / ⌘- / ⌘0 | Zoom the page in, out, actual size |
+| ⌥⌘+ / ⌥⌘- | Larger or smaller thumbnails |
+| ⌥⌘4 | Show or hide Downloads |
 
 Menus: MediaPull, File (New Window, New Tab, Close Tab, Reopen Closed Tab, Pull Account, Save, Save to Last Folder, Add Library Folder), Edit, View (panes, Arrange Panes, filter bar, grid size), Go (back, forward, address), Bookmarks, History, Window (tabs, Activity, Converter), Help (MediaPull Walkthrough).
 
@@ -997,11 +1029,11 @@ Menus: MediaPull, File (New Window, New Tab, Close Tab, Reopen Closed Tab, Pull 
 
 ## 22. Performance budgets
 
-Budgets are checked with XCTest `measure` blocks and recorded in `scripts/perf-budgets.json`. A budget miss fails CI.
+Budgets are recorded in `scripts/perf-budgets.json` and measured by hand for this personal tool (see Implementation status); the XCTest `measure` blocks and CI enforcement are not built.
 
 | Area | Budget |
 |---|---|
-| App bundle size | ≤ 90 MB (engines included) |
+| App bundle size | ≤ 800 MB, engines and models included (D-58; 90 MB up to version 1.5) |
 | Launch to interactive window | ≤ 1 s on Apple silicon |
 | Idle CPU (static page, no jobs) | ≤ 1 % averaged over 60 s; no timers when nothing is pending |
 | Helper processes when idle | none (R-403) |
@@ -1014,6 +1046,10 @@ Budgets are checked with XCTest `measure` blocks and recorded in `scripts/perf-b
 | Converting a 12 MP lossy WebP to JPEG | ≤ 400 ms |
 | Remuxing a 60 s Reel (copy) | ≤ 1 s |
 | Instagram API requests | ≤ 10 per minute (Gentle), enforced by pacing |
+| Analysis, first pass | ≥ 15 photos per second, two at a time (measured 26.5 on 640 px photos, 16.7 in the app including checksums) |
+| Analysis memory | ≤ 250 MB above idle (measured peak 180 MB) |
+| Search, 50,000 images | ≤ 20 ms including the text query (measured 4 ms query + 4 ms scan) |
+| Analysis when idle | no analysis CPU when nothing is new or changed |
 
 ---
 
@@ -1141,6 +1177,19 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-54 | Instagram media is sorted into a folder per type by default (`posts/`, `reels/`, `profile pictures/`, alongside `stories/`, `highlights/`, `tagged/`, `reposts/`), with a setting for the old flat layout; this replaces the "Reels in a subfolder" setting | Requested: several content types in one account folder stay organised; sidecars and names are unchanged |
 | D-55 | The egress guard allows POST to YouTube's `/youtubei/v1/player` and `/youtubei/v1/next`, which read one video's details; writing actions live at other paths and stay blocked | Without it yt-dlp cannot read any YouTube video inside MediaPull |
 | D-56 | A video format chosen by hand in the Save Video sheet is kept exactly as downloaded; WebM and M4A are saved without a metadata file in Archive folders (an exception to R-1502 the person asks for) | Requested: choose the format of a saved video |
+| D-57 | Learned models are allowed for content labels, recognised text, image–text search, visually similar sets and faces (section 36). Duplicate detection is the exception and stays deterministic under D-50 | Requested: find and sort media by what it shows; duplicates stay explainable |
+| D-58 | Models are bundled in the app, never downloaded. Each is pinned by SHA-256 in `scripts/models.lock` like the engines, its licence goes in `Contents/Resources/Licenses/`, and its licence is checked for use in a personal, non-commercial tool. The bundle budget is 800 MB, models included | Offline by design; reproducible builds; licences on record |
+| D-59 | Analysis runs only on the Mac and never uses the network. Place names come from bundled GeoNames data (cities of 1,000 people or more, regions and countries; CC BY 4.0, credited in About), never from Apple's online geocoder or MapKit; Vision requests that download assets and Core ML model collections are not used | Privacy contract unchanged: nothing leaves the Mac for analysis |
+| D-60 | Analysis results (labels, text, embeddings, places, faces) live in `~/Library/Application Support/MediaPull/Analysis/`, never in library folders. They are keyed by the file's SHA-256 and the model version, so moved or renamed files keep their results and only new or changed files are analysed after the first pass | R-601 holds; analysis is incremental |
+| D-61 | Face data is biometric: face analysis is off until the person accepts an opt-in sheet; "Delete All Face Data" removes faces, people, names, corrections and face vectors in one step; face files are excluded from Time Machine; face data never goes into metadata files or exports | Requested: clear opt-in and one-step deletion |
+| D-62 | Organise is a second section of the window, chosen with tabs after the window title (Collect · Organise). It works on any local folder, fetches nothing, and has two layouts: In Place (one large pane) and Sort Into (a source pane beside a target pane) | Requested; both ways of organising are common, so both are modes of one section |
+| D-63 | Every Organise operation is recorded in a journal in Application Support and can be undone, a whole automatic sort as one step, including after relaunch. Deleting always means moving to the Trash | Requested: every operation reversible |
+| D-64 | Sort into Folders by Person puts a photo of several people into each person's folder as an APFS clone (a full copy where the volume cannot clone, shown before the sort), each copy with its own metadata file. In Archive-layout folders group photos go into one shared `Group photos/` folder instead. Settings also offers the shared folder everywhere and "first person only" | Requested; in Archive folders the archive's reader would count each copy as a separate post |
+| D-65 | Sort into Folders by Subject files an item under a subject only when the model's confidence is above a threshold (adjustable in Settings); everything else goes to `Unsorted/` | Requested: no guessing |
+| D-66 | A folder named like a person that holds most photos of an unnamed face group is offered as that group's name; the name is applied only after one click | Chosen by the person: suggest, never name silently |
+| D-67 | Models (chosen for accuracy; licences set aside for this private tool at the person's request): **MobileCLIP2-S3** for image–text search, subjects and similar sets (768-d; 79.0 % of COCO captions find their photo in the top 5 of 3,000; top tag right for 92.7 %); **AdaFace IR-101 (WebFace12M)** for faces (99.80 % on LFW; grouping 158 people at 0.34 gives 99.9 % pure groups with 99.9 % of each person's photos together); **SCRFD-10G** for faces and landmarks; Apple Vision for labels and text; GeoNames for places. About 620 MB in all; the whole pipeline analyses 26.5 photos a second, peak 180 MB (`docs/spikes/analysis-models.md`) | Requested: the most accurate current models that fit |
+| D-68 | Organise works on any folder in three ways: in place, copying to a target (the source untouched; how media is imported into the library) and moving to a target. Copies are APFS clones. The default is the MediaPull library, in place | Requested: in-place and non-in-place organising, importing, and no fixed rules for the library |
+| D-69 | One pane system for the whole window: Organise's Source, Organise and Target panes and Collect's new Downloads pane are arranged, stacked and hidden like the others, with the same headers. Sheets are replaced by panes and inline previews; pop-ups only for what needs attention now | Requested: a cohesive interface with few pop-ups |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1176,7 +1225,10 @@ Riskiest work first. Each milestone ends with a check that can be demonstrated.
 | Library roots inside iCloud | Placeholders unreadable by other tools | Default root in `~/Pictures`, warning per root |
 | Instagram's largest image is not the original upload | User expectation | Stated in the UI and recorded dimensions in sidecars |
 | GPL and LGPL obligations of bundled engines | Licence compliance | Licences, `SOURCES.txt`, unmodified engines, LGPL ffmpeg |
-| App size (about 60 to 90 MB) | Heavier than a pure Swift app | Trimmed runtime, minimal ffmpeg, arm64 only |
+| App size (about 75 MB without models, up to 800 MB with them) | Heavier than a pure Swift app | Trimmed runtime, minimal ffmpeg, arm64 only, models chosen for size (D-67) |
+| Model licences change (MobileCLIP's weights moved to a research-only licence in 2025) | Unclear right to use a model | Pin the reviewed revision with its licence text; prefer MIT or Apache models (D-67) |
+| Wrong faces grouped together | A photo in the wrong person's folder | Thresholds, corrections that persist, preview before sorting, undo |
+| Analysis load | Battery and heat | Background priority, two files at a time, pause on battery and heat |
 
 ---
 
@@ -1251,9 +1303,94 @@ Riskiest work first. Each milestone ends with a check that can be demonstrated.
 
 and a resolution from the heights that format actually offers for this video (with 4K and 2K and frame rates over 30 marked), or "Best available". Protected (DRM) formats are never offered. The sheet estimates the size (reported size, or bitrate times length) and says when best quality will have to convert, which is slow at 4K.
 
+**R-3505** More Options (yt-dlp): the whole playlist or channel the page belongs to, with an item range, a maximum count and an upload date range; subtitles as uploaded or automatic, in chosen languages, saved beside the video as `<name>.<language>.vtt`; the thumbnail (as JPEG) and description (`<name>.description.txt`) beside the video; and a download speed limit. Members-only and age-checked videos use the browser's sign-in for that site.
+
 **R-3503** The download runs as a job with progress through the bridge's `stream` operation and the save pipeline. Files go to `<library>/<site>/<uploader>/`, named `<upload date>_<title>`. MP4 files get a metadata file (`category` the site, `subcategory` `video`, `username` the uploader, `post_id` the video id, `date` the upload date, `description` the title, `post_url` the page). WebM and M4A are kept exactly as chosen and saved without a metadata file, because the archive's metadata files describe only its formats (D-56).
 
 **R-3504** YouTube reads a video's details with a POST to its player API; the egress guard allows exactly `/youtubei/v1/player` and `/youtubei/v1/next` on YouTube's hosts and nothing else there (D-55). Checked in November 2026: the bundled yt-dlp lists YouTube formats from 144p to 2160p and downloads them, although without a JavaScript challenge solver it warns that some formats may be missing. If YouTube starts enforcing that challenge, the fix is to bundle yt-dlp's solver scripts and let it use a JavaScript runtime.
+
+## 36. Media analysis
+
+**R-3601** MediaPull analyses the images and videos in library roots and in folders opened in Organise (section 38). Videos are analysed from a frame a tenth of the way in. For each file it records:
+
+- content labels with confidence (Apple's built-in image classifier);
+- recognised text (Apple's text recognition);
+- an image embedding for free-text search and visually similar sets (a bundled image–text model, D-67);
+- technical facts: pixel size, orientation, aspect ratio, format, still or animated, video length, camera make and model;
+- the capture date and GPS position from EXIF, and a place name (R-3605);
+- whether it looks like a screenshot (R-3604) and its dominant colour (R-3606);
+- where the faces are, for the face filters (a bundled face detector, D-67); recognising who they are only after the opt-in (section 39).
+
+**R-3602** Learned models are used for labels, text, embeddings and faces (D-57); duplicate detection (section 33) never uses them (D-50). Every model is bundled and pinned (D-58); none is downloaded at run time. Core ML runs on the Neural Engine and CPU, leaving the GPU to the window.
+
+**R-3603** Text recognition uses Apple's accurate mode once a background probe shows it works, and fast mode otherwise. On macOS 27.0 accurate mode stalls Vision for up to a minute and then fails (a known system problem), so it is not tried there. Analysis never runs on the main actor. It runs at utility priority (background priority was throttled about tenfold in the benchmark), two files at a time, and pauses on battery (setting, on by default), in Low Power Mode and when the Mac is hot; Activity shows an Analyse job with Pause and Resume. The first pass covers every file; after that only new or changed files are analysed (path, size and modification date; the content checksum decides whether earlier results still apply, so a moved or renamed file is not analysed again). Library roots and open Organise folders are watched with FSEvents. Results carry the model version; after a model changes, files are re-analysed in the background.
+
+**R-3604** Screenshots are recognised by deterministic signs only: the system's screen-capture marker on the file (or its EXIF comment), a file name starting with "Screenshot", or a PNG or HEIC whose pixel size is a common screen size with no camera EXIF. The image classifier's "utility image" score was tested and rejected: it flagged 13 % of ordinary photos and missed most text images.
+
+**R-3605** Place names come from bundled GeoNames data compiled at build time into a compact index (D-59): the nearest place within 50 km of the GPS position, shown as "City, Region, Country". Nothing is looked up online. Location stays in MediaPull's own data; metadata files still never contain it (R-1507).
+
+**R-3606** The dominant colour comes from the 8×8 colour grid that duplicate detection already computes (R-3302), weighted by saturation and named from a fixed palette: red, orange, yellow, green, teal, blue, purple, pink, brown, black, grey, white.
+
+**R-3607** Results live in `~/Library/Application Support/MediaPull/Analysis/` (`Analysis.store` and memory-mapped vector files), never in library folders (R-601, D-60). Settings > Analysis: on or off, which library roots, pause on battery, Rebuild Analysis, Delete All Analysis Data.
+
+## 37. Library sort, filter and search
+
+**R-3701** The Library pane's header has a Sort menu, a Filter popover, "Include Subfolders" and a search field (⌘F when the Library has focus). Sort and filter choices are kept per window between launches.
+
+**R-3702** Sorts, each ascending or descending: Date (the EXIF capture date, then the metadata file's date, then the file's creation date), Name, File Size, Pixel Size, Video Length, Source (account or site, then post, from metadata files), Camera, and Events (grid sections that start wherever the gap between neighbouring dates is longer than the event gap, 3 hours by default).
+
+**R-3703** Filters combine with AND, and the values chosen within one filter with OR: kind (still, animated, video), format, orientation (landscape, portrait, square), aspect ratio, pixel size, video length, camera, source (account, site), screenshots or photos, duplicates (section 33), visually similar sets (R-3705), dominant colour, place, content tags, faces (with faces, without faces, portraits: one face covering at least a tenth of the picture; group photos: three or more faces) and people (section 39). Filters that need analysis show its progress and include only analysed files.
+
+**R-3704** Search finds files by name, by the metadata file's description and username, by recognised text, by content tags, and by free text through the image–text model ("dog on a beach"). Text matching ignores case and accents. Exact text and tag matches come first, then images by similarity to the query above a minimum. Search covers the selected folder, or everything below it with Include Subfolders.
+
+**R-3705** Visually similar sets are images whose embeddings are close (threshold from the benchmark, D-67), joined into groups. They are looser than duplicates and are not marked in the grid; they appear as a filter and as the "Group Similar" sort.
+
+**R-3706** Sort into Folders by Subject (in Organise, and from a Library folder's context menu, which opens Organise) uses a fixed subject list (people, dogs, cats, birds, other animals, food, nature, beach, mountains, city, buildings, vehicles, documents, screenshots, art) plus subjects the person adds as words. Each file goes to the subject with the highest confidence if it is above the threshold (Settings > Analysis); everything else goes to `Unsorted/` (D-65).
+
+## 38. Organise
+
+**R-3801** Organise is the second section of the window, chosen with the tabs after the window title (Collect · Organise; ⌃⌘1 and ⌃⌘2) (D-62). It works on any local folder the person opens (Open Folder… ⌘O, dropping a folder from Finder, or a library root), only rearranges local files and never fetches anything. Switching sections never reloads the Browser pane.
+
+**R-3802** Organise has three panes, arranged like Collect's (movable, stackable, hidable; D-69):
+
+- **Source** (left): any folder, the MediaPull library by default. Folder tree on top, the media grid below with search, sort and filters (section 37).
+- **Organise** (middle): where to put results, the automatic sorts, the preview of the pending change with Apply and Discard, People (section 39) and History.
+- **Target** (right): the folder results go to, with its own tree and grid.
+
+Where results go (D-68): **In Place** (folders inside the source folder, files move into them); **Copy to Target** (the source stays exactly as it was; organised copies go into the target, as APFS clones); **Move to Target**. Opening a folder outside the library starts in Copy to Target with the library as the target, which is how media is imported. The MediaPull library has no fixed rules of its own; it is organised however the person likes.
+
+**R-3803** Operations: New Folder, Rename, Move (drag and drop, or Move To…), Flatten (every media file from all subfolders moved up into the folder; the emptied subfolders go to the Trash), Remove Subfolders (each chosen subfolder's contents moved up one level; the emptied subfolder goes to the Trash), Merge Folders (one folder's contents moved into another; the emptied folder goes to the Trash), Move to Trash, and the automatic sorts: by Date (year, then month), by Event, by Source, by Subject (R-3706), by Person (R-3906), screenshots apart from photos, and by Place.
+
+**R-3804** Every operation follows these rules:
+
+- Metadata files (`<file>.json`) always move, rename and go to the Trash with their media.
+- Name collisions get a number (`name 2.jpg`); in Archive folders the number goes after the name so the date prefix stays first (R-1503, R-1504).
+- Reserved folder names (R-1505) get a leading underscore, including folder names made from a person's name or a subject.
+- Nothing is ever deleted permanently.
+- A folder's layout is its library root's. A folder outside every root counts as Archive when it holds metadata files, otherwise as Plain.
+- Moves inside a library root keep MediaPull's records (archive entries, checksums, analysis) pointing at the new paths.
+
+**R-3805** Before an automatic sort, flattening, removing a folder or merging runs, the Organise pane shows the folders it will create with their counts and sample thumbnails, how many files go to `Unsorted/`, collisions, and for Sort by Person how many copies are clones and how much space any full copies take. Nothing moves until the person applies it. Moving, copying, renaming (in place in the tree), new folders and moving to the Trash apply at once and can be undone. Pop-up windows are kept for what needs attention now, such as errors.
+
+**R-3806** Every operation is recorded in a journal in `~/Library/Application Support/MediaPull/Organise/` (D-63). ⌘Z undoes the last operation, a whole automatic sort as one step; journals survive relaunch and are listed in the Organise pane's History, each with Undo. Undoing moves files back, removes clones and folders it created, and puts trashed items back from the Trash. A file that was changed or moved since is left where it is and reported.
+
+**R-3807** Long operations run as Organise jobs in Activity with progress and Cancel; a cancelled operation can be undone as far as it got.
+
+## 39. Faces and people
+
+**R-3901** Faces are always located (boxes only, for the With Faces, Portraits and Group Photos filters); a box says nothing about who someone is. Recognising people is off until the person turns it on in a sheet that explains that face data is biometric, stays on this Mac, is never written into library folders, metadata files or exports, and can be deleted in one step (D-61). Settings > Faces: on or off, Delete All Face Data (faces, people, names, corrections and face vectors, with one confirmation), the match threshold, and where group photos go when sorting by person.
+
+**R-3902** The bundled face detector finds faces with five landmarks (eyes, nose tip, mouth corners); Apple's face detection is the fallback when it is missing. Faces narrower than 32 px count for the face filters (R-3703) but are not used to recognise people. The rest are aligned to the standard five-point template and turned into a face embedding by the bundled face model, with the mirrored crop added as the model's own evaluation does (D-67), because Apple's frameworks detect faces but do not recognise people.
+
+**R-3903** A face joins the closest person when it is similar enough (the match threshold), otherwise it starts a new person; groups are re-checked as photos are added. Unnamed people are called "Person 1", "Person 2" and so on, largest first.
+
+**R-3904** The People list (in the Organise sidebar and the Library's People filter) lets the person name someone, merge two people, split a person (the chosen photos become a new person) and choose "Not This Person" on a photo. Corrections are stored as constraints (same person, not the same person) tied to the file's checksum and the face's position, so they survive rescans, moves, renames and regrouping.
+
+**R-3905** When at least 5 photos and at least 60 % of an unnamed person's photos sit in one folder whose name looks like a person's name (not a date, an account folder, a reserved, type or generic name such as `Unsorted`, `posts` or `Saved posts`), and that folder mostly holds this person, the person shows "Alice? (from folder Alice)". One click accepts the name; it is never applied without that click (D-66).
+
+**R-3906** Sort into Folders by Person makes one folder per named person (unnamed people optional, off by default); photos without a recognised person stay where they are, or go to `Unsorted/` (option). A photo of several people goes into each person's folder as an APFS clone, each copy with its own metadata file. In Archive-layout folders group photos go into one shared `Group photos/` folder instead (D-64). Settings > Faces offers: every person's folder, a shared `Group photos/` folder, or the first person's folder only.
+
+**R-3907** Accuracy limits, stated in Settings > Faces and the People list: faces turned well away from the camera (side profiles) are matched much less reliably; children's faces change with age and are confused more often; faces narrower than 32 px are not used; JPEG compression matters only at very small sizes, while blur, poor light and partial covering matter more. The accuracy measured on this Mac is recorded in D-67.
 
 ## Appendix A. Bridge protocol (version 1)
 

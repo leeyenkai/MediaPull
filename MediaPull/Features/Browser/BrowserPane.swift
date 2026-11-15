@@ -129,10 +129,10 @@ struct BrowserBar: View {
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 4)
             if VideoPage.isLikely(model.browser.url) {
-                Button { model.saveVideoFromPage() } label: { Image(systemName: "film.stack").frame(width: 24, height: 24) }
+                Button { model.showDownloads(video: true) } label: { Image(systemName: "film.stack").frame(width: 24, height: 24) }
                     .help("Save the video on this page, choosing its format and resolution")
             }
-            Button { model.showBrowsingPanel.toggle() } label: { Image(systemName: "book").frame(width: 24, height: 24) }
+            Button { model.showBrowsingPanel.toggle() } label: { Image(systemName: "bookmark").frame(width: 24, height: 24) }
                 .help("Bookmarks and History (⌥⌘B, ⌘Y)")
                 .popover(isPresented: $model.showBrowsingPanel, arrowEdge: .bottom) {
                     BrowsingPanel(model: model)
@@ -231,9 +231,9 @@ struct StartPage: View {
                     StartRow(symbol: "globe", title: "Open a web page", detail: "Type an address above, for example nytimes.com/international") {
                         model.focusAddressToken += 1
                     }
-                    StartRow(symbol: "person.crop.rectangle.stack", title: "Pull an Instagram account",
+                    StartRow(symbol: "person.crop.rectangle.stack", title: "Download an Instagram account",
                              detail: "Posts, carousels, Reels, highlights and stories at the highest quality") {
-                        model.pullDraft = app.engines.draft(username: "")
+                        model.showDownloads("")
                     }
                     StartRow(symbol: "key.fill", title: app.engines.signedIn ? "Signed in to Instagram" : "Sign in to Instagram",
                              detail: app.engines.signedIn ? "Your session stays in this app's browser only."

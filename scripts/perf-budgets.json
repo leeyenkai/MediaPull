@@ -1,0 +1,18 @@
+{
+  "note": "Budgets from docs/SPEC.md section 22, measured by hand; not enforced in CI. Analysis figures come from docs/spikes/analysis-models.md.",
+  "bundleSizeMB": 800,
+  "launchToWindowSeconds": 1.0,
+  "idleCPUPercent": 1.0,
+  "appMemoryMB5000Items": 250,
+  "bridgeMemoryMB": 150,
+  "ingest5000CandidatesMs": 200,
+  "refilter5000ItemsMs": 10,
+  "thumbnailCacheMB": 150,
+  "webp12MPToJPEGMs": 400,
+  "remux60sReelSeconds": 1.0,
+  "instagramRequestsPerMinute": 10,
+  "analysisFirstPassImagesPerSecond": 15,
+  "analysisMemoryMB": 250,
+  "search50000ImagesMs": 20,
+  "idleAnalysisCPUPercent": 0
+}

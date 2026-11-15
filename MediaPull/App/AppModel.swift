@@ -37,6 +37,12 @@ final class AppModel {
     let browsing = BrowsingStore(persistent: !SelfTestRunner.isActive)
     /// Duplicate detection for the Library pane (SPEC section 33); hashes are cached between launches.
     let duplicates: DuplicateFinder
+    /// On-device analysis for search, sorting, Organise and people (SPEC sections 36 to 39).
+    let analysis = AnalysisService()
+    /// Undo history for Organise (D-63).
+    let journal = OperationJournal(folder: SelfTestRunner.isActive
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-journal-\(UUID().uuidString)")
+        : OperationJournal.defaultFolder)
     var libraryRevision = 0
     @ObservationIgnored private var windowRefs: [UUID: WeakWindow] = [:]
     @ObservationIgnored lazy var engines = EngineService(app: self)
@@ -83,6 +89,8 @@ final class AppModel {
         } catch {
             engineMessage = "The library database could not be opened: \(error.localizedDescription)"
         }
+        analysis.start(inMemory: SelfTestRunner.isActive)
+        Task { await journal.prune(olderThan: preferences.undoHistoryDays) }
         await refreshEngineVersions()
         if preferences.weeklyEngineCheck, Date().timeIntervalSince(preferences.lastEngineCheck ?? .distantPast) > 7 * 86400 {
             await checkForEngineUpdates(automatic: true)
@@ -128,6 +136,8 @@ final class AppModel {
         guard let store else { return }
         roots = await store.roots()
         libraryRevision += 1
+        analysis.updateWatch()
+        analysis.schedule()
     }
 
     func addDefaultRoot() async {
@@ -228,6 +238,8 @@ final class AppModel {
             }
         }
         engineUpdates = []
+        analysis.start(inMemory: SelfTestRunner.isActive)
+        Task { await journal.prune(olderThan: preferences.undoHistoryDays) }
         await refreshEngineVersions()
         engineMessage = messages.joined(separator: " ")
         job.notes = messages

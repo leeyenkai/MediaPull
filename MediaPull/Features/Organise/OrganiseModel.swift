@@ -1,0 +1,579 @@
+import AppKit
+import Foundation
+import MediaPullCore
+import MediaPullLibrary
+import MediaPullStore
+import Observation
+
+/// The automatic sorts Organise offers (R-3803).
+enum AutoSort: String, CaseIterable, Identifiable {
+    case date, event, source, subject, person, screenshots, place
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .date: "Date"
+        case .event: "Event"
+        case .source: "Source"
+        case .subject: "Subject"
+        case .person: "Person"
+        case .screenshots: "Screenshots"
+        case .place: "Place"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .date: "Year, then month"
+        case .event: "Photos taken close together"
+        case .source: "Account or website"
+        case .subject: "What the photo shows"
+        case .person: "Who is in the photo"
+        case .screenshots: "Screenshots apart from photos"
+        case .place: "Country, then city"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .date: "calendar"
+        case .event: "calendar.badge.clock"
+        case .source: "person.crop.square"
+        case .subject: "tag"
+        case .person: "person.2"
+        case .screenshots: "iphone"
+        case .place: "mappin.and.ellipse"
+        }
+    }
+}
+
+/// Where Organise puts results (R-3802, D-68).
+enum OrganiseMode: String, CaseIterable {
+    case inPlace, copy, move
+
+    var label: String {
+        switch self {
+        case .inPlace: "In Place"
+        case .copy: "Copy to Target"
+        case .move: "Move to Target"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .inPlace: "Folders are made inside the source folder and files move into them."
+        case .copy: "The source folder stays as it is. Organised copies go into the target folder and take no extra space on Mac drives."
+        case .move: "Files move out of the source folder into folders in the target folder."
+        }
+    }
+}
+
+/// A change waiting to be applied, shown in the Organise pane rather than a separate window (R-3805).
+struct PendingPlan: Identifiable {
+    let id = UUID()
+    var plan: OrganisePlan
+    var note: String?
+}
+
+enum OrganiseTab: String, CaseIterable {
+    case sort, people, history
+
+    var label: String {
+        switch self {
+        case .sort: "Sort"
+        case .people: "People"
+        case .history: "History"
+        }
+    }
+}
+
+/// One folder pane of the Organise section: a folder tree and the selected folder's media.
+@Observable
+final class OrganisePane: MediaGridOwner {
+    @ObservationIgnored weak var owner: OrganiseModel?
+    let role: Role
+    enum Role { case source, target }
+
+    /// The folder opened in this pane (the top of its tree).
+    var root: URL? {
+        didSet {
+            if root != oldValue {
+                folder = root
+                treeRevision += 1
+            }
+        }
+    }
+
+    var folder: URL? {
+        didSet { if folder != oldValue { selection = []; reload() } }
+    }
+
+    var entries: [MediaEntry] = []
+    var shown: [MediaEntry] = []
+    var sections: [LibrarySection] = []
+    var subfolderCount = 0
+    var selection: Set<String> = []
+    var revision = 0
+    var treeRevision = 0
+    var cellSize: CGFloat = 132
+    var includeSubfolders = false {
+        didSet { if includeSubfolders != oldValue { reload() } }
+    }
+
+    var query = LibraryQuery() {
+        didSet { if query != oldValue { refilter() } }
+    }
+
+    var loading = false
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var filterTask: Task<Void, Never>?
+
+    init(role: Role) {
+        self.role = role
+    }
+
+    private var app: AppModel { .shared }
+
+    func reload() {
+        loadTask?.cancel()
+        guard let folder else {
+            entries = []
+            shown = []
+            sections = []
+            revision += 1
+            return
+        }
+        loading = true
+        let recursive = includeSubfolders
+        loadTask = Task { [weak self] in
+            let (listed, folders) = await MediaListing.load(folder, recursive: recursive)
+            guard let self, !Task.isCancelled, self.folder == folder else { return }
+            let attached = await self.app.analysis.attach(listed)
+            guard !Task.isCancelled, self.folder == folder else { return }
+            self.entries = attached
+            self.subfolderCount = folders
+            self.selection = self.selection.intersection(Set(attached.map(\.path)))
+            self.loading = false
+            self.refilter()
+        }
+    }
+
+    /// New analysis results for the files already listed.
+    func reattach() {
+        let current = entries
+        guard !current.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let attached = await self.app.analysis.attach(current)
+            guard self.entries.map(\.path) == current.map(\.path) else { return }
+            self.entries = attached
+            self.refilter()
+        }
+    }
+
+    func refilter() {
+        filterTask?.cancel()
+        let entries = entries, query = query
+        filterTask = Task { [weak self] in
+            guard let self else { return }
+            var context = LibraryQuery.Context(similarityFloor: AnalysisService.meaningFloor)
+            if !query.search.trimmingCharacters(in: .whitespaces).isEmpty {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                context.similarity = await self.app.analysis.meaningScores(query.search, entries: entries)
+                context.similarityFloor = AnalysisService.floor(for: context.similarity)
+            }
+            if query.sort == .similar || query.filter.similarOnly { context.similarGroups = await self.app.analysis.similarGroups(entries) }
+            if !query.filter.people.isEmpty { context.people = await self.app.analysis.peopleByPath(entries) }
+            let built = await Task.detached(priority: .userInitiated) { query.apply(entries, context: context) }.value
+            guard !Task.isCancelled else { return }
+            self.sections = built
+            self.shown = built.flatMap(\.items)
+            self.revision += 1
+        }
+    }
+
+    var gridSections: [GridSection] {
+        sections.enumerated().map { GridSection(id: "\($0.offset)", title: $0.element.title ?? "", ids: $0.element.items.map(\.path)) }
+    }
+
+    func entry(_ path: String) -> MediaEntry? { shown.first { $0.path == path } }
+
+    var selectedURLs: [URL] { shown.filter { selection.contains($0.path) }.map(\.url) }
+
+    // MARK: Grid owner
+
+    func gridInfo(_ id: String) -> GridCellInfo? {
+        guard let entry = entry(id) else { return nil }
+        var detail: [String] = []
+        if let w = entry.facts?.pixelWidth, let h = entry.facts?.pixelHeight { detail.append("\(w) × \(h)") }
+        detail.append(entry.format?.label ?? entry.url.pathExtension.uppercased())
+        var info = GridCellInfo(title: entry.name, detail: detail.joined(separator: " · "), secondary: Format.bytes(entry.size))
+        if entry.kind == .video { info.kindSymbol = "play.fill"; info.placeholderSymbol = "film" }
+        if entry.source != nil { info.stateSymbol = "text.badge.checkmark"; info.stateColor = .secondaryLabelColor }
+        return info
+    }
+
+    func gridThumbnail(_ id: String, maxPixel: Int) async -> CGImage? {
+        await app.thumbnails.localThumbnail(for: URL(fileURLWithPath: id), maxPixel: maxPixel)?.image
+    }
+
+    func gridSelectionChanged(_ ids: Set<String>) { selection = ids }
+
+    func gridActivate(_ id: String) { NSWorkspace.shared.open(URL(fileURLWithPath: id)) }
+
+    func gridQuickLook() { QuickLook.shared.show(selectedURLs) }
+
+    func gridAppeared(_: String) {}
+
+    func gridWriter(_ id: String) -> NSPasteboardWriting? { URL(fileURLWithPath: id) as NSURL }
+
+    var gridAcceptsDrops: Bool { folder != nil }
+
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation _: NSDragOperation) -> Bool {
+        guard let folder, let owner else { return false }
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        guard !urls.isEmpty else { return false }
+        owner.drop(urls, into: folder)
+        return true
+    }
+
+    func gridMagnify(_ amount: CGFloat) { cellSize = min(320, max(72, cellSize * (1 + amount))) }
+
+    func gridMenu(_ ids: Set<String>) -> NSMenu? {
+        guard let owner else { return nil }
+        let chosen = shown.filter { ids.contains($0.path) }.map(\.url)
+        guard !chosen.isEmpty else { return nil }
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem("Open") { chosen.forEach { NSWorkspace.shared.open($0) } })
+        menu.addItem(ActionMenuItem("Quick Look") { [weak self] in self?.gridQuickLook() })
+        menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen) })
+        menu.addItem(.separator())
+        if role == .source, let target = owner.targetFolder, target.standardizedFileURL != folder?.standardizedFileURL {
+            menu.addItem(ActionMenuItem("Copy to “\(target.lastPathComponent)”") { owner.run(FolderOperations.copy(chosen, to: target)) })
+            menu.addItem(ActionMenuItem("Move to “\(target.lastPathComponent)”") { owner.run(FolderOperations.move(chosen, to: target)) })
+        }
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Move to Trash") { owner.run(FolderOperations.trash(chosen)) })
+        return menu
+    }
+}
+
+/// The Organise section of one window (SPEC section 38): source, organise and target panes.
+@Observable
+final class OrganiseModel {
+    let source = OrganisePane(role: .source)
+    let target = OrganisePane(role: .target)
+    var pending: PendingPlan?
+    var history: [JournalEntry] = []
+    var working: String?
+    var tab: OrganiseTab = .sort
+    /// The folder being renamed in place.
+    var renaming: String?
+    /// With a target other than the source: move files there instead of copying them.
+    var moveToTarget = false {
+        didSet { if moveToTarget != oldValue { pending = nil } }
+    }
+
+    /// In place when the target is the source folder ("Same as Source"); otherwise copy or move to the target (D-68).
+    var mode: OrganiseMode {
+        guard let source = source.root, let target = target.root, source.standardizedFileURL != target.standardizedFileURL else { return .inPlace }
+        return moveToTarget ? .move : .copy
+    }
+
+    var message: String? {
+        didSet {
+            messageTask?.cancel()
+            guard message != nil else { return }
+            // Results are kept in History, so the note goes away on its own.
+            messageTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                guard !Task.isCancelled else { return }
+                self?.message = nil
+            }
+        }
+    }
+
+    @ObservationIgnored private var messageTask: Task<Void, Never>?
+
+    @ObservationIgnored weak var window: WindowModel?
+    @ObservationIgnored private var listenerID = UUID()
+
+    private var app: AppModel { .shared }
+
+    init() {
+        source.owner = self
+        target.owner = self
+        AppModel.shared.analysis.onFolderChange[listenerID] = { [weak self] paths in self?.foldersChanged(paths) }
+        Task { await refreshHistory() }
+    }
+
+    /// Opens the default library folder, in place, the first time Organise is shown (D-68).
+    func prepare() {
+        if source.root == nil, let library = app.defaultRoot?.url { open(library) }
+        if target.root == nil { target.root = source.root }
+    }
+
+    var recentFolders: [URL] {
+        app.preferences.recentOrganiseFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// Where results go: the source pane's selected folder in place, otherwise the target pane's folder.
+    var destination: URL? { mode == .inPlace ? source.folder : targetFolder }
+    var targetFolder: URL? { target.folder ?? target.root }
+
+    func open(_ folder: URL, in pane: OrganisePane? = nil) {
+        let pane = pane ?? source
+        pane.root = folder
+        if pane.role == .source {
+            var recent = app.preferences.recentOrganiseFolders.filter { $0 != folder.path }
+            recent.insert(folder.path, at: 0)
+            app.preferences.recentOrganiseFolders = Array(recent.prefix(10))
+            // A folder outside the library is copied into it by default: that is how media is imported (D-68).
+            // A library folder is organised in place.
+            if app.root(containing: folder) == nil, let library = app.defaultRoot?.url {
+                moveToTarget = false
+                if target.root.map({ app.root(containing: $0) == nil }) ?? true { target.root = library }
+            } else {
+                target.root = folder
+            }
+        }
+        updateAnalysisFolders()
+    }
+
+    func updateAnalysisFolders() {
+        var folders = Set<String>()
+        for model in app.windows.map(\.organise) {
+            if let root = model.source.root { folders.insert(root.path) }
+            if let root = model.target.root { folders.insert(root.path) }
+        }
+        app.analysis.extraFolders = folders
+    }
+
+    func chooseFolder(for pane: OrganisePane) {
+        FolderPicker.chooseFolder(title: pane.role == .source ? "Open a Folder to Organise" : "Choose the Target Folder",
+                                  prompt: "Open", start: pane.root ?? AppModel.suggestedRootURL, window: window?.hostWindow) { [weak self] url in
+            guard let url else { return }
+            self?.open(url, in: pane)
+        }
+    }
+
+    private func foldersChanged(_ paths: [String]) {
+        for pane in [source, target] {
+            guard let folder = pane.folder?.path else { continue }
+            if paths.contains(where: { $0.hasPrefix(folder) || folder.hasPrefix($0.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) }) {
+                pane.reload()
+                pane.treeRevision += 1
+            }
+        }
+    }
+
+    func refreshAfterChange() {
+        for pane in [source, target] {
+            pane.treeRevision += 1
+            pane.reload()
+        }
+        app.libraryRevision += 1
+    }
+
+    // MARK: Running changes
+
+    /// Small changes apply at once (and can be undone); sorts, flattening and merging are previewed first, in the Organise pane.
+    func run(_ plan: OrganisePlan, preview: Bool = false, note: String? = nil) {
+        guard !plan.isEmpty else {
+            message = plan.unsorted > 0 ? "Nothing to change: \(plan.unsorted) file\(plan.unsorted == 1 ? "" : "s") could not be sorted."
+                : "Nothing to change."
+            return
+        }
+        if preview {
+            pending = PendingPlan(plan: plan, note: note)
+            tab = .sort
+            window?.setShowing(.organiseWork, true)
+        } else {
+            execute(plan)
+        }
+    }
+
+    func execute(_ plan: OrganisePlan) {
+        pending = nil
+        message = nil
+        let journal = app.journal
+        let job = Job(kind: .organise, title: plan.title)
+        job.total = plan.moves.count + plan.itemsToTrash.count
+        job.state = .running
+        if job.total > 20 { app.jobs.add(job) }
+        working = plan.title
+        job.task = Task { [weak self] in
+            let entry = await journal.run(plan) { done, total in
+                Task { @MainActor in
+                    job.fraction = Double(done) / Double(max(total, 1))
+                    job.summaryOverride = "\(done) of \(total) steps"
+                }
+            }
+            guard let self else { return }
+            await self.app.analysis.noteMoves(entry.moves)
+            await self.app.store?.moveArchivePaths(entry.moves)
+            job.summaryOverride = "\(entry.fileCount) file\(entry.fileCount == 1 ? "" : "s")"
+                + (entry.failures.isEmpty ? "" : ", \(entry.failures.count) problems")
+            job.failures = entry.failures.map { (id: $0, message: $0) }
+            self.app.jobs.finish(job, entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be moved")) : .cancelled)
+            self.message = entry.failures.isEmpty ? "\(plan.title): done. ⌘Z undoes it." : entry.failures.prefix(3).joined(separator: "\n")
+            self.window?.registerUndo(entry)
+            await self.refreshHistory()
+            self.working = nil
+            self.showResults(of: plan)
+        }
+    }
+
+    /// Shows where a change put files: the folder it worked on, with the files of its subfolders in the grid.
+    func showResults(of plan: OrganisePlan) {
+        let pane = mode == .inPlace ? source : target
+        if !plan.destinations.isEmpty {
+            pane.includeSubfolders = true
+            if pane.folder?.standardizedFileURL != plan.root.standardizedFileURL, plan.root.path.hasPrefix(pane.root?.path ?? "\u{0}") {
+                pane.folder = plan.root
+            }
+        }
+        refreshAfterChange()
+    }
+
+    func refreshHistory() async {
+        history = await app.journal.entries()
+    }
+
+    func undo(_ entry: JournalEntry) {
+        working = "Undoing \(entry.title)"
+        Task {
+            let report = await app.journal.undo(entry.id)
+            await app.analysis.noteMoves(report.moves)
+            await app.store?.moveArchivePaths(report.moves)
+            message = report.skipped.isEmpty ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
+                : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; ")
+            await refreshHistory()
+            working = nil
+            refreshAfterChange()
+        }
+    }
+
+    func undoLast() {
+        guard let last = history.first(where: { !$0.undone }) else { return }
+        undo(last)
+    }
+
+    /// Files dropped on a folder: copied when copying to the target (or from outside), otherwise moved.
+    func drop(_ urls: [URL], into folder: URL) {
+        let roots = [source.root, target.root].compactMap(\.self)
+        let fromOutside = urls.contains { url in roots.allSatisfy { !url.path.hasPrefix($0.path + "/") } }
+        let copy = mode == .copy || fromOutside || NSEvent.modifierFlags.contains(.option)
+        run(copy ? FolderOperations.copy(urls, to: folder) : FolderOperations.move(urls, to: folder))
+    }
+
+    /// Makes "New Folder" and starts renaming it in place.
+    func newFolder(in parent: URL) {
+        let plan = FolderOperations.newFolder(named: "New Folder", in: parent)
+        guard let folder = plan.foldersToCreate.first else { return }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for pane in [source, target] { pane.treeRevision += 1 }
+        renaming = folder.path
+    }
+
+    func commitRename(_ url: URL, to name: String) {
+        renaming = nil
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != url.lastPathComponent else { return }
+        run(FolderOperations.rename(url, to: trimmed))
+    }
+
+    func flatten(_ folder: URL) {
+        run(FolderOperations.flatten(folder), preview: true,
+            note: "Every file from the subfolders moves up into “\(folder.lastPathComponent)”; the emptied folders go to the Trash.")
+    }
+
+    func removeFolder(_ folder: URL) {
+        run(FolderOperations.removeSubfolders([folder]), preview: true,
+            note: "The folder's contents move up one level; the emptied folder goes to the Trash.")
+    }
+
+    func merge(_ folder: URL, into other: URL) {
+        run(FolderOperations.merge(folder, into: other), preview: true,
+            note: "Folders with the same name are merged; “\(folder.lastPathComponent)” goes to the Trash once empty.")
+    }
+
+    /// Folders next to `folder`, for Merge Into.
+    func siblings(of folder: URL) -> [URL] {
+        let parent = folder.deletingLastPathComponent()
+        let items = (try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isDirectoryKey],
+                                                                   options: [.skipsHiddenFiles])) ?? []
+        return items.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true && $0 != folder }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    // MARK: Automatic sorts
+
+    /// Plans an automatic sort of the source pane's shown files (or its selection) and previews it in the Organise pane.
+    func autoSort(_ kind: AutoSort) {
+        let all = source.shown.isEmpty ? source.entries : source.shown
+        let files = source.selection.isEmpty ? all : all.filter { source.selection.contains($0.path) }
+        guard let destination, !files.isEmpty else {
+            message = destination == nil ? "Choose a target folder first." : "There is nothing to sort in this folder."
+            return
+        }
+        working = "Planning a sort by \(kind.label.lowercased())…"
+        let gap = app.preferences.eventGapHours * 3600
+        let threshold = Float(app.preferences.subjectThreshold)
+        let placement = app.preferences.groupPhotoPlacement
+        let layoutForRoot = layoutFor(destination)
+        let copy = mode == .copy
+        Task {
+            var assignment: [String: [[String]]] = [:]
+            var note: String?
+            switch kind {
+            case .date: for f in files { assignment[f.path] = SortRules.byDate(f) }
+            case .event: assignment = SortRules.eventFolders(files, gap: gap)
+            case .source: for f in files { assignment[f.path] = SortRules.bySource(f) }
+            case .screenshots: for f in files { assignment[f.path] = SortRules.byScreenshot(f) }
+            case .place: for f in files { assignment[f.path] = SortRules.byPlace(f) }
+            case .subject:
+                let subjects = await app.analysis.subjects(for: files)
+                for f in files {
+                    if let (subject, confidence) = subjects[f.path], confidence >= threshold { assignment[f.path] = [[subject]] }
+                }
+                note = "Files whose best subject is below \(Int(threshold * 100)) % confidence go to Unsorted."
+            case .person:
+                let byPath = await app.analysis.peopleByPath(files)
+                let names = Dictionary(uniqueKeysWithValues: app.analysis.people.map { ($0.id, $0) })
+                let includeUnnamed = app.preferences.sortUnnamedPeople
+                // Archive folders keep one copy per post: group photos share a folder there (D-64).
+                let effective: GroupPhotoPlacement = layoutForRoot == .archive && placement == .everyPerson ? .sharedFolder : placement
+                for f in files {
+                    let people = (byPath[f.path] ?? []).compactMap { names[$0] }.filter { includeUnnamed || $0.name != nil }
+                        .sorted { $0.faceCount > $1.faceCount }.map(\.displayName)
+                    assignment[f.path] = SortRules.personFolders(names: people, placement: effective)
+                }
+                note = effective == .everyPerson ? "A photo of several people goes into each person's folder as a copy that takes no extra space."
+                    : effective == .sharedFolder ? "Photos of several people go into “\(FolderNames.groupPhotos)”." : nil
+                if !app.preferences.facesEnabled { note = "Turn on recognising people in the People tab first." }
+            }
+            let missing = files.filter { $0.record == nil }.count
+            if missing > 0, kind != .date, kind != .source, kind != .event {
+                note = [note, "\(missing) file\(missing == 1 ? " is" : "s are") not analysed yet and will go to Unsorted."].compactMap { $0 }
+                    .joined(separator: " ")
+            }
+            let urls = files.map(\.url)
+            let title = "Sort by \(kind.label)", keepUnsorted = kind == .person
+            let plan = await Task.detached(priority: .userInitiated) {
+                FolderOperations.sort(urls, into: destination, title: title, keepUnsorted: keepUnsorted, copy: copy) { assignment[$0.path] ?? [] }
+            }.value
+            working = nil
+            run(plan, preview: true, note: note)
+        }
+    }
+
+    func layoutFor(_ folder: URL) -> SaveLayout {
+        if let root = app.root(containing: folder) { return root.layout }
+        let hasSidecars = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.contains { $0.hasSuffix(".json") } ?? false
+        return hasSidecars ? .archive : .plain
+    }
+}

@@ -10,7 +10,7 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.5 implemented. Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull).
+Status: version 1.6 implemented (on-device analysis, Library search and filters, the Organise section, people). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull).
 
 ## Stack
 
@@ -20,6 +20,7 @@ Status: version 1.5 implemented. Personal tool, not a public release. See "Imple
 - WebKit (`WKWebView`) for the browser pane
 - ImageIO, AVFoundation, VideoToolbox for media
 - Bundled engines (not Swift packages): standalone CPython with gallery-dl and yt-dlp as pure-Python wheels, plus a minimal LGPL ffmpeg and ffprobe, each pinned with a SHA-256 by the build scripts
+- Bundled analysis models (Core ML, converted at build time, pinned in `scripts/models.lock`): MobileCLIP2-S3 (image–text), AdaFace IR-101 (faces), SCRFD-10G (face detection), plus GeoNames places; Apple Vision for labels and text
 - Direct distribution: Developer ID, hardened runtime, notarized DMG, not sandboxed
 - XCTest; Python tests for the bridge run with the bundled interpreter
 
@@ -35,7 +36,9 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     App/                          MediaPullApp (scenes, commands), AppModel, WindowModel (tabs), BrowsingStore (bookmarks, history),
                                   Preferences, Theme, PaneMenu, Jobs, SelfTest
     Features/                     Browser (pane, TabStrip, BrowsingPanel), Extracted, Preview (pane, details, inline editor host), Library, Instagram (EngineService, PullSheet),
-                                  Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView)
+                                  Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView),
+                                  Analysis (AnalysisService, MediaListing, QueryBar), Organise (OrganiseModel, OrganiseView: Source, Organise, Target panes),
+                                  People, Downloads (DownloadsPane: Instagram, video and gallery forms)
     Platform/                     AppKit: ReadOnlyWebView, MediaGridView (NSCollectionView), PaneSplit (nested split views per arrangement),
                                   MediaPreviewViews (player, animated image), VideoStage (editor player, trim bar), DragSupport, QuickLook, SVGRasterizer
     Resources/                    Assets.xcassets (accent colour) and AppIcon.icon (Liquid Glass icon: icon.json + SVG layers)
@@ -47,27 +50,33 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     Sources/MediaPullLibrary/     MediaConverter, SavePipeline, ArchivePlanner, FingerprintIndex, DuplicateFinder, prober, thumbnails, engine fetcher
     Sources/MediaPullStore/       SwiftData models and the AppStore actor
     Sources/MediaPullBrowser/     web view setup, extract.js, guard.js, cookie bridge
+    Sources/MediaPullAnalysis/    Vision and Core ML: Analyzer, image–text and face encoders, SCRFD detector, CLIP tokenizer, vector store,
+                                  face grouping, similar sets, subjects, offline geocoder
     Tests/MediaPullKitTests/
   Engines/bridge/                 mediapull_bridge.py, egress_guard.py, test_egress_guard.py
-  scripts/                        fetch-engines.sh, build-ffmpeg.sh, bundle-engines.sh, check.sh, install-app.sh
+  scripts/                        fetch-engines.sh, build-ffmpeg.sh, bundle-engines.sh, check.sh, install-app.sh,
+                                  fetch-models.sh, convert-models.sh (+ convert_models.py), build_places.py, bundle-models.sh, models.lock
 ```
 
 ## Build and test
 
 - Engines: `scripts/fetch-engines.sh` (Python, gallery-dl, yt-dlp, verified by SHA-256) and `scripts/build-ffmpeg.sh` (minimal LGPL ffmpeg, no network). Both write to `~/Library/Caches/MediaPullBuild/engines`; the Xcode build phase copies them into the app.
-- Everything: `scripts/check.sh`. Install: `scripts/install-app.sh`.
+- Models: `scripts/fetch-models.sh` downloads, converts (throwaway venv with pinned torch and coremltools), compiles and checks them against `scripts/models.lock`, staging `~/Library/Caches/MediaPullBuild/models/bundle`; `bundle-models.sh` (called by the build phase) copies it into `Contents/Resources/Models`. macOS can purge `~/Library/Caches` when the disk is nearly full; rerun the fetch scripts if the cache is gone.
+- Everything: `scripts/check.sh`. Install: `scripts/install-app.sh`. Disk image: `scripts/make-dmg.sh` (Apple Development signing only; not notarized).
 - Always build outside the iCloud folder: `swift test --scratch-path ~/Library/Caches/MediaPullBuild/spm` and `xcodebuild ... -derivedDataPath ~/Library/Caches/MediaPullBuild/DerivedData`. Building inside the project folder fails code signing ("resource fork, Finder information, or similar detritus").
 - End to end without touching the UI: `MediaPull --selftest-url <url> --selftest-out <folder>` (SPEC section 25). Extra flags:
   `--selftest-edit`, `--selftest-site`, `--selftest-pdf-links`, `--selftest-theme <name>`, `--selftest-layout <preset index>`,
   `--selftest-browser <second url>` (tabs, bookmarks, history, panel, walkthrough), `--selftest-idle <seconds>` (idle CPU),
   `--selftest-duplicates`, `--selftest-video`, `--selftest-zoom <points>`, `--selftest-pullsheet <account>`,
-  `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio)
+  `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio),
+  `--selftest-analyse <folder>` (copies the folder into the test library, analyses it with faces on, checks no sockets open, searches,
+  filters, sorts it in Organise and undoes the sort, comparing checksums)
   (theme and layout are restored afterwards).
 
 ## Rules
 
 - **Read-only contract (SPEC section 5) is non-negotiable.** MediaPull never uploads files and never performs write actions on any account. All Swift network traffic goes through `NetworkGate` (GET and HEAD only). Engine traffic goes through the bridge's egress guard. The browser pane has no file upload path. Every change that touches networking keeps the egress tests passing.
-- **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser`, `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, AppKit only in the app's `Platform/` folder. Dependencies point one way.
+- **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser`, `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`, AppKit only in the app's `Platform/` folder. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
 - **No third-party Swift packages.** Third-party code is limited to the pinned bundled engines and their runtime. Adding anything else needs explicit approval and a spec decision.
 - **Never name or reference other applications** in code, comments, docs, UI copy, identifiers or test fixtures. The Archive layout is described only as a gallery-dl-compatible metadata archive (SPEC section 15).
 - **Archive layout is a contract.** Do not change sidecar keys, date format, naming rules, the forbidden name pattern (R-1504) or reserved folder names (R-1505) without a decision entry and updated golden tests.
@@ -89,7 +98,14 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 - The app icon is `AppIcon.icon`, not an asset-catalog icon set; do not add an `AppIcon.appiconset` back. Preview a change with
   `xcrun actool AppIcon.icon --compile <out> --platform macosx --minimum-deployment-target 26.0 --app-icon AppIcon --output-partial-info-plist <out>/p.plist`
   and `sips -s format png <out>/AppIcon.icns --out preview.png`.
-- Duplicate detection must stay deterministic (checksums, pHash, dHash, colour grid); no learned models (D-50).
+- Duplicate detection must stay deterministic (checksums, pHash, dHash, colour grid); no learned models (D-50). Learned models are for analysis only (D-57).
+- Analysis results, face data and Organise journals live in Application Support, never in library folders (R-601, D-60). Face embeddings need the opt-in; face boxes do not (R-3901).
+- Organise operations go through `FolderOperations` plans and `OperationJournal`, so every change is undoable and sidecars move with their media.
+- The Collect panes stay mounted while Organise is shown (opacity, not `if`), so the Browser never reloads. Both sections use `PaneSplit` with their own `PaneArrangement` (`PaneGroup` collect/organise); a pane's group decides which arrangement it joins.
+- No sheets for everyday work (D-69): downloads live in the Downloads pane, Organise previews and People are in the Organise pane, folder renames are inline. Pop-ups only for errors and confirmations of destructive actions.
+- ⌘+/⌘-/⌘0 zoom the web page; ⌥⌘+/⌥⌘- change thumbnail size.
+- `LibraryItem` is taken by the SDK; the analysis file type is `MediaEntry`.
+- Vision's accurate text recognition fails on macOS 27.0.x; the Analyzer falls back to fast mode for the session.
 - The bundled Python runs with `-I`, so the bridge finds its modules only through the `paths` list in each request.
 - Video trimming must stay passthrough (no re-encode); frame grabs use zero time tolerance.
 - `model.browser` is the selected tab; per-page callbacks must use the tab they came from, not `model.browser`.

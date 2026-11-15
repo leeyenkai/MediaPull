@@ -210,26 +210,34 @@ final class IngestorTests: XCTestCase {
 final class PaneArrangementTests: XCTestCase {
     func testMovesAndStacks() throws {
         var layout = PaneArrangement.standard
-        XCTAssertEqual(layout.key, "source|extracted+preview|library")
+        XCTAssertEqual(layout.key, "source+downloads|extracted+preview|library")
         layout.move(.preview, .right)
-        XCTAssertEqual(layout.key, "source|extracted|preview|library")
+        XCTAssertEqual(layout.key, "source+downloads|extracted|preview|library")
         layout.move(.library, .left)
-        XCTAssertEqual(layout.key, "source|extracted|library|preview")
+        XCTAssertEqual(layout.key, "source+downloads|extracted|library|preview")
         XCTAssertFalse(layout.canMove(.preview, .right))
         layout.stack(.preview, onto: .left)
-        XCTAssertEqual(layout.key, "source|extracted|library+preview")
+        XCTAssertEqual(layout.key, "source+downloads|extracted|library+preview")
         layout.moveInStack(.preview, .up)
-        XCTAssertEqual(layout.key, "source|extracted|preview+library")
-        layout.stack(.source, onto: .right)
-        XCTAssertEqual(layout.key, "extracted+source|preview+library")
+        XCTAssertEqual(layout.key, "source+downloads|extracted|preview+library")
+        layout.move(.downloads, .right)
+        XCTAssertEqual(layout.key, "source|downloads|extracted|preview+library")
     }
 
     func testDecodingRepairsMissingAndDuplicatePanes() throws {
-        let data = Data(#"[["source","source"],["extracted"],["bogus"]]"#.utf8)
+        let data = Data(#"[["source","source"],["extracted"],["bogus"],["organiseWork"]]"#.utf8)
         let layout = try JSONDecoder().decode(PaneArrangement.self, from: data)
-        XCTAssertEqual(layout.key, "source|extracted+preview|library")
+        XCTAssertEqual(layout.key, "source+downloads|extracted+preview|library", "organise panes never join the collect panes")
         let round = try JSONDecoder().decode(PaneArrangement.self, from: JSONEncoder().encode(PaneArrangement.previewColumn))
         XCTAssertEqual(round, .previewColumn)
+    }
+
+    func testOrganiseArrangementsHoldOnlyOrganisePanes() throws {
+        XCTAssertEqual(PaneArrangement.organiseStandard.key, "organiseSource|organiseWork|organiseTarget")
+        XCTAssertEqual(PaneArrangement.organiseStandard.group, .organise)
+        let data = Data(#"[["organiseTarget"],["library"]]"#.utf8)
+        let layout = try JSONDecoder().decode(PaneArrangement.self, from: data)
+        XCTAssertEqual(layout.key, "organiseTarget|organiseSource|organiseWork")
     }
 }
 

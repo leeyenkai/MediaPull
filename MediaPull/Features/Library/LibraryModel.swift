@@ -62,6 +62,26 @@ final class LibraryModel: MediaGridOwner {
     }
 
     var files: [LibraryFile] = []
+    /// The files with what analysis knows about them, and the sections the sort and filters produce (section 37).
+    var entries: [MediaEntry] = []
+    var built: [LibrarySection] = []
+    var query: LibraryQuery = AppModel.shared.preferences.libraryQuery {
+        didSet {
+            guard query != oldValue else { return }
+            app.preferences.libraryQuery = query
+            refilter()
+        }
+    }
+
+    var includeSubfolders: Bool = AppModel.shared.preferences.libraryIncludeSubfolders {
+        didSet {
+            guard includeSubfolders != oldValue else { return }
+            app.preferences.libraryIncludeSubfolders = includeSubfolders
+            reload()
+        }
+    }
+
+    @ObservationIgnored private var filterTask: Task<Void, Never>?
     var subfolderCount = 0
     var selection: Set<String> = []
     var revision = 0
@@ -83,14 +103,40 @@ final class LibraryModel: MediaGridOwner {
     @ObservationIgnored private var duplicateTask: Task<Void, Never>?
 
     var shownFiles: [LibraryFile] {
-        guard showOnlyDuplicates, let duplicates else { return files }
+        let order = built.flatMap(\.items).map(\.path)
+        let byPath = Dictionary(files.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let queried = order.compactMap { byPath[$0] }
+        guard showOnlyDuplicates, let duplicates else { return queried }
         // Copies sit next to each other.
-        return files.filter { duplicates.group(for: $0.url) != nil }
+        return queried.filter { duplicates.group(for: $0.url) != nil }
             .sorted { (duplicates.groupOf[$0.url.standardizedFileURL.path] ?? 0, $0.name) < (duplicates.groupOf[$1.url.standardizedFileURL.path] ?? 0, $1.name) }
     }
 
     var sections: [GridSection] {
-        [GridSection(id: "files", title: "", ids: shownFiles.map(\.id))]
+        guard !showOnlyDuplicates, built.count > 1 else { return [GridSection(id: "files", title: "", ids: shownFiles.map(\.id))] }
+        return built.enumerated().map { GridSection(id: "\($0.offset)", title: $0.element.title ?? "", ids: $0.element.items.map(\.path)) }
+    }
+
+    /// Recomputes what is shown from the files, the sort, the filters and the search (off the main actor).
+    func refilter() {
+        filterTask?.cancel()
+        let entries = entries, query = query
+        filterTask = Task { [weak self] in
+            guard let self else { return }
+            var context = LibraryQuery.Context(similarityFloor: AnalysisService.meaningFloor)
+            if !query.search.trimmingCharacters(in: .whitespaces).isEmpty {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                context.similarity = await self.app.analysis.meaningScores(query.search, entries: entries)
+                context.similarityFloor = AnalysisService.floor(for: context.similarity)
+            }
+            if query.sort == .similar || query.filter.similarOnly { context.similarGroups = await self.app.analysis.similarGroups(entries) }
+            if !query.filter.people.isEmpty { context.people = await self.app.analysis.peopleByPath(entries) }
+            let result = await Task.detached(priority: .userInitiated) { query.apply(entries, context: context) }.value
+            guard !Task.isCancelled else { return }
+            self.built = result
+            self.revision += 1
+        }
     }
 
     func duplicateGroup(for file: URL) -> DuplicateFinder.Group? {
@@ -158,10 +204,20 @@ final class LibraryModel: MediaGridOwner {
             files = []
             return
         }
+        let recursive = includeSubfolders
         reloadTask = Task { [weak self] in
-            let (loaded, folders) = await Self.list(folder)
+            let (listed, folders) = await MediaListing.load(folder, recursive: recursive)
             guard !Task.isCancelled, let self, self.selectedFolder == folder else { return }
+            let attached = await self.app.analysis.attach(listed)
+            guard !Task.isCancelled, self.selectedFolder == folder else { return }
+            let loaded = attached.map {
+                LibraryFile(url: $0.url, name: $0.name, size: $0.size, modified: $0.modified,
+                            hasSidecar: $0.source != nil || FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: $0.url).path),
+                            format: $0.format)
+            }
+            self.entries = attached
             self.files = loaded
+            self.refilter()
             self.subfolderCount = folders
             self.selection = self.selection.intersection(Set(loaded.map(\.id)))
             self.revision += 1
@@ -170,6 +226,19 @@ final class LibraryModel: MediaGridOwner {
                 self.selectRevealed(pending)
             }
             self.scanDuplicates()
+        }
+    }
+
+    /// New analysis results for the files already listed, without listing the folder again.
+    func reattach() {
+        let current = entries
+        guard !current.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let attached = await self.app.analysis.attach(current)
+            guard self.entries.map(\.path) == current.map(\.path) else { return }
+            self.entries = attached
+            self.refilter()
         }
     }
 
@@ -232,6 +301,9 @@ final class LibraryModel: MediaGridOwner {
 
     // MARK: Folder operations
 
+    /// The folder being renamed in place in the tree (no pop-up, D-69).
+    var renaming: String?
+
     func newFolder(in parent: URL) {
         var name = "New Folder"
         var counter = 2
@@ -244,23 +316,19 @@ final class LibraryModel: MediaGridOwner {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
             treeRevision += 1
             selectedFolder = url
-            rename(url)
+            renaming = url.path
         } catch {
             message = error.localizedDescription
         }
     }
 
     func rename(_ url: URL) {
-        let alert = NSAlert()
-        alert.messageText = "Rename “\(url.lastPathComponent)”"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        field.stringValue = url.lastPathComponent
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = FileNaming.sanitize(field.stringValue, maxBytes: 240)
+        renaming = url.path
+    }
+
+    func commitRename(_ url: URL, to text: String) {
+        renaming = nil
+        let name = FileNaming.sanitize(text.trimmingCharacters(in: .whitespacesAndNewlines), maxBytes: 240)
         guard !name.isEmpty, name != url.lastPathComponent else { return }
         let destination = url.deletingLastPathComponent().appendingPathComponent(name)
         do {
@@ -269,6 +337,7 @@ final class LibraryModel: MediaGridOwner {
             if FileManager.default.fileExists(atPath: sidecar.path) {
                 try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
             }
+            Task { await app.analysis.noteMoves([(from: url.path, to: destination.path)]) }
             if selectedFolder == url { selectedFolder = destination }
             treeRevision += 1
             reload()
@@ -380,7 +449,9 @@ final class LibraryModel: MediaGridOwner {
     func gridInfo(_ id: String) -> GridCellInfo? {
         guard let file = files.first(where: { $0.id == id }) else { return nil }
         var detail: [String] = []
-        if let (size, _) = details[id], let size { detail.append(size.label) }
+        if let facts = entries.first(where: { $0.path == id })?.facts, let w = facts.pixelWidth, let h = facts.pixelHeight {
+            detail.append("\(w) × \(h)")
+        } else if let (size, _) = details[id], let size { detail.append(size.label) }
         detail.append(file.format?.label ?? file.url.pathExtension.uppercased())
         var info = GridCellInfo(title: file.name, detail: detail.joined(separator: " · "), secondary: Format.bytes(file.size))
         switch file.format?.kind {

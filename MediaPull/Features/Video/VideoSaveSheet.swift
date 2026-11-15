@@ -1,105 +1,150 @@
 import MediaPullCore
+import MediaPullEngines
 import MediaPullStore
 import SwiftUI
 
-/// A page whose video the person wants to save (SPEC section 35).
-struct VideoRequest: Identifiable, Equatable {
-    let id = UUID()
-    var url: URL
-}
-
-/// "Save Video…": choose the format and resolution of the video on the page, then download it.
-struct VideoSaveSheet: View {
+/// Video options in the Downloads pane (SPEC section 35): format, resolution and yt-dlp's other choices.
+struct VideoForm: View {
     @Bindable var model: WindowModel
-    let request: VideoRequest
+    let url: URL
     @State private var info: VideoInfo?
     @State private var failure: String?
     @State private var format: VideoDownloadFormat = .bestMP4
     @State private var height: Int?
     @State private var rootID: UUID?
     @State private var thumbnail: CGImage?
-    @Environment(\.dismiss) private var dismiss
+    @State private var extras = BridgeRequest.Extras()
+    @State private var subtitleChoice = SubtitleChoice.none
+    @State private var subtitleLanguages = "en"
+    @State private var useDates = false
+    @State private var after = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
+    @State private var before = Date()
+    @State private var speed = 0
+    @State private var showMore = false
     private var app: AppModel { .shared }
 
+    enum SubtitleChoice: String, CaseIterable {
+        case none, original, automatic
+
+        var label: String {
+            switch self {
+            case .none: "None"
+            case .original: "Uploaded"
+            case .automatic: "Uploaded or Automatic"
+            }
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Save Video").font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: 10) {
             if let info {
                 header(info)
-                Form {
-                    Picker("Format", selection: $format) {
-                        ForEach(VideoDownloadFormat.allCases, id: \.self) { choice in
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(choice.label)
-                                Text(choice.detail).font(.caption).foregroundStyle(.secondary)
-                            }
-                            .tag(choice)
+                Picker("Format", selection: $format) {
+                    ForEach(VideoDownloadFormat.allCases, id: \.self) { choice in
+                        Text(choice.label).tag(choice)
                             .disabled(!choice.isAudioOnly && choice.heights(in: info.formats).isEmpty)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                    if !format.isAudioOnly {
-                        Picker("Resolution", selection: $height) {
-                            Text(bestLabel(info)).tag(Int?.none)
-                            ForEach(format.heights(in: info.formats), id: \.self) { value in
-                                Text(heightLabel(value, in: info)).tag(Optional(value))
-                            }
-                        }
-                    }
-                    Picker("Library folder", selection: $rootID) {
-                        ForEach(app.roots) { root in Text(root.name).tag(Optional(root.id)) }
                     }
                 }
-                .formStyle(.grouped)
-                .onChange(of: format) { _, newFormat in
-                    if let height, !newFormat.heights(in: info.formats).contains(height) { self.height = nil }
+                .help(format.detail)
+                if !format.isAudioOnly {
+                    Picker("Resolution", selection: $height) {
+                        Text(bestLabel(info)).tag(Int?.none)
+                        ForEach(format.heights(in: info.formats), id: \.self) { value in
+                            Text(heightLabel(value, in: info)).tag(Optional(value))
+                        }
+                    }
                 }
-                Text(summary(info))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                DestinationPicker(rootID: $rootID)
+                DisclosureGroup("More Options", isExpanded: $showMore) { moreOptions.padding(.top, 4) }
+                Text(summary(info)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button(extras.playlist ? "Download All" : "Download") { save() }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(root == nil)
+                }
             } else if let failure {
-                Label(failure, systemImage: "film.stack")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: 120)
+                Label(failure, systemImage: "film.stack").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Looking up the formats of this video…").foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 120)
-            }
-            HStack {
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Save Video") { save() }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(info == nil || root == nil)
             }
         }
-        .padding(20)
-        .frame(width: 560)
-        .task {
-            rootID = app.lastSaveFolderURL.flatMap { app.root(containing: $0)?.id } ?? app.defaultRoot?.id
-            switch await app.engines.videoInfo(for: request.url) {
-            case let .success(found):
-                info = found
-                if let url = found.thumbnail {
-                    thumbnail = await app.thumbnails.thumbnail(for: url, maxPixel: 320, context: .init(userAgent: app.userAgent))?.image
+        .onChange(of: format) { _, newFormat in
+            if let info, let height, !newFormat.heights(in: info.formats).contains(height) { self.height = nil }
+        }
+        .task(id: url) { await lookUp() }
+    }
+
+    @ViewBuilder
+    private var moreOptions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Whole playlist or channel", isOn: $extras.playlist)
+                .help("Download every video of the playlist or channel this page belongs to")
+            if extras.playlist {
+                HStack {
+                    TextField("Items, such as 1-20 (all if empty)", text: Binding(get: { extras.playlistItems ?? "" },
+                                                                                set: { extras.playlistItems = $0.nonEmpty }))
+                    TextField("At most", value: $extras.maxDownloads, format: .number).frame(width: 70)
                 }
-            case let .failure(error):
-                failure = error.message
+                Toggle("Only videos uploaded between", isOn: $useDates)
+                if useDates {
+                    HStack {
+                        DatePicker("From", selection: $after, displayedComponents: .date).labelsHidden()
+                        Text("and")
+                        DatePicker("To", selection: $before, displayedComponents: .date).labelsHidden()
+                    }
+                }
+            }
+            Picker("Subtitles", selection: $subtitleChoice) {
+                ForEach(SubtitleChoice.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            if subtitleChoice != .none {
+                TextField("Languages, such as en, fr (all for every language)", text: $subtitleLanguages)
+            }
+            Toggle("Save the thumbnail", isOn: $extras.thumbnail)
+            Toggle("Save the description", isOn: $extras.description)
+            Picker("Download speed", selection: $speed) {
+                Text("Unlimited").tag(0)
+                Text("10 MB/s").tag(10)
+                Text("5 MB/s").tag(5)
+                Text("1 MB/s").tag(1)
             }
         }
     }
 
     private var root: LibraryRootInfo? { app.roots.first { $0.id == rootID } }
 
+    private func lookUp() async {
+        info = nil
+        failure = nil
+        height = nil
+        rootID = app.lastSaveFolderURL.flatMap { app.root(containing: $0)?.id } ?? app.defaultRoot?.id
+        extras.playlist = Self.looksLikeList(url)
+        switch await app.engines.videoInfo(for: url) {
+        case let .success(found):
+            info = found
+            if let thumb = found.thumbnail {
+                thumbnail = await app.thumbnails.thumbnail(for: thumb, maxPixel: 320, context: .init(userAgent: app.userAgent))?.image
+            }
+        case let .failure(error):
+            failure = error.message
+        }
+    }
+
+    /// Playlist, channel and user pages default to downloading the whole list.
+    static func looksLikeList(_ url: URL) -> Bool {
+        let path = url.path.lowercased()
+        let query = url.query?.lowercased() ?? ""
+        return path.hasPrefix("/playlist") || path.hasPrefix("/@") || path.hasPrefix("/channel/") || path.hasPrefix("/c/")
+            || (query.contains("list=") && !path.hasPrefix("/watch"))
+    }
+
     private func header(_ info: VideoInfo) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 6).fill(.quaternary)
                 if let thumbnail {
@@ -108,11 +153,11 @@ struct VideoSaveSheet: View {
                     Image(systemName: "film").foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 128, height: 72)
+            .frame(width: 96, height: 54)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(info.title).font(.headline).lineLimit(2)
-                Text(details(info)).font(.caption).foregroundStyle(.secondary)
+                Text(details(info)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
     }
@@ -139,23 +184,35 @@ struct VideoSaveSheet: View {
 
     private func summary(_ info: VideoInfo) -> String {
         var parts: [String] = []
-        if let bytes = format.estimatedBytes(in: info.formats, height: height, duration: info.duration) {
+        if !extras.playlist, let bytes = format.estimatedBytes(in: info.formats, height: height, duration: info.duration) {
             parts.append("About \(Format.bytes(bytes)).")
         }
         if format.needsConversion(in: info.formats, height: height) {
             let codec = format.chosenVideo(in: info.formats, height: height)?.codecFamily.uppercased() ?? "This"
-            parts.append("\(codec) video will be converted to HEVC, which takes a while at high resolutions. Choose MP4, original codec to keep it as sent.")
+            parts.append("\(codec) video will be converted to HEVC, which takes a while at high resolutions.")
         }
         if let root {
             let site = info.webpageURL.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? info.extractor
-            parts.append("Saved in \(root.name)/\(site)/\(info.uploader ?? "Videos").")
+            parts.append("Saved in \(root.name)/\(site)/\(extras.playlist ? "<channel>" : info.uploader ?? "Videos").")
         }
         return parts.joined(separator: " ")
     }
 
     private func save() {
         guard let info, let root else { return }
-        app.engines.saveVideo(info, format: format, height: format.isAudioOnly ? nil : height, root: root, window: model)
-        dismiss()
+        var chosen = extras
+        if subtitleChoice != .none {
+            chosen.subtitles = subtitleLanguages.split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init).filter { !$0.isEmpty }
+            chosen.autoSubtitles = subtitleChoice == .automatic
+        }
+        if chosen.playlist, useDates {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyyMMdd"
+            chosen.dateAfter = formatter.string(from: after)
+            chosen.dateBefore = formatter.string(from: before)
+        }
+        chosen.rateLimit = speed > 0 ? speed * 1_000_000 : nil
+        app.engines.saveVideo(info, pageURL: url, format: format, height: format.isAudioOnly ? nil : height, extras: chosen, root: root, window: model)
     }
 }

@@ -9,6 +9,8 @@ RESOURCES="$APP/Resources/Engines"
 HELPERS="$APP/Helpers"
 LICENSES="$APP/Resources/Licenses"
 
+bash "$PROJECT_DIR/scripts/bundle-models.sh"
+
 if [[ ! -x "$CACHE/python/bin/python3" ]]; then
   echo "warning: MediaPull engines are missing. Run scripts/fetch-engines.sh and scripts/build-ffmpeg.sh, then build again."
   exit 0

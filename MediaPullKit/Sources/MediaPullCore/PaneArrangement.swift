@@ -1,8 +1,14 @@
 import Foundation
 
-/// The window's panes (SPEC section 7).
+/// The two sections of the window, each with its own panes (D-62).
+public enum PaneGroup: String, Codable, Sendable, Hashable {
+    case collect, organise
+}
+
+/// The window's panes (SPEC sections 7 and 38).
 public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
-    case source, extracted, preview, library
+    case source, extracted, preview, library, downloads
+    case organiseSource, organiseWork, organiseTarget
 
     public var title: String {
         switch self {
@@ -10,17 +16,33 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
         case .extracted: "Extracted Media"
         case .preview: "Preview"
         case .library: "Library"
+        case .downloads: "Downloads"
+        case .organiseSource: "Source"
+        case .organiseWork: "Organise"
+        case .organiseTarget: "Target"
         }
     }
+
+    public var group: PaneGroup {
+        switch self {
+        case .organiseSource, .organiseWork, .organiseTarget: .organise
+        default: .collect
+        }
+    }
+
+    public static func panes(in group: PaneGroup) -> [PaneID] { allCases.filter { $0.group == group } }
 }
 
 /// Where the panes sit: columns from left to right, each a stack of panes from top to bottom
 /// (SPEC R-701a). Every pane appears exactly once.
 public struct PaneArrangement: Codable, Equatable, Sendable, Hashable {
     public private(set) var columns: [[PaneID]]
+    public let group: PaneGroup
 
-    public init(columns: [[PaneID]]) {
-        self.columns = columns
+    public init(columns: [[PaneID]], group: PaneGroup? = nil) {
+        let resolved = group ?? columns.joined().first?.group ?? .collect
+        self.group = resolved
+        self.columns = columns.map { $0.filter { $0.group == resolved } }
         repair()
     }
 
@@ -48,6 +70,20 @@ public struct PaneArrangement: Codable, Equatable, Sendable, Hashable {
         ("Preview Below Library", .previewUnderLibrary),
         ("Mirrored", .libraryFirst),
     ]
+
+    public static let organiseStandard = PaneArrangement(columns: [[.organiseSource], [.organiseWork], [.organiseTarget]])
+    public static let organiseWorkRight = PaneArrangement(columns: [[.organiseSource], [.organiseTarget], [.organiseWork]])
+    public static let organiseTargetBelow = PaneArrangement(columns: [[.organiseSource, .organiseTarget], [.organiseWork]])
+
+    public static let organisePresets: [(name: String, arrangement: PaneArrangement)] = [
+        ("Standard", .organiseStandard),
+        ("Organise on the Right", .organiseWorkRight),
+        ("Target Below Source", .organiseTargetBelow),
+    ]
+
+    public static func presets(for group: PaneGroup) -> [(name: String, arrangement: PaneArrangement)] {
+        group == .collect ? presets : organisePresets
+    }
 
     /// A stable name for this arrangement, used to keep divider positions per arrangement.
     public var key: String {
@@ -112,9 +148,12 @@ public struct PaneArrangement: Codable, Equatable, Sendable, Hashable {
     private mutating func repair() {
         var seen = Set<PaneID>()
         columns = columns.map { column in column.filter { seen.insert($0).inserted } }.filter { !$0.isEmpty }
-        for pane in PaneID.allCases where !seen.contains(pane) {
+        for pane in PaneID.panes(in: group) where !seen.contains(pane) {
             if pane == .preview, let index = column(of: .extracted) {
                 columns[index].append(.preview)
+            } else if pane == .downloads, let index = column(of: .source) {
+                // Downloads sits below the browser it downloads from.
+                columns[index].append(.downloads)
             } else {
                 columns.append([pane])
             }

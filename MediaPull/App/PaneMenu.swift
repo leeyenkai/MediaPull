@@ -8,7 +8,7 @@ struct PaneMoveCommands: View {
     private var app: AppModel { .shared }
 
     var body: some View {
-        let layout = app.preferences.paneArrangement
+        let layout = app.preferences.arrangement(for: pane.group)
         let stacked = layout.isStacked(pane)
         Button(stacked ? "Move to New Column on the Left" : "Move Left") { change { $0.move(pane, .left) } }
             .disabled(!layout.canMove(pane, .left))
@@ -33,22 +33,23 @@ struct PaneMoveCommands: View {
     }
 
     private func change(_ edit: (inout PaneArrangement) -> Void) {
-        var layout = app.preferences.paneArrangement
+        var layout = app.preferences.arrangement(for: pane.group)
         edit(&layout)
-        app.preferences.paneArrangement = layout
+        app.preferences.setArrangement(layout)
         window?.setShowing(pane, true)
     }
 }
 
 /// The preset arrangements.
 struct LayoutPresetCommands: View {
+    var group: PaneGroup = .collect
     private var app: AppModel { .shared }
 
     var body: some View {
-        ForEach(PaneArrangement.presets, id: \.name) { preset in
+        ForEach(PaneArrangement.presets(for: group), id: \.name) { preset in
             Toggle(preset.name, isOn: Binding(
-                get: { app.preferences.paneArrangement == preset.arrangement },
-                set: { if $0 { app.preferences.paneArrangement = preset.arrangement } }
+                get: { app.preferences.arrangement(for: group) == preset.arrangement },
+                set: { if $0 { app.preferences.setArrangement(preset.arrangement) } }
             ))
         }
     }
@@ -63,9 +64,9 @@ struct PaneMenu: View {
         Menu {
             PaneMoveCommands(pane: pane, window: window)
             Divider()
-            Menu("Layout") { LayoutPresetCommands() }
+            Menu("Layout") { LayoutPresetCommands(group: pane.group) }
         } label: {
-            Image(systemName: "rectangle.3.group")
+            Image(systemName: "rectangle.3.group").foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

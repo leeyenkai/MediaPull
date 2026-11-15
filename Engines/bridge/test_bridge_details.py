@@ -63,6 +63,24 @@ def test_engine_cache_stays_in_memory():
         assert not cache.path(), cache.path()
 
 
+def test_stream_options_map_extras():
+    import mediapull_bridge as bridge
+
+    request = {"video": {"format": "bv*+ba/b"}, "extras": {
+        "playlist": True, "playlist_items": "1-5", "max_downloads": 3, "date_after": "20260101", "rate_limit": 1000000,
+        "subtitles": ["en", "fr"], "auto_subtitles": True, "thumbnail": True, "description": True}}
+    options = bridge.stream_options(request, "/tmp/staging", None, lambda info: None)
+    assert options["noplaylist"] is False
+    assert options["playlist_items"] == "1-5"
+    assert options["max_downloads"] == 3
+    assert options["ratelimit"] == 1000000
+    assert options["subtitleslangs"] == ["en", "fr"] and options["writeautomaticsub"] is True
+    assert options["writethumbnail"] and options["writedescription"]
+    assert str(options["daterange"].start) == "2026-01-01"
+    single = bridge.stream_options({"video": {}}, "/tmp/staging", None, lambda info: None)
+    assert single["noplaylist"] is True and "writesubtitles" not in single
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

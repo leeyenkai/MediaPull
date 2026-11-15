@@ -87,6 +87,20 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, Ide
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
 
+    // MARK: Page zoom (R-802a)
+
+    static let zoomSteps: [CGFloat] = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+    var zoom: CGFloat = 1
+
+    func zoomIn() { setZoom(Self.zoomSteps.first { $0 > zoom + 0.001 } ?? zoom) }
+    func zoomOut() { setZoom(Self.zoomSteps.last { $0 < zoom - 0.001 } ?? zoom) }
+    func resetZoom() { setZoom(1) }
+
+    func setZoom(_ value: CGFloat) {
+        zoom = value
+        webView.pageZoom = value
+    }
+
     func reloadOrStop() {
         if webView.isLoading { webView.stopLoading() } else { webView.reload() }
     }

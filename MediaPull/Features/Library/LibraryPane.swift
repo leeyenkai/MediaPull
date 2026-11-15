@@ -39,9 +39,11 @@ struct LibraryPane: View {
             if app.roots.isEmpty {
                 NoRootsView(library: library)
             } else {
-                VSplitView {
+                VStack(spacing: 0) {
+                    // A compact tree: the media grid gets the room.
                     FolderTree(model: model, library: library)
-                        .frame(minHeight: 140, idealHeight: 260)
+                        .frame(minHeight: 60, idealHeight: 150, maxHeight: 190)
+                    Divider()
                     FolderContents(model: model, library: library)
                         .frame(minHeight: 160)
                 }
@@ -109,13 +111,27 @@ struct FolderRow: View {
     var node: FolderNode
     var root: LibraryRootInfo?
     @State private var targeted = false
+    @State private var draft = ""
+    @FocusState private var editing: Bool
     private var app: AppModel { .shared }
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: node.isRoot ? (root?.isDefault == true ? "folder.fill.badge.person.crop" : "folder.fill") : "folder")
                 .foregroundStyle(node.isRoot ? Color.accentColor : .secondary)
-            Text(node.name).lineLimit(1)
+            if library.renaming == node.url.path, !node.isRoot {
+                TextField("Name", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($editing)
+                    .onSubmit { library.commitRename(node.url, to: draft) }
+                    .onExitCommand { library.renaming = nil }
+                    .onAppear {
+                        draft = node.name
+                        editing = true
+                    }
+            } else {
+                Text(node.name).lineLimit(1)
+            }
             if node.isRoot, let root {
                 Spacer(minLength: 4)
                 Text(root.layout.shortLabel)
@@ -139,6 +155,10 @@ struct FolderRow: View {
             }
             Button("New Folder") { library.newFolder(in: node.url) }
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([node.url]) }
+            Button("Organise This Folder…") {
+                model.organise.open(node.url)
+                model.section = .organise
+            }
             if node.isRoot, let root {
                 Divider()
                 if !root.isDefault {
@@ -161,7 +181,7 @@ struct FolderRow: View {
                 }
                 Button("Remove from Library") { Task { await app.removeRoot(root.id) } }
             } else {
-                Button("Rename…") { library.rename(node.url) }
+                Button("Rename") { library.rename(node.url) }
                 Divider()
                 Button("Move to Trash") { library.trash([node.url]) }
             }
@@ -241,6 +261,11 @@ struct FolderContents: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+            if library.selectedFolder != nil {
+                QueryBar(query: $library.query, includeSubfolders: $library.includeSubfolders, entries: library.entries)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
             if let warning = library.selectedFolder.flatMap({ app.root(containing: $0) }).flatMap({ AppModel.locationWarning(for: $0.url) }) {
                 Text(warning)
                     .font(.caption)
@@ -251,7 +276,10 @@ struct FolderContents: View {
             if let message = library.message {
                 Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12)
             }
-            if app.preferences.highlightDuplicates, library.selectedFolder != nil {
+            // Duplicates only take a line when there are some here, or while checking.
+            if app.preferences.highlightDuplicates, library.selectedFolder != nil,
+               library.duplicateProgress != nil || library.duplicatesHere > 0 || library.showOnlyDuplicates
+            {
                 DuplicateBar(library: library)
             }
             Divider()
@@ -278,11 +306,13 @@ struct FolderContents: View {
             }
         }
         .onChange(of: app.libraryRevision) { _, _ in library.reload() }
+        .onChange(of: app.analysis.revision) { _, _ in library.reattach() }
     }
 
     private var subtitle: String {
         var parts: [String] = []
-        parts.append("\(library.files.count) file\(library.files.count == 1 ? "" : "s")")
+        let shown = library.shownFiles.count
+        parts.append(shown == library.files.count ? "\(shown) file\(shown == 1 ? "" : "s")" : "\(shown) of \(library.files.count) files")
         if library.subfolderCount > 0 { parts.append("\(library.subfolderCount) folder\(library.subfolderCount == 1 ? "" : "s")") }
         if let root = library.selectedFolder.flatMap({ app.root(containing: $0) }) { parts.append(root.layout.label) }
         return parts.joined(separator: " · ")

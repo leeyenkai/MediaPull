@@ -23,6 +23,9 @@ check_only_in '^import SwiftData' 'MediaPullKit/Sources/MediaPullStore/' 'SwiftD
 check_only_in 'Process\(\)' 'MediaPullKit/Sources/MediaPullEngines/' 'Process'
 check_only_in 'AsyncImage\(|Data\(contentsOf: *URL\(string' 'NONE' 'Remote loading that bypasses the gate'
 check_only_in '^import AppKit' 'MediaPull/' 'AppKit'
+check_only_in '^import (Vision|CoreML)' 'MediaPullKit/Sources/MediaPullAnalysis/' 'Vision and Core ML'
+# Analysis runs offline (D-59): no online geocoding, map search, model downloads or Vision asset downloads.
+check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|downloadAssets|MLModelCollection|import CoreLocation|import MapKit' 'NONE' 'Online analysis'
 if grep -rn "runOpenPanelWith" MediaPull MediaPullKit/Sources --include=*.swift; then
   echo "error: the browser pane must not implement a file open panel"
   FAILED=1

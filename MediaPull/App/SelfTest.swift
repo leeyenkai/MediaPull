@@ -4,6 +4,7 @@ import Foundation
 import MediaPullCore
 import MediaPullLibrary
 import MediaPullMedia
+import MediaPullNet
 import MediaPullStore
 
 /// Automated end-to-end check of the web extraction and save pipeline, started with
@@ -96,6 +97,11 @@ final class SelfTestRunner {
         if let index = Self.value(after: "--selftest-layout").flatMap(Int.init), PaneArrangement.presets.indices.contains(index) {
             app.preferences.paneArrangement = PaneArrangement.presets[index].arrangement
         }
+        if let folder = Self.value(after: "--selftest-analyse") {
+            await exerciseAnalysis(source: URL(fileURLWithPath: folder, isDirectory: true), library: library, out: out)
+            NSApp.terminate(nil)
+            return
+        }
         note("engines: \(app.engineVersions.map { "gallery-dl \($0.galleryDL ?? "?"), yt-dlp \($0.ytDLP ?? "?"), ffmpeg \($0.ffmpeg ?? "?")" } ?? "unknown")")
 
         if model.browser.webView.responds(to: NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")) {
@@ -115,16 +121,10 @@ final class SelfTestRunner {
             await exerciseVideoDownload(page: page, library: library, out: out)
         }
         if let account = Self.value(after: "--selftest-pullsheet") {
-            model.pullDraft = app.engines.draft(username: account)
-            try? await Task.sleep(for: .seconds(3))
-            if let sheet = model.hostWindow?.attachedSheet ?? NSApp.windows.first(where: { $0.isSheet && $0.isVisible }) {
-                print("SELFTEST-CAPTURE \(sheet.windowNumber) \(out.appendingPathComponent("pull-sheet.png").path)")
-                fflush(stdout)
-                try? await Task.sleep(for: .seconds(3))
-            }
-            else { note("pull sheet: no sheet window found") }
-            model.pullDraft = nil
-            note("pull sheet shown for @\(account)")
+            model.showDownloads("@\(account)")
+            try? await Task.sleep(for: .seconds(4))
+            snapshot(to: out.appendingPathComponent("downloads-instagram.png"))
+            note("downloads pane shown for @\(account)")
         }
         if let second = Self.value(after: "--selftest-browser").flatMap(URL.init(string:)) {
             await exerciseBrowser(second: second, out: out)
@@ -180,6 +180,9 @@ final class SelfTestRunner {
             model.gridRevision += 1
             try? await Task.sleep(for: .seconds(3))
         }
+        // The page back at its top for the screenshots.
+        _ = try? await model.browser.webView.evaluateJavaScript("window.scrollTo(0, 0)")
+        try? await Task.sleep(for: .seconds(1))
         snapshot(to: out.appendingPathComponent("window-extracted.png"))
 
         let toSave = Array(model.visible.prefix(limit))
@@ -310,7 +313,7 @@ final class SelfTestRunner {
         snapshot(to: out.appendingPathComponent("window-duplicates.png"))
     }
 
-    /// Looks up a video page's formats, shows the Save Video sheet, then saves it as 360p H.264 and as audio only.
+    /// Looks up a video page's formats, shows them in the Downloads pane, then saves it as 360p H.264 and as audio only.
     private func exerciseVideoDownload(page: URL, library: URL, out: URL) async {
         let app = AppModel.shared
         guard case let .success(info) = await app.engines.videoInfo(for: page) else {
@@ -319,14 +322,9 @@ final class SelfTestRunner {
         }
         let heights = VideoDownloadFormat.allCases.map { "\($0.rawValue) \($0.heights(in: info.formats).map(String.init).joined(separator: "/"))" }
         note("video download: \(info.title) by \(info.uploader ?? "?"), \(info.formats.count) formats; \(heights.joined(separator: "; "))")
-        model.videoRequest = VideoRequest(url: page)
-        try? await Task.sleep(for: .seconds(6))
-        if let sheet = model.hostWindow?.attachedSheet ?? NSApp.windows.first(where: { $0.isSheet && $0.isVisible }) {
-            print("SELFTEST-CAPTURE \(sheet.windowNumber) \(out.appendingPathComponent("video-sheet.png").path)")
-            fflush(stdout)
-            try? await Task.sleep(for: .seconds(3))
-        }
-        model.videoRequest = nil
+        model.showDownloads(page.absoluteString)
+        try? await Task.sleep(for: .seconds(8))
+        snapshot(to: out.appendingPathComponent("downloads-video.png"))
         guard let root = app.root(containing: library) else { return }
         for (format, height) in [(VideoDownloadFormat.h264MP4, Optional(360)), (.audioM4A, nil)] {
             let started = Date()
@@ -472,6 +470,172 @@ final class SelfTestRunner {
         note("editor: \(before.width)x\(before.height) rotated and cropped to \(size?.label ?? "?"), saved \(saved.lastPathComponent) "
             + "as \(analysis.map { "\($0.width)x\($0.height)" } ?? "?"), original kept: \(FileManager.default.fileExists(atPath: file.path)), "
             + "sidecar width \(sidecar?["width"] ?? "none"), edited \(sidecar?["edited"] ?? "no")")
+    }
+
+    /// Sockets the app process has open; analysis must not open any (R-513).
+    static func socketCount() -> Int {
+        let pid = getpid()
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return -1 }
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / MemoryLayout<proc_fdinfo>.stride)
+        let used = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, size)
+        return fds.prefix(Int(used) / MemoryLayout<proc_fdinfo>.stride).filter { $0.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) }.count
+    }
+
+    /// Copies a folder of test media into the library, analyses it (faces included), searches, filters, sorts it in Organise and
+    /// undoes the sort, checking the tree is restored exactly (sections 36 to 39).
+    private func exerciseAnalysis(source: URL, library: URL, out: URL) async {
+        let app = AppModel.shared
+        let savedFaces = app.preferences.facesEnabled
+        let savedBattery = app.preferences.analysisPauseOnBattery
+        defer {
+            app.preferences.facesEnabled = savedFaces
+            app.preferences.analysisPauseOnBattery = savedBattery
+        }
+        app.preferences.facesEnabled = true
+        app.preferences.analysisPauseOnBattery = false
+        let test = library.appendingPathComponent("Test media", isDirectory: true)
+        try? FileManager.default.copyItem(at: source, to: test)
+        let files = FolderOperations.mediaFiles(in: test, recursive: true)
+        note("analysis: \(files.count) files copied; models \(AnalysisService.modelsFolder?.path ?? "missing")")
+        await waitUntil(timeout: 60) { app.analysis.modelsLoaded }
+        let socketsBefore = Self.socketCount()
+        var peakSockets = socketsBefore
+        let started = Date()
+        app.analysis.schedule(after: .milliseconds(100))
+        // Copying the test folder makes folder events that reschedule the scan, so wait for the results, not for idleness.
+        await waitUntil(timeout: 900) {
+            peakSockets = max(peakSockets, Self.socketCount())
+            return !app.analysis.isRunning && app.analysis.analysedCount >= files.count
+        }
+        let seconds = Date().timeIntervalSince(started)
+        note(String(format: "analysis: %d files in %.1f s (%.1f per second); sockets before %d, most during %d",
+                    app.analysis.analysedCount, seconds, Double(files.count) / max(seconds, 0.1), socketsBefore, peakSockets))
+        let listed = await MediaListing.load(test, recursive: true).entries
+        let entries = await app.analysis.attach(listed)
+        let records = entries.compactMap(\.record)
+        note("records: \(records.count) of \(entries.count); with labels \(records.filter { !$0.labels.isEmpty }.count), with text "
+            + "\(records.filter { $0.text != nil }.count), with faces \(records.filter { !$0.faces.isEmpty }.count), "
+            + "with embeddings \(records.filter(\.hasEmbedding).count), places \(records.compactMap(\.place).count)")
+        if let sample = records.first(where: { !$0.labels.isEmpty }) {
+            note("sample: \(sample.labels.prefix(5).map { "\($0.identifier) \(String(format: "%.2f", $0.confidence))" }.joined(separator: ", ")); "
+                + "colour \(sample.colour?.rawValue ?? "none"); faces \(sample.faces.count)")
+        }
+        for query in ["bus", "a person playing tennis", "skiing in the snow", "dog"] {
+            let scores = await app.analysis.meaningScores(query, entries: entries)
+            var q = LibraryQuery()
+            q.search = query
+            let found = q.apply(entries, context: .init(similarity: scores, similarityFloor: AnalysisService.floor(for: scores))).flatMap(\.items)
+            note("search “\(query)”: \(found.count) results, first \(found.prefix(3).map(\.name).joined(separator: ", "))")
+        }
+        let similar = await app.analysis.similarGroups(entries)
+        note("similar sets: \(Set(similar.values).count) sets covering \(similar.count) files")
+        note("people: \(app.analysis.people.filter { $0.faceCount > 0 }.map { "\($0.displayName) (\($0.faceCount))" }.prefix(8).joined(separator: ", ")); "
+            + "suggested names: \(app.analysis.suggestions.values.sorted().joined(separator: ", "))")
+
+        // A second scan finds nothing new to analyse.
+        let jobsBefore = app.jobs.jobs.filter { $0.kind == .analyse }.count
+        app.analysis.schedule(after: .milliseconds(100))
+        try? await Task.sleep(for: .seconds(3))
+        await waitUntil(timeout: 120) { !app.analysis.isRunning }
+        note("second scan: \(app.jobs.jobs.filter { $0.kind == .analyse }.count - jobsBefore) new analyse jobs")
+
+        // Library with a filter, then Organise: sort by subject, preview, run, undo.
+        model.library.selectedFolder = test
+        model.library.includeSubfolders = true
+        var query = LibraryQuery()
+        query.filter.faces = .withFaces
+        model.library.query = query
+        try? await Task.sleep(for: .seconds(3))
+        note("library filter “with faces”: \(model.library.shownFiles.count) of \(model.library.files.count)")
+        snapshot(to: out.appendingPathComponent("library-filtered.png"))
+        model.library.query = LibraryQuery()
+        model.library.includeSubfolders = false
+
+        func checksums() -> [String: String] {
+            var out: [String: String] = [:]
+            let walker = FileManager.default.enumerator(at: test, includingPropertiesForKeys: [.isRegularFileKey])
+            while let url = walker?.nextObject() as? URL {
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                out[String(url.path.dropFirst(test.path.count))] = (try? FileHasher.sha256(of: url)) ?? "?"
+            }
+            return out
+        }
+        let before = checksums()
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        model.organise.open(test)
+        model.organise.source.includeSubfolders = true
+        try? await Task.sleep(for: .seconds(3))
+        snapshot(to: out.appendingPathComponent("organise.png"))
+
+        // Copy to a separate target: the source must stay exactly as it was.
+        let sortedCopy = library.appendingPathComponent("Sorted copy", isDirectory: true)
+        try? FileManager.default.createDirectory(at: sortedCopy, withIntermediateDirectories: true)
+        model.organise.open(sortedCopy, in: model.organise.target)
+        model.organise.moveToTarget = false
+        model.organise.autoSort(.date)
+        await waitUntil(timeout: 60) { self.model.organise.pending != nil }
+        if let pending = model.organise.pending {
+            try? await Task.sleep(for: .seconds(1))
+            snapshot(to: out.appendingPathComponent("organise-copy-preview.png"))
+            model.organise.execute(pending.plan)
+            await waitUntil(timeout: 120) { self.model.organise.working == nil }
+            let copies = FolderOperations.mediaFiles(in: sortedCopy, recursive: true).count
+            note("copy to target: \(copies) copies in \(Set(FolderOperations.mediaFiles(in: sortedCopy, recursive: true).map { $0.deletingLastPathComponent() }).count) folders; "
+                + "source unchanged: \(checksums() == before)")
+            snapshot(to: out.appendingPathComponent("organise-copied.png"))
+            if let entry = model.organise.history.first {
+                model.organise.undo(entry)
+                await waitUntil(timeout: 120) { self.model.organise.working == nil }
+            }
+            note("copy undone: \(FolderOperations.mediaFiles(in: sortedCopy, recursive: true).count) copies left")
+        } else {
+            note("copy preview: no plan (\(model.organise.message ?? "no message"))")
+        }
+
+        // In place: sort by subject, then undo.
+        model.organise.open(test, in: model.organise.target)
+        model.organise.autoSort(.subject)
+        await waitUntil(timeout: 60) { self.model.organise.pending != nil }
+        if let pending = model.organise.pending {
+            note("preview: \(pending.plan.title), \(pending.plan.moves.count) moves into \(pending.plan.destinations.count) folders, "
+                + "\(pending.plan.unsorted) unsorted: " + pending.plan.destinations.prefix(6).map { "\($0.folder.lastPathComponent) \($0.files.count)" }
+                .joined(separator: ", "))
+            try? await Task.sleep(for: .seconds(1))
+            snapshot(to: out.appendingPathComponent("organise-preview.png"))
+            model.organise.execute(pending.plan)
+            await waitUntil(timeout: 120) { self.model.organise.working == nil }
+            try? await Task.sleep(for: .seconds(1))
+            let sorted = checksums()
+            note("after sort: \(sorted.count) files, \(Set(sorted.keys.map { ($0 as NSString).deletingLastPathComponent }).count) folders")
+            snapshot(to: out.appendingPathComponent("organise-sorted.png"))
+            if let entry = model.organise.history.first {
+                model.organise.undo(entry)
+                await waitUntil(timeout: 120) { self.model.organise.working == nil }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            let after = checksums()
+            note("undo: tree restored exactly: \(after == before) (\(after.count) files)")
+        } else {
+            note("preview: no plan (\(model.organise.message ?? "no message"))")
+        }
+        model.organise.tab = .people
+        try? await Task.sleep(for: .seconds(3))
+        snapshot(to: out.appendingPathComponent("people.png"))
+        model.organise.tab = .sort
+        model.section = .collect
+        try? await Task.sleep(for: .seconds(2))
+        model.showDownloads("https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+        try? await Task.sleep(for: .seconds(8))
+        snapshot(to: out.appendingPathComponent("downloads.png"))
+        await app.analysis.deleteAllFaceData(turnOff: false)
+        note("face data deleted: \(app.analysis.people.isEmpty)")
+        writeLog(to: out)
+    }
+
+    private func writeLog(to out: URL) {
+        try? log.joined(separator: "\n").write(to: out.appendingPathComponent("selftest.log"), atomically: true, encoding: .utf8)
     }
 
     private func waitUntil(timeout: TimeInterval, _ condition: @escaping () -> Bool) async {

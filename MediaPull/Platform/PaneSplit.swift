@@ -72,6 +72,10 @@ final class PaneSplitController: NSViewController {
         case .extracted: 280
         case .preview: 240
         case .library: 200
+        case .downloads: 240
+        case .organiseSource: 300
+        case .organiseWork: 300
+        case .organiseTarget: 260
         }
     }
 
@@ -81,6 +85,10 @@ final class PaneSplitController: NSViewController {
         case .extracted: 36
         case .preview: 26
         case .library: 22
+        case .downloads: 42
+        case .organiseSource: 40
+        case .organiseWork: 28
+        case .organiseTarget: 32
         }
     }
 
@@ -90,6 +98,10 @@ final class PaneSplitController: NSViewController {
         case .extracted: 58
         case .preview: 42
         case .library: 50
+        case .downloads: 40
+        case .organiseSource: 50
+        case .organiseWork: 50
+        case .organiseTarget: 50
         }
     }
 
@@ -100,6 +112,10 @@ final class PaneSplitController: NSViewController {
         case .extracted: 254
         case .preview: 257
         case .library: 260
+        case .downloads: 252
+        case .organiseSource: 250
+        case .organiseWork: 258
+        case .organiseTarget: 254
         }
     }
 

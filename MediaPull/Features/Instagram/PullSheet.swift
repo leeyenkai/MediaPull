@@ -5,68 +5,43 @@ import MediaPullNet
 import MediaPullStore
 import SwiftUI
 
-/// "Pull Account…" (SPEC R-1105).
-struct PullSheet: View {
+/// Instagram options in the Downloads pane (SPEC R-1105): what to pull from an account or hashtag, dates and folder.
+struct InstagramForm: View {
     @Bindable var model: WindowModel
-    @State var draft: PullDraft
-    @State private var usernameText = ""
-    @State private var lookupTask: Task<Void, Never>?
-    @Environment(\.dismiss) private var dismiss
+    @Binding var draft: PullDraft
     private var app: AppModel { .shared }
 
-    init(model: WindowModel, draft: PullDraft) {
-        self.model = model
-        _draft = State(initialValue: draft)
-        _usernameText = State(initialValue: draft.hashtag.map { "#\($0)" } ?? draft.username)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Pull from Instagram").font(.title2.weight(.semibold))
-            HStack {
-                TextField("Username, @handle, profile link or #hashtag", text: $usernameText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { lookUp() }
-                Button(hashtagInput == nil ? "Look Up" : "Use Hashtag") { lookUp() }
-                    .disabled(cleanUsername.isEmpty && hashtagInput == nil)
-            }
+        VStack(alignment: .leading, spacing: 10) {
             if let tag = draft.hashtag {
                 Label("Posts tagged #\(tag), newest first, saved in \(SaveTarget.tagsFolder)/\(tag)", systemImage: "number")
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                    .font(.callout)
             } else {
-                AccountCard(username: draft.username)
-            }
-
-            if !app.engines.signedIn {
-                Banner(symbol: "key.fill", tint: .orange,
-                       text: "Pulling needs a signed-in Instagram session. Signed out, Instagram shows only about 12 recent posts at reduced size, which you can still collect from the browser.") {
-                    Button("Sign In") {
-                        model.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!)
-                        dismiss()
-                    }
+                HStack(alignment: .center) {
+                    AccountCard(username: draft.username, showErrors: app.engines.signedIn)
+                    Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canStart || draft.rootID == nil)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-
-            Form {
-                if draft.hashtag == nil {
-                    ForEach(InstagramContent.Group.allCases, id: \.self) { group in
-                        Section {
-                            ForEach(InstagramContent.allCases.filter { $0.group == group }, id: \.self) { content in
-                                Toggle(isOn: Binding(
-                                    get: { draft.content.contains(content) },
-                                    set: { on in if on { draft.content.insert(content) } else { draft.content.remove(content) } }
-                                )) {
-                                    Text(content.label)
-                                    if let detail = content.detail { Text(detail) }
-                                }
-                                .disabled(group == .yours && !app.engines.signedIn || group != .yours && draft.username.isEmpty)
-                            }
-                        } header: {
-                            Text(group.title)
-                        } footer: {
+            if !app.engines.signedIn {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill").foregroundStyle(.orange)
+                    Text("Instagram needs you signed in to list an account's posts.").font(.callout)
+                    Spacer(minLength: 4)
+                    Button("Sign In") { model.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!) }
+                        .controlSize(.small)
+                }
+                .padding(8)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if draft.hashtag == nil {
+                ForEach(InstagramContent.Group.allCases, id: \.self) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(group.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Spacer()
                             if group == .media {
                                 Button("Use Defaults") {
                                     draft.content = draft.content.filter { $0.group != .media }.union(InstagramContent.defaults)
@@ -75,149 +50,133 @@ struct PullSheet: View {
                                 .font(.caption)
                             }
                         }
-                    }
-                }
-                Section {
-                    Picker("Posted", selection: $draft.dateWindow) {
-                        ForEach(InstagramDateWindow.allCases, id: \.self) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    if draft.dateWindow == .custom {
-                        HStack {
-                            DatePicker("From", selection: $draft.dateFrom, in: ...Date(), displayedComponents: .date)
-                            DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
+                        FlowToggles(items: InstagramContent.allCases.filter { $0.group == group }, isOn: { draft.content.contains($0) },
+                                    label: \.label, help: { $0.detail }) { content, on in
+                            if on { draft.content.insert(content) } else { draft.content.remove(content) }
                         }
-                    }
-                    Toggle("Only new posts since the last pull", isOn: $draft.incremental)
-                        .disabled(draft.hashtag == nil && draft.username.isEmpty)
-                } header: {
-                    Text("Dates")
-                } footer: {
-                    Text("Profile pictures are always included. Stories are at most a day old; highlights keep their original dates.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Section("Save to") {
-                    Picker("Library folder", selection: $draft.rootID) {
-                        ForEach(app.roots) { root in
-                            Text(root.name).tag(Optional(root.id))
-                        }
-                    }
-                    TextField("Account folder", text: $draft.folderName)
-                    Picker("SaveLayout", selection: $draft.layout) {
-                        ForEach(SaveLayout.allCases, id: \.self) { Text($0.label).tag($0) }
-                    }
-                    Picker("Pace", selection: $draft.pacing) {
-                        ForEach(PacingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
+                        .disabled(group == .yours && !app.engines.signedIn || group != .yours && draft.username.isEmpty)
                     }
                 }
             }
-            .formStyle(.grouped)
-            .frame(minHeight: 380)
-
-            Text(estimate)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
+            LabeledContent("Posted") {
+                Picker("Posted", selection: $draft.dateWindow) {
+                    ForEach(InstagramDateWindow.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            if draft.dateWindow == .custom {
+                HStack {
+                    DatePicker("From", selection: $draft.dateFrom, in: ...Date(), displayedComponents: .date)
+                    DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
+                }
+            }
+            Toggle("Only new posts since the last pull", isOn: $draft.incremental)
+                .disabled(draft.hashtag == nil && draft.username.isEmpty)
+            Toggle("Sort into folders by type (posts, reels, stories…)", isOn: Binding(
+                get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 }
+            ))
+            DestinationPicker(rootID: $draft.rootID)
             HStack {
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Picker("Pace", selection: $draft.pacing) {
+                    ForEach(PacingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .fixedSize()
                 Spacer()
-                Button("Scan Only") {
+                Button("List in Extracted Media") {
                     var scan = draft
                     scan.incremental = false
                     app.engines.startPull(scan, scanOnly: true, window: model)
-                    dismiss()
                 }
                 .disabled(!canStart)
-                Button("Pull") {
-                    app.engines.startPull(draft, scanOnly: false, window: model)
-                    dismiss()
+                .help("List the media without saving it, then pick what to save")
+                if draft.hashtag != nil || draft.username.isEmpty {
+                    Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canStart || draft.rootID == nil)
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(!canStart || draft.rootID == nil)
             }
         }
-        .padding(20)
-        .frame(width: 560)
-        .task {
-            if !draft.username.isEmpty {
-                var copy = draft
-                await app.engines.applyStoredOptions(to: &copy)
-                draft = copy
-                await app.engines.lookup(draft.username)
-            }
+        .task(id: draft.username) {
+            guard !draft.username.isEmpty else { return }
+            var copy = draft
+            await app.engines.applyStoredOptions(to: &copy)
+            if copy.username == draft.username { draft = copy }
+            await app.engines.lookup(draft.username)
         }
-        .onDisappear { lookupTask?.cancel() }
     }
 
-    /// An account with something chosen, a hashtag, or only the person's own items.
     private var canStart: Bool {
         if draft.hashtag != nil { return true }
         let chosen = draft.content.filter { $0.group == .yours ? app.engines.signedIn : !draft.username.isEmpty }
         return !chosen.isEmpty
     }
+}
 
-    private var hashtagInput: String? {
-        let text = usernameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let range = text.range(of: #"instagram\.com/explore/tags/([^/?#]+)"#, options: .regularExpression) {
-            return String(text[range].split(separator: "/").last ?? "").nonEmpty
-        }
-        guard text.hasPrefix("#") else { return nil }
-        let tag = text.dropFirst().filter { $0.isLetter || $0.isNumber || $0 == "_" }
-        return tag.isEmpty ? nil : String(tag).lowercased()
-    }
+/// Toggles that wrap onto as many lines as the pane needs.
+struct FlowToggles<Item: Hashable>: View {
+    let items: [Item]
+    let isOn: (Item) -> Bool
+    let label: KeyPath<Item, String>
+    var help: (Item) -> String? = { _ in nil }
+    let set: (Item, Bool) -> Void
 
-    private var cleanUsername: String {
-        let text = usernameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let name = AddressInput.parse(text.hasPrefix("@") || text.contains(".com") ? text : "@" + text).instagramUsername { return name }
-        return ""
-    }
-
-    private func lookUp() {
-        if let tag = hashtagInput {
-            draft.hashtag = tag
-            draft.username = ""
-            draft.folderName = tag
-            draft.incremental = false
-            return
-        }
-        draft.hashtag = nil
-        let name = cleanUsername
-        guard !name.isEmpty else { return }
-        draft.username = name
-        if draft.folderName.isEmpty || draft.folderName != name { draft.folderName = name }
-        lookupTask?.cancel()
-        lookupTask = Task {
-            var copy = draft
-            await app.engines.applyStoredOptions(to: &copy)
-            draft = copy
-            await app.engines.lookup(name)
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { chips }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) { chips }
         }
     }
 
-    private var estimate: String {
-        if draft.hashtag != nil {
-            return "Popular hashtags have far more posts than one account; use the date range to keep a pull short."
+    @ViewBuilder
+    private var chips: some View {
+        ForEach(items, id: \.self) { item in
+            // The same chips as the Extracted filters: filled when on.
+            ChipToggle(title: item[keyPath: label], isOn: Binding(get: { isOn(item) }, set: { set(item, $0) }))
+                .help(help(item) ?? "")
         }
-        guard let account = app.engines.accounts[draft.username], let posts = account.postCount, posts > 0 else {
-            return "MediaPull waits between requests so the account is not flagged. Large accounts take a while."
+    }
+}
+
+/// The library folder a download goes into; any folder on the Mac can be added as one.
+struct DestinationPicker: View {
+    @Binding var rootID: UUID?
+    private var app: AppModel { .shared }
+
+    var body: some View {
+        Picker("Save into", selection: Binding(get: { rootID }, set: { value in
+            if value == Self.addFolderTag { addFolder() } else { rootID = value }
+        })) {
+            ForEach(app.roots) { root in Label(root.name, systemImage: "folder").tag(Optional(root.id)) }
+            Divider()
+            Text("Other Folder…").tag(Optional(Self.addFolderTag))
         }
-        let requests = Int((Double(posts) / 12).rounded(.up)) + 2
-        let average = (draft.pacing.delay[0] + draft.pacing.delay[1]) / 2
-        let minutes = max(1, Int((Double(requests) * average / 60).rounded(.up)))
-        return "About \(posts) posts, roughly \(requests) requests. A full pull takes about \(minutes) minute\(minutes == 1 ? "" : "s"); later pulls only fetch new posts."
+        .onAppear { if rootID == nil { rootID = app.defaultRoot?.id } }
+    }
+
+    static let addFolderTag = UUID(uuidString: "00000000-0000-0000-0000-00000000A0D0")!
+
+    private func addFolder() {
+        FolderPicker.chooseFolder(title: "Save Downloads Into", prompt: "Choose", start: AppModel.suggestedRootURL, window: nil) { url in
+            guard let url else { return }
+            Task {
+                await app.addRoot(url)
+                rootID = app.root(containing: url)?.id
+            }
+        }
     }
 }
 
 struct AccountCard: View {
     var username: String
+    /// Hidden while signed out: the sign-in notice below says why the lookup failed.
+    var showErrors = true
     @State private var avatar: CGImage?
     private var app: AppModel { .shared }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ZStack {
                 Circle().fill(.quaternary)
                 if let avatar {
@@ -226,17 +185,18 @@ struct AccountCard: View {
                     Image(systemName: "person.fill").foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
                 if let account = app.engines.accounts[username] {
                     Text(account.fullName?.nonEmpty ?? "@\(account.username)").font(.headline)
                     Text(line(account)).font(.caption).foregroundStyle(.secondary)
                 } else if let error = app.engines.lookupErrors[username] {
                     Text(username.isEmpty ? "No account" : "@\(username)").font(.headline)
-                    Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    if showErrors {
+                        Text(error).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
                 } else if username.isEmpty {
-                    Text("Enter an account").font(.headline)
-                    Text("For example nasa or @natgeo").font(.caption).foregroundStyle(.secondary)
+                    Text("Your saved posts and followed stories").font(.headline)
                 } else {
                     Text("@\(username)").font(.headline)
                     HStack(spacing: 4) {
@@ -247,8 +207,6 @@ struct AccountCard: View {
             }
             Spacer()
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
         .task(id: app.engines.accounts[username]?.avatarURL) {
             guard let url = app.engines.accounts[username]?.avatarURL else { return }
             avatar = await app.thumbnails.thumbnail(for: url, maxPixel: 120, context: .init())?.image

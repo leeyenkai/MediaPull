@@ -4,6 +4,7 @@ import MediaPullBrowser
 import MediaPullCore
 import MediaPullEngines
 import MediaPullLibrary
+import MediaPullMedia
 import MediaPullNet
 import MediaPullStore
 import Observation
@@ -514,36 +515,39 @@ final class EngineService {
         return .failure(VideoLookupError(message: message))
     }
 
-    /// Downloads a video in the chosen format and resolution into `<root>/<site>/<uploader>/`.
+    /// Downloads a video (or a playlist or channel, with `extras.playlist`) in the chosen format and resolution
+    /// into `<root>/<site>/<uploader>/`, with any subtitles, thumbnail and description beside each video (R-3503, R-3505).
     @discardableResult
-    func saveVideo(_ info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: LibraryRootInfo, window: WindowModel?) -> Job {
-        let job = Job(kind: .stream, title: info.title)
+    func saveVideo(_ info: VideoInfo, pageURL: URL? = nil, format: VideoDownloadFormat, height: Int?, extras: BridgeRequest.Extras = .init(),
+                   root: LibraryRootInfo, window: WindowModel?) -> Job
+    {
+        let job = Job(kind: .stream, title: extras.playlist ? "Playlist: \(info.title)" : info.title)
         job.subtitle = format.label + (format.isAudioOnly ? "" : ", " + (height.map { "\($0)p" } ?? "best resolution"))
         let site = info.webpageURL.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? info.extractor
         let channel = info.uploader?.nonEmpty ?? "Videos"
         job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(site), isDirectory: true)
             .appendingPathComponent(FileNaming.sanitize(channel, maxBytes: 80), isDirectory: true)
         app.jobs.add(job)
-        job.task = Task { [weak self, weak job] in
+        let url = pageURL ?? info.webpageURL
+        let run = { [weak self, weak job] in
             guard let self, let job else { return }
-            await self.runVideo(job: job, info: info, format: format, height: height, root: root, site: site, channel: channel, window: window)
-        }
-        job.retry = { [weak self, weak job, weak window] in
-            guard let self, let job else { return }
-            job.failed = 0
-            job.failures = []
-            job.finishedAt = nil
             job.task = Task { [weak self, weak job] in
                 guard let self, let job else { return }
-                await self.runVideo(job: job, info: info, format: format, height: height, root: root, site: site, channel: channel,
-                                    window: window)
+                await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site)
             }
+        }
+        run()
+        job.retry = { [weak job] in
+            job?.failed = 0
+            job?.failures = []
+            job?.finishedAt = nil
+            run()
         }
         return job
     }
 
-    private func runVideo(job: Job, info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: LibraryRootInfo, site: String,
-                          channel: String, window: WindowModel?) async
+    private func runVideo(job: Job, url: URL, info: VideoInfo, format: VideoDownloadFormat, height: Int?, extras: BridgeRequest.Extras,
+                          root: LibraryRootInfo, site: String) async
     {
         guard let bridge, let stagingRoot = app.enginePaths?.staging else {
             app.jobs.finish(job, .failed("The download engine is not available."))
@@ -554,26 +558,45 @@ final class EngineService {
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
         var request = BridgeRequest(op: "stream")
-        request.url = info.webpageURL.absoluteString
+        request.url = url.absoluteString
         request.staging = staging.path
         request.userAgent = app.userAgent
-        request.key = "video:\(info.extractor):\(info.id ?? info.webpageURL.absoluteString)"
+        request.key = "video:\(info.extractor)"
         let selector = format.selector(height: height)
         request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort, merge: selector.merge)
+        request.extras = extras
+        // Members-only and age-checked videos use the browser's sign-in for that site.
+        let cookieFile = CookieFile.privateLocation(job: UUID().uuidString)
+        if let host = url.host {
+            let cookies = await app.cookies(forDomain: PublicSuffix.shared.registrableDomain(host))
+            if !cookies.isEmpty, (try? CookieFile.write(cookies, to: cookieFile)) != nil { request.cookies = cookieFile.path }
+        }
+        defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
 
-        var file: BridgeFile?
+        var saved: [String: URL] = [:]
+        var waiting: [String: [(URL, String)]] = [:]
         var failure: String?
+        var index = 0
         do {
             for try await event in bridge.run(request, workingDirectory: staging) {
                 if Task.isCancelled { break }
                 switch event {
                 case let .progress(received, total, _):
                     if let received, let total, total > 0 {
-                        job.fraction = Double(received) / Double(total)
+                        job.fraction = extras.playlist ? nil : Double(received) / Double(total)
                         job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))"
                     }
                 case let .file(found) where found.isInside(staging):
-                    file = found
+                    index += 1
+                    job.found += 1
+                    if let url = await saveVideoFile(found, index: index, info: info, format: format, height: height, root: root, site: site,
+                                                     job: job)
+                    {
+                        saved[found.key] = url
+                        for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] { placeAttachment(path, kind: kind, beside: url) }
+                    }
+                case let .attachment(key, path, kind) where path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/"):
+                    if let beside = saved[key] { placeAttachment(path, kind: kind, beside: beside) } else { waiting[key, default: []].append((path, kind)) }
                 case let .error(_, message, _, fatal):
                     if fatal || failure == nil { failure = message }
                 case let .policyViolation(method, host, _, reason):
@@ -585,55 +608,86 @@ final class EngineService {
         } catch {
             failure = error.localizedDescription
         }
+        app.libraryRevision += 1
         if Task.isCancelled || job.state == .cancelled {
             app.jobs.finish(job, .cancelled)
             return
         }
-        guard let file else {
+        if job.saved + job.duplicates == 0 {
             app.jobs.finish(job, .failed(failure ?? "The video could not be downloaded."))
-            return
+        } else {
+            if let failure, job.failed > 0 || extras.playlist { job.notes.append(failure) }
+            app.jobs.finish(job, .completed)
         }
+    }
+
+    /// Saves one downloaded video through the save pipeline, named after its title, in `<site>/<uploader>/`.
+    private func saveVideoFile(_ file: BridgeFile, index: Int, info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: LibraryRootInfo,
+                               site: String, job: Job) async -> URL?
+    {
+        let meta = file.meta
+        let title = meta["title"]?.string ?? info.title
+        let uploader = meta["uploader"]?.string ?? info.uploader
+        let page = meta["webpage_url"]?.string.flatMap(URL.init(string:)) ?? info.webpageURL
         job.fraction = nil
-        job.currentItem = format.needsConversion(in: info.formats, height: height) ? "Converting to HEVC" : "Saving"
-        var context = EngineContext(key: request.key ?? "video", category: info.extractor.nonEmpty ?? site,
-                                    subcategory: format.isAudioOnly ? "audio" : "video")
-        context.username = info.uploader
-        context.postID = info.id
-        context.shortcode = info.id
-        context.date = info.uploadDate
-        context.title = info.title
-        context.description = info.title
-        context.postURL = info.webpageURL
-        context.sourceURL = info.webpageURL
-        let input = EngineItemInput(context: context, kind: format.isAudioOnly ? .audio : .video, engineURL: info.webpageURL.absoluteString,
-                                    thumbURL: info.thumbnail, width: file.meta["width"]?.int, height: file.meta["height"]?.int,
-                                    isDash: false, fallbackURL: nil)
-        let item = input.makeItem(discoveryIndex: 0)
-        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true,
-                                collectionPath: [site, FileNaming.sanitize(channel, maxBytes: 80)])
+        job.currentItem = format.needsConversion(in: info.formats, height: height) ? "Converting \(title) to HEVC" : "Saving \(title)"
+        var context = EngineContext(key: file.key, category: info.extractor.nonEmpty ?? site, subcategory: format.isAudioOnly ? "audio" : "video")
+        context.username = uploader
+        context.postID = meta["id"]?.string ?? info.id
+        context.shortcode = context.postID
+        context.date = VideoInfo.date(uploadDate: meta["upload_date"]?.string, timestamp: meta["timestamp"]?.double) ?? info.uploadDate
+        context.title = title
+        context.description = title
+        context.postURL = page
+        context.sourceURL = page
+        let input = EngineItemInput(context: context, kind: format.isAudioOnly ? .audio : .video, engineURL: page.absoluteString,
+                                    thumbURL: info.thumbnail, width: meta["width"]?.int, height: meta["height"]?.int, isDash: false, fallbackURL: nil)
+        let item = input.makeItem(discoveryIndex: index)
+        let channel = FileNaming.sanitize(uploader?.nonEmpty ?? "Videos", maxBytes: 80)
+        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [site, channel])
         var settings = app.saveSettings
         settings.conversion.keepDownloadedMedia = format.keepsDownloadedFile
-        let (outcome, note) = await app.pipeline().saveStaged(file.path, item: item, target: target, settings: settings, index: 1,
-                                                              nameOverride: info.title)
-        if let note { job.notes.append(note) }
+        let (outcome, note) = await app.pipeline().saveStaged(file.path, item: item, target: target, settings: settings, index: index,
+                                                              nameOverride: title)
+        if let note, job.notes.count < 30 { job.notes.append(note) }
         switch outcome {
         case let .saved(url):
-            job.saved = 1
+            job.saved += 1
             job.destination = url
+            return url
         case let .duplicate(url):
-            job.duplicates = 1
-            job.destination = url
+            job.duplicates += 1
+            return url
         case let .skipped(reason):
-            job.skipped = 1
-            app.jobs.finish(job, .failed(reason))
-            return
+            job.skipped += 1
+            job.failures.append((file.key, reason))
         case let .failed(reason):
-            job.failed = 1
-            app.jobs.finish(job, .failed(reason))
-            return
+            job.failed += 1
+            job.failures.append((file.key, reason))
         }
-        app.libraryRevision += 1
-        app.jobs.finish(job, .completed)
+        return nil
+    }
+
+    /// Puts a subtitle, thumbnail or description file beside the saved video, named after it.
+    private func placeAttachment(_ path: URL, kind: String, beside video: URL) {
+        let stem = video.deletingPathExtension()
+        let ext = path.pathExtension.lowercased()
+        let name: String = if kind.hasPrefix("subtitles.") {
+            "\(stem.lastPathComponent).\(kind.dropFirst("subtitles.".count)).\(ext)"
+        } else if kind == "description" {
+            "\(stem.lastPathComponent).description.txt"
+        } else {
+            "\(stem.lastPathComponent).\(ext)"
+        }
+        var destination = video.deletingLastPathComponent().appendingPathComponent(name)
+        // A WebP thumbnail is saved as JPEG, in keeping with the normal formats (R-1502).
+        if kind == "thumbnail", !["jpg", "jpeg", "png"].contains(ext), let analysis = ImageConversion.analyze(path) {
+            destination = destination.deletingPathExtension().appendingPathExtension("jpg")
+            if (try? ImageConversion.convertStill(path, to: ImageConversion.stillTarget(for: analysis), output: LibraryModel.uniqueURL(destination))) != nil {
+                return
+            }
+        }
+        try? FileManager.default.moveItem(at: path, to: LibraryModel.uniqueURL(destination))
     }
 
     // MARK: Site extractor
@@ -707,6 +761,121 @@ final class EngineService {
             } else {
                 self.app.jobs.finish(job, .completed)
             }
+        }
+        return job
+    }
+
+    // MARK: Any gallery-dl site (SPEC section 12)
+
+    /// Downloads everything gallery-dl finds at `url` into `<root>/<site>/<user or gallery>/`, through the save pipeline.
+    /// `range` limits which items ("1-50"); `onlyNew` skips what an earlier download of the same address saved.
+    @discardableResult
+    func startGalleryDownload(url: URL, category: String, range: String?, from: Date?, to: Date?, onlyNew: Bool, root: LibraryRootInfo,
+                              window: WindowModel?) -> Job?
+    {
+        guard let bridge else { return nil }
+        let job = Job(kind: .pull, title: "Downloading \(url.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? category)")
+        job.subtitle = [category, range.map { "items \($0)" }].compactMap { $0 }.joined(separator: ", ")
+        job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(category), isDirectory: true)
+        app.jobs.add(job)
+        let account = "gallery:\(category):\(url.absoluteString.lowercased())"
+        job.task = Task { [weak self, weak window] in
+            guard let self else { return }
+            job.state = .running
+            let work = UUID().uuidString
+            guard let staging = self.app.enginePaths?.staging.appendingPathComponent(work, isDirectory: true) else { return }
+            try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            let cookieFile = CookieFile.privateLocation(job: work)
+            defer {
+                try? FileManager.default.removeItem(at: staging)
+                try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent())
+            }
+            let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
+            try? CookieFile.write(await self.app.cookies(forDomain: domain), to: cookieFile)
+            var request = BridgeRequest(op: "pull")
+            request.url = url.absoluteString
+            request.cookies = cookieFile.path
+            request.staging = staging.path
+            request.range = range?.nonEmpty
+            request.setPacing([1, 3])
+            let selector = self.app.preferences.video.selector(av1Decodable: FFmpeg.canDecodeAV1)
+            request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort)
+            if let from { request.dateFrom = ISO8601DateFormatter().string(from: from) }
+            if let to { request.dateTo = ISO8601DateFormatter().string(from: to) }
+            if onlyNew {
+                let known = await self.app.store?.knownKeys(account: account) ?? []
+                let knownFile = staging.appendingPathComponent("known.json")
+                if let data = try? JSONEncoder().encode(Array(known)) { try? data.write(to: knownFile) }
+                request.knownIDs = knownFile.path
+            }
+            let settings = self.app.saveSettings
+            let pipeline = self.app.pipeline()
+            var index = 0
+            var fatal: String?
+            do {
+                for try await event in bridge.run(request, workingDirectory: staging) {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .item:
+                        job.found += 1
+                    case let .file(file) where file.isInside(staging):
+                        index += 1
+                        let context = EngineContext.from(meta: file.meta, key: file.key, subcategory: file.subcategory, sourceURL: url)
+                        let isVideo = ["mp4", "mov", "m4v", "webm", "mkv"].contains(file.path.pathExtension.lowercased())
+                        let input = EngineItemInput(context: context, kind: isVideo ? .video : .image,
+                                                    engineURL: context.postURL?.absoluteString ?? file.path.absoluteString, thumbURL: nil,
+                                                    width: file.meta["width"]?.int, height: file.meta["height"]?.int, isDash: false, fallbackURL: nil)
+                        let subject = context.username?.nonEmpty ?? context.title?.nonEmpty ?? url.lastPathComponent.nonEmpty ?? "Gallery"
+                        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true,
+                                                collectionPath: [context.category.nonEmpty ?? category, FileNaming.sanitize(subject, maxBytes: 80)])
+                        job.currentItem = file.path.lastPathComponent
+                        let (outcome, note) = await pipeline.saveStaged(file.path, item: input.makeItem(discoveryIndex: index), target: target,
+                                                                        settings: settings, index: index)
+                        try? FileManager.default.removeItem(at: file.path)
+                        switch outcome {
+                        case let .saved(saved):
+                            job.saved += 1
+                            await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
+                        case let .duplicate(saved):
+                            job.duplicates += 1
+                            await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
+                        case let .skipped(reason):
+                            job.skipped += 1
+                            job.failures.append((file.key, reason))
+                        case let .failed(reason):
+                            job.failed += 1
+                            job.failures.append((file.key, reason))
+                        }
+                        if let note, job.notes.count < 30 { job.notes.append(note) }
+                    case .skip:
+                        job.skipped += 1
+                    case let .wait(seconds, reason):
+                        job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
+                    case let .progress(received, total, _):
+                        if let received, let total, total > 0 { job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))" }
+                    case let .error(code, message, _, isFatal):
+                        if isFatal { fatal = self.describe(code: code, message: message) } else if job.notes.count < 30 { job.notes.append(message) }
+                    case let .policyViolation(method, host, _, reason):
+                        fatal = "MediaPull blocked a \(method) request to \(host): \(reason)"
+                    case let .done(status, errors):
+                        if status == "failed", fatal == nil { fatal = errors.last ?? "The download stopped." }
+                    default:
+                        if job.state != .running { job.state = .running }
+                    }
+                }
+            } catch {
+                fatal = error.localizedDescription
+            }
+            self.app.libraryRevision += 1
+            if Task.isCancelled {
+                self.app.jobs.finish(job, .cancelled)
+            } else if let fatal, job.saved + job.duplicates == 0 {
+                self.app.jobs.finish(job, .failed(fatal))
+            } else {
+                if let fatal { job.notes.append(fatal) }
+                self.app.jobs.finish(job, .completed)
+            }
+            _ = window
         }
         return job
     }

@@ -39,6 +39,12 @@ final class WindowModel: Identifiable, MediaGridOwner {
         tabs.first { $0.id == selectedTabID } ?? tabs[0]
     }
     let library: LibraryModel
+    /// The Organise section of this window (SPEC section 38).
+    let organise: OrganiseModel
+    /// Which section the window shows: Collect (browser, extracted media, preview, library) or Organise (D-62).
+    var section: WindowSection = .collect {
+        didSet { if section == .organise { organise.updateAnalysisFolders() } }
+    }
     @ObservationIgnored let ingestor = ExtractionIngestor()
     @ObservationIgnored weak var hostWindow: NSWindow?
     var items: [MediaItem] = []
@@ -62,6 +68,11 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var showExtracted = true
     var showLibrary = true
     var showPreview = true
+    /// Downloads appears when asked for (toolbar, ⌥⌘4, a video or account page's button) and stays until closed.
+    var showDownloads = false
+    var showOrganiseSource = true
+    var showOrganiseWork = true
+    var showOrganiseTarget = true
     /// What the Preview pane shows: the last item or file selected on its own.
     var previewSubject: PreviewSubject?
     var showFilters = false
@@ -75,13 +86,29 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var browsingPanelTab: BrowsingPanelTab = .bookmarks
     /// Bumped by ⌘D so the address field's star opens its editor.
     var bookmarkRequest = 0
-    var pullDraft: PullDraft?
+    /// The Downloads pane (SPEC section 11.11).
+    let downloads = DownloadsModel()
+    /// Bumped to focus the Downloads pane's address field.
+    var downloadsFocus = 0
     /// The page whose video the Save Video sheet is for (SPEC section 35).
-    var videoRequest: VideoRequest?
 
-    func saveVideoFromPage() {
-        guard let url = browser.url else { return }
-        videoRequest = VideoRequest(url: url)
+    /// Shows the Downloads pane set up for `address` (an @account, #hashtag or page address), or for the current page.
+    func showDownloads(_ address: String? = nil, video: Bool = false) {
+        section = .collect
+        setShowing(.downloads, true)
+        if let address {
+            downloads.use(address)
+        } else if let url = browser.url {
+            downloads.followsBrowser = true
+            downloads.use(url.absoluteString, fromBrowser: true)
+        }
+        if video, let url = browser.url, address == nil { downloads.target = .video(url) }
+        downloadsFocus += 1
+    }
+
+    func scanWithSiteExtractor() {
+        guard let url = browser.url, let category = siteExtractorCategory else { return }
+        app.engines.startSiteScan(url: url, category: category, window: self)
     }
     var engineScan: Job?
     var documents: [URL] = []
@@ -102,10 +129,12 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     init() {
         library = LibraryModel()
+        organise = OrganiseModel()
         let first = BrowserController()
         tabs = [first]
         selectedTabID = first.id
         library.window = self
+        organise.window = self
         wire(first)
         let stream = ingestor.snapshots
         listenTask = Task { [weak self] in
@@ -601,11 +630,20 @@ final class WindowModel: Identifiable, MediaGridOwner {
         if showExtracted { panes.insert(.extracted) }
         if showPreview { panes.insert(.preview) }
         if showLibrary { panes.insert(.library) }
+        if showDownloads { panes.insert(.downloads) }
+        return panes
+    }
+
+    var organiseVisiblePanes: Set<PaneID> {
+        var panes = Set<PaneID>()
+        if showOrganiseSource { panes.insert(.organiseSource) }
+        if showOrganiseWork { panes.insert(.organiseWork) }
+        if showOrganiseTarget { panes.insert(.organiseTarget) }
         return panes
     }
 
     func isShowing(_ pane: PaneID) -> Bool {
-        visiblePanes.contains(pane)
+        pane.group == .collect ? visiblePanes.contains(pane) : organiseVisiblePanes.contains(pane)
     }
 
     func setShowing(_ pane: PaneID, _ show: Bool) {
@@ -614,8 +652,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
         case .extracted: showExtracted = show
         case .preview: showPreview = show
         case .library: showLibrary = show
+        case .downloads: showDownloads = show
+        case .organiseSource: showOrganiseSource = show
+        case .organiseWork: showOrganiseWork = show
+        case .organiseTarget: showOrganiseTarget = show
         }
-        if visiblePanes.isEmpty { showExtracted = true }
+        if visiblePanes.subtracting([.downloads]).isEmpty { showExtracted = true }
+        if organiseVisiblePanes.isEmpty { showOrganiseSource = true }
     }
 
     /// Switches the Preview pane to a new subject, unless an edit with unsaved changes is open.
@@ -946,5 +989,22 @@ nonisolated final class ActionMenuItem: NSMenuItem {
     @objc private func run() {
         let handler = handler
         MainActor.assumeIsolated { handler() }
+    }
+}
+
+enum WindowSection: String, CaseIterable {
+    case collect, organise
+
+    var label: String { self == .collect ? "Collect" : "Organise" }
+}
+
+extension WindowModel {
+    /// ⌘Z undoes an Organise operation, a whole automatic sort as one step (R-3806).
+    func registerUndo(_ entry: JournalEntry) {
+        guard let manager = hostWindow?.undoManager else { return }
+        manager.registerUndo(withTarget: self) { window in
+            MainActor.assumeIsolated { window.organise.undo(entry) }
+        }
+        manager.setActionName(entry.title)
     }
 }

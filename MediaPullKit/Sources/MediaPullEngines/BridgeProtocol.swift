@@ -130,6 +130,8 @@ public enum BridgeEvent: Sendable {
     case videoInfo(VideoInfo)
     /// A non-media file written by the bridge in staging: a followers or following list, or the profile.
     case document(kind: String, path: URL, count: Int)
+    /// A file written beside a downloaded video: subtitles, thumbnail or description.
+    case attachment(key: String, path: URL, kind: String)
     case checkpoint(kind: String, url: URL?, message: String)
     case error(code: String, message: String, key: String?, fatal: Bool)
     case policyViolation(method: String, host: String, path: String, reason: String)
@@ -208,6 +210,9 @@ public enum BridgeEvent: Sendable {
                 extractor: string("extractor") ?? "", duration: value["duration"]?.double,
                 thumbnail: string("thumbnail").flatMap(URL.init(string:)), description: string("description"), formats: formats
             ))
+        case "attachment":
+            guard let path = string("path") else { return nil }
+            return .attachment(key: string("key") ?? "", path: URL(fileURLWithPath: path), kind: string("kind") ?? "attachment")
         case "document":
             guard let path = string("path") else { return nil }
             return .document(kind: string("kind") ?? "document", path: URL(fileURLWithPath: path), count: value["count"]?.int ?? 0)
@@ -254,6 +259,32 @@ public struct BridgeRequest: Encodable, Sendable {
         }
     }
 
+    /// yt-dlp choices beyond format and resolution (SPEC R-3505).
+    public struct Extras: Encodable, Sendable, Equatable {
+        public var playlist = false
+        public var playlistItems: String?
+        public var maxDownloads: Int?
+        public var dateAfter: String?
+        public var dateBefore: String?
+        public var rateLimit: Int?
+        public var subtitles: [String] = []
+        public var autoSubtitles = false
+        public var thumbnail = false
+        public var description = false
+
+        public init() {}
+
+        enum CodingKeys: String, CodingKey {
+            case playlist, subtitles, thumbnail, description
+            case playlistItems = "playlist_items"
+            case maxDownloads = "max_downloads"
+            case dateAfter = "date_after"
+            case dateBefore = "date_before"
+            case rateLimit = "rate_limit"
+            case autoSubtitles = "auto_subtitles"
+        }
+    }
+
     public struct Pacing: Encodable, Sendable {
         public var requestDelay: [Double]
 
@@ -276,6 +307,9 @@ public struct BridgeRequest: Encodable, Sendable {
     public var dateTo: String?
     public var pacing: Pacing?
     public var video: Video?
+    public var extras: Extras?
+    /// Which items of a gallery to download, such as "1-50".
+    public var range: String?
     public var cursor: String?
     public var filter: String?
     public var referer: String?
@@ -294,7 +328,7 @@ public struct BridgeRequest: Encodable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case v, op, url, urls, username, include, cookies, staging, pacing, video, cursor, filter, referer, key, wheel, target, paths
+        case v, op, url, urls, username, include, cookies, staging, pacing, video, extras, range, cursor, filter, referer, key, wheel, target, paths
         case knownIDs = "known_ids"
         case stopAfterKnown = "stop_after_known"
         case dateFrom = "date_from"

@@ -37,7 +37,11 @@ struct TourPage: Identifiable {
         TourPage(id: 5, pane: nil, symbol: "rectangle.3.group", title: "Make it yours",
                  text: "Drag the dividers to resize panes. Move or stack them with the arrange button in each title bar or "
                      + "View > Arrange Panes, and choose a theme in Settings > Appearance."),
-        TourPage(id: 6, pane: nil, symbol: "lock.shield", title: "Read-only by design",
+        TourPage(id: 6, pane: .library, symbol: "wand.and.stars", title: "Search and organise",
+                 text: "Search your folders by name, text or what a photo shows, and filter by faces, colour, place and more. "
+                     + "Switch to Organise at the top of the window to sort any folder by date, event, subject or person, with "
+                     + "a preview first and undo afterwards. Analysis runs only on this Mac."),
+        TourPage(id: 7, pane: nil, symbol: "lock.shield", title: "Read-only by design",
                  text: "MediaPull only reads from the web. It never uploads files and never likes, follows or posts. "
                      + "You can open this walkthrough again from Settings or the Help menu."),
     ]

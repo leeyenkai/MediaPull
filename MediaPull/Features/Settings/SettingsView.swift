@@ -12,11 +12,13 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
             AppearanceSettings().tabItem { Label("Appearance", systemImage: "paintpalette") }
             ConversionSettings().tabItem { Label("Formats", systemImage: "photo.on.rectangle") }
+            AnalysisSettings().tabItem { Label("Analysis", systemImage: "sparkle.magnifyingglass") }
+            FaceSettings().tabItem { Label("Faces", systemImage: "person.2") }
             InstagramSettings().tabItem { Label("Instagram", systemImage: "person.crop.square") }
             EngineSettings().tabItem { Label("Engines", systemImage: "shippingbox") }
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
         }
-        .frame(width: 620, height: 520)
+        .frame(width: 660, height: 560)
         .tint(AppModel.shared.preferences.theme.accent)
     }
 }

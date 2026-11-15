@@ -98,6 +98,10 @@ struct JobRow: View {
             if case .blocked = job.state, let resume = job.resume {
                 Button("Resume") { resume() }
             }
+            if let toggle = job.pauseToggle, job.state.isActive || job.state == .paused {
+                Button { toggle() } label: { Image(systemName: job.state == .paused ? "play.circle" : "pause.circle") }
+                    .help(job.state == .paused ? "Resume" : "Pause")
+            }
             if job.state.canCancel {
                 Button { job.cancel() } label: { Image(systemName: "xmark.circle") }
                     .help("Cancel")
@@ -117,6 +121,8 @@ struct JobRow: View {
         case .stream: "film"
         case .convert: "arrow.triangle.2.circlepath"
         case .engineUpdate: "arrow.down.app"
+        case .analyse: "sparkle.magnifyingglass"
+        case .organise: "folder.badge.gearshape"
         }
     }
 

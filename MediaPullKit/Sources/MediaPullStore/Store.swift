@@ -326,6 +326,16 @@ public actor AppStore {
         return result
     }
 
+    /// Keeps archive entries pointing at files Organise moved (R-3804).
+    public func moveArchivePaths(_ moves: [(from: String, to: String)]) {
+        guard !moves.isEmpty else { return }
+        let map = Dictionary(moves.map { ($0.from, $0.to) }, uniquingKeysWith: { _, b in b })
+        let froms = Array(map.keys)
+        let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { froms.contains($0.path) })
+        for model in (try? modelContext.fetch(descriptor)) ?? [] { if let to = map[model.path] { model.path = to } }
+        try? modelContext.save()
+    }
+
     public func recordArchive(key: String, account: String, path: String, sha256: String) {
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.key == key })
         if let model = try? modelContext.fetch(descriptor).first {
