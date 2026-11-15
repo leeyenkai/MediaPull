@@ -32,6 +32,43 @@ class GuardTests:
             with self.assertRaises(PolicyViolation, msg=name):
                 check("POST", "https://www.instagram.com/api/graphql", data={"fb_api_req_friendly_name": name})
 
+    def test_audited_site_reads_are_allowed(self):
+        check("POST", "https://www.deviantart.com/oauth2/token", data={"grant_type": "client_credentials"})
+        check("POST", "https://www.behance.net/v3/graphql", data={"query": "query GetProfileProjects($u: String) { user { id } }"})
+        check("POST", "https://api.e-hentai.org/api.php", data={"method": "gdata", "gidlist": [[1, "a"]]})
+        check("POST", "https://inkbunny.net/api_login.php", data={"username": "guest", "password": ""})
+        check("POST", "https://api.x.com/1.1/guest/activate.json")
+        check("POST", "https://www.reddit.com/api/v1/access_token",
+              data={"grant_type": "https://oauth.reddit.com/grants/installed_client", "device_id": "DO_NOT_TRACK_THIS_DEVICE"})
+        check("POST", "https://members.luscious.net/graphql/nobatch/?operationName=AlbumGet", data={"variables": {"id": 1}})
+        check("POST", "https://imx.to/i/abc", data={"imgContinue": "Continue+to+image+...+"})
+        check("POST", "https://rule34.xyz/api/v2/post/search/root", data={"tag": "x", "skip": 0})
+        check("POST", "https://misskey.io/api/users/notes", data={"userId": "1", "limit": 100})
+
+    def test_sign_ins_and_account_actions_stay_blocked(self):
+        blocked = [
+            ("POST", "https://www.deviantart.com/oauth2/token", {"grant_type": "refresh_token", "refresh_token": "x"}),
+            ("POST", "https://www.deviantart.com/api/v1/oauth2/user/friends/watch/someone", {}),
+            ("POST", "https://e-hentai.org/gallerypopups.php?act=addfav", {"favcat": "1"}),
+            ("POST", "https://e-hentai.org/api.php", {"method": "rategallery"}),
+            ("POST", "https://e-hentai.org/home.php", {"reset_imagelimit": "Reset Limit"}),
+            ("POST", "https://inkbunny.net/api_login.php", {"username": "me", "password": "secret"}),
+            ("POST", "https://www.behance.net/v3/graphql", {"query": "mutation Follow { follow(id: 1) }"}),
+            ("POST", "https://api.scrolller.com/admin", {"query": "query LoginQuery { login }", "operationName": "LoginQuery"}),
+            ("POST", "https://www.newgrounds.com/suitabilities", {"suitabilities": "a"}),
+            ("POST", "https://www.newgrounds.com/age-verification/ignore-filter", {}),
+            ("POST", "https://toyhou.se/~account/warnings/accept", {}),
+            ("POST", "https://www.reddit.com/api/v1/access_token", {"grant_type": "refresh_token"}),
+            ("POST", "https://imx.to/i/abc", {"imgContinue": "x", "password": "y"}),
+            ("POST", "https://vk.com/al_photos.php", {"act": "like"}),
+        ]
+        for method, url, data in blocked:
+            with self.assertRaises(PolicyViolation, msg=url):
+                check(method, url, data=data)
+        with self.assertRaises(PolicyViolation):
+            check("GET", "https://vipergirls.to/post_thanks.php?do=post_thanks_add&p=1")
+        check("GET", "https://vipergirls.to/threads/1")
+
     def test_graphql_mutation_documents_are_blocked(self):
         ig = "https://www.instagram.com/graphql/query"
         with self.assertRaises(PolicyViolation):

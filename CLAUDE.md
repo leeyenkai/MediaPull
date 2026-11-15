@@ -69,6 +69,7 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `--selftest-browser <second url>` (tabs, bookmarks, history, panel, walkthrough), `--selftest-idle <seconds>` (idle CPU),
   `--selftest-duplicates`, `--selftest-video`, `--selftest-zoom <points>`, `--selftest-pullsheet <account>`,
   `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio),
+  `--selftest-galleries <file>` (downloads the first 3 items from each address in the file through the whole app),
   `--selftest-analyse <folder>` (copies the folder into the test library, analyses it with faces on, checks no sockets open, searches,
   filters, sorts it in Organise and undoes the sort, comparing checksums)
   (theme and layout are restored afterwards).
@@ -108,6 +109,11 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 - Vision's accurate text recognition fails on macOS 27.0.x; the Analyzer falls back to fast mode for the session.
 - The bundled Python runs with `-I`, so the bridge finds its modules only through the `paths` list in each request.
 - Video trimming must stay passthrough (no re-encode); frame grabs use zero time tolerance.
+- Collect has one save folder per window: `WindowModel.saveFolder` (the Library pane's selected folder, else the default root). Save, Downloads
+  and the editors use it; downloads take a `SaveDestination` (any folder plus its layout), not a library root (D-70).
+- The Organise target is opt-in: `target.root == nil` means in place, and opening a new source never changes the target (D-68).
+- When gallery-dl is updated: rerun `scripts/build_site_catalogue.py <gallery-dl source>` (SiteCatalogue.json) and re-audit its POST
+  requests against `READ_POSTS` in the egress guard (docs/spikes/gallery-dl-post-audit.md, D-72).
 - `model.browser` is the selected tab; per-page callbacks must use the tab they came from, not `model.browser`.
 - The inline editor must not use Return, Escape or bare-key shortcuts: they would fire while typing in the web page.
 - AppKit grids read the theme accent from `AppTheme.currentAccent`; bump the grid revision when the theme changes.

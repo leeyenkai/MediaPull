@@ -20,7 +20,12 @@ import traceback
 
 PROTOCOL = 1
 VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "webm", "mkv"}
-NON_SITE_CATEGORIES = {"directlink", "generic", "recursive", "noop", "ytdl", "test"}
+NON_SITE_CATEGORIES = {"directlink", "generic", "recursive", "noop", "ytdl", "test", "oauth"}
+SITE_KEY_NAMES = {"api-key", "api-secret", "client-id", "client-secret", "user-id", "access-token", "api-token"}
+# Site switches the Downloads pane may set: each only chooses what media to fetch (SPEC R-1111b).
+SITE_OPTION_KEYS = {"videos", "audio", "gif", "livephoto", "covers", "quoted", "reposts", "reblogs", "retweets", "renotes",
+                    "replies", "cards", "embeds", "inline", "stories", "mature", "flash", "svg", "recursive", "thumbnails",
+                    "previews", "external"}
 
 
 class Emitter:
@@ -211,7 +216,13 @@ def configure_gallery_dl(request, staging):
         "timeout": 60,
         "sleep-request": delay,
         "sleep-429": 120,
-        "postprocessors": [],
+        # Animated works stored as frames (pixiv, danbooru) become MP4 with the hardware encoder; nothing else is touched.
+        "postprocessors": [{
+            "name": "ugoira", "extension": "mp4", "mode": "concat", "keep-files": False, "mtime": False,
+            "ffmpeg-location": os.path.join(os.environ.get("MEDIAPULL_HELPERS") or "", "ffmpeg") if os.environ.get("MEDIAPULL_HELPERS") else "ffmpeg",
+            "ffmpeg-args": ["-c:v", "h264_videotoolbox", "-q:v", "65", "-pix_fmt", "yuv420p", "-vf", "crop=iw-mod(iw\\,2):ih-mod(ih\\,2)"],
+            "libx264-prevent-odd": False, "ffmpeg-output": False,
+        }],
         "instagram": {
             "retries": 0,
             "sleep-429": 0,
@@ -223,6 +234,25 @@ def configure_gallery_dl(request, staging):
             "order-files": "asc",
         },
     }
+    site = request.get("category")
+    if site and site != "instagram":
+        # Per-site choices from the Downloads pane (SPEC R-1111b): which parts of a profile, and the
+        # site's own switches (videos, reblogs, replies...). Only booleans from a known list are passed on.
+        section = extractor.setdefault(site, {})
+        if request.get("include"):
+            section["include"] = request["include"]
+        for key, value in (request.get("site_options") or {}).items():
+            if key in SITE_OPTION_KEYS and isinstance(value, bool):
+                section[key] = value
+        # The person's own API key for the site, from the Keychain (only known key names, only strings).
+        for key, value in (request.get("site_keys") or {}).items():
+            if key in SITE_KEY_NAMES and isinstance(value, str) and value.strip():
+                section[key] = value.strip()
+        if site == "reddit" and section.get("client-id"):
+            section["user-agent"] = "macos:mediapull:1.6 (personal media archive)"
+        # Signed-in sessions and challenge cookies are tied to the browser that made them.
+        if request.get("cookies") and request.get("user_agent"):
+            section["user-agent"] = request["user_agent"]
     if request.get("cookies"):
         extractor["cookies"] = request["cookies"]
         extractor["cookies-update"] = True
@@ -232,8 +262,11 @@ def configure_gallery_dl(request, staging):
     if request.get("filter"):
         extractor["image-filter"] = request["filter"]
     if request.get("range"):
-        # Which items of a gallery to download, such as "1-50" (gallery-dl's image-range).
+        # Which items of a gallery to download, such as "1-50" (gallery-dl's image-range). Galleries that list their items
+        # as separate pages (one image each) are limited by chapter-range too; profiles split into parts are not.
         extractor["image-range"] = request["range"]
+        if not request.get("include"):
+            extractor["chapter-range"] = request["range"]
     config.set((), "extractor", extractor)
 
     video = request.get("video") or {}
@@ -789,7 +822,49 @@ def op_account(request):
     finish("completed" if status == 0 else "failed")
 
 
+class _Captured(Exception):
+    pass
+
+
+def content_choices(extr):
+    """For a profile page that gallery-dl splits into parts (gallery, scraps, media, likes...), the parts it offers and
+    the ones it downloads by default. Read from the extractor without any network request."""
+    from gallery_dl.extractor import common
+
+    if not isinstance(extr, common.Dispatch):
+        return [], []
+    captured = {}
+
+    def capture(extractor_data, default=(), alt=None):
+        captured["data"], captured["default"], captured["alt"] = extractor_data, default, alt
+        raise _Captured()
+
+    def no_network(*args, **kwargs):
+        raise _Captured()
+
+    extr._dispatch_extractors = capture
+    extr.request = no_network
+    try:
+        result = extr.items()
+        if hasattr(result, "__next__"):
+            next(result, None)
+    except Exception:
+        pass
+    data = captured.get("data")
+    if not data:
+        return [], []
+    choices = list(data.keys()) if isinstance(data, dict) else [entry[0].subcategory for entry in data]
+    for sub, sub_alt, _url in captured.get("alt") or ():
+        if sub_alt not in choices:
+            choices.append(sub_alt)
+    default = captured.get("default") or ()
+    if isinstance(default, str):
+        default = choices if default == "all" else default.replace(" ", "").split(",")
+    return choices, [d for d in default if d in choices]
+
+
 def op_supports(request):
+    """Whether gallery-dl handles an address, and what the Downloads pane can offer for it (SPEC R-1111b)."""
     from gallery_dl import extractor as gdl_extractor
 
     url = request.get("url") or ""
@@ -799,7 +874,11 @@ def op_supports(request):
     except Exception:
         extr = None
     if extr is not None and extr.category not in NON_SITE_CATEGORIES:
-        found = {"category": extr.category, "subcategory": extr.subcategory}
+        choices, defaults = content_choices(extr)
+        found = {"category": extr.category, "subcategory": extr.subcategory,
+                 "basecategory": getattr(extr, "basecategory", "") or "", "root": getattr(extr, "root", None),
+                 "cookies_domain": (getattr(extr, "cookies_domain", None) or "").lstrip("."),
+                 "choices": choices, "defaults": defaults}
     EMITTER.emit("supports", url=url, supported=found is not None, **(found or {}))
     EMITTER.emit("done", status="completed", counts={})
 

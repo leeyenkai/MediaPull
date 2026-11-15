@@ -18,7 +18,8 @@ Verification so far:
 
 - **Automated** (`scripts/check.sh`): module-boundary and read-only lint, Swift tests (sidecar contract, forbidden names, CDN rules and image proxies, sniffing, request policy, ingestor, filters, conversion, save pipeline, pane arrangement, bookmarks and history, hostile inputs, duplicate detection, video frames and trimming, the real bundled engine and its event stream), 8 Python tests of the egress guard, an iOS Simulator build of the package and an app build.
 - **End to end** (`MediaPull --selftest-url <url> --selftest-out <folder>`, section 25): on the New York Times international front page, 204 items were found (135 of them only while scrolling) and all 190 shown items were saved (185 saved, 5 recognised as duplicates), with images at the newspaper's largest rendition (2048 px), WebP converted to JPEG or PNG, SVG converted to PNG, and videos saved as H.264 MP4. A Wikipedia page was also scanned with the site extractor (48 originals).
-- **Version 1.6, verified end to end** (`--selftest-analyse`): media analysis (section 36), Library sort, filter and search (section 37), the Organise section (section 38) and faces and people (section 39), decisions D-57 to D-67. On 96 test files (60 photos, 36 faces of three people): all analysed in 5.8 s with no network sockets opened, the three people found with 12 photos each and two named from their folders, a second scan analysing nothing, Sort by Subject previewed and run into 13 folders, and undo restoring every file exactly (checksums). The app is 696 MB with the models.
+- **Version 1.6, verified end to end** (`--selftest-analyse`): media analysis (section 36), Library sort, filter and search (section 37), the Organise section (section 38) and faces and people (section 39), decisions D-57 to D-70. On 96 test files (60 photos, 36 faces of three people): all analysed in 5.8 s with no network sockets opened, the three people found with 12 photos each and two named from their folders, a second scan analysing nothing, Sort by Subject previewed and run into 13 folders, and undo restoring every file exactly (checksums). The save folder (D-70) and the opt-in Organise target (D-68) are checked by the same run: a folder outside the library becomes the save folder without joining the library, Organise opens in place, and a new source keeps the chosen target. The app is 696 MB with the models.
+- **gallery-dl sites** (R-1111b, D-71, D-72): every bundled site was run on gallery-dl's own test address through the bridge; 196 of 372 listed items with no sign-in and none was blocked by the egress guard (`docs/spikes/gallery-dl-sites.md`). `--selftest-galleries` downloaded through the whole app from 21 sites (Bluesky, Imgur, ArtStation, Mastodon, Behance, VSCO, Pinterest, Patreon, VK, Civitai and others). Twitter needs the browser signed in; Reddit needs the person's own API key; Pixiv's app sign-in is not built.
 - **Version 1.5 additions, verified end to end**: the Instagram content choices (section 11.5), date windows and folders by type; saving videos from video sites (section 35; `--selftest-video-download`: a YouTube video's 47 formats listed, saved as 360p H.264 MP4 with metadata in 7 s and as 128 kbps AAC M4A without metadata in 2 s).
 - **Version 1.4 additions, verified end to end**: duplicate detection in the Library (section 33; `--selftest-duplicates` found an identical copy in a subfolder and a resized, re-compressed copy, and kept colour versions of one product photo apart) and video frame grabs and trimming (section 34; `--selftest-video`: a 640×360 frame at 2.5 s saved as PNG, a 1–3 s selection saved as a 2.00 s copy without re-encoding, metadata files updated).
 - **Version 1.3 additions, verified end to end**: browser tabs, bookmarks in renamable folders, history with clearing, the walkthrough, the reworked icon and the narrow-pane fixes (`--selftest-browser`: two tabs, This Page 2 / 47 / 49 items, folder rename, history cleared, ⌘W bound to Close Tab). Measured: window ready 0.9 s after launch, idle CPU 0.17 % over 30 s, app memory peak 138–183 MB on the hard pages.
@@ -26,7 +27,7 @@ Verification so far:
 - **Version 1.1 additions, verified end to end**: images inside a hosted PDF (the arXiv paper 2010.11929: 298 embedded images extracted in about 2 seconds and saved), the image editor, and the quick filter row with the resolution slider.
 - **Not yet exercised by a person**: drag and drop, Quick Look, the trim bar and frame stepping in the video editor, and Instagram pulls with a signed-in account.
 
-Decisions that changed during implementation are D-13 and D-24 to D-56 in section 27. Sections 31 (PDFs) and 32 (editing) and R-1006a (resolution slider) were added in version 1.1; the Preview pane, pane arrangement and themes in version 1.2.
+Decisions that changed during implementation are D-13 and D-24 to D-56 (and D-68, D-72 in 1.6) in section 27. Sections 31 (PDFs) and 32 (editing) and R-1006a (resolution slider) were added in version 1.1; the Preview pane, pane arrangement and themes in version 1.2.
 
 ---
 
@@ -274,6 +275,7 @@ The package builds for iOS from the first milestone so the port stays cheap. The
 
 - GET and HEAD to any http or https URL, without a request body.
 - POST only to Instagram's GraphQL read endpoints (`/graphql/query`, `/api/graphql`) and to the read-only Instagram endpoints the pinned gallery-dl version is shown to need in M0. The request's operation name (`fb_api_req_friendly_name`) or query must end in `Query` and must not contain any of: Mutation, Like, Follow, Comment, Seen, Upload, Create, Delete, Edit, Save, Mark, Share, Send, Report, Block.
+- POST to the read-only endpoints other sites need (D-72): listings, searches, file links and anonymous or public-client tokens, each listed by host and path in `READ_POSTS` from an audit of every POST the bundled gallery-dl can make (`docs/spikes/gallery-dl-post-audit.md`). Bodies are checked per endpoint: GraphQL must be a query, token requests must be the public or guest kind, and nothing carrying a password or refresh token is sent. Sign-ins, favourites, watching, likes, rating settings and quota resets stay blocked, as does the one GET that thanks a post.
 - No multipart or octet-stream bodies, no bodies over 16 KB, no PUT, PATCH or DELETE.
 
 Any blocked request raises inside the engine and is reported as a `policy_violation` event (Appendix A). The job stops.
@@ -385,7 +387,7 @@ Instagram identifiers are always stored as strings (they exceed 2^53).
 
 **R-704** The window uses the compact unified toolbar: the window title and the section tabs Collect · Organise (D-62), then, in Collect, Downloads (shows or hides the Downloads pane) and Activity (a popover listing every job, with a badge for running ones); in Organise, Undo and Activity. Pausing extraction is a button in the Extracted Media header. The Downloads pane appears when asked for and stays until closed. Both sections use the same pane headers, arrange menus and title bar (D-69). Everything that belongs to browsing lives in the Browser pane itself (R-802), so it moves with the pane.
 
-**R-705** A bottom status bar in the Extracted pane shows item counts (found, shown after filters, selected), the total size of the selection where known, and the current destination for "Save to Last Folder".
+**R-705** A bottom status bar in the Extracted pane shows item counts (found, shown after filters, selected), the total size of the selection where known, the save folder (a menu of library folders, recent folders and "Other Folder…"; D-70) and the Save button.
 
 ### 7.1 First run
 
@@ -530,7 +532,7 @@ The Preview pane shows the full variant table and the reason for the choice.
 
 **R-1003** Selection: click, ⇧-click range, ⌘-click toggle, ⌘A select all shown, ⌘⇧A deselect, drag-rectangle select. Arrow keys move focus; Space opens Quick Look; double-click shows the item in the Preview pane.
 
-**R-1004** Context menu: Save to…, Save to Last Folder, Copy Image (images only, after download), Copy URL, Copy Original URL, Open Page in Pane, Show in Preview, Hide Items from This Domain.
+**R-1004** Context menu: Save to the save folder, Save to…, Copy Image (images only, after download), Copy URL, Copy Original URL, Open Page in Pane, Show in Preview, Hide Items from This Domain.
 
 **R-1005** The pane header shows the page session title. When the pane shows an Instagram profile or post, or a page that gallery-dl supports, the header shows the matching action buttons ("Pull @name…", "Scan @name", "Save This Post", "Scan with Site Extractor").
 
@@ -569,7 +571,7 @@ Toggles, on by default: **Hide tiny** (either side under 64 px), **Hide icons** 
 - The variant table: URL, origin, pixel size, bytes, format, verified state, and which one was chosen and why.
 - Source: page and frame, Instagram post details or site extractor details.
 - The planned file name and destination for the current layout.
-- Actions: Save to Library, Save to…, Edit, Copy URL, Open, Quick Look, Check Original Sizes.
+- Actions: Save (to the save folder), Save to…, Edit, Copy URL, Open, Quick Look, Check Original Sizes.
 
 For a library file it shows the image, animated GIF or video player, format, dimensions, size, date, folder and the sidecar's account, section, source and caption, with Show in Finder, Open and Quick Look.
 
@@ -709,7 +711,18 @@ Which `fetch` method the bridge uses (reusing the engine's downloaders on scanne
 - **Videos** (YouTube, Vimeo and the other sites yt-dlp supports): the format and resolution of R-3502, plus the choices of R-3505.
 - **Galleries** on any site gallery-dl supports (section 12): everything at the address, or a range of items, between dates, only what is new since the last download; or "Show in Extracted Media" to pick by hand.
 
-Below the options it lists the downloads in progress and just finished. Downloads go into a library folder; "Other Folder…" makes any folder on the Mac a library folder.
+Below the options it lists the downloads in progress and just finished. Downloads go into the window's save folder (R-1404), which the pane shows and can change; accounts, sites and channels get their own subfolders inside it.
+
+**R-1111b** Every gallery-dl site gets the same care as Instagram (D-71):
+
+- **What is there.** The pane names the site ("DeviantArt", "Bluesky") and the kind of page (profile, one post, tag, search), from `SiteCatalogue.json`, which `scripts/build_site_catalogue.py` builds from the bundled gallery-dl's own site list and documentation.
+- **Parts of a profile.** Where gallery-dl splits a profile into parts (gallery, scraps, favourites; posts, media, likes), they are offered as chips with gallery-dl's defaults, read from the extractor without a network request. Parts that are lists of other accounts are not offered.
+- **The site's switches.** Its own media switches (videos, retweets, reblogs, quoted posts, replies, Live Photo videos and the like) with gallery-dl's defaults. Only switches that choose media are offered or passed on; nothing that changes an account (such as watching a user) is.
+- **Sign-in.** For sites that show more when signed in, or need it, the pane says whether the browser has a session for the site and offers Sign In, which opens the site in the browser. The browser's cookies and user agent go to gallery-dl together. Sites that need the site's own app token or an API key say so.
+- **Your own API key.** Sites that accept one (Tumblr, DeviantArt, Flickr, Reddit, Wallhaven, Gelbooru and others; `SiteKeys`) offer an optional key field with a link to get one. Keys live in the Keychain, go to the bridge on standard input with known option names only, and lift the limits of the shared keys gallery-dl ships with.
+- **Errors in plain words** (`GalleryError`): a browser check, a sign-in, an API key, a refusal, a limit, nothing found, or a changed site, each with what to do next.
+- **Dates, items, only new, folders.** As for Instagram: a date window, an item range, only what is new since the last download, and folders by part when several are chosen. Choices are remembered per site.
+- **Animations stored as frames** (pixiv, Danbooru) are turned into MP4 with the hardware encoder.
 
 ## 12. Site extractor scans
 
@@ -807,7 +820,7 @@ The bridge maps engine exceptions and messages to typed `error` and `checkpoint`
 
 **R-1403** A save of many items runs as one job with per-item results. Items that fail stay in the Extracted pane marked failed, with "Retry Failed" on the job.
 
-**R-1404** "Save to Last Folder" (⌥⌘S) uses the last destination; "Save to…" (⌘S) shows a folder chooser limited to library roots, with "New Folder" and the layout shown.
+**R-1404** Collect has one save folder per window (D-70): the folder selected in the Library pane, the default library folder (`Pictures/MediaPull`) until another is chosen. Save (⌘S) saves there; its name is shown beside the Save button, whose menu changes it to a library folder, a recent folder or any other folder on the Mac. "Save to…" (⇧⌘S) picks any folder, makes it the save folder and saves. A folder outside the library is shown in the Library pane under the library folders until it is replaced or removed; it is not added to the library.
 
 ---
 
@@ -930,7 +943,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1705** Quick Look (Space), Reveal in Finder (⌘R), Open With default app, Copy (file URLs).
 
-**R-1706** The selected folder is the default destination for "Save to…".
+**R-1706** The selected folder is the save folder of Collect: Save, the Downloads pane and the editors all save there (D-70).
 
 ---
 
@@ -978,7 +991,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | Browser | Clear All Website Data; allow pop-ups in new windows |
 | Analysis | On (default) or off; which library roots; pause on battery (on); event gap (3 hours); subject list and confidence threshold for Sort by Subject; Rebuild Analysis; Delete All Analysis Data (section 36) |
 | Faces | Off until opted in (R-3901); match threshold; group photos when sorting by person; Delete All Face Data |
-| Organise | Default layout (In Place, Sort Into); keep undo history for (30 days) |
+| Organise | Keep undo history for (30 days) |
 | Appearance | Theme (R-2010); pane arrangement presets with a diagram; Reset Pane Sizes |
 | Advanced | Download concurrency limits; allow insecure http media (on, D-21); Network activity log; Export Diagnostics; verbose engine logging (off) |
 
@@ -1009,8 +1022,8 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | ⌘K | Clear extracted media |
 | ⌘A / ⇧⌘A | Select all shown / deselect |
 | Space | Quick Look |
-| ⌘S | Save to… |
-| ⌥⌘S | Save to Last Folder |
+| ⌘S | Save to the save folder |
+| ⇧⌘S | Save to… |
 | ⇧⌘P | Pull Account… (Downloads pane) |
 | ⌘O | Open PDF… (extract its images) |
 | ⌘E | Edit the selected item (crop, rotate, rename) |
@@ -1023,7 +1036,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | ⌥⌘+ / ⌥⌘- | Larger or smaller thumbnails |
 | ⌥⌘4 | Show or hide Downloads |
 
-Menus: MediaPull, File (New Window, New Tab, Close Tab, Reopen Closed Tab, Pull Account, Save, Save to Last Folder, Add Library Folder), Edit, View (panes, Arrange Panes, filter bar, grid size), Go (back, forward, address), Bookmarks, History, Window (tabs, Activity, Converter), Help (MediaPull Walkthrough).
+Menus: MediaPull, File (New Window, New Tab, Close Tab, Reopen Closed Tab, Pull Account, Save, Save to…, Add Library Folder), Edit, View (panes, Arrange Panes, filter bar, grid size), Go (back, forward, address), Bookmarks, History, Window (tabs, Activity, Converter), Help (MediaPull Walkthrough).
 
 ---
 
@@ -1182,14 +1195,17 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-59 | Analysis runs only on the Mac and never uses the network. Place names come from bundled GeoNames data (cities of 1,000 people or more, regions and countries; CC BY 4.0, credited in About), never from Apple's online geocoder or MapKit; Vision requests that download assets and Core ML model collections are not used | Privacy contract unchanged: nothing leaves the Mac for analysis |
 | D-60 | Analysis results (labels, text, embeddings, places, faces) live in `~/Library/Application Support/MediaPull/Analysis/`, never in library folders. They are keyed by the file's SHA-256 and the model version, so moved or renamed files keep their results and only new or changed files are analysed after the first pass | R-601 holds; analysis is incremental |
 | D-61 | Face data is biometric: face analysis is off until the person accepts an opt-in sheet; "Delete All Face Data" removes faces, people, names, corrections and face vectors in one step; face files are excluded from Time Machine; face data never goes into metadata files or exports | Requested: clear opt-in and one-step deletion |
-| D-62 | Organise is a second section of the window, chosen with tabs after the window title (Collect · Organise). It works on any local folder, fetches nothing, and has two layouts: In Place (one large pane) and Sort Into (a source pane beside a target pane) | Requested; both ways of organising are common, so both are modes of one section |
+| D-62 | Organise is a second section of the window, chosen with tabs after the window title (Collect · Organise). It works on any local folder and fetches nothing. (Its two layouts became the Source, Organise and Target panes in 1.6, D-69, with the target optional, D-68) | Requested; both ways of organising are common, so both are modes of one section |
 | D-63 | Every Organise operation is recorded in a journal in Application Support and can be undone, a whole automatic sort as one step, including after relaunch. Deleting always means moving to the Trash | Requested: every operation reversible |
 | D-64 | Sort into Folders by Person puts a photo of several people into each person's folder as an APFS clone (a full copy where the volume cannot clone, shown before the sort), each copy with its own metadata file. In Archive-layout folders group photos go into one shared `Group photos/` folder instead. Settings also offers the shared folder everywhere and "first person only" | Requested; in Archive folders the archive's reader would count each copy as a separate post |
 | D-65 | Sort into Folders by Subject files an item under a subject only when the model's confidence is above a threshold (adjustable in Settings); everything else goes to `Unsorted/` | Requested: no guessing |
 | D-66 | A folder named like a person that holds most photos of an unnamed face group is offered as that group's name; the name is applied only after one click | Chosen by the person: suggest, never name silently |
 | D-67 | Models (chosen for accuracy; licences set aside for this private tool at the person's request): **MobileCLIP2-S3** for image–text search, subjects and similar sets (768-d; 79.0 % of COCO captions find their photo in the top 5 of 3,000; top tag right for 92.7 %); **AdaFace IR-101 (WebFace12M)** for faces (99.80 % on LFW; grouping 158 people at 0.34 gives 99.9 % pure groups with 99.9 % of each person's photos together); **SCRFD-10G** for faces and landmarks; Apple Vision for labels and text; GeoNames for places. About 620 MB in all; the whole pipeline analyses 26.5 photos a second, peak 180 MB (`docs/spikes/analysis-models.md`) | Requested: the most accurate current models that fit |
-| D-68 | Organise works on any folder in three ways: in place, copying to a target (the source untouched; how media is imported into the library) and moving to a target. Copies are APFS clones. The default is the MediaPull library, in place | Requested: in-place and non-in-place organising, importing, and no fixed rules for the library |
+| D-68 | Organise works on any folder in three ways: in place, copying to a target (the source untouched; how media is imported into the library) and moving to a target. Copies are APFS clones. The source defaults to the MediaPull library; a target is opt-in, so every source starts in place, and changing the source keeps the chosen target. (Amended in 1.6: opening a folder outside the library no longer picks the library as the target by itself) | Requested: in-place and non-in-place organising, importing, no fixed rules for the library, and a target only when the person wants one |
 | D-69 | One pane system for the whole window: Organise's Source, Organise and Target panes and Collect's new Downloads pane are arranged, stacked and hidden like the others, with the same headers. Sheets are replaced by panes and inline previews; pop-ups only for what needs attention now | Requested: a cohesive interface with few pop-ups |
+| D-70 | Collect has one save folder per window, the folder selected in the Library pane (the default library folder at first), named beside the Save button. Save, the Downloads pane and the editors use it; any folder on the Mac can be chosen without becoming a library folder. "Save to Last Folder" is removed | Requested: the library by default, an easy change to any folder; three separate destinations (Save, Save Here, last folder) were confusing |
+| D-71 | Every gallery-dl site gets per-site options: its name, the parts of a profile, its media switches, sign-in state and remembered choices, from a catalogue generated from the bundled gallery-dl and from the extractor itself. Checked against gallery-dl's own test addresses for every site | Requested: every source with as much attention to detail as Instagram and YouTube |
+| D-72 | The egress guard allows the read-only POSTs gallery-dl's sites need, listed by host and path from an audit of every POST in the bundled gallery-dl (49 reads, 8 tokens; logins and the 7 account actions stay blocked), with a body check per endpoint. Re-audit when gallery-dl is updated. This amends D-40 | About 40 sites, DeviantArt among them, could not download at all because a public token or a search is a POST |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1353,11 +1369,11 @@ and a resolution from the heights that format actually offers for this video (wi
 
 **R-3802** Organise has three panes, arranged like Collect's (movable, stackable, hidable; D-69):
 
-- **Source** (left): any folder, the MediaPull library by default. Folder tree on top, the media grid below with search, sort and filters (section 37).
+- **Source** (left): any folder, the default library folder by default. Folder tree on top, the media grid below with search, sort and filters (section 37).
 - **Organise** (middle): where to put results, the automatic sorts, the preview of the pending change with Apply and Discard, People (section 39) and History.
-- **Target** (right): the folder results go to, with its own tree and grid.
+- **Target** (right): optional. Until a target folder is chosen it shows "Organising in place" with Choose Target Folder… and, for a source outside the library, Use MediaPull Library; once chosen, its own tree and grid.
 
-Where results go (D-68): **In Place** (folders inside the source folder, files move into them); **Copy to Target** (the source stays exactly as it was; organised copies go into the target, as APFS clones); **Move to Target**. Opening a folder outside the library starts in Copy to Target with the library as the target, which is how media is imported. The MediaPull library has no fixed rules of its own; it is organised however the person likes.
+Where results go (D-68): **In Place** (no target; folders inside the source folder, files move into them) is the default for every source; **Copy to Target** (the source stays exactly as it was; organised copies go into the target, as APFS clones) and **Move to Target** apply once a target folder is chosen. Changing the source never changes the target; choosing the source itself, or None, as the target returns to in place. Copying into a library folder is how media is imported. Dropping a folder from Finder on a pane's header opens it in that pane. The MediaPull library has no fixed rules of its own; it is organised however the person likes.
 
 **R-3803** Operations: New Folder, Rename, Move (drag and drop, or Move To…), Flatten (every media file from all subfolders moved up into the folder; the emptied subfolders go to the Trash), Remove Subfolders (each chosen subfolder's contents moved up one level; the emptied subfolder goes to the Trash), Merge Folders (one folder's contents moved into another; the emptied folder goes to the Trash), Move to Trash, and the automatic sorts: by Date (year, then month), by Event, by Source, by Subject (R-3706), by Person (R-3906), screenshots apart from photos, and by Place.
 

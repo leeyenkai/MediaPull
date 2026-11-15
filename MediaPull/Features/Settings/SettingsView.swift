@@ -150,7 +150,7 @@ struct GeneralSettings: View {
                 }
             }
             Section("Saving") {
-                Picker("SaveLayout for new folders", selection: $preferences.defaultLayout) {
+                Picker("Layout for new folders", selection: $preferences.defaultLayout) {
                     ForEach(SaveLayout.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 Text("Archive keeps a small JSON file next to each item with its caption, date, source and post grouping, in the format gallery-dl uses. Media-library and archiving tools can import these folders with their details intact.")

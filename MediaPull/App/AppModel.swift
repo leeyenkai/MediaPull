@@ -46,6 +46,8 @@ final class AppModel {
     var libraryRevision = 0
     @ObservationIgnored private var windowRefs: [UUID: WeakWindow] = [:]
     @ObservationIgnored lazy var engines = EngineService(app: self)
+    /// Every site the bundled gallery-dl supports, with names, sign-in and media switches (SPEC R-1111b).
+    @ObservationIgnored lazy var sites = SiteCatalogue.load(from: Bundle.main.url(forResource: "SiteCatalogue", withExtension: "json"))
 
     struct WeakWindow {
         weak var model: WindowModel?
@@ -274,9 +276,18 @@ final class AppModel {
         return SaveTarget(folder: folder, layout: layout, autoSubfolders: isRoot, accountUsername: accountUsername)
     }
 
-    var lastSaveFolderURL: URL? {
-        preferences.lastSaveFolder.map { URL(fileURLWithPath: $0, isDirectory: true) }
+    /// Recently used save folders that are not library folders and still exist.
+    var recentSaveFolders: [URL] {
+        preferences.recentSaveFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            .filter { url in !roots.contains { $0.path == url.path } && FileManager.default.fileExists(atPath: url.path) }
     }
+
+    func destination(for folder: URL) -> SaveDestination {
+        SaveDestination(url: folder, layout: root(containing: folder)?.layout ?? preferences.defaultLayout)
+    }
+
+    /// The folder the front window saves into (D-70).
+    var saveFolder: URL? { frontWindow?.saveFolder ?? defaultRoot?.url }
 
     /// Starts a save job for items from a window (SPEC section 14).
     @discardableResult
@@ -288,7 +299,9 @@ final class AppModel {
         job.total = items.count
         job.destination = folder
         jobs.add(job)
-        if !SelfTestRunner.isActive { preferences.lastSaveFolder = folder.path }
+        if !SelfTestRunner.isActive {
+            preferences.recentSaveFolders = Array(([folder.path] + preferences.recentSaveFolders.filter { $0 != folder.path }).prefix(10))
+        }
         window?.markQueued(items.map(\.id))
         job.retry = { [weak self, weak window, weak job] in
             guard let self, let job else { return }

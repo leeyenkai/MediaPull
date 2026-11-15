@@ -20,11 +20,16 @@ struct PullDraft: Identifiable, Equatable {
     var dateWindow: InstagramDateWindow = .allTime
     var dateFrom = Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date()
     var dateTo = Date()
-    var rootID: UUID?
     var folderName: String
     var layout: SaveLayout
     var incremental = true
     var pacing: PacingPreset
+}
+
+/// The folder a download goes into, with the layout of the library folder holding it (D-70); any folder on the Mac works.
+struct SaveDestination {
+    var url: URL
+    var layout: SaveLayout
 }
 
 struct VideoLookupError: Error, Equatable {
@@ -170,7 +175,7 @@ final class EngineService {
 
     func draft(username: String, postURL: URL? = nil) -> PullDraft {
         let prefs = app.preferences
-        var draft = PullDraft(username: username, postURL: postURL, content: prefs.defaultContent, rootID: app.defaultRoot?.id,
+        var draft = PullDraft(username: username, postURL: postURL, content: prefs.defaultContent,
                               folderName: username, layout: app.defaultRoot?.layout ?? prefs.defaultLayout, pacing: prefs.pacing)
         if postURL != nil { draft.content = [.posts] }
         return draft
@@ -185,7 +190,6 @@ final class EngineService {
             draft.content = options.content
             draft.layout = options.layout
             draft.pacing = options.pacing
-            if let root = options.rootID, app.roots.contains(where: { $0.id == root }) { draft.rootID = root }
         }
         draft.incremental = info.lastPullAt != nil
     }
@@ -202,9 +206,9 @@ final class EngineService {
         job.subtitle = draft.hashtag != nil ? "Posts with this hashtag"
             : InstagramContent.allCases.filter { draft.content.contains($0) }.map(\.label).joined(separator: ", ")
         app.jobs.add(job)
-        let root = app.roots.first { $0.id == draft.rootID } ?? app.defaultRoot
+        let root = (window?.saveFolder ?? app.defaultRoot?.url).map(app.destination(for:))
         if !scanOnly, root == nil {
-            app.jobs.finish(job, .failed("Choose a library folder first."))
+            app.jobs.finish(job, .failed("Choose where to save first."))
             return job
         }
         if !scanOnly, let root {
@@ -236,7 +240,7 @@ final class EngineService {
         if !scanOnly, draft.hashtag == nil, !draft.username.isEmpty {
             Task {
                 await app.store?.updateAccount(draft.username, options: PullOptions(content: draft.content, layout: draft.layout,
-                                                                                    rootID: root?.id, pacing: draft.pacing))
+                                                                                    rootID: root.flatMap { app.root(containing: $0.url)?.id }, pacing: draft.pacing))
             }
         }
         return job
@@ -265,7 +269,7 @@ final class EngineService {
         }
     }
 
-    private func runPull(job: Job, draft: PullDraft, root: LibraryRootInfo?, scanOnly: Bool, window: WindowModel?, bridge: BridgeClient,
+    private func runPull(job: Job, draft: PullDraft, root: SaveDestination?, scanOnly: Bool, window: WindowModel?, bridge: BridgeClient,
                          resuming: Bool) async
     {
         if case .cancelled = job.state { return }
@@ -473,7 +477,7 @@ final class EngineService {
     }
 
     /// Moves a followers or following list, or the profile, into `<account>/Account details/` with the date in its name.
-    private func fileAccountDocument(_ file: URL, kind: String, root: LibraryRootInfo, folder: String) -> URL? {
+    private func fileAccountDocument(_ file: URL, kind: String, root: SaveDestination, folder: String) -> URL? {
         let directory = root.url.appendingPathComponent(FileNaming.safeTopFolder(folder), isDirectory: true)
             .appendingPathComponent(SaveTarget.accountDetailsFolder, isDirectory: true)
         let formatter = DateFormatter()
@@ -519,7 +523,7 @@ final class EngineService {
     /// into `<root>/<site>/<uploader>/`, with any subtitles, thumbnail and description beside each video (R-3503, R-3505).
     @discardableResult
     func saveVideo(_ info: VideoInfo, pageURL: URL? = nil, format: VideoDownloadFormat, height: Int?, extras: BridgeRequest.Extras = .init(),
-                   root: LibraryRootInfo, window: WindowModel?) -> Job
+                   root: SaveDestination, window: WindowModel?) -> Job
     {
         let job = Job(kind: .stream, title: extras.playlist ? "Playlist: \(info.title)" : info.title)
         job.subtitle = format.label + (format.isAudioOnly ? "" : ", " + (height.map { "\($0)p" } ?? "best resolution"))
@@ -547,7 +551,7 @@ final class EngineService {
     }
 
     private func runVideo(job: Job, url: URL, info: VideoInfo, format: VideoDownloadFormat, height: Int?, extras: BridgeRequest.Extras,
-                          root: LibraryRootInfo, site: String) async
+                          root: SaveDestination, site: String) async
     {
         guard let bridge, let stagingRoot = app.enginePaths?.staging else {
             app.jobs.finish(job, .failed("The download engine is not available."))
@@ -622,7 +626,7 @@ final class EngineService {
     }
 
     /// Saves one downloaded video through the save pipeline, named after its title, in `<site>/<uploader>/`.
-    private func saveVideoFile(_ file: BridgeFile, index: Int, info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: LibraryRootInfo,
+    private func saveVideoFile(_ file: BridgeFile, index: Int, info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: SaveDestination,
                                site: String, job: Job) async -> URL?
     {
         let meta = file.meta
@@ -693,12 +697,17 @@ final class EngineService {
     // MARK: Site extractor
 
     func supportedCategory(for url: URL) async -> String? {
+        await siteInfo(for: url)?.category
+    }
+
+    /// The site gallery-dl recognises at an address and what it offers there; read locally, without a network request.
+    func siteInfo(for url: URL) async -> SiteInfo? {
         guard let bridge else { return nil }
         var request = BridgeRequest(op: "supports")
         request.url = url.absoluteString
         guard let events = try? await bridge.collect(request) else { return nil }
         for event in events {
-            if case let .supports(supported, category, _) = event, supported { return category }
+            if case let .supports(site) = event { return site }
         }
         return nil
     }
@@ -770,11 +779,14 @@ final class EngineService {
     /// Downloads everything gallery-dl finds at `url` into `<root>/<site>/<user or gallery>/`, through the save pipeline.
     /// `range` limits which items ("1-50"); `onlyNew` skips what an earlier download of the same address saved.
     @discardableResult
-    func startGalleryDownload(url: URL, category: String, range: String?, from: Date?, to: Date?, onlyNew: Bool, root: LibraryRootInfo,
-                              window: WindowModel?) -> Job?
+    func startGalleryDownload(url: URL, site: SiteInfo, include: [String], switches: [String: Bool], range: String?, from: Date?, to: Date?,
+                              onlyNew: Bool, root: SaveDestination, window: WindowModel?) -> Job?
     {
+        let category = site.category
+        let siteName = app.sites.name(SiteInfoKey(category: site.category, baseCategory: site.baseCategory))
+        let ownKey = SiteKeys.forSite(site.category, baseCategory: site.baseCategory) != nil
         guard let bridge else { return nil }
-        let job = Job(kind: .pull, title: "Downloading \(url.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? category)")
+        let job = Job(kind: .pull, title: "Downloading from \(siteName)")
         job.subtitle = [category, range.map { "items \($0)" }].compactMap { $0 }.joined(separator: ", ")
         job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(category), isDirectory: true)
         app.jobs.add(job)
@@ -797,6 +809,14 @@ final class EngineService {
             request.cookies = cookieFile.path
             request.staging = staging.path
             request.range = range?.nonEmpty
+            request.category = category
+            if !include.isEmpty { request.include = include }
+            if !switches.isEmpty { request.siteOptions = switches }
+            if let keys = SiteKeys.forSite(site.category, baseCategory: site.baseCategory) {
+                let saved = SiteKeychain.keys(for: site.category, fields: keys.fields)
+                if !saved.isEmpty { request.siteKeys = saved }
+            }
+            request.userAgent = self.app.userAgent
             request.setPacing([1, 3])
             let selector = self.app.preferences.video.selector(av1Decodable: FFmpeg.canDecodeAV1)
             request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort)
@@ -812,6 +832,7 @@ final class EngineService {
             let pipeline = self.app.pipeline()
             var index = 0
             var fatal: String?
+            var blocked: String?
             do {
                 for try await event in bridge.run(request, workingDirectory: staging) {
                     if Task.isCancelled { break }
@@ -820,14 +841,26 @@ final class EngineService {
                         job.found += 1
                     case let .file(file) where file.isInside(staging):
                         index += 1
+                        let ext = file.path.pathExtension.lowercased()
+                        if MediaFormat.fromExtension(ext) == nil, !["mp4", "mov", "m4v", "webm", "mkv"].contains(ext) {
+                            // Archives, documents and other attachments: MediaPull keeps images and videos only.
+                            job.skipped += 1
+                            if job.notes.count < 30 { job.notes.append("Skipped \(file.path.lastPathComponent): not an image or video") }
+                            try? FileManager.default.removeItem(at: file.path)
+                            continue
+                        }
                         let context = EngineContext.from(meta: file.meta, key: file.key, subcategory: file.subcategory, sourceURL: url)
                         let isVideo = ["mp4", "mov", "m4v", "webm", "mkv"].contains(file.path.pathExtension.lowercased())
                         let input = EngineItemInput(context: context, kind: isVideo ? .video : .image,
                                                     engineURL: context.postURL?.absoluteString ?? file.path.absoluteString, thumbURL: nil,
                                                     width: file.meta["width"]?.int, height: file.meta["height"]?.int, isDash: false, fallbackURL: nil)
                         let subject = context.username?.nonEmpty ?? context.title?.nonEmpty ?? url.lastPathComponent.nonEmpty ?? "Gallery"
-                        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true,
-                                                collectionPath: [context.category.nonEmpty ?? category, FileNaming.sanitize(subject, maxBytes: 80)])
+                        var path = [context.category.nonEmpty ?? category, FileNaming.sanitize(subject, maxBytes: 80)]
+                        // Several parts of a profile at once: each in its own folder, like Instagram's posts and reels (D-54).
+                        if include.count > 1, self.app.preferences.typeSubfolders, let part = file.subcategory, include.contains(part) {
+                            path.append(SiteCatalogue.choiceLabel(part))
+                        }
+                        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: path)
                         job.currentItem = file.path.lastPathComponent
                         let (outcome, note) = await pipeline.saveStaged(file.path, item: input.makeItem(discoveryIndex: index), target: target,
                                                                         settings: settings, index: index)
@@ -854,11 +887,20 @@ final class EngineService {
                     case let .progress(received, total, _):
                         if let received, let total, total > 0 { job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))" }
                     case let .error(code, message, _, isFatal):
-                        if isFatal { fatal = self.describe(code: code, message: message) } else if job.notes.count < 30 { job.notes.append(message) }
+                        if isFatal { fatal = GalleryError.describe(self.describe(code: code, message: message), site: siteName, ownKey: ownKey) }
+                        else if job.notes.count < 30 { job.notes.append(message) }
+                    case let .checkpoint(_, _, message):
+                        // A site's limit stops the job: say so instead of finishing with nothing saved.
+                        fatal = GalleryError.describe(message, site: siteName, ownKey: ownKey)
                     case let .policyViolation(method, host, _, reason):
-                        fatal = "MediaPull blocked a \(method) request to \(host): \(reason)"
+                        blocked = "MediaPull blocked a \(method) request to \(host): \(reason)"
                     case let .done(status, errors):
-                        if status == "failed", fatal == nil { fatal = errors.last ?? "The download stopped." }
+                        // gallery-dl can finish "completed" with an error and nothing found, such as a sign-in it needed.
+                        if fatal == nil, status == "failed" || status == "blocked" || job.found == 0, let last = errors.last {
+                            fatal = GalleryError.describe(last, site: siteName, ownKey: ownKey)
+                        } else if status == "failed" || status == "blocked", fatal == nil {
+                            fatal = "The download stopped."
+                        }
                     default:
                         if job.state != .running { job.state = .running }
                     }
@@ -866,6 +908,8 @@ final class EngineService {
             } catch {
                 fatal = error.localizedDescription
             }
+            // A blocked request explains a failure better than the error the site then returns.
+            if let blocked { fatal = blocked }
             self.app.libraryRevision += 1
             if Task.isCancelled {
                 self.app.jobs.finish(job, .cancelled)

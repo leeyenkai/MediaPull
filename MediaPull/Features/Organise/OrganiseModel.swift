@@ -312,7 +312,6 @@ final class OrganiseModel {
     /// Opens the default library folder, in place, the first time Organise is shown (D-68).
     func prepare() {
         if source.root == nil, let library = app.defaultRoot?.url { open(library) }
-        if target.root == nil { target.root = source.root }
     }
 
     var recentFolders: [URL] {
@@ -324,22 +323,28 @@ final class OrganiseModel {
     var destination: URL? { mode == .inPlace ? source.folder : targetFolder }
     var targetFolder: URL? { target.folder ?? target.root }
 
+    /// Opens a folder in the source or target pane. The target is opt-in and survives a change of source (D-68);
+    /// a target that is the source folder itself means in place.
     func open(_ folder: URL, in pane: OrganisePane? = nil) {
         let pane = pane ?? source
-        pane.root = folder
-        if pane.role == .source {
+        let same = { (a: URL?, b: URL?) in a?.standardizedFileURL.path == b?.standardizedFileURL.path }
+        if pane.role == .target {
+            target.root = same(folder, source.root) ? nil : folder
+        } else {
+            source.root = folder
             var recent = app.preferences.recentOrganiseFolders.filter { $0 != folder.path }
             recent.insert(folder.path, at: 0)
             app.preferences.recentOrganiseFolders = Array(recent.prefix(10))
-            // A folder outside the library is copied into it by default: that is how media is imported (D-68).
-            // A library folder is organised in place.
-            if app.root(containing: folder) == nil, let library = app.defaultRoot?.url {
-                moveToTarget = false
-                if target.root.map({ app.root(containing: $0) == nil }) ?? true { target.root = library }
-            } else {
-                target.root = folder
-            }
+            if same(target.root, folder) { target.root = nil }
         }
+        pending = nil
+        updateAnalysisFolders()
+    }
+
+    /// No target: sorts make folders inside the source folder.
+    func clearTarget() {
+        target.root = nil
+        pending = nil
         updateAnalysisFolders()
     }
 

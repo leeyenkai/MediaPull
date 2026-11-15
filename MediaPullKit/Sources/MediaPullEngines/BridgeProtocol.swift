@@ -136,7 +136,8 @@ public enum BridgeEvent: Sendable {
     case error(code: String, message: String, key: String?, fatal: Bool)
     case policyViolation(method: String, host: String, path: String, reason: String)
     case log(level: String, message: String)
-    case supports(supported: Bool, category: String?, subcategory: String?)
+    /// The site gallery-dl recognises at an address, or nil when it does not.
+    case supports(SiteInfo?)
     case done(status: String, errors: [String])
     case unknown(String)
 
@@ -228,7 +229,13 @@ public enum BridgeEvent: Sendable {
         case "log":
             return .log(level: string("level") ?? "info", message: string("message") ?? "")
         case "supports":
-            return .supports(supported: value["supported"]?.bool ?? false, category: string("category"), subcategory: string("subcategory"))
+            guard value["supported"]?.bool == true, let category = string("category") else { return .supports(nil) }
+            func strings(_ key: String) -> [String] {
+                if case let .array(list) = value[key] ?? .null { return list.compactMap(\.string) }
+                return []
+            }
+            return .supports(SiteInfo(category: category, subcategory: string("subcategory") ?? "", baseCategory: string("basecategory") ?? "",
+                                      root: string("root").flatMap(URL.init(string:)), choices: strings("choices"), defaults: strings("defaults")))
         case "done":
             var errors: [String] = []
             if case let .array(list) = value["errors"] ?? .null { errors = list.compactMap(\.string) }
@@ -236,6 +243,28 @@ public enum BridgeEvent: Sendable {
         default:
             return .unknown(type)
         }
+    }
+}
+
+/// What gallery-dl offers at an address (SPEC R-1111b): the site, the kind of page, and for profile pages the parts it can
+/// download (gallery, scraps, likes...) with the ones it downloads by default.
+public struct SiteInfo: Sendable, Equatable {
+    public var category: String
+    public var subcategory: String
+    public var baseCategory: String
+    public var root: URL?
+    public var choices: [String]
+    public var defaults: [String]
+
+    public init(category: String, subcategory: String, baseCategory: String = "", root: URL? = nil, choices: [String] = [],
+                defaults: [String] = [])
+    {
+        self.category = category
+        self.subcategory = subcategory
+        self.baseCategory = baseCategory
+        self.root = root
+        self.choices = choices
+        self.defaults = defaults
     }
 }
 
@@ -299,6 +328,12 @@ public struct BridgeRequest: Encodable, Sendable {
     public var urls: [String]?
     public var username: String?
     public var include: [String]?
+    /// The gallery-dl site an address belongs to, for per-site choices (SPEC R-1111b).
+    public var category: String?
+    /// Per-site switches such as videos or retweets; the bridge only passes on known media switches.
+    public var siteOptions: [String: Bool]?
+    /// The person's own API keys for the site (from the Keychain); sent to the bridge on standard input only.
+    public var siteKeys: [String: String]?
     public var cookies: String?
     public var staging: String?
     public var knownIDs: String?
@@ -328,12 +363,14 @@ public struct BridgeRequest: Encodable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case v, op, url, urls, username, include, cookies, staging, pacing, video, extras, range, cursor, filter, referer, key, wheel, target, paths
+        case v, op, url, urls, username, include, category, cookies, staging, pacing, video, extras, range, cursor, filter, referer, key, wheel, target, paths
         case knownIDs = "known_ids"
         case stopAfterKnown = "stop_after_known"
         case dateFrom = "date_from"
         case dateTo = "date_to"
         case userAgent = "user_agent"
+        case siteOptions = "site_options"
+        case siteKeys = "site_keys"
     }
 }
 

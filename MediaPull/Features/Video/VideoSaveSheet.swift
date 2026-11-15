@@ -11,7 +11,6 @@ struct VideoForm: View {
     @State private var failure: String?
     @State private var format: VideoDownloadFormat = .bestMP4
     @State private var height: Int?
-    @State private var rootID: UUID?
     @State private var thumbnail: CGImage?
     @State private var extras = BridgeRequest.Extras()
     @State private var subtitleChoice = SubtitleChoice.none
@@ -54,7 +53,7 @@ struct VideoForm: View {
                         }
                     }
                 }
-                DestinationPicker(rootID: $rootID)
+                SaveFolderRow(model: model)
                 DisclosureGroup("More Options", isExpanded: $showMore) { moreOptions.padding(.top, 4) }
                 Text(summary(info)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
@@ -116,13 +115,12 @@ struct VideoForm: View {
         }
     }
 
-    private var root: LibraryRootInfo? { app.roots.first { $0.id == rootID } }
+    private var root: SaveDestination? { model.saveFolder.map(app.destination(for:)) }
 
     private func lookUp() async {
         info = nil
         failure = nil
         height = nil
-        rootID = app.lastSaveFolderURL.flatMap { app.root(containing: $0)?.id } ?? app.defaultRoot?.id
         extras.playlist = Self.looksLikeList(url)
         switch await app.engines.videoInfo(for: url) {
         case let .success(found):
@@ -193,7 +191,7 @@ struct VideoForm: View {
         }
         if let root {
             let site = info.webpageURL.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? info.extractor
-            parts.append("Saved in \(root.name)/\(site)/\(extras.playlist ? "<channel>" : info.uploader ?? "Videos").")
+            parts.append("Saved in \(root.url.lastPathComponent)/\(site)/\(extras.playlist ? "<channel>" : info.uploader ?? "Videos").")
         }
         return parts.joined(separator: " ")
     }

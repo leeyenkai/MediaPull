@@ -61,6 +61,17 @@ final class LibraryModel: MediaGridOwner {
         didSet { if selectedFolder != oldValue { reload(); watch() } }
     }
 
+    /// A save folder outside the library, shown under the library folders until replaced or removed (D-70).
+    var otherFolder: URL?
+
+    /// Whether the folder is inside a library folder or the other folder.
+    func shows(_ folder: URL) -> Bool {
+        if app.root(containing: folder) != nil { return true }
+        guard let other = otherFolder?.standardizedFileURL.path else { return false }
+        let path = folder.standardizedFileURL.path
+        return path == other || path.hasPrefix(other + "/")
+    }
+
     var files: [LibraryFile] = []
     /// The files with what analysis knows about them, and the sections the sort and filters produce (section 37).
     var entries: [MediaEntry] = []

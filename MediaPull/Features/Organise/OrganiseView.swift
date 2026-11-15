@@ -30,7 +30,20 @@ struct OrganiseFolderPane: View {
     @Bindable var organise: OrganiseModel
     @Bindable var pane: OrganisePane
     @State private var dropTargeted = false
+    @State private var headerTargeted = false
     private var app: AppModel { .shared }
+
+    private func openDropped(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        Task {
+            if let data = await provider.loadData(type: UTType.fileURL.identifier), let url = URL(dataRepresentation: data, relativeTo: nil),
+               (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            {
+                organise.open(url, in: pane)
+            }
+        }
+        return true
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +51,9 @@ struct OrganiseFolderPane: View {
                        model: model) {
                 FolderMenu(organise: organise, pane: pane)
             }
+            // A folder dropped on the header opens in this pane, whatever it shows now.
+            .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: headerTargeted ? 2 : 0).allowsHitTesting(false))
+            .onDrop(of: [.fileURL], isTargeted: $headerTargeted) { openDropped($0) }
             Divider()
             if let root = pane.root {
                 VStack(spacing: 0) {
@@ -67,10 +83,12 @@ struct OrganiseFolderPane: View {
                     }
                     .frame(minHeight: 160)
                 }
+            } else if pane.role == .target {
+                NoTargetView(organise: organise, pane: pane)
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "folder.badge.plus").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
-                    Text(pane.role == .source ? "Choose a folder to organise" : "Choose where organised media goes").font(.headline)
+                    Text("Choose a folder to organise").font(.headline)
                     Button("Choose Folder…") { organise.chooseFolder(for: pane) }.buttonStyle(.borderedProminent)
                     Text("Or drop a folder here from Finder.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -79,15 +97,7 @@ struct OrganiseFolderPane: View {
         }
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: dropTargeted ? 2 : 0).allowsHitTesting(false))
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-            guard pane.root == nil, let provider = providers.first else { return false }
-            Task {
-                if let data = await provider.loadData(type: UTType.fileURL.identifier), let url = URL(dataRepresentation: data, relativeTo: nil),
-                   (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-                {
-                    organise.open(url, in: pane)
-                }
-            }
-            return true
+            pane.root == nil ? openDropped(providers) : false
         }
         .onChange(of: app.analysis.revision) { _, _ in pane.reattach() }
     }
@@ -97,6 +107,36 @@ struct OrganiseFolderPane: View {
         if pane.subfolderCount > 0 { parts.append("\(pane.subfolderCount) folder\(pane.subfolderCount == 1 ? "" : "s")") }
         if !pane.selection.isEmpty { parts.append("\(pane.selection.count) selected") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// The Target pane before a target is chosen: sorting happens in place, and a target is one click away (D-68).
+struct NoTargetView: View {
+    @Bindable var organise: OrganiseModel
+    @Bindable var pane: OrganisePane
+    private var app: AppModel { .shared }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
+            Text("Organising in place").font(.headline)
+            Text("Sorts make folders inside the source folder. Choose a target folder to leave the source as it is.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Choose Target Folder…") { organise.chooseFolder(for: pane) }.buttonStyle(.borderedProminent)
+            if let library = app.defaultRoot, let source = organise.source.root, app.root(containing: source) == nil {
+                Button("Copy into “\(library.name)”") {
+                    organise.moveToTarget = false
+                    organise.open(library.url, in: pane)
+                }
+                .help("Import: organised copies go into the library and the source stays as it is")
+            }
+            Text("Or drop a folder here from Finder.").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -117,13 +157,13 @@ struct FolderMenu: View {
                     ForEach(recent.prefix(6), id: \.self) { folder in Button(folder.lastPathComponent) { organise.open(folder, in: pane) } }
                 }
             }
-            if pane.role == .target, let source = organise.source.root {
-                Button("Same as Source (In Place)") { organise.open(source, in: pane) }
+            if pane.role == .target, pane.root != nil {
+                Button("None (Organise In Place)") { organise.clearTarget() }
             }
             Divider()
             Button("Other Folder…") { organise.chooseFolder(for: pane) }
         } label: {
-            Label(pane.root?.lastPathComponent ?? "Choose Folder", systemImage: "folder")
+            Label(pane.root?.lastPathComponent ?? (pane.role == .target ? "None" : "Choose Folder"), systemImage: "folder")
                 .labelStyle(.titleAndIcon)
         }
         .menuStyle(.borderlessButton)

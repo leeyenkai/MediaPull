@@ -123,7 +123,7 @@ final class VideoEditorModel {
                 item.variants = [variant]
                 item.bestID = variant.id
                 window.customNames[id] = stem
-                guard let destination = app.defaultRoot?.url else {
+                guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
                     return
                 }
@@ -184,7 +184,7 @@ final class VideoEditorModel {
                 item.variants = [variant]
                 item.bestID = variant.id
                 if hasNameChange { window.customNames[id] = cleanName }
-                guard let destination = app.defaultRoot?.url else {
+                guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
                     return
                 }
@@ -345,7 +345,7 @@ struct VideoEditorView: View {
         } else {
             Button("Keep Name Only") { model.keepNameOnly() }
                 .disabled(!model.hasNameChange || model.selection != nil)
-            Button("Save Trimmed to Library") { Task { await model.saveTrim(replacing: false) } }
+            Button("Save Trimmed to “\(model.window?.saveFolderName ?? "Library")”") { Task { await model.saveTrim(replacing: false) } }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.selection == nil)
         }

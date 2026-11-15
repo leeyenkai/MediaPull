@@ -270,21 +270,12 @@ struct ExtractedStatusBar: View {
                     Text(job.title).font(.caption).lineLimit(1)
                 }
             }
-            Menu {
-                Button("Save to Library") { model.saveToLibrary() }
-                if let last = app.lastSaveFolderURL {
-                    Button("Save to \(last.lastPathComponent)") { model.saveToLastFolder() }
-                }
-                Button("Save to…") { model.saveTo() }
-            } label: {
-                Text(model.selection.isEmpty ? "Save" : "Save \(model.selection.count)")
-            } primaryAction: {
-                model.saveToLibrary()
-            }
-            .menuStyle(.borderedButton)
-            .fixedSize()
-            .disabled(model.selection.isEmpty)
-            .help("Save the selected items to your library (⌘S)")
+            SaveFolderMenu(model: model)
+            Button(model.selection.isEmpty ? "Save" : "Save \(model.selection.count)") { model.saveItems() }
+                .buttonStyle(.borderedProminent)
+                .fixedSize()
+                .disabled(model.selection.isEmpty)
+                .help("Save the selected items to “\(model.saveFolderName)” (⌘S)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

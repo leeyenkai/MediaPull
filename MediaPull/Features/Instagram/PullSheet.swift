@@ -22,7 +22,7 @@ struct InstagramForm: View {
                     Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
-                        .disabled(!canStart || draft.rootID == nil)
+                        .disabled(!canStart || model.saveFolder == nil)
                 }
             }
             if !app.engines.signedIn {
@@ -76,7 +76,7 @@ struct InstagramForm: View {
             Toggle("Sort into folders by type (posts, reels, stories…)", isOn: Binding(
                 get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 }
             ))
-            DestinationPicker(rootID: $draft.rootID)
+            SaveFolderRow(model: model)
             HStack {
                 Picker("Pace", selection: $draft.pacing) {
                     ForEach(PacingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -94,7 +94,7 @@ struct InstagramForm: View {
                     Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
-                        .disabled(!canStart || draft.rootID == nil)
+                        .disabled(!canStart || model.saveFolder == nil)
                 }
             }
         }
@@ -139,30 +139,15 @@ struct FlowToggles<Item: Hashable>: View {
     }
 }
 
-/// The library folder a download goes into; any folder on the Mac can be added as one.
-struct DestinationPicker: View {
-    @Binding var rootID: UUID?
-    private var app: AppModel { .shared }
+/// Where downloads go: the window's save folder (D-70), changed here or in the Library pane.
+struct SaveFolderRow: View {
+    @Bindable var model: WindowModel
 
     var body: some View {
-        Picker("Save into", selection: Binding(get: { rootID }, set: { value in
-            if value == Self.addFolderTag { addFolder() } else { rootID = value }
-        })) {
-            ForEach(app.roots) { root in Label(root.name, systemImage: "folder").tag(Optional(root.id)) }
-            Divider()
-            Text("Other Folder…").tag(Optional(Self.addFolderTag))
-        }
-        .onAppear { if rootID == nil { rootID = app.defaultRoot?.id } }
-    }
-
-    static let addFolderTag = UUID(uuidString: "00000000-0000-0000-0000-00000000A0D0")!
-
-    private func addFolder() {
-        FolderPicker.chooseFolder(title: "Save Downloads Into", prompt: "Choose", start: AppModel.suggestedRootURL, window: nil) { url in
-            guard let url else { return }
-            Task {
-                await app.addRoot(url)
-                rootID = app.root(containing: url)?.id
+        LabeledContent("Save into") {
+            HStack(spacing: 0) {
+                SaveFolderMenu(model: model)
+                Spacer(minLength: 0)
             }
         }
     }

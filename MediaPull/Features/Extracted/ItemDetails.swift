@@ -44,7 +44,7 @@ struct ItemDetails: View {
                 }
 
                 HStack {
-                    Button("Save to Library") { model.saveToLibrary([item]) }
+                    Button("Save to “\(model.saveFolderName)”") { model.saveItems([item]) }
                         .buttonStyle(.borderedProminent)
                     Button("Save to…") { model.saveTo([item]) }
                     Button(item.kind == .image ? "Edit" : (item.kind == .video ? "Edit Video" : "Rename")) { model.edit(item.id) }
@@ -97,7 +97,7 @@ struct ItemDetails: View {
 
     private var plannedName: String? {
         let format = model.predictedFormat(item)
-        let root = app.lastSaveFolderURL.flatMap { app.root(containing: $0) } ?? app.defaultRoot
+        let root = model.saveFolder.flatMap { app.root(containing: $0) } ?? app.defaultRoot
         let layout = root?.layout ?? app.preferences.defaultLayout
         let info = FinalFileInfo(format: format, sha256: "0000000000", pixelSize: item.displaySize, duration: item.duration,
                                  sourceURL: item.best?.url, lastModified: nil,

@@ -95,11 +95,8 @@ struct AppCommands: Commands {
                 .disabled(window == nil)
             }
             Divider()
-            Button("Save to Library") { window?.saveToLibrary() }
+            Button(window.map { "Save to “\($0.saveFolderName)”" } ?? "Save") { window?.saveItems() }
                 .keyboardShortcut("s")
-                .disabled(window?.selection.isEmpty ?? true)
-            Button("Save to Last Folder") { window?.saveToLastFolder() }
-                .keyboardShortcut("s", modifiers: [.command, .option])
                 .disabled(window?.selection.isEmpty ?? true)
             Button("Save to…") { window?.saveTo() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])

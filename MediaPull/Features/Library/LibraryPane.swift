@@ -36,7 +36,7 @@ struct LibraryPane: View {
             .padding(.vertical, 8)
             .background(app.preferences.theme.headerBackground)
             Divider()
-            if app.roots.isEmpty {
+            if app.roots.isEmpty, library.otherFolder == nil {
                 NoRootsView(library: library)
             } else {
                 VStack(spacing: 0) {
@@ -82,7 +82,7 @@ struct FolderTree: View {
         // Reading the revisions makes the tree rebuild its nodes (and re-read folders) after changes,
         // while expansion state, keyed by path, is kept.
         let _ = (library.treeRevision, app.libraryRevision)
-        let rootNodes = app.roots.map { FolderNode(url: $0.url, name: $0.name, isRoot: true, rootID: $0.id) }
+        let rootNodes = topNodes
         List(selection: Binding(get: { library.selectedFolder?.path }, set: { path in
             library.selectedFolder = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
         })) {
@@ -98,10 +98,20 @@ struct FolderTree: View {
             if library.selectedFolder == nil { library.selectedFolder = app.defaultRoot?.url }
         }
         .onChange(of: app.roots.map(\.id)) { _, _ in
-            if library.selectedFolder == nil || app.root(containing: library.selectedFolder!) == nil {
+            if let other = library.otherFolder, app.root(containing: other) != nil { library.otherFolder = nil }
+            if library.selectedFolder.map({ !library.shows($0) }) ?? true {
                 library.selectedFolder = app.defaultRoot?.url
             }
         }
+    }
+
+    /// The library folders, then a save folder chosen outside the library (D-70).
+    private var topNodes: [FolderNode] {
+        var nodes = app.roots.map { FolderNode(url: $0.url, name: $0.name, isRoot: true, rootID: $0.id) }
+        if let other = library.otherFolder, app.root(containing: other) == nil {
+            nodes.append(FolderNode(url: other, name: other.lastPathComponent, isRoot: true, rootID: nil))
+        }
+        return nodes
     }
 }
 
@@ -118,7 +128,7 @@ struct FolderRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: node.isRoot ? (root?.isDefault == true ? "folder.fill.badge.person.crop" : "folder.fill") : "folder")
-                .foregroundStyle(node.isRoot ? Color.accentColor : .secondary)
+                .foregroundStyle(node.isRoot && root != nil ? Color.accentColor : .secondary)
             if library.renaming == node.url.path, !node.isRoot {
                 TextField("Name", text: $draft)
                     .textFieldStyle(.roundedBorder)
@@ -131,6 +141,14 @@ struct FolderRow: View {
                     }
             } else {
                 Text(node.name).lineLimit(1)
+            }
+            if node.isRoot, root == nil {
+                Spacer(minLength: 4)
+                Text("Not in Library")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .background(.quaternary, in: Capsule())
             }
             if node.isRoot, let root {
                 Spacer(minLength: 4)
@@ -169,7 +187,7 @@ struct FolderRow: View {
                         }
                     }
                 }
-                Menu("SaveLayout") {
+                Menu("Layout") {
                     ForEach(SaveLayout.allCases, id: \.self) { layout in
                         Button(layout.label + (root.layout == layout ? " ✓" : "")) {
                             Task {
@@ -180,6 +198,18 @@ struct FolderRow: View {
                     }
                 }
                 Button("Remove from Library") { Task { await app.removeRoot(root.id) } }
+            } else if node.isRoot {
+                Divider()
+                Button("Add to Library") {
+                    Task {
+                        await app.addRoot(node.url)
+                        library.otherFolder = nil
+                    }
+                }
+                Button("Stop Showing") {
+                    library.otherFolder = nil
+                    if library.selectedFolder.map({ !library.shows($0) }) ?? true { library.selectedFolder = app.defaultRoot?.url }
+                }
             } else {
                 Button("Rename") { library.rename(node.url) }
                 Divider()
@@ -256,7 +286,7 @@ struct FolderContents: View {
                     Button("Save \(model.selection.count) Here") { app.save(model.selectedItems, from: model, to: folder) }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
-                        .help("Save the selected extracted items into this folder")
+                        .help("Save the selected extracted items into this folder (⌘S)")
                 }
             }
             .padding(.horizontal, 12)

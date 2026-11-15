@@ -484,32 +484,43 @@ final class WindowModel: Identifiable, MediaGridOwner {
         gridRevision += 1
     }
 
-    func saveToLibrary(_ items: [MediaItem]? = nil) {
+    // MARK: Save folder (D-70)
+
+    /// Where Collect saves: the folder selected in the Library pane, the default library folder until another is chosen.
+    var saveFolder: URL? { library.selectedFolder ?? app.defaultRoot?.url }
+
+    var saveFolderName: String { saveFolder?.lastPathComponent ?? "Library" }
+
+    /// Makes `folder` the save folder. A folder outside the library is shown in the Library pane without joining the library.
+    func useSaveFolder(_ folder: URL) {
+        if app.root(containing: folder) == nil { library.otherFolder = folder }
+        library.selectedFolder = folder
+    }
+
+    func chooseSaveFolder(then action: (() -> Void)? = nil) {
+        FolderPicker.chooseFolder(title: "Choose Where to Save", prompt: "Choose", start: saveFolder, window: hostWindow) { [weak self] url in
+            guard let self, let url else { return }
+            self.useSaveFolder(url)
+            action?()
+        }
+    }
+
+    /// Saves the items (the selection by default) into the save folder.
+    func saveItems(_ items: [MediaItem]? = nil) {
         let chosen = items ?? selectedItems
         guard !chosen.isEmpty else { return }
-        guard let root = app.defaultRoot else {
-            library.promptForRoot()
+        guard let folder = saveFolder else {
+            chooseSaveFolder { [weak self] in self?.saveItems(chosen) }
             return
         }
-        app.save(chosen, from: self, to: root.url)
+        app.save(chosen, from: self, to: folder)
     }
 
-    func saveToLastFolder() {
-        guard let folder = app.lastSaveFolderURL ?? app.defaultRoot?.url else {
-            saveTo()
-            return
-        }
-        app.save(selectedItems, from: self, to: folder)
-    }
-
+    /// Picks any folder, makes it the save folder and saves there.
     func saveTo(_ items: [MediaItem]? = nil) {
         let chosen = items ?? selectedItems
         guard !chosen.isEmpty else { return }
-        FolderPicker.chooseFolder(title: "Save \(chosen.count) item\(chosen.count == 1 ? "" : "s")", prompt: "Save Here",
-                                  start: app.lastSaveFolderURL ?? app.defaultRoot?.url, window: hostWindow) { [weak self] url in
-            guard let self, let url else { return }
-            self.app.save(chosen, from: self, to: url)
-        }
+        chooseSaveFolder { [weak self] in self?.saveItems(chosen) }
     }
 
     func save(_ ids: [String], to folder: URL) {
@@ -916,13 +927,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         let chosen = visible.filter { ids.contains($0.id) }
         let menu = NSMenu()
         let count = chosen.count == 1 ? "" : " \(chosen.count) Items"
-        menu.addItem(ActionMenuItem("Save\(count) to Library") { [weak self] in self?.saveToLibrary(chosen) })
-        if let last = app.lastSaveFolderURL {
-            menu.addItem(ActionMenuItem("Save\(count) to \(last.lastPathComponent)") { [weak self] in
-                guard let self else { return }
-                self.app.save(chosen, from: self, to: last)
-            })
-        }
+        menu.addItem(ActionMenuItem("Save\(count) to “\(saveFolderName)”") { [weak self] in self?.saveItems(chosen) })
         menu.addItem(ActionMenuItem("Save\(count) to…") { [weak self] in self?.saveTo(chosen) })
         menu.addItem(.separator())
         if let item = chosen.first, chosen.count == 1 {

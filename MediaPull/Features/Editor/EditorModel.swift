@@ -268,7 +268,7 @@ final class EditorModel {
     func saveItem(to folder: URL?) -> Bool {
         guard case let .item(id) = request.subject, let window, let item = window.itemsByID[id] else { return false }
         if hasNameChange { window.customNames[id] = cleanName } else if name.isEmpty { window.customNames[id] = nil }
-        guard let destination = folder ?? app.defaultRoot?.url else {
+        guard let destination = folder ?? window.saveFolder else {
             message = "Choose a library folder first."
             return false
         }

@@ -26,7 +26,7 @@ final class EngineTests: XCTestCase {
             request.url = "https://www.pinterest.com/pin/123456/"
             let events = try await client.collect(request)
             let supported = events.contains { event in
-                if case let .supports(found, category, _) = event { return found && category == "pinterest" }
+                if case let .supports(site) = event { return site?.category == "pinterest" }
                 return false
             }
             XCTAssertTrue(supported, "supports event missing: \(events)")

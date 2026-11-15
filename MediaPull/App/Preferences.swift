@@ -26,7 +26,8 @@ final class Preferences {
     var archiveWebTemplate: String { didSet { set(archiveWebTemplate, "archiveWebTemplate") } }
     var plainTemplate: String { didSet { set(plainTemplate, "plainTemplate") } }
     var onboardingDone: Bool { didSet { set(onboardingDone, "onboardingDone") } }
-    var lastSaveFolder: String? { didSet { set(lastSaveFolder, "lastSaveFolder") } }
+    /// Folders saved to recently, newest first, for the save folder menu (D-70).
+    var recentSaveFolders: [String] { didSet { set(recentSaveFolders, "recentSaveFolders") } }
     var defaultContent: Set<InstagramContent> { didSet { set(defaultContent.map(\.rawValue).sorted(), "defaultContent") } }
     var autoProbe: Bool { didSet { set(autoProbe, "autoProbe") } }
     var verboseEngineLog: Bool { didSet { set(verboseEngineLog, "verboseEngineLog") } }
@@ -55,9 +56,11 @@ final class Preferences {
     var faceMatchAdjustment: Double { didSet { set(faceMatchAdjustment, "faceMatchAdjustment") } }
     var groupPhotoPlacement: GroupPhotoPlacement { didSet { set(groupPhotoPlacement.rawValue, "groupPhotoPlacement") } }
     var sortUnnamedPeople: Bool { didSet { set(sortUnnamedPeople, "sortUnnamedPeople") } }
-    var organiseLayout: OrganiseLayout { didSet { set(organiseLayout.rawValue, "organiseLayout") } }
     var undoHistoryDays: Int { didSet { set(undoHistoryDays, "undoHistoryDays") } }
     var recentOrganiseFolders: [String] { didSet { set(recentOrganiseFolders, "recentOrganiseFolders") } }
+    /// The parts of a profile and the site switches last chosen per gallery-dl site (SPEC R-1111b).
+    var galleryChoices: [String: [String]] { didSet { set(galleryChoices, "galleryChoices") } }
+    var gallerySwitches: [String: [String: Bool]] { didSet { set(gallerySwitches, "gallerySwitches") } }
     var libraryQuery: LibraryQuery { didSet { set(try? JSONEncoder().encode(libraryQuery), "libraryQuery") } }
     var libraryIncludeSubfolders: Bool { didSet { set(libraryIncludeSubfolders, "libraryIncludeSubfolders") } }
     var theme: AppTheme {
@@ -87,7 +90,7 @@ final class Preferences {
         archiveWebTemplate = d.string(forKey: "archiveWebTemplate") ?? NameTemplate.archiveWeb.pattern
         plainTemplate = d.string(forKey: "plainTemplate") ?? NameTemplate.plain.pattern
         onboardingDone = d.bool(forKey: "onboardingDone")
-        lastSaveFolder = d.string(forKey: "lastSaveFolder")
+        recentSaveFolders = d.array(forKey: "recentSaveFolders") as? [String] ?? []
         let content = (d.array(forKey: "defaultContent") as? [String])?.compactMap(InstagramContent.init(rawValue:))
         defaultContent = Set(content ?? Array(InstagramContent.defaults))
         autoProbe = d.object(forKey: "autoProbe") as? Bool ?? true
@@ -110,9 +113,10 @@ final class Preferences {
         faceMatchAdjustment = d.object(forKey: "faceMatchAdjustment") as? Double ?? 0
         groupPhotoPlacement = GroupPhotoPlacement(rawValue: d.string(forKey: "groupPhotoPlacement") ?? "") ?? .everyPerson
         sortUnnamedPeople = d.bool(forKey: "sortUnnamedPeople")
-        organiseLayout = OrganiseLayout(rawValue: d.string(forKey: "organiseLayout") ?? "") ?? .inPlace
         undoHistoryDays = d.object(forKey: "undoHistoryDays") as? Int ?? 30
         recentOrganiseFolders = d.array(forKey: "recentOrganiseFolders") as? [String] ?? []
+        galleryChoices = d.dictionary(forKey: "galleryChoices") as? [String: [String]] ?? [:]
+        gallerySwitches = d.dictionary(forKey: "gallerySwitches") as? [String: [String: Bool]] ?? [:]
         libraryQuery = d.data(forKey: "libraryQuery").flatMap { try? JSONDecoder().decode(LibraryQuery.self, from: $0) } ?? LibraryQuery()
         libraryIncludeSubfolders = d.bool(forKey: "libraryIncludeSubfolders")
         theme = AppTheme(rawValue: d.string(forKey: "theme") ?? "") ?? .system
@@ -147,12 +151,4 @@ final class Preferences {
         settings.extractorVersion = extractorVersion
         return settings
     }
-}
-
-/// The two layouts of the Organise section (R-3802).
-enum OrganiseLayout: String, CaseIterable {
-    case inPlace, sortInto
-
-    var label: String { self == .inPlace ? "In Place" : "Sort Into" }
-    var symbol: String { self == .inPlace ? "rectangle.grid.2x2" : "rectangle.split.2x1" }
 }

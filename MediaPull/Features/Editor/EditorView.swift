@@ -114,7 +114,7 @@ struct EditorView: View {
             .disabled(!model.hasImageEdits && !model.hasNameChange)
         case .item:
             Button("Save to…") {
-                FolderPicker.chooseFolder(title: "Save Edited Item", prompt: "Save Here", start: app.lastSaveFolderURL ?? app.defaultRoot?.url,
+                FolderPicker.chooseFolder(title: "Save Edited Item", prompt: "Save Here", start: model.window?.saveFolder,
                                           window: model.window?.hostWindow) { url in
                     guard let url else { return }
                     if model.saveItem(to: url) { dismiss() }
@@ -125,7 +125,7 @@ struct EditorView: View {
                 dismiss()
             }
             .disabled(!model.hasNameChange || model.hasImageEdits)
-            Button("Save to Library") {
+            Button("Save to “\(model.window?.saveFolderName ?? "Library")”") {
                 if model.saveItem(to: nil) { dismiss() }
             }
             .buttonStyle(.borderedProminent)

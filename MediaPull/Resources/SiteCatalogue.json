@@ -1,0 +1,2218 @@
+{
+ "galleryDL": "1.32.19",
+ "options": {
+  "artstation": [
+   {
+    "default": false,
+    "key": "external",
+    "label": "Media on linked sites"
+   },
+   {
+    "default": false,
+    "key": "previews",
+    "label": "Preview images"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "aryion": [
+   {
+    "default": true,
+    "key": "recursive",
+    "label": "Subfolders"
+   }
+  ],
+  "bellazon": [
+   {
+    "default": false,
+    "key": "quoted",
+    "label": "Quoted posts"
+   }
+  ],
+  "bilibili": [
+   {
+    "default": true,
+    "key": "livephoto",
+    "label": "Live Photo videos"
+   }
+  ],
+  "blogger": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "bluesky": [
+   {
+    "default": false,
+    "key": "quoted",
+    "label": "Quoted posts"
+   },
+   {
+    "default": false,
+    "key": "reposts",
+    "label": "Reposts"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "cyberfile": [
+   {
+    "default": true,
+    "key": "recursive",
+    "label": "Subfolders"
+   }
+  ],
+  "danbooru": [
+   {
+    "default": false,
+    "key": "external",
+    "label": "Media on linked sites"
+   }
+  ],
+  "deviantart": [
+   {
+    "default": true,
+    "key": "mature",
+    "label": "Mature content"
+   },
+   {
+    "default": false,
+    "key": "previews",
+    "label": "Preview images"
+   }
+  ],
+  "fansly": [
+   {
+    "default": true,
+    "key": "previews",
+    "label": "Preview images"
+   }
+  ],
+  "flickr": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "foriio": [
+   {
+    "default": true,
+    "key": "audio",
+    "label": "Audio"
+   },
+   {
+    "default": true,
+    "key": "external",
+    "label": "Media on linked sites"
+   },
+   {
+    "default": false,
+    "key": "previews",
+    "label": "Preview images"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "furaffinity": [
+   {
+    "default": false,
+    "key": "external",
+    "label": "Media on linked sites"
+   }
+  ],
+  "gofile": [
+   {
+    "default": true,
+    "key": "recursive",
+    "label": "Subfolders"
+   }
+  ],
+  "instagram": [
+   {
+    "default": false,
+    "key": "audio",
+    "label": "Audio"
+   }
+  ],
+  "itaku": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "joyreactor": [
+   {
+    "default": false,
+    "key": "embeds",
+    "label": "Embedded media"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "khinsider": [
+   {
+    "default": false,
+    "key": "covers",
+    "label": "Covers"
+   }
+  ],
+  "koofr": [
+   {
+    "default": true,
+    "key": "recursive",
+    "label": "Subfolders"
+   }
+  ],
+  "luscious": [
+   {
+    "default": false,
+    "key": "gif",
+    "label": "Animated GIFs"
+   }
+  ],
+  "mastodon": [
+   {
+    "default": false,
+    "key": "cards",
+    "label": "Link cards"
+   },
+   {
+    "default": false,
+    "key": "reblogs",
+    "label": "Reblogs"
+   },
+   {
+    "default": true,
+    "key": "replies",
+    "label": "Replies"
+   }
+  ],
+  "misskey": [
+   {
+    "default": false,
+    "key": "renotes",
+    "label": "Renotes"
+   },
+   {
+    "default": true,
+    "key": "replies",
+    "label": "Replies"
+   }
+  ],
+  "naver-blog": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "newgrounds": [
+   {
+    "default": true,
+    "key": "flash",
+    "label": "Flash originals"
+   }
+  ],
+  "nitter": [
+   {
+    "default": false,
+    "key": "quoted",
+    "label": "Quoted posts"
+   },
+   {
+    "default": false,
+    "key": "retweets",
+    "label": "Retweets"
+   }
+  ],
+  "philomena": [
+   {
+    "default": true,
+    "key": "svg",
+    "label": "SVG versions"
+   }
+  ],
+  "pillowfort": [
+   {
+    "default": false,
+    "key": "external",
+    "label": "Media on linked sites"
+   },
+   {
+    "default": true,
+    "key": "inline",
+    "label": "Inline images"
+   },
+   {
+    "default": false,
+    "key": "reblogs",
+    "label": "Reblogs"
+   }
+  ],
+  "pinterest": [
+   {
+    "default": true,
+    "key": "stories",
+    "label": "Story pins"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "pixeldrain": [
+   {
+    "default": true,
+    "key": "recursive",
+    "label": "Subfolders"
+   }
+  ],
+  "pixiv-novel": [
+   {
+    "default": false,
+    "key": "covers",
+    "label": "Covers"
+   },
+   {
+    "default": false,
+    "key": "embeds",
+    "label": "Embedded media"
+   }
+  ],
+  "reactor": [
+   {
+    "default": false,
+    "key": "gif",
+    "label": "Animated GIFs"
+   }
+  ],
+  "reddit": [
+   {
+    "default": true,
+    "key": "embeds",
+    "label": "Embedded media"
+   },
+   {
+    "default": true,
+    "key": "previews",
+    "label": "Preview images"
+   }
+  ],
+  "sankakucomplex": [
+   {
+    "default": false,
+    "key": "embeds",
+    "label": "Embedded media"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "skeb": [
+   {
+    "default": false,
+    "key": "thumbnails",
+    "label": "Thumbnails"
+   }
+  ],
+  "smugmug": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "tiktok": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "tumblr": [
+   {
+    "default": false,
+    "key": "external",
+    "label": "Media on linked sites"
+   },
+   {
+    "default": true,
+    "key": "inline",
+    "label": "Inline images"
+   }
+  ],
+  "twibooru": [
+   {
+    "default": true,
+    "key": "svg",
+    "label": "SVG versions"
+   }
+  ],
+  "twitter": [
+   {
+    "default": false,
+    "key": "previews",
+    "label": "Preview images"
+   },
+   {
+    "default": false,
+    "key": "quoted",
+    "label": "Quoted posts"
+   },
+   {
+    "default": true,
+    "key": "replies",
+    "label": "Replies"
+   },
+   {
+    "default": false,
+    "key": "retweets",
+    "label": "Retweets"
+   }
+  ],
+  "vsco": [
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "webtoons": [
+   {
+    "default": false,
+    "key": "thumbnails",
+    "label": "Thumbnails"
+   }
+  ],
+  "weibo": [
+   {
+    "default": true,
+    "key": "livephoto",
+    "label": "Live Photo videos"
+   },
+   {
+    "default": false,
+    "key": "retweets",
+    "label": "Retweets"
+   },
+   {
+    "default": true,
+    "key": "videos",
+    "label": "Videos"
+   }
+  ],
+  "xenforo": [
+   {
+    "default": true,
+    "key": "embeds",
+    "label": "Embedded media"
+   },
+   {
+    "default": false,
+    "key": "quoted",
+    "label": "Quoted posts"
+   }
+  ]
+ },
+ "sites": {
+  "2ch": {
+   "auth": "none",
+   "home": "https://2ch.org/",
+   "name": "2ch"
+  },
+  "2chan": {
+   "auth": "none",
+   "home": "https://www.2chan.net/",
+   "name": "Futaba Channel"
+  },
+  "35photo": {
+   "auth": "none",
+   "home": "https://35photo.pro/",
+   "name": "35PHOTO"
+  },
+  "3dbooru": {
+   "auth": "none",
+   "home": "http://behoimi.org/",
+   "name": "3dbooru"
+  },
+  "4archive": {
+   "auth": "none",
+   "home": "https://4archive.org/",
+   "name": "4archive"
+  },
+  "4chan": {
+   "auth": "none",
+   "home": "https://www.4chan.org/",
+   "name": "4chan"
+  },
+  "4chanarchives": {
+   "auth": "none",
+   "home": "https://4chanarchives.com/",
+   "name": "4chanarchives"
+  },
+  "4plebs": {
+   "auth": "none",
+   "home": "https://archive.4plebs.org/",
+   "name": "4plebs"
+  },
+  "500px": {
+   "auth": "none",
+   "home": "https://500px.com/",
+   "name": "500px"
+  },
+  "8chan": {
+   "auth": "none",
+   "home": "https://8chan.moe/",
+   "name": "8chan"
+  },
+  "8kun": {
+   "auth": "none",
+   "home": "https://8kun.top/",
+   "name": "8kun"
+  },
+  "8muses": {
+   "auth": "none",
+   "home": "https://comics.8muses.com/",
+   "name": "8muses"
+  },
+  "94chan": {
+   "auth": "none",
+   "home": "https://94chan.org/",
+   "name": "94chan"
+  },
+  "acidimg": {
+   "auth": "none",
+   "home": "https://acidimg.cc/",
+   "name": "Acidimg"
+  },
+  "adultempire": {
+   "auth": "none",
+   "home": "https://www.adultempire.com/",
+   "name": "Adult Empire"
+  },
+  "agnph": {
+   "auth": "none",
+   "home": "https://agn.ph/",
+   "name": "AGNPH"
+  },
+  "ahottie": {
+   "auth": "none",
+   "home": "https://ahottie.top/",
+   "name": "AHottie"
+  },
+  "aibooru": {
+   "auth": "optional",
+   "home": "https://aibooru.online/",
+   "name": "AIBooru"
+  },
+  "allgirlbooru": {
+   "auth": "none",
+   "home": "https://allgirl.booru.org/",
+   "name": "All girl"
+  },
+  "allporncomic": {
+   "auth": "none",
+   "home": "https://allporncomic.com/",
+   "name": "AllPornComic"
+  },
+  "ao3": {
+   "auth": "optional",
+   "home": "https://archiveofourown.org/",
+   "name": "Archive of Our Own"
+  },
+  "arcalive": {
+   "auth": "none",
+   "home": "https://arca.live/",
+   "name": "Arcalive"
+  },
+  "architizer": {
+   "auth": "none",
+   "home": "https://architizer.com/",
+   "name": "Architizer"
+  },
+  "archivedmoe": {
+   "auth": "none",
+   "home": "https://archived.moe/",
+   "name": "Archived.Moe"
+  },
+  "archiveofsins": {
+   "auth": "none",
+   "home": "https://archiveofsins.com/",
+   "name": "Archive of Sins"
+  },
+  "arena": {
+   "auth": "none",
+   "home": "https://are.na/",
+   "name": "Are.na"
+  },
+  "artstation": {
+   "auth": "none",
+   "home": "https://www.artstation.com/",
+   "name": "ArtStation"
+  },
+  "aryion": {
+   "auth": "optional",
+   "home": "https://aryion.com/",
+   "name": "Eka's Portal"
+  },
+  "atfbooru": {
+   "auth": "optional",
+   "home": "https://booru.allthefallen.moe/",
+   "name": "ATFBooru"
+  },
+  "atfforum": {
+   "auth": "none",
+   "home": "https://allthefallen.moe/forum/",
+   "name": "All The Fallen"
+  },
+  "audiochan": {
+   "auth": "none",
+   "home": "https://audiochan.com/",
+   "name": "Audiochan"
+  },
+  "azurlanewiki": {
+   "auth": "none",
+   "home": "https://azurlane.koumakan.jp/",
+   "name": "Azur Lane Wiki"
+  },
+  "b4k": {
+   "auth": "none",
+   "home": "https://arch.b4k.dev/",
+   "name": "arch.b4k.dev"
+  },
+  "baraag": {
+   "auth": "oauth",
+   "home": "https://baraag.net/",
+   "name": "baraag"
+  },
+  "bbc": {
+   "auth": "none",
+   "home": "https://bbc.co.uk/",
+   "name": "BBC"
+  },
+  "bbw-chan": {
+   "auth": "none",
+   "home": "https://bbw-chan.link/",
+   "name": "Bbw-chan"
+  },
+  "bcbnsfw": {
+   "auth": "none",
+   "home": "https://booru.bcbnsfw.space/",
+   "name": "Bcbnsfw"
+  },
+  "behance": {
+   "auth": "none",
+   "home": "https://www.behance.net/",
+   "name": "Behance"
+  },
+  "bellazon": {
+   "auth": "none",
+   "home": "https://www.bellazon.com/",
+   "name": "Bellazon"
+  },
+  "bilibili": {
+   "auth": "none",
+   "home": "https://www.bilibili.com/",
+   "name": "Bilibili"
+  },
+  "bitly": {
+   "auth": "none",
+   "home": "https://bit.ly/",
+   "name": "Bitly"
+  },
+  "blacktowhite": {
+   "auth": "none",
+   "home": "https://www.blacktowhite.net/",
+   "name": "BlacktoWhite"
+  },
+  "blogspot": {
+   "auth": "none",
+   "home": "https://www.blogger.com/",
+   "name": "Blogspot"
+  },
+  "bluesky": {
+   "auth": "optional",
+   "home": "https://bsky.app/",
+   "name": "Bluesky"
+  },
+  "booruvar": {
+   "auth": "optional",
+   "home": "https://booru.borvar.art/",
+   "name": "Booruvar"
+  },
+  "boosty": {
+   "auth": "cookies",
+   "home": "https://www.boosty.to/",
+   "name": "Boosty"
+  },
+  "booth": {
+   "auth": "none",
+   "home": "https://booth.pm/",
+   "name": "BOOTH"
+  },
+  "bulbapedia": {
+   "auth": "none",
+   "home": "https://bulbapedia.bulbagarden.net/",
+   "name": "Bulbapedia"
+  },
+  "bunkr": {
+   "auth": "none",
+   "home": "https://bunkr.si/",
+   "name": "Bunkr"
+  },
+  "catbox": {
+   "auth": "none",
+   "home": "https://catbox.moe/",
+   "name": "Catbox"
+  },
+  "cavemanon": {
+   "auth": "none",
+   "home": "https://booru.cavemanon.xyz/",
+   "name": "Cavemanon"
+  },
+  "celebforum": {
+   "auth": "none",
+   "home": "https://celebforum.to/",
+   "name": "celebforum"
+  },
+  "cfake": {
+   "auth": "none",
+   "home": "https://cfake.com/",
+   "name": "Celebrity Fakes"
+  },
+  "chelseacrew": {
+   "auth": "none",
+   "home": "https://chelseacrew.com/",
+   "name": "Chelseacrew"
+  },
+  "cien": {
+   "auth": "none",
+   "home": "https://ci-en.net/",
+   "name": "Ci-en"
+  },
+  "civitai": {
+   "auth": "none",
+   "home": "https://www.civitai.com/",
+   "name": "Civitai"
+  },
+  "comedywildlifephoto": {
+   "auth": "none",
+   "home": "https://www.comedywildlifephoto.com/",
+   "name": "Comedy Wildlife Photography Awards"
+  },
+  "comick": {
+   "auth": "none",
+   "home": "https://comick.io/",
+   "name": "Comick"
+  },
+  "comicvine": {
+   "auth": "none",
+   "home": "https://comicvine.gamespot.com/",
+   "name": "Comic Vine"
+  },
+  "coomer": {
+   "auth": "optional",
+   "home": "https://coomer.st/",
+   "name": "Coomer"
+  },
+  "cyberdrop": {
+   "auth": "none",
+   "home": "https://cyberdrop.cr/",
+   "name": "Cyberdrop"
+  },
+  "cyberfile": {
+   "auth": "none",
+   "home": "https://cyberfile.me/",
+   "name": "CyberFile"
+  },
+  "danbooru": {
+   "auth": "optional",
+   "home": "https://danbooru.donmai.us/",
+   "name": "Danbooru"
+  },
+  "dandadan": {
+   "auth": "none",
+   "home": "https://dandadan.net/",
+   "name": "Dandadan"
+  },
+  "dankefuerslesen": {
+   "auth": "none",
+   "home": "https://danke.moe/",
+   "name": "Danke fürs Lesen"
+  },
+  "derpibooru": {
+   "auth": "key",
+   "home": "https://derpibooru.org/",
+   "name": "Derpibooru"
+  },
+  "desktopography": {
+   "auth": "none",
+   "home": "https://desktopography.net/",
+   "name": "Desktopography"
+  },
+  "desuarchive": {
+   "auth": "none",
+   "home": "https://desuarchive.org/",
+   "name": "Desuarchive"
+  },
+  "deviantart": {
+   "auth": "oauth",
+   "home": "https://www.deviantart.com/",
+   "name": "DeviantArt"
+  },
+  "discord": {
+   "auth": "none",
+   "home": "https://discord.com/",
+   "name": "Discord"
+  },
+  "drawfriends": {
+   "auth": "none",
+   "home": "https://drawfriends.booru.org/",
+   "name": "Draw Friends"
+  },
+  "dynastyscans": {
+   "auth": "none",
+   "home": "https://dynasty-scans.com/",
+   "name": "Dynasty Reader"
+  },
+  "e621": {
+   "auth": "optional",
+   "home": "https://e621.net/",
+   "name": "e621"
+  },
+  "e6ai": {
+   "auth": "optional",
+   "home": "https://e6ai.net/",
+   "name": "e6AI"
+  },
+  "e926": {
+   "auth": "optional",
+   "home": "https://e926.net/",
+   "name": "e926"
+  },
+  "endchan": {
+   "auth": "none",
+   "home": "https://endchan.org/",
+   "name": "Endchan"
+  },
+  "eporner": {
+   "auth": "none",
+   "home": "https://www.eporner.com/",
+   "name": "EPORNER"
+  },
+  "erome": {
+   "auth": "none",
+   "home": "https://www.erome.com/",
+   "name": "EroMe"
+  },
+  "everia": {
+   "auth": "none",
+   "home": "https://everia.club",
+   "name": "EVERIA.CLUB"
+  },
+  "facebook": {
+   "auth": "cookies",
+   "home": "https://www.facebook.com/",
+   "name": "Facebook"
+  },
+  "fanbox": {
+   "auth": "cookies",
+   "home": "https://www.fanbox.cc/",
+   "name": "pixivFANBOX"
+  },
+  "fandom": {
+   "auth": "none",
+   "home": "https://www.fandom.com/",
+   "name": "Fandom"
+  },
+  "fansly": {
+   "auth": "none",
+   "home": "https://fansly.com/",
+   "name": "Fansly"
+  },
+  "fantia": {
+   "auth": "cookies",
+   "home": "https://fantia.jp/",
+   "name": "Fantia"
+  },
+  "fapachi": {
+   "auth": "none",
+   "home": "https://fapachi.com/",
+   "name": "Fapachi"
+  },
+  "fapello": {
+   "auth": "none",
+   "home": "https://fapello.com/",
+   "name": "Fapello"
+  },
+  "fappic": {
+   "auth": "none",
+   "home": "https://fappic.com/",
+   "name": "Fappic.com"
+  },
+  "fashionnova": {
+   "auth": "none",
+   "home": "https://www.fashionnova.com/",
+   "name": "Fashion Nova"
+  },
+  "fikfap": {
+   "auth": "none",
+   "home": "https://fikfap.com/",
+   "name": "FikFap"
+  },
+  "filester": {
+   "auth": "none",
+   "home": "https://filester.me/",
+   "name": "filester.me"
+  },
+  "fireden": {
+   "auth": "none",
+   "home": "https://boards.fireden.net/",
+   "name": "Fireden"
+  },
+  "fitnakedgirls": {
+   "auth": "none",
+   "home": "https://fitnakedgirls.com/",
+   "name": "FitNakedGirls"
+  },
+  "flickr": {
+   "auth": "oauth",
+   "home": "https://www.flickr.com/",
+   "name": "Flickr"
+  },
+  "foriio": {
+   "auth": "none",
+   "home": "https://foriio.com/",
+   "name": "foriio"
+  },
+  "furaffinity": {
+   "auth": "cookies",
+   "home": "https://www.furaffinity.net/",
+   "name": "Fur Affinity"
+  },
+  "furbooru": {
+   "auth": "key",
+   "home": "https://furbooru.org/",
+   "name": "Furbooru"
+  },
+  "furry34": {
+   "auth": "none",
+   "home": "https://furry34.com/",
+   "name": "Furry 34 com"
+  },
+  "fuskator": {
+   "auth": "none",
+   "home": "https://fuskator.com/",
+   "name": "Fuskator"
+  },
+  "gelbooru": {
+   "auth": "none",
+   "home": "https://gelbooru.com/",
+   "name": "Gelbooru"
+  },
+  "girlsreleased": {
+   "auth": "none",
+   "home": "https://girlsreleased.com/",
+   "name": "Girlsreleased"
+  },
+  "girlswithmuscle": {
+   "auth": "optional",
+   "home": "https://www.girlswithmuscle.com/",
+   "name": "Girls with Muscle"
+  },
+  "gofile": {
+   "auth": "none",
+   "home": "https://gofile.io/",
+   "name": "Gofile"
+  },
+  "gurochan": {
+   "auth": "none",
+   "home": "https://boards.guro.cx/",
+   "name": "Gurochan"
+  },
+  "hatenablog": {
+   "auth": "none",
+   "home": "https://hatenablog.com",
+   "name": "HatenaBlog"
+  },
+  "hentai2read": {
+   "auth": "none",
+   "home": "https://hentai2read.com/",
+   "name": "Hentai2Read"
+  },
+  "hentaicosplay": {
+   "auth": "none",
+   "home": "https://hentai-cosplay-xxx.com/",
+   "name": "Hentai Cosplay"
+  },
+  "hentaienvy": {
+   "auth": "none",
+   "home": "https://hentaienvy.com/",
+   "name": "HentaiEnvy"
+  },
+  "hentaiera": {
+   "auth": "none",
+   "home": "https://hentaiera.com/",
+   "name": "HentaiEra"
+  },
+  "hentaifox": {
+   "auth": "none",
+   "home": "https://hentaifox.com/",
+   "name": "HentaiFox"
+  },
+  "hentaihere": {
+   "auth": "none",
+   "home": "https://hentaihere.com/",
+   "name": "HentaiHere"
+  },
+  "hentaiimg": {
+   "auth": "none",
+   "home": "https://hentai-img-xxx.com/",
+   "name": "Hentai Image"
+  },
+  "hentairox": {
+   "auth": "none",
+   "home": "https://hentairox.com/",
+   "name": "HentaiRox"
+  },
+  "hentaizap": {
+   "auth": "none",
+   "home": "https://hentaizap.com/",
+   "name": "HentaiZap"
+  },
+  "hiperdex": {
+   "auth": "none",
+   "home": "https://hiperdex.com/",
+   "name": "HiperDEX"
+  },
+  "horne": {
+   "auth": "required",
+   "home": "https://horne.red/",
+   "name": "horne"
+  },
+  "hotleak": {
+   "auth": "none",
+   "home": "https://hotleak.vip/",
+   "name": "Hotleak"
+  },
+  "hypnohub": {
+   "auth": "none",
+   "home": "https://hypnohub.net/",
+   "name": "Hypnohub"
+  },
+  "idolcomplex": {
+   "auth": "optional",
+   "home": "https://www.idolcomplex.com/",
+   "name": "Idol Complex"
+  },
+  "illusioncardsbooru": {
+   "auth": "none",
+   "home": "https://illusioncards.booru.org/",
+   "name": "Illusion Game Cards"
+  },
+  "imagebam": {
+   "auth": "none",
+   "home": "https://www.imagebam.com/",
+   "name": "ImageBam"
+  },
+  "imagechest": {
+   "auth": "none",
+   "home": "https://imgchest.com/",
+   "name": "ImageChest"
+  },
+  "imagefap": {
+   "auth": "none",
+   "home": "https://www.imagefap.com/",
+   "name": "ImageFap"
+  },
+  "imagepond": {
+   "auth": "none",
+   "home": "https://www.imagepond.net/",
+   "name": "ImagePond"
+  },
+  "imageshack": {
+   "auth": "none",
+   "home": "https://imageshack.com/",
+   "name": "ImageShack"
+  },
+  "imagetwist": {
+   "auth": "none",
+   "home": "https://imagetwist.com/",
+   "name": "ImageTwist"
+  },
+  "imagevenue": {
+   "auth": "none",
+   "home": "https://www.imagevenue.com/",
+   "name": "Imagevenue"
+  },
+  "imgadult": {
+   "auth": "none",
+   "home": "https://imgadult.com/",
+   "name": "ImgAdult"
+  },
+  "imgbb": {
+   "auth": "optional",
+   "home": "https://imgbb.com/",
+   "name": "ImgBB"
+  },
+  "imgbox": {
+   "auth": "none",
+   "home": "https://imgbox.com/",
+   "name": "imgbox"
+  },
+  "imgclick": {
+   "auth": "none",
+   "home": "http://imgclick.net/",
+   "name": "Imgclick"
+  },
+  "imgdrive": {
+   "auth": "none",
+   "home": "https://imgdrive.net/",
+   "name": "ImgDrive.net"
+  },
+  "imglike": {
+   "auth": "none",
+   "home": "https://imglike.com/",
+   "name": "Nude Celeb"
+  },
+  "imgpile": {
+   "auth": "none",
+   "home": "https://imgpile.com/",
+   "name": "imgpile"
+  },
+  "imgpv": {
+   "auth": "none",
+   "home": "https://imgpv.com/",
+   "name": "IMGPV"
+  },
+  "imgspice": {
+   "auth": "none",
+   "home": "https://imgspice.com/",
+   "name": "Imgspice"
+  },
+  "imgtaxi": {
+   "auth": "none",
+   "home": "https://imgtaxi.com/",
+   "name": "ImgTaxi.com"
+  },
+  "imgth": {
+   "auth": "none",
+   "home": "https://imgth.com/",
+   "name": "imgth"
+  },
+  "imgur": {
+   "auth": "none",
+   "home": "https://imgur.com/",
+   "name": "imgur"
+  },
+  "imgwallet": {
+   "auth": "none",
+   "home": "https://imgwallet.com/",
+   "name": "ImgWallet.com"
+  },
+  "imhentai": {
+   "auth": "none",
+   "home": "https://imhentai.xxx/",
+   "name": "IMHentai"
+  },
+  "imxto": {
+   "auth": "none",
+   "home": "https://imx.to/",
+   "name": "IMX.to"
+  },
+  "inkbunny": {
+   "auth": "optional",
+   "home": "https://inkbunny.net/",
+   "name": "Inkbunny"
+  },
+  "instagram": {
+   "auth": "cookies",
+   "home": "https://www.instagram.com/",
+   "name": "Instagram"
+  },
+  "issuu": {
+   "auth": "none",
+   "home": "https://issuu.com/",
+   "name": "Issuu"
+  },
+  "itaku": {
+   "auth": "none",
+   "home": "https://itaku.ee/",
+   "name": "Itaku"
+  },
+  "itchio": {
+   "auth": "none",
+   "home": "https://itch.io/",
+   "name": "itch.io"
+  },
+  "iwara": {
+   "auth": "optional",
+   "home": "https://www.iwara.tv/",
+   "name": "Iwara"
+  },
+  "joyreactor": {
+   "auth": "none",
+   "home": "https://joyreactor.com/",
+   "name": "JoyReactor"
+  },
+  "jpgfish": {
+   "auth": "none",
+   "home": "https://jpg7.cr/",
+   "name": "JPG Fish"
+  },
+  "kabeuchi": {
+   "auth": "none",
+   "home": "https://kabe-uchiroom.com/",
+   "name": "かべうち"
+  },
+  "kaliscan": {
+   "auth": "none",
+   "home": "https://kaliscan.me/",
+   "name": "KaliScan"
+  },
+  "keenspot": {
+   "auth": "none",
+   "home": "http://www.keenspot.com/",
+   "name": "Keenspot"
+  },
+  "kemono": {
+   "auth": "optional",
+   "home": "https://kemono.cr/",
+   "name": "Kemono"
+  },
+  "khinsider": {
+   "auth": "none",
+   "home": "https://downloads.khinsider.com/",
+   "name": "Khinsider"
+  },
+  "kohlchan": {
+   "auth": "none",
+   "home": "https://kohlchan.net/",
+   "name": "Kohlchan"
+  },
+  "komikcast": {
+   "auth": "none",
+   "home": "https://komikcast.li/",
+   "name": "Komikcast"
+  },
+  "konachan": {
+   "auth": "none",
+   "home": "https://konachan.com/",
+   "name": "Konachan"
+  },
+  "koofr": {
+   "auth": "none",
+   "home": "https://koofr.net/",
+   "name": "Koofr"
+  },
+  "leakgallery": {
+   "auth": "none",
+   "home": "https://leakgallery.com",
+   "name": "Leak Gallery"
+  },
+  "lensdump": {
+   "auth": "none",
+   "home": "https://lensdump.com/",
+   "name": "Lensdump"
+  },
+  "lesbian.energy": {
+   "auth": "none",
+   "home": "https://lesbian.energy/",
+   "name": "Lesbian.energy"
+  },
+  "lexica": {
+   "auth": "none",
+   "home": "https://lexica.art/",
+   "name": "Lexica"
+  },
+  "lightbrd": {
+   "auth": "none",
+   "home": "https://lightbrd.com/",
+   "name": "Lightbrd"
+  },
+  "lightroom": {
+   "auth": "none",
+   "home": "https://lightroom.adobe.com/",
+   "name": "Lightroom"
+  },
+  "listal": {
+   "auth": "none",
+   "home": "https://listal.com",
+   "name": "Listal"
+  },
+  "livedoor": {
+   "auth": "none",
+   "home": "http://blog.livedoor.jp/",
+   "name": "livedoor Blog"
+  },
+  "lofter": {
+   "auth": "none",
+   "home": "https://www.lofter.com/",
+   "name": "LOFTER"
+  },
+  "lolibooru": {
+   "auth": "none",
+   "home": "https://lolibooru.moe/",
+   "name": "Lolibooru"
+  },
+  "loungeunderwear": {
+   "auth": "none",
+   "home": "https://loungeunderwear.com/",
+   "name": "Loungeunderwear"
+  },
+  "luscious": {
+   "auth": "none",
+   "home": "https://members.luscious.net/",
+   "name": "Luscious"
+  },
+  "madokami": {
+   "auth": "required",
+   "home": "https://manga.madokami.al/",
+   "name": "Madokami"
+  },
+  "mangadex": {
+   "auth": "optional",
+   "home": "https://mangadex.org/",
+   "name": "MangaDex"
+  },
+  "mangafire": {
+   "auth": "none",
+   "home": "https://mangafire.to/",
+   "name": "MangaFire"
+  },
+  "mangafox": {
+   "auth": "none",
+   "home": "https://fanfox.net/",
+   "name": "Manga Fox"
+  },
+  "mangafreak": {
+   "auth": "none",
+   "home": "https://ww2.mangafreak.me/",
+   "name": "MangaFreak"
+  },
+  "mangahere": {
+   "auth": "none",
+   "home": "https://www.mangahere.cc/",
+   "name": "Manga Here"
+  },
+  "mangakakalot": {
+   "auth": "none",
+   "home": "https://www.mangakakalot.gg/",
+   "name": "MangaKakalot"
+  },
+  "manganato": {
+   "auth": "none",
+   "home": "https://www.manganato.gg/",
+   "name": "MangaNato"
+  },
+  "mangapark": {
+   "auth": "none",
+   "home": "https://mangapark.net/",
+   "name": "MangaPark"
+  },
+  "mangaread": {
+   "auth": "none",
+   "home": "https://mangaread.org/",
+   "name": "MangaRead"
+  },
+  "mangareader": {
+   "auth": "none",
+   "home": "https://mangareader.to/",
+   "name": "MangaReader"
+  },
+  "mangataro": {
+   "auth": "none",
+   "home": "https://mangataro.org/",
+   "name": "MangaTaro"
+  },
+  "mangatown": {
+   "auth": "none",
+   "home": "https://www.mangatown.com/",
+   "name": "MangaTown"
+  },
+  "mangoxo": {
+   "auth": "optional",
+   "home": "https://www.mangoxo.com/",
+   "name": "Mangoxo"
+  },
+  "mariowiki": {
+   "auth": "none",
+   "home": "https://www.mariowiki.com/",
+   "name": "Super Mario Wiki"
+  },
+  "mastodon.social": {
+   "auth": "oauth",
+   "home": "https://mastodon.social/",
+   "name": "mastodon.social"
+  },
+  "mediawiki": {
+   "auth": "none",
+   "home": "https://www.mediawiki.org/",
+   "name": "MediaWiki"
+  },
+  "mgewiki": {
+   "auth": "none",
+   "home": "https://mgewiki.moe/",
+   "name": "Monster Girl Encyclopedia Wiki"
+  },
+  "michaelscameras": {
+   "auth": "none",
+   "home": "https://michaels.com.au/",
+   "name": "Michaelscameras"
+  },
+  "misskey.art": {
+   "auth": "none",
+   "home": "https://misskey.art/",
+   "name": "Misskey.art"
+  },
+  "misskey.design": {
+   "auth": "none",
+   "home": "https://misskey.design/",
+   "name": "Misskey.design"
+  },
+  "misskey.io": {
+   "auth": "none",
+   "home": "https://misskey.io/",
+   "name": "Misskey.io"
+  },
+  "mixdrop": {
+   "auth": "none",
+   "home": "https://mixdrop.ag/",
+   "name": "MixDrop"
+  },
+  "modcloth": {
+   "auth": "none",
+   "home": "https://modcloth.com/",
+   "name": "Modcloth"
+  },
+  "motherless": {
+   "auth": "none",
+   "home": "https://motherless.com/",
+   "name": "Motherless"
+  },
+  "myhentaigallery": {
+   "auth": "none",
+   "home": "https://myhentaigallery.com/",
+   "name": "My Hentai Gallery"
+  },
+  "myportfolio": {
+   "auth": "none",
+   "home": "https://www.myportfolio.com/",
+   "name": "Adobe Portfolio"
+  },
+  "natomanga": {
+   "auth": "none",
+   "home": "https://www.natomanga.com/",
+   "name": "MangaNato"
+  },
+  "naver-blog": {
+   "auth": "none",
+   "home": "https://blog.naver.com/",
+   "name": "Naver Blog"
+  },
+  "naver-chzzk": {
+   "auth": "none",
+   "home": "https://chzzk.naver.com/",
+   "name": "CHZZK"
+  },
+  "naver-webtoon": {
+   "auth": "none",
+   "home": "https://comic.naver.com/",
+   "name": "Naver Webtoon"
+  },
+  "nekohouse": {
+   "auth": "none",
+   "home": "https://nekohouse.su/",
+   "name": "Nekohouse"
+  },
+  "nelomanga": {
+   "auth": "none",
+   "home": "https://www.nelomanga.net/",
+   "name": "MangaNelo"
+  },
+  "newgrounds": {
+   "auth": "optional",
+   "home": "https://www.newgrounds.com/",
+   "name": "Newgrounds"
+  },
+  "nijie": {
+   "auth": "required",
+   "home": "https://nijie.info/",
+   "name": "nijie"
+  },
+  "nitter.net": {
+   "auth": "none",
+   "home": "https://nitter.net/",
+   "name": "Nitter.net"
+  },
+  "nitter.space": {
+   "auth": "none",
+   "home": "https://nitter.space/",
+   "name": "Nitter.space"
+  },
+  "nitter.tiekoetter": {
+   "auth": "none",
+   "home": "https://nitter.tiekoetter/",
+   "name": "Nitter.tiekoetter"
+  },
+  "nozomi": {
+   "auth": "none",
+   "home": "https://nozomi.la/",
+   "name": "Nozomi.la"
+  },
+  "nozrip": {
+   "auth": "none",
+   "home": "https://noz.rip/booru/",
+   "name": "GaryC Booru"
+  },
+  "nsfwalbum": {
+   "auth": "none",
+   "home": "https://nsfwalbum.com/",
+   "name": "NSFWalbum.com"
+  },
+  "nudostar": {
+   "auth": "none",
+   "home": "https://nudostar.tv/",
+   "name": "NudoStar.TV"
+  },
+  "nudostarforum": {
+   "auth": "optional",
+   "home": "https://nudostar.com/forum/",
+   "name": "NudoStar Forums"
+  },
+  "ohpolly": {
+   "auth": "none",
+   "home": "https://www.ohpolly.com/",
+   "name": "Oh Polly"
+  },
+  "okporn": {
+   "auth": "none",
+   "home": "https://ok.porn/",
+   "name": "OK.PORN"
+  },
+  "omgmiamiswimwear": {
+   "auth": "none",
+   "home": "https://www.omgmiamiswimwear.com/",
+   "name": "Omg Miami Swimwear"
+  },
+  "paheal": {
+   "auth": "none",
+   "home": "https://rule34.paheal.net/",
+   "name": "Rule 34"
+  },
+  "palanq": {
+   "auth": "none",
+   "home": "https://archive.palanq.win/",
+   "name": "Palanq"
+  },
+  "patreon": {
+   "auth": "cookies",
+   "home": "https://www.patreon.com/",
+   "name": "Patreon"
+  },
+  "pawoo": {
+   "auth": "oauth",
+   "home": "https://pawoo.net/",
+   "name": "Pawoo"
+  },
+  "pexels": {
+   "auth": "none",
+   "home": "https://pexels.com/",
+   "name": "Pexels"
+  },
+  "pholder": {
+   "auth": "none",
+   "home": "https://pholder.com/",
+   "name": "pholder"
+  },
+  "photovogue": {
+   "auth": "none",
+   "home": "https://www.vogue.com/photovogue/",
+   "name": "PhotoVogue"
+  },
+  "picarto": {
+   "auth": "none",
+   "home": "https://picarto.tv/",
+   "name": "Picarto"
+  },
+  "picazor": {
+   "auth": "none",
+   "home": "https://picazor.com/",
+   "name": "Picazor"
+  },
+  "picstate": {
+   "auth": "none",
+   "home": "https://picstate.com/",
+   "name": "PicState"
+  },
+  "pictoa": {
+   "auth": "none",
+   "home": "https://pictoa.com/",
+   "name": "Pictoa"
+  },
+  "piczel": {
+   "auth": "none",
+   "home": "https://piczel.tv/",
+   "name": "Piczel"
+  },
+  "pidgiwiki": {
+   "auth": "none",
+   "home": "https://www.pidgi.net/",
+   "name": "PidgiWiki"
+  },
+  "pillowfort": {
+   "auth": "optional",
+   "home": "https://www.pillowfort.social/",
+   "name": "Pillowfort"
+  },
+  "pinterest": {
+   "auth": "cookies",
+   "home": "https://www.pinterest.com/",
+   "name": "Pinterest"
+  },
+  "pinupgirlclothing": {
+   "auth": "none",
+   "home": "https://pinupgirlclothing.com/",
+   "name": "Pinupgirlclothing"
+  },
+  "pixeldrain": {
+   "auth": "none",
+   "home": "https://pixeldrain.com/",
+   "name": "pixeldrain"
+  },
+  "pixhost": {
+   "auth": "none",
+   "home": "https://pixhost.to/",
+   "name": "PiXhost"
+  },
+  "pixiv": {
+   "auth": "oauth",
+   "home": "https://www.pixiv.net/",
+   "name": "[pixiv]"
+  },
+  "pixiv-novel": {
+   "auth": "oauth",
+   "home": "https://www.pixiv.net/novel",
+   "name": "[pixiv] Novels"
+  },
+  "pixnet": {
+   "auth": "none",
+   "home": "https://www.pixnet.net/",
+   "name": "Pixnet"
+  },
+  "plurk": {
+   "auth": "none",
+   "home": "https://www.plurk.com/",
+   "name": "Plurk"
+  },
+  "poipiku": {
+   "auth": "cookies",
+   "home": "https://poipiku.com/",
+   "name": "Poipiku"
+  },
+  "ponybooru": {
+   "auth": "key",
+   "home": "https://ponybooru.org/",
+   "name": "Ponybooru"
+  },
+  "poringa": {
+   "auth": "none",
+   "home": "http://www.poringa.net/",
+   "name": "Poringa"
+  },
+  "pornhub": {
+   "auth": "none",
+   "home": "https://www.pornhub.com/",
+   "name": "Pornhub"
+  },
+  "pornimage": {
+   "auth": "none",
+   "home": "https://porn-image.com/",
+   "name": "Porn Image"
+  },
+  "pornpics": {
+   "auth": "none",
+   "home": "https://www.pornpics.com/",
+   "name": "PornPics.com"
+  },
+  "pornreactor": {
+   "auth": "none",
+   "home": "http://pornreactor.cc/",
+   "name": "PornReactor"
+  },
+  "pornstarstube": {
+   "auth": "none",
+   "home": "https://pornstars.tube/",
+   "name": "PORNSTARS.TUBE"
+  },
+  "postimg": {
+   "auth": "none",
+   "home": "https://postimages.org/",
+   "name": "Postimages"
+  },
+  "putmega": {
+   "auth": "none",
+   "home": "https://putmega.com/",
+   "name": "Putmega"
+  },
+  "raddle": {
+   "auth": "none",
+   "home": "https://raddle.me/",
+   "name": "Raddle"
+  },
+  "raidlondon": {
+   "auth": "none",
+   "home": "https://www.raidlondon.com/",
+   "name": "Raidlondon"
+  },
+  "rawkuma": {
+   "auth": "none",
+   "home": "https://rawkuma.net/",
+   "name": "Rawkuma"
+  },
+  "rbt": {
+   "auth": "none",
+   "home": "https://rbt.asia/",
+   "name": "RebeccaBlackTech"
+  },
+  "reactor": {
+   "auth": "none",
+   "home": "http://reactor.cc/",
+   "name": "Reactor"
+  },
+  "readcomiconline": {
+   "auth": "none",
+   "home": "https://readcomiconline.li/",
+   "name": "Read Comic Online"
+  },
+  "realbooru": {
+   "auth": "none",
+   "home": "https://realbooru.com/",
+   "name": "Realbooru"
+  },
+  "reddit": {
+   "auth": "oauth",
+   "home": "https://www.reddit.com/",
+   "name": "Reddit"
+  },
+  "redgifs": {
+   "auth": "none",
+   "home": "https://redgifs.com/",
+   "name": "RedGIFs"
+  },
+  "rule34": {
+   "auth": "none",
+   "home": "https://rule34.xxx/",
+   "name": "Rule 34"
+  },
+  "rule34hentai": {
+   "auth": "none",
+   "home": "https://rule34hentai.net/",
+   "name": "Rule34Hentai"
+  },
+  "rule34us": {
+   "auth": "none",
+   "home": "https://rule34.us/",
+   "name": "Rule 34"
+  },
+  "rule34vault": {
+   "auth": "none",
+   "home": "https://rule34vault.com/",
+   "name": "R34 Vault"
+  },
+  "rule34world": {
+   "auth": "optional",
+   "home": "https://rule34.world/",
+   "name": "Rule 34 World"
+  },
+  "rule34xyz": {
+   "auth": "optional",
+   "home": "https://rule34.xyz/",
+   "name": "Rule 34 XYZ"
+  },
+  "s3ndpics": {
+   "auth": "none",
+   "home": "https://s3nd.pics/",
+   "name": "S3ND"
+  },
+  "safebooru": {
+   "auth": "none",
+   "home": "https://safebooru.org/",
+   "name": "Safebooru"
+  },
+  "sakugabooru": {
+   "auth": "none",
+   "home": "https://www.sakugabooru.com/",
+   "name": "Sakugabooru"
+  },
+  "sankaku": {
+   "auth": "optional",
+   "home": "https://sankaku.app/",
+   "name": "Sankaku Channel"
+  },
+  "sankakucomplex": {
+   "auth": "none",
+   "home": "https://news.sankakucomplex.com/",
+   "name": "Sankaku Complex"
+  },
+  "scatbooru": {
+   "auth": "none",
+   "home": "https://scatbooru.co.uk/",
+   "name": "Scatbooru"
+  },
+  "schan": {
+   "auth": "none",
+   "home": "https://schan.help/",
+   "name": "Schan"
+  },
+  "scrolller": {
+   "auth": "optional",
+   "home": "https://scrolller.com/",
+   "name": "Scrolller"
+  },
+  "seiga": {
+   "auth": "optional",
+   "home": "https://seiga.nicovideo.jp/",
+   "name": "Niconico Seiga"
+  },
+  "senmanga": {
+   "auth": "none",
+   "home": "https://raw.senmanga.com/",
+   "name": "Sen Manga"
+  },
+  "sexcom": {
+   "auth": "none",
+   "home": "https://www.sex.com/",
+   "name": "Sex.com"
+  },
+  "silverpic": {
+   "auth": "none",
+   "home": "https://silverpic.net/",
+   "name": "SilverPic.com"
+  },
+  "simpcity": {
+   "auth": "optional",
+   "home": "https://simpcity.cr/",
+   "name": "SimpCity Forums"
+  },
+  "simplyhentai": {
+   "auth": "none",
+   "home": "https://www.simply-hentai.com/",
+   "name": "Simply Hentai"
+  },
+  "sizebooru": {
+   "auth": "none",
+   "home": "https://sizebooru.com/",
+   "name": "Size Booru"
+  },
+  "skeb": {
+   "auth": "none",
+   "home": "https://skeb.jp/",
+   "name": "Skeb"
+  },
+  "slickpic": {
+   "auth": "none",
+   "home": "https://www.slickpic.com/",
+   "name": "SlickPic"
+  },
+  "slideshare": {
+   "auth": "none",
+   "home": "https://www.slideshare.net/",
+   "name": "SlideShare"
+  },
+  "smugloli": {
+   "auth": "none",
+   "home": "https://smuglo.li/",
+   "name": "Smugloli"
+  },
+  "smugmug": {
+   "auth": "oauth",
+   "home": "https://www.smugmug.com/",
+   "name": "SmugMug"
+  },
+  "snootbooru": {
+   "auth": "none",
+   "home": "https://snootbooru.com/",
+   "name": "Snootbooru"
+  },
+  "socialmediagirlsforum": {
+   "auth": "none",
+   "home": "https://forums.socialmediagirls.com/",
+   "name": "Social Media Girls Forums"
+  },
+  "soundgasm": {
+   "auth": "none",
+   "home": "https://soundgasm.net/",
+   "name": "Soundgasm"
+  },
+  "soybooru": {
+   "auth": "none",
+   "home": "https://soybooru.com/",
+   "name": "Soybooru"
+  },
+  "speakerdeck": {
+   "auth": "none",
+   "home": "https://speakerdeck.com/",
+   "name": "Speaker Deck"
+  },
+  "steamgriddb": {
+   "auth": "none",
+   "home": "https://www.steamgriddb.com",
+   "name": "SteamGridDB"
+  },
+  "sturdychan": {
+   "auth": "none",
+   "home": "https://sturdychan.help/",
+   "name": "Sturdychan"
+  },
+  "subscribestar": {
+   "auth": "optional",
+   "home": "https://www.subscribestar.com/",
+   "name": "SubscribeStar"
+  },
+  "sushi.ski": {
+   "auth": "none",
+   "home": "https://sushi.ski/",
+   "name": "Sushi.ski"
+  },
+  "sxypix": {
+   "auth": "none",
+   "home": "https://sxypix.com/",
+   "name": "Sxypix"
+  },
+  "tapas": {
+   "auth": "optional",
+   "home": "https://tapas.io/",
+   "name": "Tapas"
+  },
+  "tbib": {
+   "auth": "none",
+   "home": "https://tbib.org/",
+   "name": "The Big ImageBoard"
+  },
+  "tcbscans": {
+   "auth": "none",
+   "home": "https://tcbscans.me/",
+   "name": "TCB Scans"
+  },
+  "tco": {
+   "auth": "none",
+   "home": "https://t.co/",
+   "name": "Twitter t.co"
+  },
+  "telegraph": {
+   "auth": "none",
+   "home": "https://telegra.ph/",
+   "name": "Telegraph"
+  },
+  "tenor": {
+   "auth": "none",
+   "home": "https://tenor.com/",
+   "name": "Tenor"
+  },
+  "thatpervert": {
+   "auth": "none",
+   "home": "http://thatpervert.com/",
+   "name": "ThatPervert"
+  },
+  "thebarchive": {
+   "auth": "none",
+   "home": "https://thebarchive.com/",
+   "name": "The /b/ Archive"
+  },
+  "thecollection": {
+   "auth": "none",
+   "home": "https://the-collection.booru.org/",
+   "name": "The /co/llection"
+  },
+  "thecollectionS": {
+   "auth": "none",
+   "home": "https://co.llection.pics/",
+   "name": "The /co/llection"
+  },
+  "thefap": {
+   "auth": "none",
+   "home": "https://thefap.net/",
+   "name": "TheFap"
+  },
+  "thehentaiworld": {
+   "auth": "none",
+   "home": "https://thehentaiworld.com/",
+   "name": "The Hentai World"
+  },
+  "tiktok": {
+   "auth": "cookies",
+   "home": "https://www.tiktok.com/",
+   "name": "TikTok"
+  },
+  "titsintops": {
+   "auth": "none",
+   "home": "https://titsintops.com/phpBB2/",
+   "name": "Tits In Tops Forum"
+  },
+  "tmohentai": {
+   "auth": "none",
+   "home": "https://tmohentai.com/",
+   "name": "TMOHentai"
+  },
+  "toyhouse": {
+   "auth": "none",
+   "home": "https://toyhou.se/",
+   "name": "Toyhouse"
+  },
+  "tumblr": {
+   "auth": "oauth",
+   "home": "https://www.tumblr.com/",
+   "name": "Tumblr"
+  },
+  "tumblrgallery": {
+   "auth": "none",
+   "home": "https://tumblrgallery.xyz/",
+   "name": "TumblrGallery"
+  },
+  "tungsten": {
+   "auth": "none",
+   "home": "https://tungsten.run/",
+   "name": "Tungsten"
+  },
+  "turbo": {
+   "auth": "none",
+   "home": "https://turbo.cr/",
+   "name": "turbo.cr"
+  },
+  "turboimagehost": {
+   "auth": "none",
+   "home": "https://www.turboimagehost.com/",
+   "name": "TurboImageHost.com"
+  },
+  "twibooru": {
+   "auth": "none",
+   "home": "https://twibooru.org/",
+   "name": "Twibooru"
+  },
+  "twitter": {
+   "auth": "cookies",
+   "home": "https://x.com/",
+   "name": "Twitter"
+  },
+  "unique-vintage": {
+   "auth": "none",
+   "home": "https://www.unique-vintage.com/",
+   "name": "Unique-vintage"
+  },
+  "unsplash": {
+   "auth": "none",
+   "home": "https://unsplash.com/",
+   "name": "Unsplash"
+  },
+  "uploadir": {
+   "auth": "none",
+   "home": "https://uploadir.com/",
+   "name": "Uploadir"
+  },
+  "urlgalleries": {
+   "auth": "none",
+   "home": "https://urlgalleries.com/",
+   "name": "Urlgalleries"
+  },
+  "vanillarock": {
+   "auth": "none",
+   "home": "https://vanilla-rock.com/",
+   "name": "もえぴりあ"
+  },
+  "vidyapics": {
+   "auth": "none",
+   "home": "https://vidya.pics/",
+   "name": "Vidya Booru"
+  },
+  "vidyart2": {
+   "auth": "none",
+   "home": "https://vidyart2.booru.org/",
+   "name": "/v/idyart2"
+  },
+  "vipergirls": {
+   "auth": "optional",
+   "home": "https://vipergirls.to/",
+   "name": "Vipergirls"
+  },
+  "vipr": {
+   "auth": "none",
+   "home": "https://vipr.im/",
+   "name": "Vipr.im"
+  },
+  "visuabusters": {
+   "auth": "none",
+   "home": "https://www.visuabusters.com/booru/",
+   "name": "VISUABUSTERS"
+  },
+  "vk": {
+   "auth": "none",
+   "home": "https://vk.com/",
+   "name": "VK"
+  },
+  "vsco": {
+   "auth": "none",
+   "home": "https://vsco.co/",
+   "name": "VSCO"
+  },
+  "wallhaven": {
+   "auth": "key",
+   "home": "https://wallhaven.cc/",
+   "name": "Wallhaven"
+  },
+  "wallpapercave": {
+   "auth": "none",
+   "home": "https://wallpapercave.com/",
+   "name": "Wallpaper Cave"
+  },
+  "warosu": {
+   "auth": "none",
+   "home": "https://warosu.org/",
+   "name": "Warosu"
+  },
+  "weasyl": {
+   "auth": "key",
+   "home": "https://www.weasyl.com/",
+   "name": "Weasyl"
+  },
+  "webmshare": {
+   "auth": "none",
+   "home": "https://webmshare.com/",
+   "name": "webmshare"
+  },
+  "webtoons": {
+   "auth": "none",
+   "home": "https://www.webtoons.com/",
+   "name": "WEBTOON"
+  },
+  "weebcentral": {
+   "auth": "none",
+   "home": "https://weebcentral.com/",
+   "name": "Weeb Central"
+  },
+  "weebdex": {
+   "auth": "none",
+   "home": "https://weebdex.org/",
+   "name": "WeebDex"
+  },
+  "weibo": {
+   "auth": "none",
+   "home": "https://www.weibo.com/",
+   "name": "Weibo"
+  },
+  "whyp": {
+   "auth": "none",
+   "home": "https://whyp.it/",
+   "name": "Whyp"
+  },
+  "wikiart": {
+   "auth": "none",
+   "home": "https://www.wikiart.org/",
+   "name": "WikiArt.org"
+  },
+  "wikifeet": {
+   "auth": "none",
+   "home": "https://www.wikifeet.com/",
+   "name": "Wikifeet"
+  },
+  "wikifeetx": {
+   "auth": "none",
+   "home": "https://www.wikifeetx.com/",
+   "name": "Wikifeetx"
+  },
+  "wikigg": {
+   "auth": "none",
+   "home": "https://www.wiki.gg/",
+   "name": "wiki.gg"
+  },
+  "wikimedia": {
+   "auth": "none",
+   "home": "https://www.wikimedia.org/",
+   "name": "Wikimedia"
+  },
+  "wikimediacommons": {
+   "auth": "none",
+   "home": "https://commons.wikimedia.org/",
+   "name": "Wikimedia Commons"
+  },
+  "wikispecies": {
+   "auth": "none",
+   "home": "https://species.wikimedia.org/",
+   "name": "Wikispecies"
+  },
+  "windsorstore": {
+   "auth": "none",
+   "home": "https://www.windsorstore.com/",
+   "name": "Windsorstore"
+  },
+  "xasiat": {
+   "auth": "none",
+   "home": "https://www.xasiat.com",
+   "name": "Xasiat"
+  },
+  "xbooru": {
+   "auth": "none",
+   "home": "https://xbooru.com/",
+   "name": "Xbooru"
+  },
+  "xcancel": {
+   "auth": "none",
+   "home": "https://xcancel.com/",
+   "name": "Xcancel"
+  },
+  "xfolio": {
+   "auth": "none",
+   "home": "https://xfolio.jp/",
+   "name": "Xfolio"
+  },
+  "xhamster": {
+   "auth": "none",
+   "home": "https://xhamster.com/",
+   "name": "xHamster"
+  },
+  "xvideos": {
+   "auth": "none",
+   "home": "https://www.xvideos.com/",
+   "name": "XVideos"
+  },
+  "yandere": {
+   "auth": "none",
+   "home": "https://yande.re/",
+   "name": "yande.re"
+  },
+  "yiffverse": {
+   "auth": "none",
+   "home": "https://yiffverse.com/",
+   "name": "Yiff verse"
+  },
+  "yourlesbians": {
+   "auth": "none",
+   "home": "https://yourlesbians.com/",
+   "name": "YourLesbians"
+  },
+  "zerochan": {
+   "auth": "optional",
+   "home": "https://www.zerochan.net/",
+   "name": "Zerochan"
+  }
+ }
+}

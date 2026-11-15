@@ -81,6 +81,36 @@ def test_stream_options_map_extras():
     assert single["noplaylist"] is True and "writesubtitles" not in single
 
 
+
+def test_profile_parts_are_read_without_network():
+    from gallery_dl import extractor
+
+    choices, defaults = bridge.content_choices(extractor.find("https://x.com/someone"))
+    assert {"media", "tweets", "likes"} <= set(choices) and defaults == ["timeline"], (choices, defaults)
+    choices, defaults = bridge.content_choices(extractor.find("https://www.deviantart.com/someone"))
+    assert "scraps" in choices and defaults == ["gallery"], (choices, defaults)
+    assert bridge.content_choices(extractor.find("https://www.flickr.com/photos/someone/")) == ([], [])
+
+
+def test_site_choices_reach_gallery_dl_and_unknown_switches_do_not():
+    from gallery_dl import config
+
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"category": "twitter", "include": ["media", "likes"], "cookies": "/tmp/c.txt",
+                                     "user_agent": "Browser/1.0",
+                                     "site_options": {"retweets": True, "auto-watch": True, "videos": "yes"}}, staging)
+    section = config.get(("extractor",), "twitter")
+    assert section["include"] == ["media", "likes"] and section["retweets"] is True, section
+    assert "auto-watch" not in section and "videos" not in section, section
+    assert section["user-agent"] == "Browser/1.0"
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"category": "tumblr", "site_keys": {"api-key": " k ", "password": "x", "api-secret": 3}}, staging)
+    tumblr = config.get(("extractor",), "tumblr")
+    assert tumblr["api-key"] == "k" and "password" not in tumblr and "api-secret" not in tumblr, tumblr
+    processors = config.get((), "extractor")["postprocessors"]
+    assert processors[0]["name"] == "ugoira" and processors[0]["extension"] == "mp4"
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

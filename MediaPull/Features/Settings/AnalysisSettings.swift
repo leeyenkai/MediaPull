@@ -64,9 +64,6 @@ struct AnalysisSettings: View {
                 Picker("Event gap", selection: $preferences.eventGapHours) {
                     ForEach([1.0, 2, 3, 6, 12, 24], id: \.self) { Text("\(Int($0)) hour\($0 == 1 ? "" : "s")").tag($0) }
                 }
-                Picker("Default layout", selection: $preferences.organiseLayout) {
-                    ForEach(OrganiseLayout.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
                 Picker("Keep undo history for", selection: $preferences.undoHistoryDays) {
                     ForEach([7, 30, 90, 365], id: \.self) { Text("\($0) days").tag($0) }
                 }

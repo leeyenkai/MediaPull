@@ -120,6 +120,9 @@ final class SelfTestRunner {
         if let page = Self.value(after: "--selftest-video-download").flatMap(URL.init(string:)) {
             await exerciseVideoDownload(page: page, library: library, out: out)
         }
+        if let list = Self.value(after: "--selftest-galleries") {
+            await exerciseGalleries(list: URL(fileURLWithPath: list), library: library, out: out)
+        }
         if let account = Self.value(after: "--selftest-pullsheet") {
             model.showDownloads("@\(account)")
             try? await Task.sleep(for: .seconds(4))
@@ -314,6 +317,50 @@ final class SelfTestRunner {
     }
 
     /// Looks up a video page's formats, shows them in the Downloads pane, then saves it as 360p H.264 and as audio only.
+    /// Downloads the first few items from each address in a list through the whole app (site choices, the bridge, the save
+    /// pipeline and folders), and reports what was saved (SPEC R-1111b).
+    private func exerciseGalleries(list: URL, library: URL, out: URL) async {
+        let app = AppModel.shared
+        let addresses = ((try? String(contentsOf: list, encoding: .utf8)) ?? "").split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("#") }.compactMap(URL.init(string:))
+        let root = app.destination(for: library)
+        var shown = false
+        for url in addresses {
+            guard let site = await app.engines.siteInfo(for: url) else {
+                note("gallery \(url.absoluteString): not recognised")
+                continue
+            }
+            // As a person would: open the page in the browser first, so its session and any browser check carry over.
+            model.browser.load(url)
+            await waitUntil(timeout: 30) { !self.model.browser.isLoading }
+            try? await Task.sleep(for: .seconds(4))
+            if !shown {
+                model.showDownloads(url.absoluteString)
+                try? await Task.sleep(for: .seconds(3))
+                snapshot(to: out.appendingPathComponent("downloads-gallery.png"))
+                shown = true
+            }
+            let include = SiteCatalogue.visibleChoices(site.choices).filter { site.defaults.contains($0) }
+            let key = SiteInfoKey(category: site.category, baseCategory: site.baseCategory)
+            let switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map { ($0.key, $0.default) })
+            let started = Date()
+            guard let job = app.engines.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: "1-3",
+                                                             from: nil, to: nil, onlyNew: false, root: root, window: model) else { continue }
+            await waitUntil(timeout: 240) { job.state.isFinished }
+            let folder = job.destination ?? library
+            let files = (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
+                .filter { !$0.hasDirectoryPath && $0.pathExtension != "json" }
+            let kinds: String = Set(files.map { $0.pathExtension.lowercased() }).sorted().joined(separator: "/")
+            let name: String = app.sites.name(key)
+            let seconds = Int(Date().timeIntervalSince(started))
+            let place: String = folder.path.replacingOccurrences(of: library.path, with: "<library>")
+            let failure: String = job.failures.first.map { "; first failure: \($0.1)" } ?? ""
+            let extra: String = job.notes.first.map { "; note: \($0)" } ?? ""
+            let counts = "saved \(job.saved), duplicates \(job.duplicates), failed \(job.failed) in \(seconds) s"
+            note("gallery \(name) [\(site.category)/\(site.subcategory)]: \(job.state.label), \(counts); files \(kinds.isEmpty ? "none" : kinds) in \(place)\(failure)\(extra)")
+        }
+    }
+
     private func exerciseVideoDownload(page: URL, library: URL, out: URL) async {
         let app = AppModel.shared
         guard case let .success(info) = await app.engines.videoInfo(for: page) else {
@@ -325,7 +372,7 @@ final class SelfTestRunner {
         model.showDownloads(page.absoluteString)
         try? await Task.sleep(for: .seconds(8))
         snapshot(to: out.appendingPathComponent("downloads-video.png"))
-        guard let root = app.root(containing: library) else { return }
+        let root = app.destination(for: library)
         for (format, height) in [(VideoDownloadFormat.h264MP4, Optional(360)), (.audioM4A, nil)] {
             let started = Date()
             let job = app.engines.saveVideo(info, format: format, height: height, root: root, window: model)
@@ -548,6 +595,17 @@ final class SelfTestRunner {
         model.library.query = query
         try? await Task.sleep(for: .seconds(3))
         note("library filter “with faces”: \(model.library.shownFiles.count) of \(model.library.files.count)")
+
+        // The save folder (D-70): any folder, shown in the Library pane without joining the library.
+        let outside = out.appendingPathComponent("Outside folder", isDirectory: true)
+        try? FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let rootsBefore = app.roots.count
+        model.useSaveFolder(outside)
+        try? await Task.sleep(for: .seconds(1))
+        note("save folder: \(model.saveFolderName); shown in Library: \(model.library.shows(outside)); "
+            + "library folders unchanged: \(app.roots.count == rootsBefore); downloads go to \(app.destination(for: outside).url.lastPathComponent)")
+        model.library.otherFolder = nil
+        model.library.selectedFolder = library
         snapshot(to: out.appendingPathComponent("library-filtered.png"))
         model.library.query = LibraryQuery()
         model.library.includeSubfolders = false
@@ -568,12 +626,15 @@ final class SelfTestRunner {
         model.organise.source.includeSubfolders = true
         try? await Task.sleep(for: .seconds(3))
         snapshot(to: out.appendingPathComponent("organise.png"))
+        note("organise opens: mode \(model.organise.mode.label), target \(model.organise.target.root?.lastPathComponent ?? "none")")
 
         // Copy to a separate target: the source must stay exactly as it was.
         let sortedCopy = library.appendingPathComponent("Sorted copy", isDirectory: true)
         try? FileManager.default.createDirectory(at: sortedCopy, withIntermediateDirectories: true)
         model.organise.open(sortedCopy, in: model.organise.target)
         model.organise.moveToTarget = false
+        model.organise.open(test)
+        note("new source keeps the target: \(model.organise.target.root?.lastPathComponent ?? "none"), mode \(model.organise.mode.label)")
         model.organise.autoSort(.date)
         await waitUntil(timeout: 60) { self.model.organise.pending != nil }
         if let pending = model.organise.pending {

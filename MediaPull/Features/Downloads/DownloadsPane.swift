@@ -8,7 +8,7 @@ enum DownloadTarget: Equatable {
     case empty
     case instagram(PullDraft)
     case video(URL)
-    case gallery(URL, category: String)
+    case gallery(URL, site: SiteInfo)
     case unknown(URL)
 }
 
@@ -25,7 +25,9 @@ final class DownloadsModel {
     var dateFrom = Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date()
     var dateTo = Date()
     var onlyNew = true
-    var rootID: UUID? = AppModel.shared.defaultRoot?.id
+    /// For a gallery: the parts of a profile and the site's switches, remembered per site.
+    var include: Set<String> = []
+    var switches: [String: Bool] = [:]
     @ObservationIgnored private var checkTask: Task<Void, Never>?
     private var app: AppModel { .shared }
 
@@ -63,12 +65,28 @@ final class DownloadsModel {
             target = .unknown(url)
             checking = true
             checkTask = Task { [weak self] in
-                let category = await self?.app.engines.supportedCategory(for: url)
+                let site = await self?.app.engines.siteInfo(for: url)
                 guard let self, !Task.isCancelled, self.address == text else { return }
                 self.checking = false
-                if let category { self.target = .gallery(url, category: category) }
+                if let site { self.useGallery(url, site: site) }
             }
         }
+    }
+
+    private func useGallery(_ url: URL, site: SiteInfo) {
+        let prefs = app.preferences
+        let choices = SiteCatalogue.visibleChoices(site.choices)
+        let remembered = prefs.galleryChoices[site.category].map { Set($0).intersection(choices) }
+        include = remembered.flatMap { $0.isEmpty ? nil : $0 } ?? Set(site.defaults).intersection(choices)
+        let key = SiteInfoKey(category: site.category, baseCategory: site.baseCategory)
+        switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map { ($0.key, prefs.gallerySwitches[site.category]?[$0.key] ?? $0.default) })
+        target = .gallery(url, site: site)
+    }
+
+    /// Remembers the choices for the site, so the next download from it starts the same way.
+    func remember(_ site: SiteInfo) {
+        app.preferences.galleryChoices[site.category] = Array(include).sorted()
+        app.preferences.gallerySwitches[site.category] = switches
     }
 
     static func hashtag(_ text: String) -> String? {
@@ -150,8 +168,8 @@ struct DownloadsPane: View {
                 .id(draft.username + (draft.hashtag ?? "") + (draft.postURL?.absoluteString ?? ""))
         case let .video(url):
             VideoForm(model: model, url: url).id(url)
-        case let .gallery(url, category):
-            GalleryForm(model: model, downloads: downloads, url: url, category: category)
+        case let .gallery(url, site):
+            GalleryForm(model: model, downloads: downloads, url: url, site: site).id(url)
         case let .unknown(url):
             if downloads.checking {
                 HStack(spacing: 6) {
@@ -174,21 +192,61 @@ struct DownloadsPane: View {
     }
 }
 
-/// Any site gallery-dl supports: everything at the address, or part of it (SPEC section 12).
+/// Any site gallery-dl supports (SPEC R-1111b): the site and what is at the address, the parts of a profile to download,
+/// the site's own switches, sign-in, dates and folder; the same care as the Instagram options.
 struct GalleryForm: View {
     @Bindable var model: WindowModel
     @Bindable var downloads: DownloadsModel
     let url: URL
-    let category: String
+    let site: SiteInfo
+    @State private var hasSession = false
     private var app: AppModel { .shared }
+    private var key: SiteInfoKey { SiteInfoKey(category: site.category, baseCategory: site.baseCategory) }
+    private var name: String { app.sites.name(key) }
+    private var choices: [String] { SiteCatalogue.visibleChoices(site.choices) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("\(category.capitalized) gallery: every image and video at this address, at the highest quality.",
-                  systemImage: "photo.stack")
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-            TextField("Items, such as 1-50 (all if empty)", text: $downloads.range)
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().fill(.quaternary)
+                    Image(systemName: "photo.stack").foregroundStyle(.secondary)
+                }
+                .frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.headline)
+                    Text(pageDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                Button("Download") { start() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!choices.isEmpty && downloads.include.isEmpty || model.saveFolder == nil)
+            }
+            signInNotice
+            if !choices.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Download").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Use Defaults") { downloads.include = Set(site.defaults).intersection(choices) }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                    }
+                    FlowToggles(items: choices, isOn: { downloads.include.contains($0) }, label: \.choiceLabel) { choice, on in
+                        if on { downloads.include.insert(choice) } else { downloads.include.remove(choice) }
+                    }
+                }
+            }
+            let switches = app.sites.switches(key)
+            if !switches.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Include").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    FlowToggles(items: switches, isOn: { downloads.switches[$0.key] ?? $0.default }, label: \.label) { item, on in
+                        downloads.switches[item.key] = on
+                    }
+                }
+            }
             LabeledContent("Posted") {
                 Picker("Posted", selection: $downloads.dateWindow) {
                     ForEach(InstagramDateWindow.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -202,22 +260,132 @@ struct GalleryForm: View {
                     DatePicker("To", selection: $downloads.dateTo, in: ...Date(), displayedComponents: .date)
                 }
             }
+            LabeledContent("Items") {
+                TextField("All", text: $downloads.range, prompt: Text("All, or a range such as 1-50"))
+                    .labelsHidden()
+            }
             Toggle("Only what is new since the last download", isOn: $downloads.onlyNew)
-            DestinationPicker(rootID: $downloads.rootID)
+            if choices.count > 1 {
+                Toggle("Sort into folders by type (\(choices.prefix(2).map(SiteCatalogue.choiceLabel).joined(separator: ", "))…)", isOn: Binding(
+                    get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 }
+                ))
+            }
+            if let keys = SiteKeys.forSite(site.category, baseCategory: site.baseCategory) {
+                SiteKeyFields(model: model, category: site.category, siteName: name, keys: keys)
+            }
+            SaveFolderRow(model: model)
             HStack {
                 Spacer()
                 Button("List in Extracted Media") { model.scanWithSiteExtractor() }
                     .help("List everything without saving it, then pick what to save")
-                Button("Download") {
-                    guard let root = app.roots.first(where: { $0.id == downloads.rootID }) ?? app.defaultRoot else { return }
-                    let dates = downloads.dateWindow.bounds(from: downloads.dateFrom, to: downloads.dateTo)
-                    app.engines.startGalleryDownload(url: url, category: category, range: downloads.range.nonEmpty, from: dates.from,
-                                                     to: dates.to, onlyNew: downloads.onlyNew, root: root, window: model)
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
             }
         }
+        .task(id: site.category) {
+            let domain = PublicSuffix.shared.registrableDomain((site.root ?? url).host ?? "")
+            hasSession = !(await app.cookies(forDomain: domain)).isEmpty
+        }
+    }
+
+    private var pageDescription: String {
+        let kind: String = switch site.subcategory {
+        case "user", "profile", "artist", "creator", "account", "channel", "blog": "Profile"
+        case "post", "image", "status", "tweet", "work", "artwork", "deviation", "submission", "photo", "video", "note": "One post"
+        case "search": "Search results"
+        case "tag", "tags", "hashtag": "Tag"
+        default: SiteCatalogue.choiceLabel(site.subcategory)
+        }
+        let what = choices.isEmpty ? "every image and video here" : "the parts chosen below"
+        return "\(kind) · \(what), at the highest quality"
+    }
+
+    @ViewBuilder
+    private var signInNotice: some View {
+        let signIn = app.sites.signIn(key)
+        let home = site.root ?? URL(string: app.sites.site(key)?.home ?? "")
+        switch signIn {
+        case .none:
+            EmptyView()
+        case .optional, .cookies, .required:
+            if hasSession {
+                Label("Uses your \(name) session from the browser.", systemImage: "person.crop.circle.badge.checkmark")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                notice(signIn == .optional ? "Sign in to \(name) in the browser to include private or age-restricted posts."
+                    : "\(name) needs you signed in. Sign in in the browser, then download.", button: home)
+            }
+        case .oauth, .key:
+            if SiteKeys.forSite(site.category, baseCategory: site.baseCategory) != nil {
+                notice("Public pages work with a shared key that \(name) sometimes limits. Your own key, below, avoids that.", button: nil)
+            } else {
+                notice(signIn == .key ? "\(name) may ask for an API key for some pages. Public pages usually work without one."
+                    : "Some \(name) pages need the site's own app sign-in, which MediaPull does not set up. Public pages usually work.",
+                    button: nil)
+            }
+        }
+    }
+
+    private func notice(_ text: String, button url: URL?) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "key.fill").foregroundStyle(.orange)
+            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if let url {
+                Button("Sign In") { model.browser.load(url) }.controlSize(.small)
+            }
+        }
+        .padding(8)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func start() {
+        guard let root = model.saveFolder.map(app.destination(for:)) else { return }
+        downloads.remember(site)
+        let dates = downloads.dateWindow.bounds(from: downloads.dateFrom, to: downloads.dateTo)
+        let include = choices.filter { downloads.include.contains($0) }
+        let switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map { ($0.key, downloads.switches[$0.key] ?? $0.default) })
+        app.engines.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: downloads.range.nonEmpty,
+                                         from: dates.from, to: dates.to, onlyNew: downloads.onlyNew, root: root, window: model)
+    }
+}
+
+private extension String {
+    var choiceLabel: String { SiteCatalogue.choiceLabel(self) }
+}
+
+/// The person's own API key for a site, optional, kept in the Keychain (SPEC R-1111b).
+struct SiteKeyFields: View {
+    @Bindable var model: WindowModel
+    let category: String
+    let siteName: String
+    let keys: SiteKeys
+    @State private var values: [String: String] = [:]
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Optional. Your own key avoids the limits of the shared one and uses your account's settings. It is kept in the Keychain and only sent to \(siteName).")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                ForEach(keys.fields, id: \.self) { field in
+                    SecureField(field.label, text: Binding(get: { values[field.option] ?? "" }, set: { value in
+                        values[field.option] = value
+                        SiteKeychain.set(value, category, field.option)
+                    }))
+                    .textFieldStyle(.roundedBorder)
+                }
+                if let page = keys.getKeyURL {
+                    Button("Get a Key in the Browser") { model.browser.load(page) }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            Label(values.values.contains { !$0.isEmpty } ? "Using your own \(siteName) API key" : "Your own \(siteName) API key",
+                  systemImage: "key")
+                .font(.callout)
+        }
+        .onAppear { values = SiteKeychain.keys(for: category, fields: keys.fields) }
     }
 }
 
