@@ -82,34 +82,48 @@ struct MainWindow: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        // The window's name, then the section tabs, right of the traffic lights (D-62).
+        // The section tabs, then the window's name, right of the traffic lights (D-62). No glass capsules: the title bar uses
+        // the same straight edges and small corners as the address and search fields.
         ToolbarItem(placement: .navigation) {
             HStack(spacing: 12) {
+                SectionTabs(section: $model.section)
+                Rectangle().fill(.separator).frame(width: 1, height: 16)
                 Text(windowName)
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(maxWidth: 260, alignment: .leading)
-                    .fixedSize(horizontal: windowName.count < 30, vertical: false)
-                Picker("Section", selection: $model.section) {
-                    ForEach(WindowSection.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .help("Collect media from the web, or organise media in folders (⌃⌘1, ⌃⌘2)")
+                    .frame(maxWidth: 320, alignment: .leading)
+                    .fixedSize(horizontal: windowName.count < 34, vertical: false)
             }
             .padding(.leading, 4)
         }
+        .sharedBackgroundVisibility(.hidden)
+        ToolbarSpacer(.flexible)
         if model.section == .organise {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button { model.organise.undoLast() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
-                    .disabled(!model.organise.history.contains { !$0.undone })
-                    .help("Undo the last change (⌘Z)")
-                activityButton
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 2) {
+                    TopBarButton(title: "Undo", symbol: "arrow.uturn.backward") { model.organise.undoLast() }
+                        .disabled(!model.organise.history.contains { !$0.undone })
+                        .help("Undo the last change (⌘Z)")
+                    activityButton
+                }
             }
+            .sharedBackgroundVisibility(.hidden)
         } else {
-            collectToolbar
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 2) {
+                    TopBarButton(title: "Downloads", symbol: "arrow.down.circle", active: model.showDownloads) {
+                        if model.showDownloads {
+                            model.setShowing(.downloads, false)
+                        } else {
+                            model.showDownloads(model.pageKind.instagramUsername.map { "@\($0)" })
+                        }
+                    }
+                    .help("Download this page: an Instagram account, a video or a whole gallery (⌥⌘4)")
+                    activityButton
+                }
+            }
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -118,28 +132,10 @@ struct MainWindow: View {
             : (model.browser.title.isEmpty ? "MediaPull" : model.browser.title)
     }
 
-    @ToolbarContentBuilder
-    private var collectToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            Button {
-                if model.showDownloads {
-                    model.setShowing(.downloads, false)
-                } else {
-                    model.showDownloads(model.pageKind.instagramUsername.map { "@\($0)" })
-                }
-            } label: {
-                Label("Downloads", systemImage: model.showDownloads ? "arrow.down.circle.fill" : "arrow.down.circle")
-            }
-            .help("Download this page: an Instagram account, a video or a whole gallery (⌥⌘4)")
-            activityButton
-        }
-    }
-
     private var activityButton: some View {
-        Button { showActivity.toggle() } label: {
-            Label("Activity", systemImage: app.jobs.activeCount > 0 ? "list.bullet.rectangle.fill" : "list.bullet.rectangle")
+        TopBarButton(title: "Activity", symbol: "list.bullet.rectangle", active: showActivity, badge: app.jobs.activeCount) {
+            showActivity.toggle()
         }
-        .badge(app.jobs.activeCount)
         .help("All jobs: downloads, analysis and organising (⇧⌘J)")
         .popover(isPresented: $showActivity, arrowEdge: .bottom) {
             ActivityView().frame(width: 460, height: 420)

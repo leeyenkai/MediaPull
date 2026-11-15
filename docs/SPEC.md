@@ -248,10 +248,10 @@ The package builds for iOS from the first milestone so the port stays cheap. The
 
 ### 5.1 The contract
 
-1. No file or media bytes from the Mac are ever sent anywhere.
+1. No file or media bytes from the Mac are ever sent anywhere. This protects the library and every other file on the Mac.
 2. Neither MediaPull's own code nor the engines perform any write action on any account or service.
 3. MediaPull sends no telemetry, analytics or crash reports.
-4. The browser pane is the one honest exception to "MediaPull sends nothing": pages loaded in it run their own code and send their own form submissions (a login form, a search box), exactly as in any browser. The pane cannot upload files (5.4).
+4. The browser pane is the one honest exception to "MediaPull sends nothing": pages loaded in it run their own code and send what any browser sends (sign-in details typed into a login form, a search, cookies, a page's own requests). The pane still cannot upload files from the Mac (5.4).
 
 ### 5.2 Swift network gate
 
@@ -385,7 +385,7 @@ Instagram identifiers are always stored as strings (they exceed 2^53).
 
 **R-703** ⌘N opens a new window with its own browser pane and page session. All windows share the website data store, the library roots and the job queue.
 
-**R-704** The window uses the compact unified toolbar: the window title and the section tabs Collect · Organise (D-62), then, in Collect, Downloads (shows or hides the Downloads pane) and Activity (a popover listing every job, with a badge for running ones); in Organise, Undo and Activity. Pausing extraction is a button in the Extracted Media header. The Downloads pane appears when asked for and stays until closed. Both sections use the same pane headers, arrange menus and title bar (D-69). Everything that belongs to browsing lives in the Browser pane itself (R-802), so it moves with the pane.
+**R-704** The window uses the compact unified toolbar: the section tabs Collect · Organise (D-62), then the window title, then at the right edge, in Collect, Downloads (shows or hides the Downloads pane) and Activity (a popover listing every job, with a badge for running ones); in Organise, Undo and Activity. Pausing extraction is a button in the Extracted Media header. The Downloads pane appears when asked for and stays until closed. Both sections use the same pane headers, arrange menus and title bar (D-69). The title bar has no capsule backgrounds: tabs and buttons are drawn like the browser's tab chips, with the same 6-point corners as the address and search fields, and the Organise pane's Sort / People / History switch uses the same tabs. Everything that belongs to browsing lives in the Browser pane itself (R-802), so it moves with the pane.
 
 **R-705** A bottom status bar in the Extracted pane shows item counts (found, shown after filters, selected), the total size of the selection where known, the save folder (a menu of library folders, recent folders and "Other Folder…"; D-70) and the Save button.
 
@@ -437,7 +437,7 @@ Tracking parameters such as `igsh`, `utm_*` and `fbclid` are removed from Instag
 
 **R-806** The pane uses WebKit's default User-Agent for the platform. The same User-Agent string is used for the app's own downloads and passed to the engines so that all requests look consistent.
 
-**R-807** Pop-ups (which WebKit allows only after a click) open in a new tab (R-805a). Downloads that the page itself triggers (`Content-Disposition: attachment`) are routed into the Extracted pane as items instead of being saved silently.
+**R-807** Pop-ups (which WebKit allows only after a click) open in a new tab (R-805a). A download the page itself offers (a download link, `Content-Disposition: attachment`, or a file the pane cannot show) opens the standard save dialog, starting in the Collect save folder (D-70) with the site's file name; the file is fetched by WebKit with the page's own session, and the address bar reports where it went. Nothing is saved without the dialog (D-73).
 
 **R-808** When a checkpoint occurs (section 11.9), the pane shows a banner above the page: what happened, "Resume" (enabled when the condition is cleared) and "Cancel Jobs".
 
@@ -1206,6 +1206,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-70 | Collect has one save folder per window, the folder selected in the Library pane (the default library folder at first), named beside the Save button. Save, the Downloads pane and the editors use it; any folder on the Mac can be chosen without becoming a library folder. "Save to Last Folder" is removed | Requested: the library by default, an easy change to any folder; three separate destinations (Save, Save Here, last folder) were confusing |
 | D-71 | Every gallery-dl site gets per-site options: its name, the parts of a profile, its media switches, sign-in state and remembered choices, from a catalogue generated from the bundled gallery-dl and from the extractor itself. Checked against gallery-dl's own test addresses for every site | Requested: every source with as much attention to detail as Instagram and YouTube |
 | D-72 | The egress guard allows the read-only POSTs gallery-dl's sites need, listed by host and path from an audit of every POST in the bundled gallery-dl (49 reads, 8 tokens; logins and the 7 account actions stay blocked), with a body check per endpoint. Re-audit when gallery-dl is updated. This amends D-40 | About 40 sites, DeviantArt among them, could not download at all because a public token or a search is a POST |
+| D-73 | A download a web page offers is saved where the person chooses in the standard save dialog (starting in the save folder), instead of being listed in Extracted Media. It is a read, like any download | Requested: clicking a download link in the browser should download the file |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1365,7 +1366,7 @@ and a resolution from the heights that format actually offers for this video (wi
 
 ## 38. Organise
 
-**R-3801** Organise is the second section of the window, chosen with the tabs after the window title (Collect · Organise; ⌃⌘1 and ⌃⌘2) (D-62). It works on any local folder the person opens (Open Folder… ⌘O, dropping a folder from Finder, or a library root), only rearranges local files and never fetches anything. Switching sections never reloads the Browser pane.
+**R-3801** Organise is the second section of the window, chosen with the tabs before the window title (Collect · Organise; ⌃⌘1 and ⌃⌘2) (D-62). It works on any local folder the person opens (Open Folder… ⌘O, dropping a folder from Finder, or a library root), only rearranges local files and never fetches anything. Switching sections never reloads the Browser pane.
 
 **R-3802** Organise has three panes, arranged like Collect's (movable, stackable, hidable; D-69):
 

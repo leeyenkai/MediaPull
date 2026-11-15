@@ -266,12 +266,8 @@ struct OrganiseWorkPane: View {
         VStack(spacing: 0) {
             // The Sort, People and History tabs name the pane.
             PaneHeader(title: "", pane: .organiseWork, model: model) {
-                Picker("Show", selection: $organise.tab) {
-                    ForEach(OrganiseTab.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
+                ChipTabs(selection: $organise.tab, items: OrganiseTab.allCases, label: \.label)
+                    .fixedSize()
             }
             Divider()
             switch organise.tab {

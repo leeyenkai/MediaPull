@@ -68,7 +68,7 @@ struct AddressField: View {
         .padding(.leading, 8)
         .padding(.trailing, 10)
         .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: TopBarStyle.radius, style: .continuous))
         .onChange(of: model.browser.addressText) { _, newValue in
             if !editing { text = newValue }
         }

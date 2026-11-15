@@ -167,9 +167,18 @@ final class WindowModel: Identifiable, MediaGridOwner {
             guard let self, let tab else { return }
             self.didFinish(url, in: tab)
         }
-        tab.onDownload = { [weak self, weak tab] url, mime in
-            guard let self, let tab else { return }
-            self.addDownload(url, mime: mime, from: tab)
+        tab.onChooseDownloadDestination = { [weak self] name in
+            guard let self else { return nil }
+            return await FolderPicker.chooseSaveLocation(suggestedName: name, start: self.saveFolder, window: self.hostWindow)
+        }
+        tab.onDownloadFinished = { [weak self] file, error in
+            guard let self else { return }
+            if let error {
+                self.addressMessage = "The download did not finish: \(error)"
+            } else if let file {
+                self.addressMessage = "Downloaded \(file.lastPathComponent) to \(file.deletingLastPathComponent().lastPathComponent)."
+                self.app.libraryRevision += 1
+            }
         }
         tab.onPDF = { [weak self] url in
             guard let self, self.extractionEnabled else { return }
@@ -290,17 +299,6 @@ final class WindowModel: Identifiable, MediaGridOwner {
             if app.userAgent == nil { app.userAgent = await browser.userAgent() }
             await app.engines.refreshSignIn()
         }
-    }
-
-    private func addDownload(_ url: URL, mime: String?, from tab: BrowserController) {
-        let page = tab.url ?? url
-        var item: [String: Any] = ["u": url.absoluteString, "k": "link"]
-        if let mime { item["t"] = mime }
-        let batch: [String: Any] = ["v": 1, "items": [item]]
-        guard let data = try? JSONSerialization.data(withJSONObject: batch), let json = String(data: data, encoding: .utf8) else { return }
-        let frame = FrameInfo(frameURL: page, isMainFrame: true, origin: nil, pageURL: page, pageTitle: tab.title.nonEmpty)
-        Task { await ingestor.ingest(json: json, frame: frame) }
-        addressMessage = "The page offered a download. It was added to Extracted Media instead of being saved."
     }
 
     // MARK: Address field

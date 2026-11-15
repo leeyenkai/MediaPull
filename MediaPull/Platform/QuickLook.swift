@@ -38,6 +38,18 @@ final class QuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegat
 }
 
 enum FolderPicker {
+    /// Where to save a file a web page offers, starting in `start` with the site's suggested name.
+    static func chooseSaveLocation(suggestedName: String, start: URL?, window: NSWindow?) async -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Save Download"
+        panel.prompt = "Save"
+        panel.nameFieldStringValue = suggestedName
+        panel.directoryURL = start
+        panel.canCreateDirectories = true
+        let response = if let window { await panel.beginSheetModal(for: window) } else { await panel.begin() }
+        return response == .OK ? panel.url : nil
+    }
+
     static func chooseFolder(title: String, prompt: String, start: URL?, window: NSWindow?, completion: @escaping (URL?) -> Void) {
         let panel = NSOpenPanel()
         panel.title = title

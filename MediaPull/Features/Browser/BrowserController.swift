@@ -8,7 +8,7 @@ import WebKit
 /// Drives one browser pane (SPEC section 8). The UI delegate deliberately has no open-panel
 /// method, so file inputs on web pages do nothing (SPEC R-508).
 @Observable
-final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, Identifiable {
+final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, Identifiable {
     let id = UUID()
     let webView: WKWebView
     let handler = ExtractionMessageHandler()
@@ -23,7 +23,10 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, Ide
     @ObservationIgnored var onMessage: ((ExtractionMessage) -> Void)?
     @ObservationIgnored var onCommit: ((URL) -> Void)?
     @ObservationIgnored var onFinish: ((URL) -> Void)?
-    @ObservationIgnored var onDownload: ((URL, String?) -> Void)?
+    /// A file the page offers for download: where to save it (nil cancels), then the result (SPEC R-807).
+    @ObservationIgnored var onChooseDownloadDestination: ((String) async -> URL?)?
+    @ObservationIgnored var onDownloadFinished: ((URL?, String?) -> Void)?
+    @ObservationIgnored private var downloadDestinations: [ObjectIdentifier: URL] = [:]
     @ObservationIgnored var onPDF: ((URL) -> Void)?
     /// A link that asks for a new window, or a ⌘-click: open it in a tab (selected when the Bool is true).
     @ObservationIgnored var onOpenInNewTab: ((URL, Bool) -> Void)?
@@ -135,9 +138,8 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, Ide
     // MARK: Navigation
 
     func webView(_: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-        if navigationAction.shouldPerformDownload, let url = navigationAction.request.url {
-            onDownload?(url, nil)
-            return .cancel
+        if navigationAction.shouldPerformDownload {
+            return .download
         }
         if navigationAction.navigationType == .linkActivated, navigationAction.modifierFlags.contains(.command),
            let url = navigationAction.request.url, url.scheme == "https" || url.scheme == "http", let open = onOpenInNewTab
@@ -161,13 +163,37 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, Ide
             if isPDF, let url = response.url { onPDF?(url) }
         }
         let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
-        if navigationResponse.isForMainFrame, !navigationResponse.canShowMIMEType || disposition.hasPrefix("attachment"),
-           let url = response.url
-        {
-            onDownload?(url, response.mimeType)
-            return .cancel
+        if navigationResponse.isForMainFrame, !navigationResponse.canShowMIMEType || disposition.hasPrefix("attachment") {
+            return .download
         }
         return .allow
+    }
+
+    // MARK: Downloads the page offers (SPEC R-807)
+
+    func webView(_: WKWebView, navigationAction _: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_: WKWebView, navigationResponse _: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func download(_ download: WKDownload, decideDestinationUsing _: URLResponse, suggestedFilename: String) async -> URL? {
+        guard let chosen = await onChooseDownloadDestination?(suggestedFilename) else { return nil }
+        // The save panel already asked about replacing; WebKit refuses to write over an existing file.
+        try? FileManager.default.removeItem(at: chosen)
+        downloadDestinations[ObjectIdentifier(download)] = chosen
+        return chosen
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        onDownloadFinished?(downloadDestinations.removeValue(forKey: ObjectIdentifier(download)), nil)
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData _: Data?) {
+        let file = downloadDestinations.removeValue(forKey: ObjectIdentifier(download))
+        onDownloadFinished?(file, error.localizedDescription)
     }
 
     func webView(_ webView: WKWebView, didCommit _: WKNavigation!) {
