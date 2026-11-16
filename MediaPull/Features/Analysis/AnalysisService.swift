@@ -77,8 +77,9 @@ final class AnalysisService {
         Float((analyzer?.faceEncoder?.spec.matchThreshold).map(Double.init) ?? 0.3) + Float(preferences.faceMatchAdjustment)
     }
 
+    /// Reads `modelsLoaded`, which is observed (the analyzer is not), so views update once the models finish loading.
     var canSearchByMeaning: Bool {
-        analyzer?.imageText != nil
+        modelsLoaded && analyzer?.imageText != nil
     }
 
     // MARK: Start
