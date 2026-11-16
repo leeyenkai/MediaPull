@@ -30,7 +30,6 @@ final class Preferences {
     var recentSaveFolders: [String] { didSet { set(recentSaveFolders, "recentSaveFolders") } }
     var defaultContent: Set<InstagramContent> { didSet { set(defaultContent.map(\.rawValue).sorted(), "defaultContent") } }
     var autoProbe: Bool { didSet { set(autoProbe, "autoProbe") } }
-    var verboseEngineLog: Bool { didSet { set(verboseEngineLog, "verboseEngineLog") } }
     var saveConcurrency: Int { didSet { set(saveConcurrency, "saveConcurrency") } }
     var paneArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(paneArrangement), "paneArrangement") } }
     var organiseArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(organiseArrangement), "organiseArrangement") } }
@@ -94,9 +93,9 @@ final class Preferences {
         let content = (d.array(forKey: "defaultContent") as? [String])?.compactMap(InstagramContent.init(rawValue:))
         defaultContent = Set(content ?? Array(InstagramContent.defaults))
         autoProbe = d.object(forKey: "autoProbe") as? Bool ?? true
-        verboseEngineLog = d.bool(forKey: "verboseEngineLog")
         saveConcurrency = d.object(forKey: "saveConcurrency") as? Int ?? 4
-        paneArrangement = d.data(forKey: "paneArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) } ?? .standard
+        paneArrangement = d.data(forKey: "paneArrangement")
+            .flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) } ?? .standard
         organiseArrangement = d.data(forKey: "organiseArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
             .flatMap { $0.group == .organise ? $0 : nil } ?? .organiseStandard
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true

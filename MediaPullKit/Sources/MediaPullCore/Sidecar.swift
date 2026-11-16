@@ -95,6 +95,14 @@ public struct Sidecar: Encodable, Equatable, Sendable {
     public static func sidecarURL(for media: URL) -> URL {
         media.deletingLastPathComponent().appendingPathComponent(media.lastPathComponent + ".json")
     }
+
+    /// Dropped or chosen files without the metadata files of media also in the list: those move with their media.
+    public static func withoutCompanions(_ urls: [URL]) -> [URL] {
+        let paths = Set(urls.map(\.standardizedFileURL.path))
+        return urls.filter { url in
+            url.pathExtension.lowercased() != "json" || !paths.contains(url.standardizedFileURL.deletingPathExtension().path)
+        }
+    }
 }
 
 public extension String {
@@ -113,5 +121,35 @@ public enum ShortHash {
             hash = hash &* 0x0000_0100_0000_01B3
         }
         return String(format: "%016llx", hash).prefix(12).description
+    }
+}
+
+/// Moving, copying and trashing a media file together with its metadata file, which always travel together (R-1801).
+/// A folder has no metadata file: a file named "<folder>.json" beside it is left alone. The metadata file is best effort;
+/// the media file's own error is what is thrown.
+public enum MediaFiles {
+    public static func companion(of url: URL) -> URL? {
+        var isFolder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), !isFolder.boolValue else { return nil }
+        let sidecar = Sidecar.sidecarURL(for: url)
+        return FileManager.default.fileExists(atPath: sidecar.path) ? sidecar : nil
+    }
+
+    public static func move(_ url: URL, to target: URL) throws {
+        let sidecar = companion(of: url)
+        try FileManager.default.moveItem(at: url, to: target)
+        if let sidecar { try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: target)) }
+    }
+
+    public static func copy(_ url: URL, to target: URL, withSidecar: Bool = true) throws {
+        let sidecar = withSidecar ? companion(of: url) : nil
+        try FileManager.default.copyItem(at: url, to: target)
+        if let sidecar { try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: target)) }
+    }
+
+    public static func trash(_ url: URL) throws {
+        let sidecar = companion(of: url)
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        if let sidecar { try? FileManager.default.trashItem(at: sidecar, resultingItemURL: nil) }
     }
 }

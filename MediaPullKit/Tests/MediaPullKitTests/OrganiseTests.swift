@@ -181,7 +181,7 @@ final class FolderOperationTests: XCTestCase {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? contents.data(using: .utf8)!.write(to: url)
         if sidecar {
-            try? "{\"username\":\"a\"}".data(using: .utf8)!.write(to: Sidecar.sidecarURL(for: url))
+            try? Data("{\"username\":\"a\"}".utf8).write(to: Sidecar.sidecarURL(for: url))
         }
         return url
     }
@@ -240,11 +240,30 @@ final class FolderOperationTests: XCTestCase {
             [root.appendingPathComponent("sub/a.jpg"), root.appendingPathComponent("sub/b.jpg")],
             to: root
         ))
-        try try XCTUnwrap("changed contents".data(using: .utf8)?.write(to: root.appendingPathComponent("a.jpg")))
+        try Data("changed contents".utf8).write(to: root.appendingPathComponent("a.jpg"))
         let report = await journal.undo(entry.id)
         XCTAssertEqual(report.restored, 1)
         XCTAssertEqual(report.skipped.count, 1)
         XCTAssertEqual(tree(), ["a.jpg", "sub/b.jpg"])
+        let again = await journal.undo(entry.id)
+        XCTAssertEqual(again.restored + again.skipped.count, 0, "a changed file is not offered again")
+    }
+
+    /// A target that is not there (an unplugged drive) keeps its steps, so Undo works once it is back.
+    func testUndoCanBeRetriedWhenTheFolderComesBack() async throws {
+        file("in/a.jpg", "one")
+        let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+        let drive = root.appendingPathComponent("drive", isDirectory: true)
+        try FileManager.default.createDirectory(at: drive, withIntermediateDirectories: true)
+        let entry = await journal.run(FolderOperations.move([root.appendingPathComponent("in/a.jpg")], to: drive))
+        let away = root.appendingPathComponent("away", isDirectory: true)
+        try FileManager.default.moveItem(at: drive, to: away)
+        let first = await journal.undo(entry.id)
+        XCTAssertEqual(first.restored, 0)
+        try FileManager.default.moveItem(at: away, to: drive)
+        let second = await journal.undo(entry.id)
+        XCTAssertEqual(second.restored, 1)
+        XCTAssertEqual(tree(), ["in/a.jpg"])
     }
 
     func testMergeCombinesSameNamedFolders() {
@@ -327,7 +346,7 @@ extension FolderOperationTests {
         }
     }
 
-    func testUndoLeavesMetadataInTheTrashWhenItsMediaCannotComeBack() async throws {
+    func testUndoLeavesMetadataInTheTrashWhenItsMediaCannotComeBack() async {
         let a = file("a.jpg", "one", sidecar: true)
         let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
         let entry = await journal.run(FolderOperations.trash([a]))

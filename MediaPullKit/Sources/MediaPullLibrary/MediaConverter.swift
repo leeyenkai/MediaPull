@@ -91,6 +91,11 @@ public struct MediaConverter: Sendable {
     func convertImage(_ file: URL, format: MediaFormat, policy: ConversionPolicy, layout: SaveLayout, workDirectory: URL) async throws
         -> ConversionResult
     {
+        // An APNG is converted like any animation: GIF by default, MP4 or APNG as chosen (SPEC 16.1, D-06).
+        if format == .png, policy.animated != .apng, let analysis = ImageConversion.analyze(file), analysis.isAnimated {
+            let size = PixelSize(width: analysis.width, height: analysis.height)
+            return try await convertAnimated(file, policy: policy.animated, size: size, workDirectory: workDirectory)
+        }
         if format == .jpeg || format == .gif || format == .png {
             let analysis = ImageConversion.analyze(file)
             return ConversionResult(url: file, format: format, converted: false,
@@ -119,7 +124,8 @@ public struct MediaConverter: Sendable {
         case .apng:
             let output = workDirectory.appendingPathComponent(UUID().uuidString + ".png")
             try ImageConversion.writeAnimated(frames, loopCount: loop, as: .png, to: output)
-            return ConversionResult(url: output, format: .png, converted: true, note: "Converted animation to animated PNG", pixelSize: size)
+            return ConversionResult(url: output, format: .png, converted: true,
+                                    note: "Converted animation to animated PNG", pixelSize: size)
         case .gif, .mp4:
             if let ffmpeg {
                 let folder = workDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

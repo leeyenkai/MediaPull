@@ -10,6 +10,40 @@ import MediaPullStore
 import Observation
 
 /// What the Pull sheet is set up with.
+/// A job's private copy of the browser's cookies for one site, written 0600 in a 0700 folder for the engine. When the job
+/// ends, cookies the engine refreshed go back to the browser (R-1103) and the copy is deleted.
+final class EngineCookies {
+    let file: URL
+    private let original: [CookieRecord]
+    private var finished = false
+
+    /// Throws when the copy cannot be written.
+    init(_ cookies: [CookieRecord], job: String = UUID().uuidString) throws {
+        file = CookieFile.privateLocation(job: job)
+        original = cookies
+        do {
+            try CookieFile.write(cookies, to: file)
+        } catch {
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+            throw error
+        }
+    }
+
+    /// For sites where signing in is optional: nil when the browser has no cookies for the site.
+    static func optional(_ cookies: [CookieRecord]) -> EngineCookies? {
+        cookies.isEmpty ? nil : try? EngineCookies(cookies)
+    }
+
+    /// Hands refreshed cookies back and deletes the copy; only the first call does anything.
+    func finish() async {
+        guard !finished else { return }
+        finished = true
+        let updated = CookieFile.read(file)
+        if !updated.isEmpty { await CookieBridge.update(updated, existing: original) }
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+}
+
 struct PullDraft: Identifiable, Equatable {
     var id = UUID()
     var username: String
@@ -21,7 +55,6 @@ struct PullDraft: Identifiable, Equatable {
     var dateFrom = Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date()
     var dateTo = Date()
     var folderName: String
-    var layout: SaveLayout
     var incremental = true
     var pacing: PacingPreset
 }
@@ -61,7 +94,7 @@ final class EngineService {
     var bridge: BridgeClient? { app.engineManager.map { BridgeClient(paths: $0.paths) } }
 
     func refreshSignIn() async {
-        let cookies = await CookieBridge.allCookies(app.cookieStore)
+        let cookies = await CookieBridge.allCookies()
         signedIn = CookieBridge.isSignedInToInstagram(cookies)
     }
 
@@ -118,25 +151,43 @@ final class EngineService {
     // MARK: Lookup
 
     func lookup(_ username: String) async {
-        guard let bridge else { return }
+        guard let bridge else {
+            lookupErrors[username] = "The download engine is not available."
+            return
+        }
+        // The name is looked up as it is typed; wait for a pause so only the finished name reaches Instagram.
+        try? await Task.sleep(for: .milliseconds(600))
+        guard !Task.isCancelled else { return }
         lookupErrors[username] = nil
         guard canRunInstagram else {
             lookupErrors[username] = gateMessage ?? "Instagram is not available right now."
             return
         }
-        guard !instagramBusy else {
+        if instagramBusy {
+            // Wait for the running Instagram job, then look the account up.
             lookupErrors[username] = "Account details appear once the current Instagram job finishes."
-            return
+            while instagramBusy, !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+            }
+            guard !Task.isCancelled else { return }
+            lookupErrors[username] = nil
         }
+        // A lookup is an Instagram request too: pulls wait for it, one at a time (R-1113).
+        instagramBusy = true
         var request = BridgeRequest(op: "account")
         request.username = username
         let job = UUID().uuidString
-        let cookieFile = CookieFile.privateLocation(job: job)
-        defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
-        try? CookieFile.write(await app.cookies(forDomain: "instagram.com"), to: cookieFile)
-        request.cookies = cookieFile.path
+        let cookies = try? EngineCookies(await app.cookies(forDomain: "instagram.com"), job: job)
+        let staging = app.enginePaths?.staging.appendingPathComponent(job)
+        defer {
+            if let cookies { Task { await cookies.finish() } }
+            if let staging { try? FileManager.default.removeItem(at: staging) }
+            instagramBusy = false
+            pumpInstagram()
+        }
+        request.cookies = cookies?.file.path
         request.userAgent = app.userAgent
-        request.staging = app.enginePaths?.staging.appendingPathComponent(job).path
+        request.staging = staging?.path
         do {
             var found = false
             var problem: String?
@@ -155,29 +206,41 @@ final class EngineService {
                     break
                 }
             }
-            if !found { lookupErrors[username] = problem ?? "The account could not be found." }
+            // A lookup stopped because the name changed or the pane closed says nothing about the account.
+            if !found, !Task.isCancelled { lookupErrors[username] = problem ?? "The account could not be found." }
         } catch {
-            lookupErrors[username] = error.localizedDescription
+            if !Task.isCancelled { lookupErrors[username] = error.localizedDescription }
         }
+        await cookies?.finish()
     }
 
     func describe(code: String, message: String) -> String {
         switch code {
         case "private": return "This account is private. Instagram only shows its posts to followers."
         case "not_found":
-            return signedIn ? "No Instagram account has that name." : "Instagram did not answer. Sign in to Instagram in the browser pane to look up accounts."
+            return signedIn
+                ? "No Instagram account has that name."
+                : "Instagram did not answer. Sign in to Instagram in the browser pane to look up accounts."
         case "engine_outdated": return "Instagram may have changed. Check for engine updates in Settings."
         case "login_required": return "Sign in to Instagram in the browser pane first."
         default: return message
         }
     }
 
+    /// Video files engines write; webm and mkv are converted when saved.
+    static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "webm", "mkv"]
+
     // MARK: Drafts
 
     func draft(username: String, postURL: URL? = nil) -> PullDraft {
         let prefs = app.preferences
-        var draft = PullDraft(username: username, postURL: postURL, content: prefs.defaultContent,
-                              folderName: username, layout: app.defaultRoot?.layout ?? prefs.defaultLayout, pacing: prefs.pacing)
+        var draft = PullDraft(
+            username: username,
+            postURL: postURL,
+            content: prefs.defaultContent,
+            folderName: username,
+            pacing: prefs.pacing
+        )
         if postURL != nil { draft.content = [.posts] }
         return draft
     }
@@ -189,7 +252,6 @@ final class EngineService {
         }
         if let options = info.options {
             draft.content = options.content
-            draft.layout = options.layout
             draft.pacing = options.pacing
         }
         draft.incremental = info.lastPullAt != nil
@@ -240,8 +302,12 @@ final class EngineService {
         }
         if !scanOnly, draft.hashtag == nil, !draft.username.isEmpty {
             Task {
-                await app.store?.updateAccount(draft.username, options: PullOptions(content: draft.content, layout: draft.layout,
-                                                                                    rootID: root.flatMap { app.root(containing: $0.url)?.id }, pacing: draft.pacing))
+                await app.store?.updateAccount(draft.username, options: PullOptions(
+                    content: draft.content,
+                    rootID: root
+                                                                                    .flatMap { app.root(containing: $0.url)?.id },
+                    pacing: draft.pacing
+                ))
             }
         }
         return job
@@ -285,17 +351,17 @@ final class EngineService {
             return
         }
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        let cookieFile = CookieFile.privateLocation(job: work)
-        let originalCookies = await app.cookies(forDomain: "instagram.com")
-        defer {
-            try? FileManager.default.removeItem(at: staging)
-            try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent())
-        }
+        let cookies: EngineCookies
         do {
-            try CookieFile.write(originalCookies, to: cookieFile)
+            cookies = try EngineCookies(await app.cookies(forDomain: "instagram.com"), job: work)
         } catch {
+            try? FileManager.default.removeItem(at: staging)
             app.jobs.finish(job, .failed("The sign-in cookies could not be prepared: \(error.localizedDescription)"))
             return
+        }
+        defer {
+            try? FileManager.default.removeItem(at: staging)
+            Task { await cookies.finish() }
         }
 
         // Archive bookkeeping key: the account, the hashtag, or the signed-in person's own items.
@@ -326,7 +392,7 @@ final class EngineService {
             request.urls = urls
             request.url = urls.first ?? profileURL.absoluteString
         }
-        request.cookies = cookieFile.path
+        request.cookies = cookies.file.path
         request.userAgent = app.userAgent
         request.staging = staging.path
         request.setPacing(draft.pacing.delay)
@@ -335,7 +401,7 @@ final class EngineService {
         let dates = draft.dateWindow.bounds(from: draft.dateFrom, to: draft.dateTo)
         if let from = dates.from { request.dateFrom = ISO8601DateFormatter().string(from: from) }
         if let to = dates.to { request.dateTo = ISO8601DateFormatter().string(from: to) }
-        if (draft.incremental || resuming), draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
+        if draft.incremental || resuming, draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
             let known = await app.store?.knownKeys(account: account) ?? []
             let knownFile = staging.appendingPathComponent("known.json")
             if let data = try? JSONEncoder().encode(Array(known)) { try? data.write(to: knownFile) }
@@ -351,7 +417,8 @@ final class EngineService {
                 return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [SaveTarget.tagsFolder, tag])
             }
             return draft.postURL == nil && isAccount
-                ? SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, accountUsername: draft.folderName.nonEmpty ?? account)
+                ? SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true,
+                             accountUsername: draft.folderName.nonEmpty ?? account)
                 : SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true)
         }
         let settings = app.saveSettings
@@ -383,10 +450,17 @@ final class EngineService {
                     }
                     index += 1
                     let context = EngineContext.from(meta: file.meta, key: file.key, subcategory: file.subcategory, sourceURL: sourceURL)
-                    let isVideo = ["mp4", "mov", "m4v", "webm", "mkv"].contains(file.path.pathExtension.lowercased())
-                    let input = EngineItemInput(context: context, kind: isVideo ? .video : .image,
-                                                engineURL: context.postURL?.absoluteString ?? file.path.absoluteString, thumbURL: nil,
-                                                width: file.meta["width"]?.int, height: file.meta["height"]?.int, isDash: false, fallbackURL: nil)
+                    let isVideo = Self.videoExtensions.contains(file.path.pathExtension.lowercased())
+                    let input = EngineItemInput(
+                        context: context,
+                        kind: isVideo ? .video : .image,
+                        engineURL: context.postURL?.absoluteString ?? file.path.absoluteString,
+                        thumbURL: nil,
+                        width: file.meta["width"]?.int,
+                        height: file.meta["height"]?.int,
+                        isDash: false,
+                        fallbackURL: nil
+                    )
                     let item = input.makeItem(discoveryIndex: index)
                     job.currentItem = context.postShortcode ?? file.path.lastPathComponent
                     let (outcome, note) = await pipeline.saveStaged(file.path, item: item, target: target, settings: settings, index: index)
@@ -410,7 +484,9 @@ final class EngineService {
                     }
                     if let note, job.notes.count < 30 { job.notes.append(note) }
                 case let .document(kind, path, count):
-                    guard !scanOnly, let root, isAccount, path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/") else {
+                    guard !scanOnly, let root, isAccount,
+                          path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/")
+                    else {
                         continue
                     }
                     if let saved = fileAccountDocument(path, kind: kind, root: root, folder: draft.folderName.nonEmpty ?? account) {
@@ -422,7 +498,9 @@ final class EngineService {
                 case let .wait(seconds, reason):
                     job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
                 case let .progress(received, total, _):
-                    if let received, let total, total > 0 { job.fraction = nil; job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))" }
+                    if let received, let total, total > 0 {
+                        job.fraction = nil; job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))"
+                    }
                 case let .cursor(subcategory, value):
                     if subcategory == "posts", !scanOnly, isAccount { await app.store?.updateAccount(account, resumeCursor: .some(value)) }
                 case let .checkpoint(kind, url, message):
@@ -435,7 +513,9 @@ final class EngineService {
                     fatal = "MediaPull blocked a \(method) request to \(host): \(reason)"
                 case let .done(status, errors):
                     finishedCleanly = status == "completed"
-                    if status == "failed", fatal == nil { fatal = errors.last.map { describe(code: "", message: $0) } ?? "The download engine stopped." }
+                    if status == "failed", fatal == nil {
+                        fatal = errors.last.map { describe(code: "", message: $0) } ?? "The download engine stopped."
+                    }
                 default:
                     break
                 }
@@ -444,8 +524,7 @@ final class EngineService {
             fatal = error.localizedDescription
         }
 
-        let updated = CookieFile.read(cookieFile)
-        if !updated.isEmpty { await CookieBridge.update(updated, in: app.cookieStore, existing: originalCookies) }
+        await cookies.finish()
         await refreshSignIn()
         app.libraryRevision += 1
         if Task.isCancelled || job.state == .cancelled {
@@ -473,7 +552,8 @@ final class EngineService {
         if let fatal { job.notes.append(fatal) }
         if !scanOnly, draft.postURL == nil, isAccount {
             if finishedCleanly {
-                await app.store?.updateAccount(account, newestSavedDate: newest, resumeCursor: .some(nil), lastResult: job.summary, pulledNow: true)
+                await app.store?.updateAccount(account, newestSavedDate: newest, resumeCursor: .some(nil), lastResult: job.summary,
+                                               pulledNow: true)
             } else {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: job.summary)
             }
@@ -510,12 +590,9 @@ final class EngineService {
         request.url = url.absoluteString
         request.userAgent = app.userAgent
         // Members-only and age-checked videos list their formats only with the browser's sign-in for that site.
-        let cookieFile = CookieFile.privateLocation(job: UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
-        if let host = url.host {
-            let cookies = await app.cookies(forDomain: PublicSuffix.shared.registrableDomain(host))
-            if !cookies.isEmpty, (try? CookieFile.write(cookies, to: cookieFile)) != nil { request.cookies = cookieFile.path }
-        }
+        let cookies = EngineCookies.optional(await app.cookies(forDomain: PublicSuffix.shared.registrableDomain(url.host ?? "")))
+        defer { if let cookies { Task { await cookies.finish() } } }
+        request.cookies = cookies?.file.path
         var message = "No downloadable video was found on this page."
         do {
             for try await event in bridge.run(request) {
@@ -535,8 +612,8 @@ final class EngineService {
     /// Downloads a video (or a playlist or channel, with `extras.playlist`) in the chosen format and resolution
     /// into `<root>/<site>/<uploader>/`, with any subtitles, thumbnail and description beside each video (R-3503, R-3505).
     @discardableResult
-    func saveVideo(_ info: VideoInfo, pageURL: URL? = nil, format: VideoDownloadFormat, height: Int?, extras: BridgeRequest.Extras = .init(),
-                   root: SaveDestination, window: WindowModel?) -> Job
+    func saveVideo(_ info: VideoInfo, pageURL: URL? = nil, format: VideoDownloadFormat, height: Int?,
+                   extras: BridgeRequest.Extras = .init(), root: SaveDestination, window _: WindowModel?) -> Job
     {
         let job = Job(kind: .stream, title: extras.playlist ? "Playlist: \(info.title)" : info.title)
         job.subtitle = format.label + (format.isAudioOnly ? "" : ", " + (height.map { "\($0)p" } ?? "best resolution"))
@@ -583,12 +660,9 @@ final class EngineService {
         request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort, merge: selector.merge)
         request.extras = extras
         // Members-only and age-checked videos use the browser's sign-in for that site.
-        let cookieFile = CookieFile.privateLocation(job: UUID().uuidString)
-        if let host = url.host {
-            let cookies = await app.cookies(forDomain: PublicSuffix.shared.registrableDomain(host))
-            if !cookies.isEmpty, (try? CookieFile.write(cookies, to: cookieFile)) != nil { request.cookies = cookieFile.path }
-        }
-        defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
+        let cookies = EngineCookies.optional(await app.cookies(forDomain: PublicSuffix.shared.registrableDomain(url.host ?? "")))
+        defer { if let cookies { Task { await cookies.finish() } } }
+        request.cookies = cookies?.file.path
 
         var saved: [String: URL] = [:]
         var waiting: [String: [(URL, String)]] = [:]
@@ -606,14 +680,17 @@ final class EngineService {
                 case let .file(found) where found.isInside(staging):
                     index += 1
                     job.found += 1
-                    if let url = await saveVideoFile(found, index: index, info: info, format: format, height: height, root: root, site: site,
-                                                     job: job)
+                    if let url = await saveVideoFile(found, index: index, info: info, format: format, height: height, root: root,
+                                                     site: site, job: job)
                     {
                         saved[found.key] = url
                         for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] {
                             await placeAttachment(path, kind: kind, beside: url)
                         }
                     }
+                case .file:
+                    // A path outside the staging folder comes from site metadata and is never trusted, as for pulls.
+                    failure = "The engine reported a file outside its working folder. It was left alone."
                 case let .attachment(key, path, kind) where path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/"):
                     if let beside = saved[key] {
                         await placeAttachment(path, kind: kind, beside: beside)
@@ -645,8 +722,8 @@ final class EngineService {
     }
 
     /// Saves one downloaded video through the save pipeline, named after its title, in `<site>/<uploader>/`.
-    private func saveVideoFile(_ file: BridgeFile, index: Int, info: VideoInfo, format: VideoDownloadFormat, height: Int?, root: SaveDestination,
-                               site: String, job: Job) async -> URL?
+    private func saveVideoFile(_ file: BridgeFile, index: Int, info: VideoInfo, format: VideoDownloadFormat, height: Int?,
+                               root: SaveDestination, site: String, job: Job) async -> URL?
     {
         let meta = file.meta
         let title = meta["title"]?.string ?? info.title
@@ -654,7 +731,8 @@ final class EngineService {
         let page = meta["webpage_url"]?.string.flatMap(URL.init(string:)) ?? info.webpageURL
         job.fraction = nil
         job.currentItem = format.needsConversion(in: info.formats, height: height) ? "Converting \(title) to HEVC" : "Saving \(title)"
-        var context = EngineContext(key: file.key, category: info.extractor.nonEmpty ?? site, subcategory: format.isAudioOnly ? "audio" : "video")
+        var context = EngineContext(key: file.key, category: info.extractor.nonEmpty ?? site,
+                                    subcategory: format.isAudioOnly ? "audio" : "video")
         context.username = uploader
         context.postID = meta["id"]?.string ?? info.id
         context.shortcode = context.postID
@@ -664,7 +742,8 @@ final class EngineService {
         context.postURL = page
         context.sourceURL = page
         let input = EngineItemInput(context: context, kind: format.isAudioOnly ? .audio : .video, engineURL: page.absoluteString,
-                                    thumbURL: info.thumbnail, width: meta["width"]?.int, height: meta["height"]?.int, isDash: false, fallbackURL: nil)
+                                    thumbURL: info.thumbnail, width: meta["width"]?.int, height: meta["height"]?.int,
+                                    isDash: false, fallbackURL: nil)
         let item = input.makeItem(discoveryIndex: index)
         let channel = FileNaming.sanitize(uploader?.nonEmpty ?? "Videos", maxBytes: 80)
         let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [site, channel])
@@ -695,7 +774,7 @@ final class EngineService {
     private func placeAttachment(_ path: URL, kind: String, beside video: URL) async {
         let stem = video.deletingPathExtension()
         let ext = path.pathExtension.lowercased()
-        let name: String = if kind.hasPrefix("subtitles.") {
+        let name = if kind.hasPrefix("subtitles.") {
             "\(stem.lastPathComponent).\(kind.dropFirst("subtitles.".count)).\(ext)"
         } else if kind == "description" {
             "\(stem.lastPathComponent).description.txt"
@@ -749,16 +828,15 @@ final class EngineService {
             job.state = .running
             let work = UUID().uuidString
             let staging = self.app.enginePaths?.staging.appendingPathComponent(work, isDirectory: true)
-            let cookieFile = CookieFile.privateLocation(job: work)
+            let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
+            let cookies = EngineCookies.optional(await self.app.cookies(forDomain: domain))
             defer {
                 if let staging { try? FileManager.default.removeItem(at: staging) }
-                try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent())
+                if let cookies { Task { await cookies.finish() } }
             }
-            let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
-            try? CookieFile.write(await self.app.cookies(forDomain: domain), to: cookieFile)
             var request = BridgeRequest(op: "scan")
             request.url = url.absoluteString
-            request.cookies = cookieFile.path
+            request.cookies = cookies?.file.path
             request.userAgent = self.app.userAgent
             request.category = category
             if let keys = SiteKeys.forSite(category) {
@@ -775,6 +853,8 @@ final class EngineService {
             do {
                 for try await event in bridge.run(request, workingDirectory: staging) {
                     if Task.isCancelled { break }
+                    // Any event but a wait means the engine is working again, not pausing between requests.
+                    if case .wait = event {} else if case .waiting = job.state { job.state = .running }
                     switch event {
                     case let .item(item):
                         job.found += 1
@@ -846,16 +926,15 @@ final class EngineService {
                 return
             }
             try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-            let cookieFile = CookieFile.privateLocation(job: work)
+            let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
+            let cookies = EngineCookies.optional(await self.app.cookies(forDomain: domain))
             defer {
                 try? FileManager.default.removeItem(at: staging)
-                try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent())
+                if let cookies { Task { await cookies.finish() } }
             }
-            let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
-            try? CookieFile.write(await self.app.cookies(forDomain: domain), to: cookieFile)
             var request = BridgeRequest(op: "pull")
             request.url = url.absoluteString
-            request.cookies = cookieFile.path
+            request.cookies = cookies?.file.path
             request.staging = staging.path
             request.range = range?.nonEmpty
             request.category = category
@@ -885,13 +964,15 @@ final class EngineService {
             do {
                 for try await event in bridge.run(request, workingDirectory: staging) {
                     if Task.isCancelled { break }
+                    // Any event but a wait means the engine is working again, not pausing between requests.
+                    if case .wait = event {} else if case .waiting = job.state { job.state = .running }
                     switch event {
                     case .item:
                         job.found += 1
                     case let .file(file) where file.isInside(staging):
                         index += 1
                         let ext = file.path.pathExtension.lowercased()
-                        if MediaFormat.fromExtension(ext) == nil, !["mp4", "mov", "m4v", "webm", "mkv"].contains(ext) {
+                        if MediaFormat.fromExtension(ext) == nil, !Self.videoExtensions.contains(ext) {
                             // Archives, documents and other attachments: MediaPull keeps images and videos only.
                             job.skipped += 1
                             if job.notes.count < 30 { job.notes.append("Skipped \(file.path.lastPathComponent): not an image or video") }
@@ -899,10 +980,17 @@ final class EngineService {
                             continue
                         }
                         let context = EngineContext.from(meta: file.meta, key: file.key, subcategory: file.subcategory, sourceURL: url)
-                        let isVideo = ["mp4", "mov", "m4v", "webm", "mkv"].contains(file.path.pathExtension.lowercased())
-                        let input = EngineItemInput(context: context, kind: isVideo ? .video : .image,
-                                                    engineURL: context.postURL?.absoluteString ?? file.path.absoluteString, thumbURL: nil,
-                                                    width: file.meta["width"]?.int, height: file.meta["height"]?.int, isDash: false, fallbackURL: nil)
+                        let isVideo = Self.videoExtensions.contains(file.path.pathExtension.lowercased())
+                        let input = EngineItemInput(
+                            context: context,
+                            kind: isVideo ? .video : .image,
+                            engineURL: context.postURL?.absoluteString ?? file.path.absoluteString,
+                            thumbURL: nil,
+                            width: file.meta["width"]?.int,
+                            height: file.meta["height"]?.int,
+                            isDash: false,
+                            fallbackURL: nil
+                        )
                         let subject = context.username?.nonEmpty ?? context.title?.nonEmpty ?? url.lastPathComponent.nonEmpty ?? "Gallery"
                         var path = [context.category.nonEmpty ?? category, FileNaming.sanitize(subject, maxBytes: 80)]
                         // Several parts of a profile at once: each in its own folder, like Instagram's posts and reels (D-54).
@@ -911,8 +999,8 @@ final class EngineService {
                         }
                         let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: path)
                         job.currentItem = file.path.lastPathComponent
-                        let (outcome, note) = await pipeline.saveStaged(file.path, item: input.makeItem(discoveryIndex: index), target: target,
-                                                                        settings: settings, index: index)
+                        let (outcome, note) = await pipeline.saveStaged(file.path, item: input.makeItem(discoveryIndex: index),
+                                                                        target: target, settings: settings, index: index)
                         try? FileManager.default.removeItem(at: file.path)
                         switch outcome {
                         case let .saved(saved):
@@ -939,8 +1027,9 @@ final class EngineService {
                     case let .progress(received, total, _):
                         if let received, let total, total > 0 { job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))" }
                     case let .error(code, message, _, isFatal):
-                        if isFatal { fatal = GalleryError.describe(self.describe(code: code, message: message), site: siteName, ownKey: ownKey) }
-                        else if job.notes.count < 30 { job.notes.append(message) }
+                        if isFatal {
+                            fatal = GalleryError.describe(self.describe(code: code, message: message), site: siteName, ownKey: ownKey)
+                        } else if job.notes.count < 30 { job.notes.append(message) }
                     case let .checkpoint(_, _, message):
                         // A site's limit stops the job: say so instead of finishing with nothing saved.
                         fatal = GalleryError.describe(message, site: siteName, ownKey: ownKey)

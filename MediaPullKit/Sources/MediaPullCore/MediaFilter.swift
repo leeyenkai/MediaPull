@@ -103,7 +103,9 @@ public struct MediaFilter: Codable, Equatable, Sendable {
         var count = 0
         if !kinds.isEmpty { count += 1 }
         if !formats.isEmpty { count += 1 }
-        if minWidth != nil || minHeight != nil || maxWidth != nil || maxHeight != nil || minShortSide != nil || minLongSide != nil { count += 1 }
+        if minWidth != nil || minHeight != nil || maxWidth != nil || maxHeight != nil || minShortSide != nil || minLongSide != nil {
+            count += 1
+        }
         if minMegapixels != nil { count += 1 }
         if minBytes != nil || maxBytes != nil { count += 1 }
         if aspect != .any { count += 1 }
@@ -210,7 +212,8 @@ public extension MediaFilter {
             if let duration = item.duration {
                 if let minDuration, duration < minDuration { return false }
                 if let maxDuration, duration > maxDuration { return false }
-            } else if excludeUnknown || item.kind == .image {
+            } else if excludeUnknown || ![.video, .audio, .stream].contains(item.kind) {
+                // A length filter is about videos and audio; pictures and drawings have none (R-1006).
                 return false
             }
         }
@@ -262,24 +265,22 @@ public extension MediaFilter {
 
     /// Items in the chosen order; `ascending` false puts the largest, longest or newest first.
     func sorted(_ items: [MediaItem]) -> [MediaItem] {
-        let ordered: [MediaItem] = switch sort {
-        case .discovery:
-            items.sorted { $0.discoveryIndex < $1.discoveryIndex }
-        case .resolution:
-            items.sorted { ($0.displaySize?.pixels ?? -1, $1.discoveryIndex) < ($1.displaySize?.pixels ?? -1, $0.discoveryIndex) }
-        case .fileSize:
-            items.sorted { ($0.displayBytes ?? -1, $1.discoveryIndex) < ($1.displayBytes ?? -1, $0.discoveryIndex) }
-        case .duration:
-            items.sorted { ($0.duration ?? -1, $1.discoveryIndex) < ($1.duration ?? -1, $0.discoveryIndex) }
-        case .type:
-            items.sorted { ($0.kind.rawValue, $0.discoveryIndex) < ($1.kind.rawValue, $1.discoveryIndex) }
-        case .domain:
-            items.sorted { ($0.host, $0.discoveryIndex) < ($1.host, $1.discoveryIndex) }
-        case .date:
-            items.sorted {
-                (($0.source.engine?.date ?? .distantPast), $1.discoveryIndex) < (($1.source.engine?.date ?? .distantPast), $0.discoveryIndex)
+        // Items with the same value keep the order they were found in, whichever way the list is sorted.
+        func by(_ key: (MediaItem) -> some Comparable) -> [MediaItem] {
+            items.sorted { a, b in
+                let first = key(a), second = key(b)
+                if first != second { return ascending ? first < second : first > second }
+                return a.discoveryIndex < b.discoveryIndex
             }
         }
-        return ascending ? ordered : ordered.reversed()
+        return switch sort {
+        case .discovery: items.sorted { ascending ? $0.discoveryIndex < $1.discoveryIndex : $0.discoveryIndex > $1.discoveryIndex }
+        case .resolution: by { $0.displaySize?.pixels ?? -1 }
+        case .fileSize: by { $0.displayBytes ?? -1 }
+        case .duration: by { $0.duration ?? -1 }
+        case .type: by(\.kind.rawValue)
+        case .domain: by(\.host)
+        case .date: by { $0.source.engine?.date ?? .distantPast }
+        }
     }
 }

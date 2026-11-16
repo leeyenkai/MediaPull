@@ -77,9 +77,10 @@ public actor VectorStore {
         rowByID[Self.id(key)] != nil
     }
 
-    /// Adds or replaces the vector for `key`, returning its row.
+    /// Adds or replaces the vector for `key`, returning its row; nil when a new row could not be written (a full disk), so
+    /// nothing points at a row that would be empty after the next launch.
     @discardableResult
-    public func put(_ key: String, _ vector: [Float]) -> Int {
+    public func put(_ key: String, _ vector: [Float]) -> Int? {
         precondition(vector.count == dimension)
         let id = Self.id(key)
         let half = Half.bits(vector)
@@ -92,10 +93,10 @@ public actor VectorStore {
             return row
         }
         let row = ids.count
+        guard append(row: row, id: id, vector: half) else { return nil }
         ids.append(id)
         vectors.append(contentsOf: half)
         rowByID[id] = row
-        append(row: row, id: id, vector: half)
         return row
     }
 
@@ -162,15 +163,17 @@ public actor VectorStore {
 
     /// Writes row `row` at its own offset in both files, so rows stay aligned even after an earlier write failed.
     /// When the vector cannot be written, the id is taken back so the files never disagree.
-    func append(row: Int, id: Data, vector: [UInt16]) {
+    func append(row: Int, id: Data, vector: [UInt16]) -> Bool {
         guard write(id, to: idURL, at: row * 32) else {
             Self.truncate(idURL, to: row * 32)
-            return
+            return false
         }
         if !write(vector.withUnsafeBufferPointer { Data(buffer: $0) }, to: vectorURL, at: row * dimension * 2) {
             Self.truncate(idURL, to: row * 32)
             Self.truncate(vectorURL, to: row * dimension * 2)
+            return false
         }
+        return true
     }
 
     func write(_ data: Data, to url: URL, at offset: Int) -> Bool {

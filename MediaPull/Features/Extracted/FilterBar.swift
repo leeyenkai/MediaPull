@@ -56,7 +56,11 @@ struct FilterBar: View {
                         Toggle(section.capitalized, isOn: Binding(
                             get: { model.filter.instagramSections.contains(section) },
                             set: { on in
-                                if on { model.filter.instagramSections.insert(section) } else { model.filter.instagramSections.remove(section) }
+                                if on {
+                                    model.filter.instagramSections.insert(section)
+                                } else {
+                                    model.filter.instagramSections.remove(section)
+                                }
                             }
                         ))
                     }
@@ -111,7 +115,9 @@ struct FilterBar: View {
     }
 
     private var instagramTitle: String {
-        model.filter.instagramSections.isEmpty ? "Instagram: all" : model.filter.instagramSections.sorted().joined(separator: ", ").capitalized
+        model.filter.instagramSections.isEmpty
+            ? "Instagram: all"
+            : model.filter.instagramSections.sorted().joined(separator: ", ").capitalized
     }
 
     private var stateTitle: String {

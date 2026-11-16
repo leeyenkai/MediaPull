@@ -28,7 +28,7 @@ final class AnalysisService {
     @ObservationIgnored private var analyzer: Analyzer?
     @ObservationIgnored private var imageVectors: VectorStore?
     @ObservationIgnored private var faceVectors: VectorStore?
-    @ObservationIgnored private var subjects: SubjectClassifier?
+    @ObservationIgnored private var subjectClassifier: SubjectClassifier?
     @ObservationIgnored private var subjectsKey: [String]?
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var regroupTask: Task<Void, Never>?
@@ -92,14 +92,18 @@ final class AnalysisService {
             : Self.folder
         Task {
             let models = Self.modelsFolder
-            let loaded = await Task.detached(priority: .utility) { Analyzer(modelsFolder: models) }.value
+            // The vector stores read their whole files when made (hundreds of MB for a large library): off the main actor.
+            let (loaded, images, faces) = await Task.detached(priority: .utility) { () -> (Analyzer, VectorStore?, VectorStore?) in
+                let loaded = Analyzer(modelsFolder: models)
+                let images = loaded.imageText.map { VectorStore(folder: folder, name: "image-\($0.spec.id)", dimension: $0.dimension) }
+                let faces = loaded.faceEncoder.map {
+                    VectorStore(folder: folder, name: "faces-\($0.spec.id)", dimension: $0.spec.dimension, excludeFromBackup: true)
+                }
+                return (loaded, images, faces)
+            }.value
             analyzer = loaded
-            if let dim = loaded.imageText?.dimension, let id = loaded.imageText?.spec.id {
-                imageVectors = VectorStore(folder: folder, name: "image-\(id)", dimension: dim)
-            }
-            if let face = loaded.faceEncoder?.spec {
-                faceVectors = VectorStore(folder: folder, name: "faces-\(face.id)", dimension: face.dimension, excludeFromBackup: true)
-            }
+            imageVectors = images
+            faceVectors = faces
             modelsLoaded = true
             analysedCount = await store?.fileCount() ?? 0
             await refreshPeople()
@@ -249,12 +253,10 @@ final class AnalysisService {
         for file in files {
             guard let state = states[file.url.path], state.size == file.size, abs(state.modified.timeIntervalSince(file.modified)) < 1,
                   state.version == AnalysisRecord.currentVersion else { work.append(file); continue }
-            if wantFaces || embeddings, let record = await store.record(sha256: state.sha256) {
-                if (wantFaces && !record.peopleChecked && !record.faces.isEmpty) ||
-                    (embeddings && !record.hasEmbedding && !noPicture.contains(file.url.path))
-                {
-                    work.append(file)
-                }
+            if (wantFaces && state.peopleChecked == false && state.hasFaces == true) ||
+                (embeddings && state.hasEmbedding == false && !noPicture.contains(file.url.path))
+            {
+                work.append(file)
             }
         }
         // Paths the store knows below these folders that are no longer on disk.
@@ -285,7 +287,7 @@ final class AnalysisService {
         var added: [NewFace] = []
         if let faces {
             for face in output.faces {
-                let row = await faces.put("\(sha)|\(face.key)", face.embedding)
+                guard let row = await faces.put("\(sha)|\(face.key)", face.embedding) else { continue }
                 added.append(NewFace(key: face.key, vectorRow: row, quality: face.box.quality ?? 0.5, pixelSize: face.box.pixelSize))
             }
         }
@@ -422,11 +424,11 @@ final class AnalysisService {
     func subjects(for entries: [MediaEntry]) async -> [String: (String, Float)] {
         guard let analyzer, let encoder = analyzer.imageText, let imageVectors else { return [:] }
         let custom = preferences.customSubjects
-        if subjects == nil || subjectsKey != custom {
-            subjects = await Task.detached(priority: .userInitiated) { SubjectClassifier(encoder: encoder, custom: custom) }.value
+        if subjectClassifier == nil || subjectsKey != custom {
+            subjectClassifier = await Task.detached(priority: .userInitiated) { SubjectClassifier(encoder: encoder, custom: custom) }.value
             subjectsKey = custom
         }
-        guard let classifier = subjects else { return [:] }
+        guard let classifier = subjectClassifier else { return [:] }
         var out: [String: (String, Float)] = [:]
         for entry in entries {
             guard let sha = entry.record?.sha256, let vector = await imageVectors.vector(sha),
@@ -499,8 +501,23 @@ final class AnalysisService {
         guard let store, preferences.facesEnabled else { suggestions = [:]; return }
         let unnamed = people.filter { $0.name == nil }
         guard !unnamed.isEmpty else { suggestions = [:]; return }
-        let pathsBySha = await Dictionary(grouping: store.allPaths(), by: \.value).mapValues { $0.map(\.key) }
+        let paths = await store.allPaths()
         let peopleBySha = await store.peopleBySha()
+        let accounts = Set(app.engines.accounts.keys.map { $0.lowercased() })
+        // Thousands of paths and folder checks: worked out off the main actor (R-3905).
+        suggestions = await Task.detached(priority: .utility) {
+            Self.suggestNames(unnamed: unnamed, paths: paths, peopleBySha: peopleBySha, accounts: accounts)
+        }.value
+    }
+
+    nonisolated private static func suggestNames(
+        unnamed: [PersonInfo],
+        paths: [String: String],
+        peopleBySha: [String: [UUID]],
+        accounts: Set<String>
+    ) -> [UUID: String]
+    {
+        let pathsBySha = Dictionary(grouping: paths, by: \.value).mapValues { $0.map(\.key) }
         var folderCounts: [String: Int] = [:]
         var photosByPerson: [UUID: [String]] = [:]
         for (sha, ids) in peopleBySha {
@@ -515,32 +532,35 @@ final class AnalysisService {
                 }
             }
         }
-        let accounts = Set(app.engines.accounts.keys.map { $0.lowercased() })
+        // Each folder is checked once, however many photos are in it.
+        var isAccountFolder: [String: Bool] = [:]
+        func accountFolder(_ folder: String) -> Bool {
+            if let known = isAccountFolder[folder] { return known }
+            let name = (folder as NSString).lastPathComponent.lowercased()
+            let found = accounts.contains(name) || ["posts", "reels", "stories", "highlights", "tagged"].contains { child in
+                FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(child))
+            }
+            isAccountFolder[folder] = found
+            return found
+        }
         var result: [UUID: String] = [:]
         for person in unnamed {
             let photos = photosByPerson[person.id] ?? []
-            let accountFolders = Set(photos.flatMap { path -> [String] in
-                var out: [String] = []
+            var accountFolders = Set<String>()
+            for path in photos {
                 var folder = (path as NSString).deletingLastPathComponent
                 for _ in 0 ..< 3 where folder.count > 1 {
-                    let name = (folder as NSString).lastPathComponent.lowercased()
-                    let typeFolder = ["posts", "reels", "stories", "highlights", "tagged"].contains { child in
-                        FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(child))
-                    }
-                    if accounts.contains(name) || typeFolder {
-                        out.append(folder)
-                    }
+                    if accountFolder(folder) { accountFolders.insert(folder) }
                     folder = (folder as NSString).deletingLastPathComponent
                 }
-                return out
-            })
+            }
             if let name = NameSuggestion.suggest(personPhotos: photos, peoplePhotosByFolder: folderCounts, accountFolders: accountFolders),
                name != person.dismissedSuggestion
             {
                 result[person.id] = name
             }
         }
-        suggestions = result
+        return result
     }
 
     func rename(_ person: UUID, to name: String?) async {
@@ -570,12 +590,13 @@ final class AnalysisService {
     }
 
     /// Faces of one person with the paths of their files, for the People view.
-    func faces(of person: UUID) async -> [(key: String, path: String, box: FaceBox?)] {
+    /// `limit`: a person's row needs only one face, so it does not read every record of every face.
+    func faces(of person: UUID, limit: Int = .max) async -> [(key: String, path: String, box: FaceBox?)] {
         guard let store else { return [] }
         let faces = await store.faces().filter { $0.personID == person }
         let paths = await Dictionary(grouping: store.allPaths(), by: \.value).mapValues { $0.map(\.key).sorted() }
         var out: [(String, String, FaceBox?)] = []
-        for face in faces {
+        for face in faces where out.count < limit {
             guard let path = paths[face.sha256]?.first else { continue }
             let record = await store.record(sha256: face.sha256)
             let faceKey = String(face.key.split(separator: "|").last ?? "")

@@ -8,7 +8,7 @@ import SwiftUI
 
 /// Saves a full-resolution frame and trims videos without re-encoding (SPEC section 34).
 @Observable
-final class VideoEditorModel {
+final class VideoEditorModel: UnsavedEditing {
     let request: EditorRequest
     weak var window: WindowModel?
     var stage: VideoStage?
@@ -31,6 +31,7 @@ final class VideoEditorModel {
     var app: AppModel { .shared }
     var isLibraryFile: Bool { if case .file = request.subject { true } else { false } }
     var hasNameChange: Bool { name.trimmingCharacters(in: .whitespacesAndNewlines) != originalName }
+    var hasUnsavedChanges: Bool { hasNameChange || selection != nil }
 
     private var cleanName: String {
         let text = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -107,7 +108,9 @@ final class VideoEditorModel {
             let stem = "\(cleanName)_frame_\(Self.timestamp(time, forFileName: true))"
             switch request.subject {
             case let .file(url):
-                let target = LibraryModel.uniqueURL(url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: stem, ext: "png")))
+                let target = LibraryModel.uniqueURL(
+                    url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: stem, ext: "png"))
+                )
                 try FileManager.default.moveItem(at: still, to: target)
                 Self.writeSidecar(from: url, to: target, changes: [
                     "width": size.width, "height": size.height, "sha256": await Self.checksum(target),
@@ -122,7 +125,8 @@ final class VideoEditorModel {
                 // A separate item: the video keeps its own name, saved state and preview.
                 let frameID = "\(id)#frame-\(Int((time * 1000).rounded()))"
                 let frame = MediaItem(id: frameID, kind: .image, variants: [variant], source: video.source,
-                                      discoveryIndex: video.discoveryIndex, group: video.group, groupTitle: video.groupTitle, alt: video.alt)
+                                      discoveryIndex: video.discoveryIndex, group: video.group, groupTitle: video.groupTitle,
+                                      alt: video.alt)
                 window.customNames[frameID] = stem
                 guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
@@ -173,7 +177,10 @@ final class VideoEditorModel {
                     let stem = hasNameChange ? cleanName : "\(cleanName)_trimmed"
                     target = LibraryModel.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: url.pathExtension)))
                 }
-                try manager.moveItem(at: trimmed, to: target)
+                let destination = target
+                // Moving from the cache to a library on another volume is a full copy: not on the main actor.
+                try await LibraryModel.offMain { try FileManager.default.moveItem(at: trimmed, to: destination) }
+                if replacing { app.noteMoved([(from: url.path, to: target.path)]) }
                 Self.writeSidecar(from: url, to: target, changes: [
                     "duration": (length * 1000).rounded() / 1000, "sha256": await Self.checksum(target), "edited": true,
                     "trimmed_from": [(selection.lowerBound * 1000).rounded() / 1000, (selection.upperBound * 1000).rounded() / 1000],
@@ -206,13 +213,15 @@ final class VideoEditorModel {
     /// Renames a library video and its metadata file.
     func rename() {
         guard case let .file(url) = request.subject, hasNameChange else { return }
-        let target = LibraryModel.uniqueURL(url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: cleanName, ext: url.pathExtension)))
+        let target = LibraryModel.renameTarget(
+            from: url, to: url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(
+                stem: cleanName,
+                ext: url.pathExtension
+            ))
+        )
         do {
-            try FileManager.default.moveItem(at: url, to: target)
-            let sidecar = Sidecar.sidecarURL(for: url)
-            if FileManager.default.fileExists(atPath: sidecar.path) {
-                try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: target))
-            }
+            try MediaFiles.move(url, to: target)
+            app.noteMoved([(from: url.path, to: target.path)])
             finishLibraryChange()
             window?.editorRequest = nil
             window?.previewSubject = .file(target)
@@ -227,9 +236,8 @@ final class VideoEditorModel {
         window?.editorRequest = nil
     }
 
+    /// Every window's Library and folder tree reload once on this (LibraryPane watches it).
     private func finishLibraryChange() {
-        window?.library.reload()
-        window?.library.refreshTree()
         app.libraryRevision += 1
     }
 
@@ -250,7 +258,9 @@ final class VideoEditorModel {
         for (key, value) in changes {
             object[key] = value
         }
-        if let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
+        if let output = try? JSONSerialization.data(withJSONObject: object,
+                                                    options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        {
             try? output.write(to: Sidecar.sidecarURL(for: target), options: .atomic)
         }
         // Replacing under the same name writes the new metadata to the old path: never trash what was just written.
@@ -302,7 +312,9 @@ struct VideoEditorView: View {
                     .help("Choose the part to keep with the trim bar")
                     Spacer(minLength: 0)
                     if let selection = model.selection {
-                        Text("Keep \(VideoEditorModel.timestamp(selection.lowerBound)) to \(VideoEditorModel.timestamp(selection.upperBound))")
+                        Text("""
+                            Keep \(VideoEditorModel.timestamp(selection.lowerBound)) to \(VideoEditorModel.timestamp(selection.upperBound))
+                            """)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -337,13 +349,19 @@ struct VideoEditorView: View {
         }
         .padding(12)
         .disabled(model.isWorking)
-        .task { await model.load() }
+        .task {
+            model.window?.activeEditor = model
+            await model.load()
+        }
         .onDisappear { model.stage?.stop() }
     }
 
     private var hint: String {
         model.isLibraryFile
-            ? "Frames are saved next to the video. Trimming copies the video data without re-encoding; Replace moves the original to the Trash."
+            ? """
+                Frames are saved next to the video. Trimming copies the video data without re-encoding; Replace moves the original to the \
+                Trash.
+                """
             : "Frames and trimmed videos are saved to your library. Trimming copies the video data without re-encoding."
     }
 

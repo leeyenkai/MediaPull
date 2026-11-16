@@ -39,12 +39,19 @@ public enum ImageConversion {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             return nil
         }
-        let head = (try? FileHandle(forReadingFrom: url)).flatMap { handle -> Data? in
-            defer { try? handle.close() }
-            return try? handle.read(upToCount: 4096)
-        } ?? Data()
-        let sniff = Sniffer.sniff(head)
-        let count = CGImageSourceGetCount(source)
+        func head(_ bytes: Int) -> Data {
+            (try? FileHandle(forReadingFrom: url)).flatMap { handle -> Data? in
+                defer { try? handle.close() }
+                return try? handle.read(upToCount: bytes)
+            } ?? Data()
+        }
+        var sniff = Sniffer.sniff(head(4096))
+        // A WebP's lossless chunk can come after a large colour profile chunk: read further before deciding it is lossy.
+        if sniff.format == .webp, sniff.webp?.lossless == false { sniff = Sniffer.sniff(head(512 * 1024)) }
+        var count = CGImageSourceGetCount(source)
+        // Several images in a HEIC or AVIF are an animation only when they are a sequence with frame timing; a stereo
+        // pair (spatial photo) or an image with its depth map is one picture.
+        if sniff.format == .heic || sniff.format == .avif, count > 1, !Self.hasFrameTiming(source) { count = 1 }
         guard count > 0, let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
         let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
         let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
@@ -64,6 +71,11 @@ public enum ImageConversion {
             format: sniff.format, width: width, height: height, hasAlpha: hasAlpha, bitsPerComponent: depth, frameCount: count,
             isLossless: lossless
         )
+    }
+
+    static func hasFrameTiming(_ source: CGImageSource) -> Bool {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return false }
+        return properties[kCGImagePropertyHEICSDictionary] != nil || properties[kCGImagePropertyAVISDictionary] != nil
     }
 
     static func imageHasAlpha(_ image: CGImage) -> Bool {

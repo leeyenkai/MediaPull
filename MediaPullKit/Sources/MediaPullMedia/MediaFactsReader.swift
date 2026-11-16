@@ -26,9 +26,11 @@ public enum MediaFactsReader {
         }
         facts.pixelWidth = width
         facts.pixelHeight = height
-        // Sizes in an ICO or pages in a TIFF are not frames.
+        // Sizes in an ICO or pages in a TIFF are not frames; nor is a HEIC stereo pair (ImageConversion.analyze).
         let type = CGImageSourceGetType(source) as String?
-        facts.isAnimated = CGImageSourceGetCount(source) > 1 && ![UTType.ico.identifier, UTType.tiff.identifier].contains(type)
+        let still = type.map { [UTType.ico.identifier, UTType.tiff.identifier, UTType.bmp.identifier].contains($0) } ?? false
+        let heif = type.map { [UTType.heic.identifier, UTType.heif.identifier, "public.avif"].contains($0) } ?? false
+        facts.isAnimated = CGImageSourceGetCount(source) > 1 && !still && (!heif || ImageConversion.hasFrameTiming(source))
         let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
         let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
         facts.cameraMake = (tiff[kCGImagePropertyTIFFMake] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,19 +56,29 @@ public enum MediaFactsReader {
     }
 
     /// EXIF dates have no time zone unless the offset tag is present; without it the Mac's own zone is assumed.
-    static func exifDate(_ text: String, offset: String?) -> Date? {
+    /// Made once: analysis reads a date from every photo.
+    private static let withOffset: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
-        if let offset, offset.count == 6 {
-            formatter.dateFormat = "yyyy:MM:dd HH:mm:ssxxx"
-            if let date = formatter.date(from: text + offset) {
-                return date
-            }
-        }
-        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ssxxx"
+        return formatter
+    }()
+
+    private static let local: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .autoupdatingCurrent
         formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        return formatter.date(from: text)
+        return formatter
+    }()
+
+    static func exifDate(_ text: String, offset: String?) -> Date? {
+        if let offset, offset.count == 6, let date = withOffset.date(from: text + offset) {
+            return date
+        }
+        return local.date(from: text)
     }
 
     static func videoFacts(_ url: URL) async -> MediaFacts {
@@ -119,18 +131,8 @@ public enum MediaFactsReader {
     }
 
     /// The average colour of each cell of an 8×8 grid (192 values), for the dominant colour (R-3606).
+    /// Transparent areas count as white, the same grid duplicate detection uses.
     public static func colourGrid(_ image: CGImage) -> [UInt8] {
-        var pixels = [UInt8](repeating: 0, count: 8 * 8 * 4)
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: &pixels, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32, space: space,
-                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return [] }
-        context.interpolationQuality = .medium
-        context.draw(image, in: CGRect(x: 0, y: 0, width: 8, height: 8))
-        var grid: [UInt8] = []
-        grid.reserveCapacity(192)
-        for cell in 0 ..< 64 {
-            grid.append(contentsOf: pixels[cell * 4 ..< cell * 4 + 3])
-        }
-        return grid
+        PerceptualHash.colorGrid(image)
     }
 }

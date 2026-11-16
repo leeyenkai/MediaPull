@@ -94,7 +94,6 @@ struct InstagramForm: View {
         }
     }
 
-
     @ViewBuilder
     private var postedOptions: some View {
         LabeledContent("Posted") {
@@ -132,11 +131,11 @@ struct FlowToggles<Item: Hashable>: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) { chips }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) { chips }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 6, alignment: .leading)],
+                      alignment: .leading, spacing: 6) { chips }
         }
     }
 
-    @ViewBuilder
     private var chips: some View {
         ForEach(items, id: \.self) { item in
             // The same chips as the Extracted filters: filled when on.

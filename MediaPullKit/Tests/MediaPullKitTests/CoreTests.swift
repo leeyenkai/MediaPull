@@ -25,7 +25,8 @@ final class SidecarTests: XCTestCase {
         XCTAssertTrue(text.contains("https://www.instagram.com/p/CnAbCdEfGh/"), "Slashes must not be escaped")
         let keys = object.keys.sorted()
         let order = text.split(separator: "\n").compactMap { line -> String? in
-            guard let start = line.firstIndex(of: "\""), let end = line[line.index(after: start)...].firstIndex(of: "\"") else { return nil }
+            guard let start = line.firstIndex(of: "\""), let end = line[line.index(after: start)...].firstIndex(of: "\"")
+            else { return nil }
             return String(line[line.index(after: start) ..< end])
         }
         XCTAssertEqual(order, keys, "Keys must be sorted")
@@ -72,37 +73,98 @@ final class NamingTests: XCTestCase {
         XCTAssertLessThanOrEqual(name.utf8.count + 5, 255)
         XCTAssertEqual(FileNaming.sanitize("../a/b:c"), "_a_b_c")
     }
+
+    /// Joiners stay (D-74); control codes, direction overrides and zero-width spaces do not.
+    func testNamesKeepJoinersButNotControls() {
+        let cases: [(String, String)] = [
+            ("می\u{200C}خواهم", "می\u{200C}خواهم"),
+            ("👨\u{200D}👩\u{200D}👧", "👨\u{200D}👩\u{200D}👧"),
+            ("a\u{200B}b", "ab"),
+            ("\u{FEFF}title", "title"),
+            ("photo\u{202E}gpj.exe", "photo_gpj.exe"),
+            ("tab\there", "tab_here"),
+            ("bell\u{0007}\u{0085}", "bell__"),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(FileNaming.sanitize(input), expected, input.debugDescription)
+        }
+    }
 }
 
 final class CDNRuleTests: XCTestCase {
     func testNYTimesRendition() throws {
-        let url = try XCTUnwrap(URL(string: "https://static01.nyt.com/images/2026/11/13/world/13int-abc/13int-abc-articleLarge.jpg?quality=75&auto=webp"))
+        let url = try XCTUnwrap(
+            URL(string: "https://static01.nyt.com/images/2026/11/13/world/13int-abc/13int-abc-articleLarge.jpg?quality=75&auto=webp")
+        )
         let candidates = CDNRules.candidates(for: url).map(\.url.absoluteString)
         XCTAssertEqual(candidates.first, "https://static01.nyt.com/images/2026/11/13/world/13int-abc/13int-abc-superJumbo.jpg")
         XCTAssertTrue(candidates.contains("https://static01.nyt.com/images/2026/11/13/world/13int-abc/13int-abc-articleLarge.jpg"))
-        let other = try XCTUnwrap(URL(string: "https://static01.nyt.com/images/2026/11/13/world/13int-abc/13int-abc-threeByTwoMediumAt2X.jpg"))
+        let other = try XCTUnwrap(
+            URL(string: "https://static01.nyt.com/images/2026/11/13/world/13int-abc/13int-abc-threeByTwoMediumAt2X.jpg")
+        )
         XCTAssertEqual(CDNRules.assetKey(for: url), CDNRules.assetKey(for: other))
-        let versioned = try XCTUnwrap(URL(string: "https://static01.nyt.com/images/2018/a/author-x/author-x-thumbLarge-v3.png?quality=75&auto=avif"))
+        let versioned = try XCTUnwrap(
+            URL(string: "https://static01.nyt.com/images/2018/a/author-x/author-x-thumbLarge-v3.png?quality=75&auto=avif")
+        )
         XCTAssertEqual(CDNRules.candidates(for: versioned).first?.url.absoluteString,
                        "https://static01.nyt.com/images/2018/a/author-x/author-x-superJumbo-v3.png")
     }
 
     func testTwitterWordPressAndSigned() throws {
         let twitter = try XCTUnwrap(URL(string: "https://pbs.twimg.com/media/ABC123?format=jpg&name=small"))
-        XCTAssertEqual(CDNRules.candidates(for: twitter).first?.url.absoluteString, "https://pbs.twimg.com/media/ABC123?format=jpg&name=orig")
+        XCTAssertEqual(CDNRules.candidates(for: twitter).first?.url.absoluteString,
+                       "https://pbs.twimg.com/media/ABC123?format=jpg&name=orig")
         let wordpress = try XCTUnwrap(URL(string: "https://example.com/wp-content/uploads/2024/05/photo-1024x683.jpg"))
-        XCTAssertEqual(CDNRules.candidates(for: wordpress).first?.url.absoluteString, "https://example.com/wp-content/uploads/2024/05/photo.jpg")
+        XCTAssertEqual(CDNRules.candidates(for: wordpress).first?.url.absoluteString,
+                       "https://example.com/wp-content/uploads/2024/05/photo.jpg")
         let signed = try XCTUnwrap(URL(string: "https://scontent.cdninstagram.com/v/t51/abc.jpg?stp=dst-jpg&oh=1&oe=2"))
         XCTAssertTrue(CDNRules.candidates(for: signed).isEmpty)
         let wiki = try XCTUnwrap(URL(string: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/File.jpg/220px-File.jpg"))
-        XCTAssertEqual(CDNRules.candidates(for: wiki).first?.url.absoluteString, "https://upload.wikimedia.org/wikipedia/commons/a/ab/File.jpg")
+        XCTAssertEqual(CDNRules.candidates(for: wiki).first?.url.absoluteString,
+                       "https://upload.wikimedia.org/wikipedia/commons/a/ab/File.jpg")
         let thumbScript = URL(string: "https://shop.example.com/ss26/squarethumb.php?src=products/A_WP/a_600_01.png")!
-        XCTAssertEqual(CDNRules.candidates(for: thumbScript).first?.url.absoluteString, "https://shop.example.com/ss26/products/A_WP/a_600_01.png")
+        XCTAssertEqual(CDNRules.candidates(for: thumbScript).first?.url.absoluteString,
+                       "https://shop.example.com/ss26/products/A_WP/a_600_01.png")
         let nextImage = URL(string: "https://site.example/_next/image?url=%2Fuploads%2Fhero.jpg&w=640&q=75")!
         XCTAssertEqual(CDNRules.proxiedTarget(of: nextImage)?.absoluteString, "https://site.example/uploads/hero.jpg")
         XCTAssertNil(CDNRules.proxiedTarget(of: URL(string: "https://site.example/page.php?src=home")!))
         let reddit = try XCTUnwrap(URL(string: "https://preview.redd.it/abc123.jpg?width=640&auto=webp&s=0123456789abcdef"))
         XCTAssertEqual(CDNRules.candidates(for: reddit).first?.url.absoluteString, "https://i.redd.it/abc123.jpg")
+    }
+
+    func testRulesKeepOtherParametersAndPaths() throws {
+        let cases: [(String, String?)] = [
+            ("https://pbs.twimg.com/media/ABC123?format=webp&name=small", "https://pbs.twimg.com/media/ABC123?format=jpg&name=orig"),
+            ("https://example.com/photo.jpg?w=300&caption=a%2Bb", "https://example.com/photo.jpg?caption=a%2Bb"),
+            (
+                "https://res.cloudinary.com/demo/image/upload/c_fill,w_300/my_folder/cat.jpg",
+                "https://res.cloudinary.com/demo/image/upload/my_folder/cat.jpg"
+            ),
+            (
+                "https://res.cloudinary.com/demo/image/upload/w_300,h_200/v1712/cat.jpg",
+                "https://res.cloudinary.com/demo/image/upload/v1712/cat.jpg"
+            ),
+            ("https://example.imgix.net/a.jpg?w=200&label=x%2By", "https://example.imgix.net/a.jpg?label=x%2By"),
+        ]
+        for (input, expected) in cases {
+            let url = try XCTUnwrap(URL(string: input))
+            XCTAssertEqual(CDNRules.candidates(for: url).first?.url.absoluteString, expected, input)
+        }
+        let twitterWebP = try XCTUnwrap(URL(string: "https://pbs.twimg.com/media/ABC123?format=webp&name=small"))
+        XCTAssertEqual(
+            CDNRules.candidates(for: twitterWebP).map(\.url.absoluteString),
+            ["https://pbs.twimg.com/media/ABC123?format=jpg&name=orig"]
+        )
+        let hostile =
+            try XCTUnwrap(URL(string: "https://res.cloudinary.com/x/image/upload/" + String(repeating: "w_a", count: 40) + ",!/x.jpg"))
+        let started = Date()
+        _ = CDNRules.candidates(for: hostile)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+        let wiki = try XCTUnwrap(URL(string: "https://upload.wikimedia.org/wikipedia/commons/a/ab/What%3F.jpg"))
+        XCTAssertEqual(
+            CDNRules.thumbnailURL(for: wiki, width: 220)?.absoluteString,
+            "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/What%3F.jpg/220px-What%3F.jpg"
+        )
     }
 
     func testBaseNameDecodesOnce() throws {
@@ -199,6 +261,20 @@ final class IngestorTests: XCTestCase {
         XCTAssertEqual(snapshot.items[1].kind, .video)
     }
 
+    /// A batch the old page sends after the tab already shows the new address still belongs to the old page.
+    func testLateBatchKeepsItsOwnPage() async throws {
+        let ingestor = ExtractionIngestor(interval: .milliseconds(1))
+        let newPage = try XCTUnwrap(URL(string: "https://example.com/next/"))
+        let json = #"{"v":1,"page":"https://example.com/old/","items":[{"u":"/img/old.jpg","k":"img","w":400,"h":300}]}"#
+        await ingestor.ingest(
+            json: json,
+            frame: FrameInfo(frameURL: newPage, isMainFrame: true, origin: nil, pageURL: newPage, pageTitle: nil)
+        )
+        let items = await ingestor.snapshot().items
+        let item = try XCTUnwrap(items.first)
+        XCTAssertEqual(item.group, "https://example.com/old/")
+    }
+
     func testFilterHidesTinyAndMatchesSize() {
         let url = URL(string: "https://example.com/x.jpg")!
         let page = URL(string: "https://example.com/")!
@@ -218,7 +294,7 @@ final class IngestorTests: XCTestCase {
 }
 
 final class PaneArrangementTests: XCTestCase {
-    func testMovesAndStacks() throws {
+    func testMovesAndStacks() {
         var layout = PaneArrangement.standard
         XCTAssertEqual(layout.key, "source+downloads|extracted+preview|library")
         layout.move(.preview, .right)
@@ -317,7 +393,8 @@ final class VideoDownloadTests: XCTestCase {
     }
 
     func testSelectorsSizesAndConversion() {
-        XCTAssertEqual(VideoDownloadFormat.h264MP4.selector(height: 720).format, "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=720]")
+        XCTAssertEqual(VideoDownloadFormat.h264MP4.selector(height: 720).format,
+                       "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=720]")
         XCTAssertEqual(VideoDownloadFormat.bestMP4.selector(height: nil).format, "bv*+ba/b")
         XCTAssertEqual(VideoDownloadFormat.webm.selector(height: 1080).merge, "webm")
         XCTAssertNil(VideoDownloadFormat.audioM4A.selector(height: nil).merge)
@@ -340,10 +417,18 @@ final class VideoDownloadTests: XCTestCase {
                      "https://vimeo.com/76979871", "https://www.dailymotion.com/video/x8abc"] {
             XCTAssertTrue(VideoPage.isLikely(URL(string: page)), page)
         }
-        for page in ["https://www.youtube.com/", "https://www.youtube.com/@Blender", "https://vimeo.com/channels/staffpicks", "https://example.com/watch"] {
+        for page in ["https://www.youtube.com/", "https://www.youtube.com/@Blender", "https://vimeo.com/channels/staffpicks",
+                     "https://example.com/watch"] {
             XCTAssertFalse(VideoPage.isLikely(URL(string: page)), page)
         }
         let date = try XCTUnwrap(VideoInfo.date(uploadDate: "20141110", timestamp: nil))
         XCTAssertEqual(ISO8601DateFormatter().string(from: date), "2014-11-10T00:00:00Z")
+    }
+}
+
+final class SidecarDropTests: XCTestCase {
+    func testMetadataFilesTravelWithTheirMedia() {
+        let urls = ["/a/1.jpg", "/a/1.jpg.json", "/a/2.json", "/a/3.png.json"].map { URL(fileURLWithPath: $0) }
+        XCTAssertEqual(Sidecar.withoutCompanions(urls).map(\.lastPathComponent), ["1.jpg", "2.json", "3.png.json"])
     }
 }

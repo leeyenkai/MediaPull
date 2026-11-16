@@ -52,7 +52,8 @@ enum JobState: Equatable {
         case .queued: "Waiting to start"
         case .running: "Running"
         case let .waiting(until, reason):
-            reason == "rate_limit" ? "Instagram asked to slow down, waiting until \(until.formatted(date: .omitted, time: .shortened))"
+            // Any site can ask for this, not only Instagram.
+            reason == "rate_limit" ? "The site asked to slow down, waiting until \(until.formatted(date: .omitted, time: .shortened))"
                 : "Pausing between requests"
         case .paused: "Paused"
         case let .blocked(message): message

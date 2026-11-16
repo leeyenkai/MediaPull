@@ -467,6 +467,11 @@
     scanTree(document.documentElement);
     return true;
   };
+  // Back and Forward can restore the page from the cache without running scripts again; the list may have been
+  // cleared on the way, so everything is sent again.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) window.__mediapullRescan();
+  });
   window.__mediapullCount = () => total;
   window.__mediapullScrollStep = () => {
     const before = window.scrollY;

@@ -55,7 +55,7 @@ struct ItemDetails: View {
                         Button("Copy URL") { Format.copy(url.absoluteString) }
                         Button("Open") { model.browser.load(url) }
                     }
-                    Button("Quick Look") { model.gridQuickLook() }
+                    Button("Quick Look") { model.quickLook([item]) }
                 }
                 .controlSize(.small)
             }
@@ -102,9 +102,8 @@ struct ItemDetails: View {
         let info = FinalFileInfo(format: format, sha256: "0000000000", pixelSize: item.displaySize, duration: item.duration,
                                  sourceURL: item.best?.url, lastModified: nil,
                                  originalName: item.best.flatMap { URLNormalizer.baseName(of: $0.url) }, note: nil)
-        let name = ArchivePlanner.fileName(for: item, info: info, layout: layout, settings: app.saveSettings, index: item.discoveryIndex + 1,
-                                           saveDate: Date(), override: model.customNames[item.id])
-        return name
+        return ArchivePlanner.fileName(for: item, info: info, layout: layout, settings: app.saveSettings,
+                                           index: item.discoveryIndex + 1, saveDate: Date(), override: model.customNames[item.id])
     }
 }
 

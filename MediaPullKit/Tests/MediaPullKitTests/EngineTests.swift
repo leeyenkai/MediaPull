@@ -49,7 +49,8 @@ final class EngineTests: XCTestCase {
         let cookies = [
             CookieRecord(name: "sessionid", value: "abc%3Adef", domain: ".instagram.com", path: "/", isSecure: true, isHTTPOnly: true,
                          expires: Date(timeIntervalSince1970: 2_000_000_000)),
-            CookieRecord(name: "csrftoken", value: "xyz", domain: ".instagram.com", path: "/", isSecure: true, isHTTPOnly: false, expires: nil),
+            CookieRecord(name: "csrftoken", value: "xyz", domain: ".instagram.com", path: "/", isSecure: true,
+                         isHTTPOnly: false, expires: nil),
         ]
         try CookieFile.write(cookies, to: file)
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
@@ -80,13 +81,15 @@ final class ConversionTests: XCTestCase {
         let png = folder.appendingPathComponent("a.png")
         try ImageWriter.write(image, type: "public.png", to: png)
         let converter = MediaConverter(ffmpeg: nil)
-        let kept = try await converter.convert(png, policy: ConversionPolicy(), layout: .archive, workDirectory: folder.appendingPathComponent("w"))
+        let kept = try await converter.convert(png, policy: ConversionPolicy(), layout: .archive,
+                                               workDirectory: folder.appendingPathComponent("w"))
         XCTAssertFalse(kept.converted)
         XCTAssertEqual(kept.format, .png)
 
         let heic = folder.appendingPathComponent("b.heic")
         guard (try? ImageWriter.write(image, type: "public.heic", to: heic)) != nil else { throw XCTSkip("HEIC encoding unavailable") }
-        let converted = try await converter.convert(heic, policy: ConversionPolicy(), layout: .archive, workDirectory: folder.appendingPathComponent("w"))
+        let converted = try await converter.convert(heic, policy: ConversionPolicy(), layout: .archive,
+                                                    workDirectory: folder.appendingPathComponent("w"))
         XCTAssertTrue(converted.converted)
         XCTAssertEqual(converted.format, .jpeg)
         XCTAssertEqual(converted.pixelSize, PixelSize(width: 64, height: 48))
@@ -113,7 +116,8 @@ final class ConversionTests: XCTestCase {
     static func gradient(width: Int, height: Int, alpha: Bool) -> CGImage? {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
-                                      bitmapInfo: alpha ? CGImageAlphaInfo.premultipliedLast.rawValue : CGImageAlphaInfo.noneSkipLast.rawValue)
+                                      bitmapInfo: alpha ? CGImageAlphaInfo.premultipliedLast.rawValue
+                                                        : CGImageAlphaInfo.noneSkipLast.rawValue)
         else { return nil }
         for x in 0 ..< width {
             context.setFillColor(CGColor(red: CGFloat(x) / CGFloat(width), green: 0.4, blue: 0.7, alpha: 1))
@@ -212,7 +216,8 @@ final class PDFExtractionTests: XCTestCase {
         let jpegURL = folder.appendingPathComponent("photo.jpg")
         try ImageWriter.write(photo, type: "public.jpeg", to: jpegURL)
         let jpegProvider = try XCTUnwrap(CGDataProvider(url: jpegURL as CFURL))
-        let jpeg = try XCTUnwrap(CGImage(jpegDataProviderSource: jpegProvider, decode: nil, shouldInterpolate: true, intent: .defaultIntent))
+        let jpeg = try XCTUnwrap(CGImage(jpegDataProviderSource: jpegProvider, decode: nil, shouldInterpolate: true,
+                                         intent: .defaultIntent))
         let transparent = try XCTUnwrap(ConversionTests.gradient(width: 120, height: 80, alpha: true))
 
         let pdf = folder.appendingPathComponent("doc.pdf")
@@ -244,7 +249,8 @@ final class EditingAndFilterTests: XCTestCase {
     /// A 4×2 image whose top-left pixel is red and everything else is blue.
     func makeImage() throws -> CGImage {
         let context = try XCTUnwrap(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
-                                              space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
         context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 4, height: 2))
         context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
@@ -412,5 +418,67 @@ final class PlacementTests: XCTestCase {
         XCTAssertEqual(Set(placed.map(\.lastPathComponent)).count, count)
         let contents = try Set(placed.map { try String(contentsOf: $0, encoding: .utf8) })
         XCTAssertEqual(contents.count, count)
+    }
+}
+
+final class TrackHeaderTests: XCTestCase {
+    private func tkhd(width: UInt32, height: UInt32, quarterTurn: Bool) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: 84)
+        func put(_ value: UInt32, at offset: Int) {
+            for index in 0 ..< 4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (24 - 8 * UInt32(index))) }
+        }
+        // Display matrix (16.16 fixed point) at 40, width and height at 76 in a version 0 box.
+        put(quarterTurn ? 0 : 0x0001_0000, at: 40)
+        put(quarterTurn ? 0x0001_0000 : 0, at: 44)
+        put(quarterTurn ? 0xFFFF_0000 : 0, at: 52)
+        put(quarterTurn ? 0 : 0x0001_0000, at: 56)
+        put(width << 16, at: 76)
+        put(height << 16, at: 80)
+        return bytes
+    }
+
+    func testPortraitPhoneVideoIsReportedUpright() {
+        let rotated = tkhd(width: 1920, height: 1080, quarterTurn: true)
+        XCTAssertEqual(MP4Probe.parseTKHD(rotated, 0 ..< rotated.count), PixelSize(width: 1080, height: 1920))
+        let plain = tkhd(width: 1920, height: 1080, quarterTurn: false)
+        XCTAssertEqual(MP4Probe.parseTKHD(plain, 0 ..< plain.count), PixelSize(width: 1920, height: 1080))
+    }
+}
+
+final class ColourProfileTests: XCTestCase {
+    private func jpeg(_ space: CGColorSpace?) throws -> Data {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: space ?? CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        // No profile in the file, as JPEG data inside a PDF usually has none.
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationEmbedThumbnail: false] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    private func profileName(_ data: Data) -> String? {
+        CGImageSourceCreateWithData(data as CFData, nil)
+            .flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }?[kCGImagePropertyProfileName] as? String
+    }
+
+    /// A wide-colour picture copied out of a PDF keeps its profile, and the image data is not touched (R-1602).
+    func testPDFProfileIsAddedWithoutReencoding() throws {
+        let p3 = try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3)?.copyICCData() as Data?)
+        let plain = try jpeg(CGColorSpaceCreateDeviceRGB())
+        let tagged = PDFImageExtractor.embedICC(p3, in: plain)
+        XCTAssertEqual(profileName(tagged), "Display P3")
+        XCTAssertTrue(tagged.count > plain.count)
+        // From the start-of-scan marker on, the compressed picture is byte for byte the same.
+        func scan(_ data: Data) -> Data? {
+            let bytes = [UInt8](data)
+            return (0 ..< bytes.count - 1).first { bytes[$0] == 0xFF && bytes[$0 + 1] == 0xDA }.map { Data(bytes[$0...]) }
+        }
+        XCTAssertEqual(scan(tagged), scan(plain))
+        XCTAssertEqual(PDFImageExtractor.embedICC(p3, in: tagged), tagged, "a profile is added once")
     }
 }

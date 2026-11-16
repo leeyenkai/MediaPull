@@ -81,7 +81,9 @@ struct TabChip: View {
         .frame(height: 24)
         .background {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(selected ? AnyShapeStyle(Color.primary.opacity(0.11)) : AnyShapeStyle(hovering ? Color.primary.opacity(0.05) : .clear))
+                .fill(
+                    selected ? AnyShapeStyle(Color.primary.opacity(0.11)) : AnyShapeStyle(hovering ? Color.primary.opacity(0.05) : .clear)
+                )
                 .overlay {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .strokeBorder(selected ? Color.primary.opacity(0.12) : .clear, lineWidth: 0.5)
@@ -94,7 +96,7 @@ struct TabChip: View {
         .contextMenu {
             Button("New Tab") { model.newTab() }
             if let url = tab.url {
-                Button("Duplicate Tab") { model.newTab(url) }
+                Button("Duplicate Tab") { model.newTab(url, after: tab.id) }
                 Button(AppModel.shared.browsing.bookmark(for: url) == nil ? "Bookmark This Page" : "Already Bookmarked") {
                     AppModel.shared.browsing.addBookmark(title: tab.title, url: url)
                 }

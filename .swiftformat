@@ -1,0 +1,10 @@
+# MediaPull house style (CLAUDE.md): 140-column lines, few comments. swiftformat applies only rules that match how the
+# code is written; line length itself is checked by swiftlint (.swiftlint.yml), and long lines are wrapped by hand.
+--swiftversion 6.2
+--maxwidth 140
+--indent 4
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--disable wrap,wrapArguments,wrapIfStatementBodies,wrapPropertyBodies,wrapFunctionBodies,wrapLoopBodies,wrapIfExpressionBodies,wrapMultilineStatementBraces,trailingCommas,redundantSelf,blankLinesBetweenScopes,braces,indent,hoistTry,hoistAwait,noForceUnwrapInTests,docComments,modifierOrder,elseOnSameLine,sortImports,andOperator,redundantReturn,preferKeyPath
+--exclude MediaPullKit/.build,**/.build

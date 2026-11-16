@@ -42,7 +42,7 @@ public enum JSONValue: Codable, Sendable, Equatable {
     public var string: String? {
         switch self {
         case let .string(value): value
-        case let .number(value): value.rounded() == value && abs(value) < 1e15 ? String(Int64(value)) : String(value)
+        case let .number(value): if value.rounded() == value, abs(value) < 1e15 { String(Int64(value)) } else { String(value) }
         case let .bool(value): value ? "true" : "false"
         default: nil
         }
@@ -234,8 +234,9 @@ public enum BridgeEvent: Sendable {
                 if case let .array(list) = value[key] ?? .null { return list.compactMap(\.string) }
                 return []
             }
-            return .supports(SiteInfo(category: category, subcategory: string("subcategory") ?? "", baseCategory: string("basecategory") ?? "",
-                                      root: string("root").flatMap(URL.init(string:)), choices: strings("choices"), defaults: strings("defaults")))
+            return .supports(SiteInfo(category: category, subcategory: string("subcategory") ?? "",
+                                      baseCategory: string("basecategory") ?? "", root: string("root").flatMap(URL.init(string:)),
+                                      choices: strings("choices"), defaults: strings("defaults")))
         case "done":
             var errors: [String] = []
             if case let .array(list) = value["errors"] ?? .null { errors = list.compactMap(\.string) }
@@ -363,7 +364,8 @@ public struct BridgeRequest: Encodable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case v, op, url, urls, username, include, category, cookies, staging, pacing, video, extras, range, cursor, filter, referer, key, wheel, target, paths
+        case v, op, url, urls, username, include, category, cookies, staging, pacing, video, extras, range, cursor, filter,
+             referer, key, wheel, target, paths
         case knownIDs = "known_ids"
         case stopAfterKnown = "stop_after_known"
         case dateFrom = "date_from"

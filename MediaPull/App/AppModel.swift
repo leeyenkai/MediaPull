@@ -7,7 +7,6 @@ import MediaPullLibrary
 import MediaPullNet
 import MediaPullStore
 import Observation
-import WebKit
 
 /// Shared state and services for every window.
 @Observable
@@ -31,7 +30,7 @@ final class AppModel {
     var engineMessage: String?
     var isCheckingEngines = false
     var userAgent: String?
-    var ruleList: WKContentRuleList?
+    var ruleList: UploadRules?
     /// The walkthrough (SPEC 7.2): on first run with the setup steps, or the tour alone from Settings or Help.
     var walkthrough: WalkthroughMode?
     let browsing = BrowsingStore(persistent: !SelfTestRunner.isActive)
@@ -173,12 +172,17 @@ final class AppModel {
     static func locationWarning(for url: URL) -> String? {
         let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .volumeIsLocalKey])
         if values?.isUbiquitousItem == true || url.path.contains("/Library/Mobile Documents/") {
-            return "This folder is in iCloud Drive. If Optimise Mac Storage is on, files can become cloud-only placeholders that other apps cannot read."
+            return """
+                This folder is in iCloud Drive. If Optimise Mac Storage is on, files can become cloud-only placeholders that other apps \
+                cannot read.
+                """
         }
         if values?.volumeIsLocal == false { return "This folder is on a network volume. Saving may be slower." }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if url.path.hasPrefix(home + "/Desktop") || url.path.hasPrefix(home + "/Documents") {
-            if FileManager.default.ubiquityIdentityToken != nil, FileManager.default.fileExists(atPath: home + "/Library/Mobile Documents/com~apple~CloudDocs/Desktop") {
+            if FileManager.default.ubiquityIdentityToken != nil,
+               FileManager.default.fileExists(atPath: home + "/Library/Mobile Documents/com~apple~CloudDocs/Desktop")
+            {
                 return "Desktop and Documents sync with iCloud on this Mac. Files may become cloud-only placeholders."
             }
         }
@@ -187,14 +191,12 @@ final class AppModel {
 
     // MARK: Cookies
 
-    var cookieStore: WKHTTPCookieStore { WKWebsiteDataStore.default().httpCookieStore }
-
     func cookieJar() async -> CookieJar {
-        CookieJar(cookies: await CookieBridge.allCookies(cookieStore))
+        CookieJar(cookies: await CookieBridge.allCookies())
     }
 
     func cookies(forDomain domain: String) async -> [CookieRecord] {
-        await CookieBridge.cookies(cookieStore, registrableDomain: domain)
+        await CookieBridge.cookies(registrableDomain: domain)
     }
 
     // MARK: Engines
@@ -262,10 +264,11 @@ final class AppModel {
     func pipeline(onCheckpoint: @escaping @Sendable (String, URL?) -> Void = { _, _ in }) -> SavePipeline {
         var fetcher: (any EngineFetching)?
         if let engineManager {
-            let store = cookieStore
             fetcher = BridgeEngineFetcher(
                 client: BridgeClient(paths: engineManager.paths), video: preferences.video, userAgent: userAgent,
-                cookies: { domain in await CookieBridge.cookies(store, registrableDomain: domain) }, onCheckpoint: onCheckpoint
+                cookies: { domain in await CookieBridge.cookies(registrableDomain: domain) },
+                cookiesUpdated: { updated, original in await CookieBridge.update(updated, existing: original) },
+                onCheckpoint: onCheckpoint
             )
         }
         return SavePipeline(gate: gate, converter: MediaConverter(ffmpeg: ffmpeg, svgRasterizer: SVGRasterizer.rasterize), index: index,
@@ -297,6 +300,16 @@ final class AppModel {
 
     /// The folder the front window saves into (D-70).
     var saveFolder: URL? { frontWindow?.saveFolder ?? defaultRoot?.url }
+
+    /// Files and folders moved or renamed in the Library or an editor: analysis results and the download archive follow
+    /// them, as they do for Organise (R-3804), so an incremental pull still knows what it already saved.
+    func noteMoved(_ moves: [(from: String, to: String)]) {
+        guard !moves.isEmpty else { return }
+        Task {
+            await analysis.noteMoves(moves)
+            await store?.moveArchivePaths(moves)
+        }
+    }
 
     /// Starts a save job for items from a window (SPEC section 14).
     @discardableResult
@@ -384,7 +397,8 @@ final class AppModel {
         let converter = MediaConverter(ffmpeg: ffmpeg, svgRasterizer: SVGRasterizer.rasterize)
         job.task = Task {
             job.state = .running
-            let files = Self.expand(urls)
+            // A dropped folder can hold thousands of files: walk it off the main actor.
+            let files = await Task.detached(priority: .userInitiated) { Self.expand(urls) }.value
             job.total = files.count
             let work = SavePipeline.defaultWorkDirectory.appendingPathComponent("convert-\(job.id.uuidString)")
             defer { try? FileManager.default.removeItem(at: work) }
@@ -403,7 +417,9 @@ final class AppModel {
                     var output = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: result.format.fileExtension))
                     var counter = 2
                     while FileManager.default.fileExists(atPath: output.path) {
-                        output = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem) \(counter)", ext: result.format.fileExtension))
+                        output = folder.appendingPathComponent(
+                            FileNaming.fileName(stem: "\(stem) \(counter)", ext: result.format.fileExtension)
+                        )
                         counter += 1
                     }
                     try FileManager.default.moveItem(at: result.url, to: output)
@@ -420,7 +436,7 @@ final class AppModel {
         }
     }
 
-    static func expand(_ urls: [URL]) -> [URL] {
+    nonisolated static func expand(_ urls: [URL]) -> [URL] {
         var files: [URL] = []
         for url in urls {
             var isDirectory: ObjCBool = false

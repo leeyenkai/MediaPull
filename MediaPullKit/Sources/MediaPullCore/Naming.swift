@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Values a name template can use.
 public struct NameContext: Sendable {
@@ -68,8 +69,8 @@ public struct NameTemplate: Codable, Hashable, Sendable {
             return String(number)
         }
         switch name {
-        case "yyyy", "MM", "dd", "HH", "mm", "ss": return DateFormats.utc(name).string(from: context.date)
-        case "date": return DateFormats.utc(format ?? "yyyy-MM-dd").string(from: context.date)
+        case "yyyy", "MM", "dd", "HH", "mm", "ss": return DateFormats.string(context.date, format: name)
+        case "date": return DateFormats.string(context.date, format: format ?? "yyyy-MM-dd")
         case "code": return context.code ?? context.mediaID ?? context.postID ?? context.hash ?? "item"
         case "shortcode": return context.code ?? ""
         case "post_id": return context.postID ?? ""
@@ -117,14 +118,34 @@ public enum DateFormats {
         return formatter
     }
 
+    /// Formatters are costly to make and every saved name uses several; these are shared and never changed after
+    /// creation (formatting and parsing are thread-safe). Callers that change a formatter use `utc` instead.
+    private static let shared = Mutex<[String: DateFormatter]>([:])
+
+    /// Made once and never changed after; ISO8601DateFormatter parsing is thread-safe.
+    nonisolated(unsafe) private static let iso8601 = ISO8601DateFormatter()
+
+    static func cached(_ format: String) -> DateFormatter {
+        shared.withLock { formatters in
+            if let formatter = formatters[format] { return formatter }
+            let formatter = utc(format)
+            formatters[format] = formatter
+            return formatter
+        }
+    }
+
+    public static func string(_ date: Date, format: String) -> String {
+        cached(format).string(from: date)
+    }
+
     public static func sidecarString(_ date: Date) -> String {
-        utc("yyyy-MM-dd HH:mm:ss").string(from: date)
+        string(date, format: "yyyy-MM-dd HH:mm:ss")
     }
 
     public static func parseEngineDate(_ text: String) -> Date? {
-        if let date = utc("yyyy-MM-dd HH:mm:ss").date(from: text) { return date }
-        if let date = ISO8601DateFormatter().date(from: text) { return date }
-        return utc("yyyy-MM-dd'T'HH:mm:ss").date(from: text)
+        if let date = cached("yyyy-MM-dd HH:mm:ss").date(from: text) { return date }
+        if let date = iso8601.date(from: text) { return date }
+        return cached("yyyy-MM-dd'T'HH:mm:ss").date(from: text)
     }
 }
 
@@ -137,13 +158,24 @@ public enum FileNaming {
         return forbidden.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
     }
 
+    /// Control codes and the direction overrides that can disguise a name's extension (U+202A–U+202E, U+2066–U+2069).
+    /// Joiners (U+200C, U+200D) are kept: Persian, Hindi and joined emoji need them (D-74).
+    static let bannedInNames: CharacterSet = {
+        var set = CharacterSet(charactersIn: "/:\\\0").union(.newlines)
+        set.insert(charactersIn: ("\u{00}" as Unicode.Scalar) ... "\u{1F}")
+        set.insert(charactersIn: ("\u{7F}" as Unicode.Scalar) ... "\u{9F}")
+        set.insert(charactersIn: ("\u{202A}" as Unicode.Scalar) ... "\u{202E}")
+        set.insert(charactersIn: ("\u{2066}" as Unicode.Scalar) ... "\u{2069}")
+        return set
+    }()
+
     /// A safe file or folder name: NFC, no separators or control characters, no leading dot,
     /// and at most `maxBytes` bytes of UTF-8.
     public static func sanitize(_ name: String, maxBytes: Int = 200) -> String {
         var result = name.precomposedStringWithCanonicalMapping
-        let banned = CharacterSet(charactersIn: "/:\\\0").union(.controlCharacters).union(.newlines)
-        result = String(result.unicodeScalars.map { banned.contains($0) ? "_" : Character($0) })
-        result = result.replacingOccurrences(of: "\u{200B}", with: "")
+        // Invisible characters that only get in the way: zero-width space and the byte-order mark.
+        result = result.replacingOccurrences(of: "\u{200B}", with: "").replacingOccurrences(of: "\u{FEFF}", with: "")
+        result = String(result.unicodeScalars.map { bannedInNames.contains($0) ? "_" : Character($0) })
         result = result.trimmingCharacters(in: .whitespaces)
         while result.hasPrefix(".") { result.removeFirst() }
         while result.utf8.count > maxBytes { result.removeLast() }

@@ -59,7 +59,18 @@ public enum WebViewSetup {
         configuration.websiteDataStore = .default()
         let controller = WKUserContentController()
         controller.addUserScript(WKUserScript(source: script("guard"), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
-        controller.addUserScript(WKUserScript(source: script("extract"), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
+        controller.addUserScript(WKUserScript(
+            source: script("guard-page"),
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: .page
+        ))
+        controller.addUserScript(WKUserScript(
+            source: script("extract"),
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: world
+        ))
         controller.add(WeakMessageHandler(handler), contentWorld: world, name: handlerName)
         if let ruleList { controller.add(ruleList) }
         configuration.userContentController = controller
@@ -71,7 +82,7 @@ public enum WebViewSetup {
     }
 
     /// Blocks well-known upload endpoints in the browser pane (SPEC R-508).
-    public static func uploadBlockingRules() async -> WKContentRuleList? {
+    public static func uploadBlockingRules() async -> UploadRules? {
         let rules = """
         [
           {"trigger": {"url-filter": "^https?://rupload\\\\."}, "action": {"type": "block"}},
@@ -82,7 +93,11 @@ public enum WebViewSetup {
           {"trigger": {"url-filter": "^https?://[^/]*\\\\.?upload\\\\.facebook\\\\.com/"}, "action": {"type": "block"}}
         ]
         """
-        return try? await WKContentRuleListStore.default()?.compileContentRuleList(forIdentifier: "MediaPullUploadBlock", encodedContentRuleList: rules)
+        let list = try? await WKContentRuleListStore.default()?.compileContentRuleList(
+            forIdentifier: "MediaPullUploadBlock",
+            encodedContentRuleList: rules
+        )
+        return list.map(UploadRules.init)
     }
 
     public static func callAsync<T>(_ webView: WKWebView, _ body: String, arguments: [String: Any] = [:], as _: T.Type) async -> T? {
@@ -91,20 +106,29 @@ public enum WebViewSetup {
     }
 }
 
+/// The upload-blocking content rules, compiled once and installed in every tab; app code holds them without WebKit (R-401).
+public struct UploadRules: @unchecked Sendable {
+    public let list: WKContentRuleList
+}
+
+/// The browser's cookies and website data. The app reaches the shared data store only through here (R-401).
 @MainActor
 public enum CookieBridge {
-    public static func allCookies(_ store: WKHTTPCookieStore) async -> [CookieRecord] {
+    /// The store every browser tab shares (WebViewSetup uses the default website data store).
+    public static var browserStore: WKHTTPCookieStore { WKWebsiteDataStore.default().httpCookieStore }
+
+    public static func allCookies(_ store: WKHTTPCookieStore = browserStore) async -> [CookieRecord] {
         await store.allCookies().map(CookieRecord.init)
     }
 
-    public static func cookies(_ store: WKHTTPCookieStore, registrableDomain: String) async -> [CookieRecord] {
+    public static func cookies(_ store: WKHTTPCookieStore = browserStore, registrableDomain: String) async -> [CookieRecord] {
         CookieJar(cookies: await allCookies(store)).cookies(forRegistrableDomain: registrableDomain)
     }
 
     /// Writes cookies an engine refreshed back into the browser's store, so both stay in step.
     /// Only values change: the browser's own flags and expiry are kept, `csrftoken` is never
     /// replaced, and cookies the browser did not already have are ignored.
-    public static func update(_ records: [CookieRecord], in store: WKHTTPCookieStore, existing: [CookieRecord]) async {
+    public static func update(_ records: [CookieRecord], in store: WKHTTPCookieStore = browserStore, existing: [CookieRecord]) async {
         let current = Dictionary(existing.map { ("\($0.domain)|\($0.path)|\($0.name)", $0) }, uniquingKeysWith: { a, _ in a })
         for record in records where record.name != "csrftoken" {
             let key = "\(record.domain)|\(record.path)|\(record.name)"
@@ -120,7 +144,7 @@ public enum CookieBridge {
         return instagram.contains { $0.name == "sessionid" && !$0.value.isEmpty } && instagram.contains { $0.name == "ds_user_id" }
     }
 
-    public static func clearWebsiteData(matching domains: [String]?, in dataStore: WKWebsiteDataStore) async {
+    public static func clearWebsiteData(matching domains: [String]?, in dataStore: WKWebsiteDataStore = .default()) async {
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         let records = await dataStore.dataRecords(ofTypes: types)
         let selected = domains.map { domains in

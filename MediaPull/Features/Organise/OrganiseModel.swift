@@ -236,7 +236,7 @@ final class OrganisePane: MediaGridOwner {
         guard let folder, let owner else { return false }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
         guard !urls.isEmpty else { return false }
-        owner.drop(urls, into: folder)
+        owner.drop(Sidecar.withoutCompanions(urls), into: folder)
         return true
     }
 
@@ -252,8 +252,12 @@ final class OrganisePane: MediaGridOwner {
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen) })
         menu.addItem(.separator())
         if role == .source, let target = owner.targetFolder, target.standardizedFileURL != folder?.standardizedFileURL {
-            menu.addItem(ActionMenuItem("Copy to “\(target.lastPathComponent)”") { owner.run(FolderOperations.copy(chosen, to: target)) })
-            menu.addItem(ActionMenuItem("Move to “\(target.lastPathComponent)”") { owner.run(FolderOperations.move(chosen, to: target)) })
+            menu.addItem(ActionMenuItem("Copy to “\(target.lastPathComponent)”") {
+                owner.run(FolderOperations.copy(chosen, to: target))
+            })
+            menu.addItem(ActionMenuItem("Move to “\(target.lastPathComponent)”") {
+                owner.run(FolderOperations.move(chosen, to: target))
+            })
         }
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Move to Trash") { owner.run(FolderOperations.trash(chosen)) })
@@ -279,7 +283,8 @@ final class OrganiseModel {
 
     /// In place when the target is the source folder ("Same as Source"); otherwise copy or move to the target (D-68).
     var mode: OrganiseMode {
-        guard let source = source.root, let target = target.root, source.standardizedFileURL != target.standardizedFileURL else { return .inPlace }
+        guard let source = source.root, let target = target.root, source.standardizedFileURL != target.standardizedFileURL
+        else { return .inPlace }
         return moveToTarget ? .move : .copy
     }
 
@@ -299,7 +304,8 @@ final class OrganiseModel {
     @ObservationIgnored private var messageTask: Task<Void, Never>?
 
     @ObservationIgnored weak var window: WindowModel?
-    @ObservationIgnored private var listenerID = UUID()
+    @ObservationIgnored private let listenerID = UUID()
+    @ObservationIgnored private var lastEntryID: UUID?
 
     private var app: AppModel { .shared }
 
@@ -308,6 +314,13 @@ final class OrganiseModel {
         target.owner = self
         AppModel.shared.analysis.onFolderChange[listenerID] = { [weak self] paths in self?.foldersChanged(paths) }
         Task { await refreshHistory() }
+    }
+
+    /// A closed window's Organise section stops listening for folder changes.
+    isolated deinit {
+        AppModel.shared.analysis.onFolderChange[listenerID] = nil
+        // Once this window is gone, its folders stop being watched (after the window's own reference has cleared).
+        Task { @MainActor in OrganiseModel.updateAnalysisFolders() }
     }
 
     /// Opens the default library folder, in place, the first time Organise is shown (D-68).
@@ -349,17 +362,25 @@ final class OrganiseModel {
     }
 
     func updateAnalysisFolders() {
+        Self.updateAnalysisFolders()
+    }
+
+    /// The folders open in Organise in any window are watched and analysed too; a folder inside another counts once.
+    static func updateAnalysisFolders() {
         var folders = Set<String>()
-        for model in app.windows.map(\.organise) {
-            if let root = model.source.root { folders.insert(root.path) }
-            if let root = model.target.root { folders.insert(root.path) }
+        for model in AppModel.shared.windows.map(\.organise) {
+            if let root = model.source.root { folders.insert(root.standardizedFileURL.path) }
+            if let root = model.target.root { folders.insert(root.standardizedFileURL.path) }
         }
-        app.analysis.extraFolders = folders
+        AppModel.shared.analysis.extraFolders = folders.filter { folder in
+            !folders.contains { $0 != folder && folder.hasPrefix($0 + "/") }
+        }
     }
 
     func chooseFolder(for pane: OrganisePane) {
         FolderPicker.chooseFolder(title: pane.role == .source ? "Open a Folder to Organise" : "Choose the Target Folder",
-                                  prompt: "Open", start: pane.root ?? AppModel.suggestedRootURL, window: window?.hostWindow) { [weak self] url in
+                                  prompt: "Open", start: pane.root ?? AppModel.suggestedRootURL,
+                                  window: window?.hostWindow) { [weak self] url in
             guard let url else { return }
             self?.open(url, in: pane)
         }
@@ -371,7 +392,7 @@ final class OrganiseModel {
             // A change inside the shown folder, or to a folder above it (renamed or moved to the Trash in the Finder).
             let affected = paths.contains { path in
                 let event = path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
-                return event.hasPrefix(folder) || folder.hasPrefix(event == "/" ? event : event + "/")
+                return event == folder || event.hasPrefix(folder + "/") || folder.hasPrefix(event == "/" ? event : event + "/")
             }
             if affected {
                 pane.reload()
@@ -410,8 +431,9 @@ final class OrganiseModel {
         pending = nil
         message = nil
         let journal = app.journal
+        let app = app
         let job = Job(kind: .organise, title: plan.title)
-        job.total = plan.moves.count + plan.itemsToTrash.count
+        job.total = plan.moves.count + plan.itemsToTrash.count + plan.foldersToCreate.count + plan.foldersToTrash.count
         job.state = .running
         if job.total > 20 { app.jobs.add(job) }
         working = plan.title
@@ -422,15 +444,22 @@ final class OrganiseModel {
                     job.summaryOverride = "\(done) of \(total) steps"
                 }
             }
-            guard let self else { return }
-            await self.app.analysis.noteMoves(entry.moves)
-            await self.app.store?.moveArchivePaths(entry.moves)
+            // The files have moved whether or not the window is still open: the records follow them and the job ends.
+            await app.analysis.noteMoves(entry.moves)
+            await app.store?.moveArchivePaths(entry.moves)
             job.summaryOverride = "\(entry.fileCount) file\(entry.fileCount == 1 ? "" : "s")"
                 + (entry.failures.isEmpty ? "" : ", \(entry.failures.count) problems")
             job.failures = entry.failures.map { (id: $0, message: $0) }
-            self.app.jobs.finish(job, entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be moved")) : .cancelled)
-            self.message = entry.failures.isEmpty ? "\(plan.title): done. ⌘Z undoes it." : entry.failures.prefix(3).joined(separator: "\n")
+            app.jobs.finish(
+                job,
+                entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be moved")) : .cancelled
+            )
+            guard let self else { return }
+            self.message = entry.failures.isEmpty
+                ? "\(plan.title): done. ⌘Z undoes it."
+                : entry.failures.prefix(3).joined(separator: "\n")
             self.window?.registerUndo(entry)
+            self.lastEntryID = entry.id
             await self.refreshHistory()
             self.working = nil
             self.showResults(of: plan)
@@ -457,10 +486,18 @@ final class OrganiseModel {
     func undo(_ entry: JournalEntry) {
         working = "Undoing \(entry.title)"
         Task {
+            // ⌘Z and the toolbar's Undo can both reach an entry: the second one says so instead of "0 items put back".
+            if await app.journal.entry(entry.id)?.undone ?? true {
+                message = "“\(entry.title)” was already undone."
+                working = nil
+                await refreshHistory()
+                return
+            }
             let report = await app.journal.undo(entry.id)
             await app.analysis.noteMoves(report.moves)
             await app.store?.moveArchivePaths(report.moves)
-            message = report.skipped.isEmpty ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
+            message = report.skipped.isEmpty
+                ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
                 : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; ")
             await refreshHistory()
             working = nil
@@ -468,9 +505,13 @@ final class OrganiseModel {
         }
     }
 
+    /// The toolbar's Undo: this window's last change, as ⌘Z, else the newest change not undone yet.
     func undoLast() {
-        guard let last = history.first(where: { !$0.undone }) else { return }
-        undo(last)
+        if let id = lastEntryID, let mine = history.first(where: { $0.id == id && !$0.undone }) {
+            undo(mine)
+        } else if let last = history.first(where: { !$0.undone }) {
+            undo(last)
+        }
     }
 
     /// Files dropped on a folder: copied when copying to the target (or from outside), otherwise moved.
@@ -525,6 +566,24 @@ final class OrganiseModel {
 
     /// Plans an automatic sort of the source pane's shown files (or its selection) and previews it in the Organise pane.
     func autoSort(_ kind: AutoSort) {
+        // Until a newly opened folder is listed, the pane still holds the previous folder's files: wait for the listing.
+        if source.loading {
+            working = "Reading the folder…"
+            Task { [weak self] in
+                let deadline = Date().addingTimeInterval(60)
+                while self?.source.loading == true, Date() < deadline {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard let self else { return }
+                self.working = nil
+                if self.source.loading {
+                    self.message = "The folder is taking a long time to read. Try again in a moment."
+                } else {
+                    self.autoSort(kind)
+                }
+            }
+            return
+        }
         let all = source.shown.isEmpty ? source.entries : source.shown
         let files = source.selection.isEmpty ? all : all.filter { source.selection.contains($0.path) }
         guard let destination, !files.isEmpty else {
@@ -563,19 +622,23 @@ final class OrganiseModel {
                         .sorted { $0.faceCount > $1.faceCount }.map(\.displayName)
                     assignment[f.path] = SortRules.personFolders(names: people, placement: effective)
                 }
-                note = effective == .everyPerson ? "A photo of several people goes into each person's folder as a copy that takes no extra space."
+                note = effective == .everyPerson
+                    ? "A photo of several people goes into each person's folder as a copy that takes no extra space."
                     : effective == .sharedFolder ? "Photos of several people go into “\(FolderNames.groupPhotos)”." : nil
                 if !app.preferences.facesEnabled { note = "Turn on recognising people in the People tab first." }
             }
             let missing = files.filter { $0.record == nil }.count
             if missing > 0, kind != .date, kind != .source, kind != .event {
-                note = [note, "\(missing) file\(missing == 1 ? " is" : "s are") not analysed yet and will go to Unsorted."].compactMap { $0 }
+                note = [note, "\(missing) file\(missing == 1 ? " is" : "s are") not analysed yet and will go to Unsorted."]
+                    .compactMap { $0 }
                     .joined(separator: " ")
             }
             let urls = files.map(\.url)
             let title = "Sort by \(kind.label)", keepUnsorted = kind == .person
             let plan = await Task.detached(priority: .userInitiated) {
-                FolderOperations.sort(urls, into: destination, title: title, keepUnsorted: keepUnsorted, copy: copy) { assignment[$0.path] ?? [] }
+                FolderOperations.sort(urls, into: destination, title: title, keepUnsorted: keepUnsorted, copy: copy) {
+                    assignment[$0.path] ?? []
+                }
             }.value
             working = nil
             run(plan, preview: true, note: note)

@@ -28,7 +28,8 @@ public enum AddressInput: Equatable, Sendable {
             guard looksLikeHost(candidate) else { return .invalid }
             candidate = "https://" + candidate
         }
-        guard let url = URL(string: candidate) ?? URL(string: candidate.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? ""),
+        guard let url = URL(string: candidate)
+                  ?? URL(string: candidate.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? ""),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https", url.host != nil
         else { return .invalid }
         return classify(url)

@@ -38,9 +38,29 @@ struct AnimatedImageView: NSViewRepresentable {
         view.animates = true
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        view.image = NSImage(contentsOf: file)
+        load(file, into: view)
         return view
     }
 
-    func updateNSView(_ view: NSImageView, context _: Context) {}
+    func updateNSView(_ view: NSImageView, context: Context) {
+        guard context.coordinator.file != file else { return }
+        context.coordinator.file = file
+        load(file, into: view)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(file: file) }
+
+    final class Coordinator {
+        var file: URL
+        init(file: URL) { self.file = file }
+    }
+
+    /// A long GIF can be many megabytes: it is read off the main actor.
+    private func load(_ file: URL, into view: NSImageView) {
+        Task { [weak view] in
+            let data = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: file) }.value
+            guard let view, let data else { return }
+            view.image = NSImage(data: data)
+        }
+    }
 }

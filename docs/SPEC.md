@@ -164,7 +164,7 @@ MediaPull is a lightweight native macOS app for collecting media from the web in
 
 **R-302** Swift 6 language mode with approachable concurrency. The app target uses MainActor default isolation; package targets are nonisolated by default and mark CPU-heavy functions `@concurrent`.
 
-**R-303** SwiftUI for all UI. AppKit only inside the app's `Platform/` folder (section 4.3).
+**R-303** SwiftUI for all UI. AppKit only in the app target, never in the MediaPullKit modules; views and controllers built on it live in the app's `Platform/` folder (section 4.3), and other app files use it only for small things such as the pasteboard, menus and windows.
 
 **R-304** No third-party Swift packages. Third-party code is limited to the bundled engines and their runtime (section 13), each pinned to an exact version with a recorded SHA-256 by the build scripts.
 
@@ -199,7 +199,7 @@ The app target holds `App/` (entry point, window scenes, commands), `Features/` 
 
 ### 4.2 Dependency rule
 
-**R-401** Dependencies point only in the direction of the table. SwiftData appears only in `MediaPullStore`, WebKit only in `MediaPullBrowser`, `URLSession` and `URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`. No module uses Apple's geocoder (`CLGeocoder`), MapKit search, Vision asset downloads (`downloadAssets`) or Core ML model collections (`MLModelCollection`), all of which reach the network (D-59). A lint script enforces this (section 25).
+**R-401** Dependencies point only in the direction of the table. SwiftData appears only in `MediaPullStore`, WebKit only in `MediaPullBrowser` and the browser pane's own files in the app (`Features/Browser`, `Platform/ReadOnlyWebView`), with the rest of the app reaching cookies and website data through `MediaPullBrowser`, `URLSession` and `URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`. No module uses Apple's geocoder (`CLGeocoder`), MapKit search, Vision asset downloads (`downloadAssets`) or Core ML model collections (`MLModelCollection`), all of which reach the network (D-59). A lint script enforces this (section 25).
 
 ### 4.3 Platform layer
 
@@ -882,7 +882,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | Archive, web page or site extractor | `{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{index:04}_{orig_name}.{ext}` (date of the post if known, else the time the save started) |
 | Plain | `{orig_name}.{ext}` |
 
-**R-1510** Names are NFC-normalized; `/`, `:` and control characters are replaced; names never start with a dot; the full name plus `.json` fits in 255 bytes (the name is shortened before the extension if needed).
+**R-1510** Names are NFC-normalized; `/`, `:`, control codes and text-direction overrides are replaced, zero-width spaces are removed, and joiners (U+200C, U+200D) are kept (D-74); names never start with a dot; the full name plus `.json` fits in 255 bytes (the name is shortened before the extension if needed).
 
 ---
 
@@ -1101,7 +1101,7 @@ Budgets are recorded in `scripts/perf-budgets.json` and measured by hand for thi
 
 `scripts/check.sh` runs every automated check:
 
-- **Lint**: networking (`URLSession`, `URLRequest`) only in MediaPullNet, SwiftData only in MediaPullStore, `Process` only in MediaPullEngines, AppKit only in the app target, no remote loading that bypasses the gate, no file open panel in the browser pane, and no reference to other applications (R-401, R-504, R-508).
+- **Lint**: networking (`URLSession`, `URLRequest`) only in MediaPullNet, SwiftData only in MediaPullStore, `Process` only in MediaPullEngines, WebKit only in MediaPullBrowser and the browser pane, AppKit only in the app target, no remote loading that bypasses the gate, no file open panel in the browser pane, and no reference to other applications (R-401, R-504, R-508).
 - **Swift tests** (`swift test` in `MediaPullKit`, built outside the iCloud-synced folder): sidecar contract and key order, date formatting independent of the user's calendar, forbidden Instaloader-style names over many dates, reserved folder names and name lengths, CDN rules (NYT, X, WordPress, Wikimedia, signed URLs), magic-byte sniffing, the request policy, address parsing and registrable domains, the ingestor merging srcset candidates, filters, image conversion (PNG kept, HEIC to JPEG), SVG handling per layout, the save pipeline (sidecar contents, duplicates, never overwriting), Netscape cookie files with 0600 permissions, engine version and dependency checks, and the real bundled engine (self-test, and the final events of repeated runs are never lost).
 - **Network tests** (opt in with `MEDIAPULL_NETWORK_TESTS=1`): the engine update check against PyPI.
 - **Bridge tests** (`Engines/bridge/test_egress_guard.py`, run with the bundled interpreter): reads allowed, Instagram GraphQL queries allowed, mutations, uploads, file bodies and other methods blocked, `requests` wrapped.
@@ -1207,6 +1207,8 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-71 | Every gallery-dl site gets per-site options: its name, the parts of a profile, its media switches, sign-in state and remembered choices, from a catalogue generated from the bundled gallery-dl and from the extractor itself. Checked against gallery-dl's own test addresses for every site | Requested: every source with as much attention to detail as Instagram and YouTube |
 | D-72 | The egress guard allows the read-only POSTs gallery-dl's sites need, listed by host and path from an audit of every POST in the bundled gallery-dl (49 reads, 8 tokens; logins and the 7 account actions stay blocked), with a body check per endpoint. Re-audit when gallery-dl is updated. YouTube's `/youtubei/v1/browse` is allowed beside player and next, since yt-dlp reads every page of a channel or playlist after the first through it (R-3505). This amends D-40 | About 40 sites, DeviantArt among them, could not download at all because a public token or a search is a POST |
 | D-73 | A download a web page offers is saved where the person chooses in the standard save dialog (starting in the save folder), instead of being listed in Extracted Media. It is a read, like any download | Requested: clicking a download link in the browser should download the file |
+| D-74 | File names keep the zero-width joiner and non-joiner (U+200C, U+200D); control codes and text-direction overrides are still replaced and zero-width spaces removed. Names already saved are not changed. This amends R-1510 | Persian and Hindi words and joined emoji (a family, a flag) were broken by an underscore |
+| D-75 | A file from an engine is keyed by its post and its number in the post (`category:id:num`) whenever the post numbers its files, for `id` as well as `post_id`. Keys already recorded for such sites change once: their next incremental pull may fetch those files again, and they are recognised as duplicates, not saved twice | On sites that give every file of a post the post's id (Pixiv, Kemono), all files of a post had one key, so scans kept one and incremental pulls skipped the rest |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1580,7 +1582,7 @@ Each rule produces an unverified candidate that is checked before use (R-913). R
 | Reddit | `preview.redd.it` | Rewrite to `i.redd.it/<id>.<ext>` without query parameters |
 | Image proxies and resizing scripts | a query parameter `src`, `img`, `image`, `file`, `url`, `path`, `u`, `f`, `source`, `photo` or `pic` whose value is an image path (`thumb.php?src=photos/a.jpg`, `/_next/image?url=…`) | The value, resolved against the proxy's URL; the file is named after it. URLs served by a script from an `<img>` are accepted even without an image extension |
 | Lightbox links | a quoted image or video path in a link's `onclick` (`show('photos/large.jpg')`) | Added as a link variant; an unsized link to a media file ranks above the thumbnail until a probe shows otherwise |
-| Generic | query parameters `w`, `width`, `h`, `height`, `resize`, `size` on image URLs | Offered as a candidate only when no specific rule matched and the URL is unsigned |
+| Generic | sizing query parameters on image URLs: `w`, `width`, `h`, `height`, `resize`, `size`, and the quality, fit, crop and format parameters CDNs pair with them (`q`, `quality`, `fit`, `crop`, `dpr`, `auto`, `fm`, `format`, `max-w`, `max-h`, `maxwidth`, `maxheight`, `im`, `rect`, `ar`, `c`, `imwidth`, `impolicy`, `downsize`, `disable`, `output-quality`, `output-format`) | All of these are removed and other parameters kept as they are. Offered as a candidate only when no specific rule matched, the URL is unsigned and it has at least one of them; like every candidate it is probed before use |
 
 ---
 

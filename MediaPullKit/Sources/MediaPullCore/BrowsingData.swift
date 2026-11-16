@@ -176,12 +176,16 @@ public struct BrowsingHistory: Codable, Equatable, Sendable {
         if entries.count > Self.limit { entries.removeLast(entries.count - Self.limit) }
     }
 
-    public mutating func updateTitle(_ url: URL, title: String) {
-        guard !title.isEmpty else { return }
+    /// Returns whether a title changed, so callers save only then.
+    @discardableResult
+    public mutating func updateTitle(_ url: URL, title: String) -> Bool {
+        guard !title.isEmpty else { return false }
         let key = BookmarkCollection.key(url)
-        if let index = entries.prefix(50).firstIndex(where: { BookmarkCollection.key($0.url) == key }) {
-            entries[index].title = title
-        }
+        guard let index = entries.prefix(50).firstIndex(where: { BookmarkCollection.key($0.url) == key }),
+              entries[index].title != title
+        else { return false }
+        entries[index].title = title
+        return true
     }
 
     public mutating func remove(_ id: UUID) {

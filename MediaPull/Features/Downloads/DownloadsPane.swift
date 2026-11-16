@@ -10,6 +10,11 @@ enum DownloadTarget: Equatable {
     case video(URL)
     case gallery(URL, site: SiteInfo)
     case unknown(URL)
+    /// Text that is not a web address, an @account or a #hashtag.
+    case notAddress
+    /// An Instagram page with no download of its own here (a location, the Reels feed, a highlight). Instagram traffic
+    /// only goes through the Instagram options, which keep its pace, its one-at-a-time rule and its checkpoints (R-1113).
+    case instagramPage(URL)
 }
 
 /// One window's Downloads pane: an address, the right tool for it, and its options (no sheets).
@@ -47,16 +52,29 @@ final class DownloadsModel {
             target = .instagram(draft)
             return
         }
+        if case let .web(url) = input, let host = url.host?.lowercased(), host == "instagram.com" || host.hasSuffix(".instagram.com") {
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if parts.count >= 3, parts[0] == "explore", parts[1] == "tags", let tag = Self.hashtag("#" + parts[2]) {
+                var draft = app.engines.draft(username: "")
+                draft.hashtag = tag
+                draft.folderName = tag
+                draft.incremental = false
+                target = .instagram(draft)
+            } else {
+                target = .instagramPage(url)
+            }
+            return
+        }
         switch input {
         case .invalid:
-            target = text.isEmpty ? .empty : .unknown(URL(string: text) ?? URL(fileURLWithPath: "/"))
+            target = text.isEmpty ? .empty : .notAddress
         case let .instagramPost(_, url):
             target = .instagram(app.engines.draft(username: "", postURL: url))
         case .instagramProfile, .handle, .instagramStories:
             target = .instagram(app.engines.draft(username: input.instagramUsername ?? ""))
-        case .instagramHighlight(_, let url), .web(let url):
+        case let .instagramHighlight(_, url), let .web(url):
             if case .instagramHighlight = input {
-                target = .unknown(url)
+                target = .instagramPage(url)
                 return
             }
             if VideoPage.isLikely(url) {
@@ -66,6 +84,9 @@ final class DownloadsModel {
             target = .unknown(url)
             checking = true
             checkTask = Task { [weak self] in
+                // Each check starts the engine; wait for a pause in typing so only the finished address is checked.
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled else { return }
                 let site = await self?.app.engines.siteInfo(for: url)
                 guard let self, !Task.isCancelled, self.address == text else { return }
                 self.checking = false
@@ -80,7 +101,9 @@ final class DownloadsModel {
         let remembered = prefs.galleryChoices[site.category].map { Set($0).intersection(choices) }
         include = remembered.flatMap { $0.isEmpty ? nil : $0 } ?? Set(site.defaults).intersection(choices)
         let key = SiteInfoKey(category: site.category, baseCategory: site.baseCategory)
-        switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map { ($0.key, prefs.gallerySwitches[site.category]?[$0.key] ?? $0.default) })
+        switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map {
+            ($0.key, prefs.gallerySwitches[site.category]?[$0.key] ?? $0.default)
+        })
         target = .gallery(url, site: site)
     }
 
@@ -121,7 +144,8 @@ struct DownloadsPane: View {
             Divider()
             HStack(spacing: 6) {
                 Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16)
-                TextField("Address, @account or #hashtag to download", text: Binding(get: { downloads.address }, set: { downloads.use($0) }))
+                TextField("Address, @account or #hashtag to download",
+                          text: Binding(get: { downloads.address }, set: { downloads.use($0) }))
                     .textFieldStyle(.roundedBorder)
                     .focused($focused)
                 if !downloads.followsBrowser, let url = model.browser.url {
@@ -163,7 +187,10 @@ struct DownloadsPane: View {
     private var form: some View {
         switch downloads.target {
         case .empty:
-            hint("Open a page in the browser, or type an address, @account or #hashtag. Instagram, YouTube, Bluesky, Pinterest, ArtStation and hundreds of other sites work here.")
+            hint("""
+                Open a page in the browser, or type an address, @account or #hashtag. Instagram, YouTube, Bluesky, Pinterest, ArtStation \
+                and hundreds of other sites work here.
+                """)
         case let .instagram(draft):
             InstagramForm(model: model, draft: Binding(get: { draft }, set: { downloads.target = .instagram($0) }))
                 .id(draft.username + (draft.hashtag ?? "") + (draft.postURL?.absoluteString ?? ""))
@@ -171,6 +198,10 @@ struct DownloadsPane: View {
             VideoForm(model: model, url: url).id(url)
         case let .gallery(url, site):
             GalleryForm(model: model, downloads: downloads, url: url, site: site).id(url)
+        case .notAddress:
+            hint("Enter a web address, an Instagram @account or a #hashtag.")
+        case .instagramPage:
+            hint("Instagram downloads use the Instagram options: enter an @account, a post or reel link, or a #hashtag.")
         case let .unknown(url):
             if downloads.checking {
                 HStack(spacing: 6) {
@@ -266,9 +297,10 @@ struct GalleryForm: View {
             }
             Toggle("Only what is new since the last download", isOn: $downloads.onlyNew)
             if choices.count > 1 {
-                Toggle("Sort into folders by type (\(choices.prefix(2).map(SiteCatalogue.choiceLabel).joined(separator: ", "))…)", isOn: Binding(
-                    get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 }
-                ))
+                Toggle(
+                    "Sort into folders by type (\(choices.prefix(2).map(SiteCatalogue.choiceLabel).joined(separator: ", "))…)",
+                    isOn: Binding(get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 })
+                )
             }
             if let keys = SiteKeys.forSite(site.category, baseCategory: site.baseCategory) {
                 SiteKeyFields(model: model, category: site.category, siteName: name, keys: keys)
@@ -276,12 +308,14 @@ struct GalleryForm: View {
             SaveFolderRow(model: model)
             HStack {
                 Spacer()
-                Button("List in Extracted Media") { model.scanWithSiteExtractor() }
+                // The form's own address, which can differ from the page in the browser.
+                Button("List in Extracted Media") { _ = app.engines.startSiteScan(url: url, category: site.category, window: model) }
                     .help("List everything without saving it, then pick what to save")
             }
         }
         .task(id: site.category) {
-            let domain = PublicSuffix.shared.registrableDomain((site.root ?? url).host ?? "")
+            // The same domain the download sends cookies for (EngineService.startGalleryDownload).
+            let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
             hasSession = !(await app.cookies(forDomain: domain)).isEmpty
         }
     }
@@ -364,7 +398,10 @@ struct SiteKeyFields: View {
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Optional. Your own key avoids the limits of the shared one and uses your account's settings. It is kept in the Keychain and only sent to \(siteName).")
+                Text("""
+                    Optional. Your own key avoids the limits of the shared one and uses your account's settings. It is kept in the \
+                    Keychain and only sent to \(siteName).
+                    """)
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(keys.fields, id: \.self) { field in
                     SecureField(field.label, text: Binding(get: { values[field.option] ?? "" }, set: { value in
@@ -405,7 +442,11 @@ struct ActiveDownloads: View {
                             Text([job.state.label, job.summary].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             if job.state.isActive {
-                                if let progress = job.progress { ProgressView(value: progress) } else { ProgressView().progressViewStyle(.linear) }
+                                if let progress = job.progress {
+                                    ProgressView(value: progress)
+                                } else {
+                                    ProgressView().progressViewStyle(.linear)
+                                }
                             }
                         }
                         if job.state.canCancel {

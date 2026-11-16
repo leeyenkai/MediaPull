@@ -95,6 +95,23 @@ class GuardTests:
         with self.assertRaises(PolicyViolation):
             check("POST", "https://www.youtube.com/youtubei/v1/browse/edit_playlist", data=body)
 
+    def test_urllib_redirect_hops_are_checked(self):
+        import urllib.request
+
+        from yt_dlp.networking._urllib import RedirectHandler
+
+        reported = []
+        egress_guard.install(reported.append, patch_ytdlp=False)
+        # yt-dlp's handler keeps the method and body on 307 and 308 (the standard one refuses to resend a POST).
+        handler = RedirectHandler()
+        start = urllib.request.Request("https://www.deviantart.com/oauth2/token", data=b"grant_type=client_credentials", method="POST")
+        # A 307 keeps the method and body: a POST to a host outside the allowed reads must be stopped.
+        with self.assertRaises(PolicyViolation):
+            handler.redirect_request(start, None, 307, "Temporary Redirect", {}, "https://collector.example.invalid/token")
+        get = urllib.request.Request("https://example.com/a.jpg")
+        follow = handler.redirect_request(get, None, 302, "Found", {}, "https://cdn.example.com/a.jpg")
+        self.assertEqual(follow.full_url, "https://cdn.example.com/a.jpg")
+
     def test_every_redirect_hop_is_checked(self):
         import io
         import requests

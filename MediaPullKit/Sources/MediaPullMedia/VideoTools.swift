@@ -41,11 +41,14 @@ public enum VideoTools {
     /// Writes the part of `url` between `start` and `end` seconds to `output` (MP4 or MOV, matching the source).
     public static func trim(_ url: URL, from start: Double, to end: Double, output: URL) async throws {
         let asset = AVURLAsset(url: url)
-        guard end > start,
-              let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough)
-        else { throw VideoToolsError.cannotTrim("the selection is empty") }
-        session.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 60000),
-                                        end: CMTime(seconds: end, preferredTimescale: 60000))
+        guard end > start else { throw VideoToolsError.cannotTrim("the selection is empty") }
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw VideoToolsError.cannotTrim("this video cannot be copied without re-encoding")
+        }
+        session.timeRange = CMTimeRange(
+            start: CMTime(seconds: start, preferredTimescale: 60000),
+            end: CMTime(seconds: end, preferredTimescale: 60000)
+        )
         session.shouldOptimizeForNetworkUse = true
         let type: AVFileType = output.pathExtension.lowercased() == "mov" ? .mov : .mp4
         try? FileManager.default.removeItem(at: output)

@@ -104,6 +104,19 @@ public struct FileState: Sendable, Hashable {
     public var size: Int64
     public var modified: Date
     public var version: Int?
+    /// From the stored record: whether it has an image embedding, whether faces were checked for people, and whether
+    /// it found any faces. Nil when nothing is stored for the checksum.
+    public var hasEmbedding: Bool?
+    public var peopleChecked: Bool?
+    public var hasFaces: Bool?
+}
+
+/// The few fields a scan needs from a stored record; decoding these skips building labels, text and facts.
+private struct RecordFlags: Decodable {
+    struct Skipped: Decodable {}
+    var hasEmbedding: Bool
+    var peopleChecked: Bool?
+    var faces: [Skipped]
 }
 
 public struct PersonInfo: Sendable, Hashable, Identifiable {
@@ -166,23 +179,46 @@ public actor AnalysisStore {
     // MARK: Files
 
     /// What is known about these paths: their checksum, size and date when analysed, and the record version.
+    /// The stored rows for these paths, fetched by path in batches rather than reading the whole table: panes reload
+    /// often (every folder change) and a library can hold many thousands of paths.
+    private func pathRows(_ paths: [String]) -> [FilePathModel] {
+        var rows: [FilePathModel] = []
+        let unique = Array(Set(paths))
+        for start in stride(from: 0, to: unique.count, by: 500) {
+            let batch = Array(unique[start ..< min(start + 500, unique.count)])
+            let predicate = #Predicate<FilePathModel> { batch.contains($0.path) }
+            rows += (try? modelContext.fetch(FetchDescriptor(predicate: predicate))) ?? []
+        }
+        return rows
+    }
+
+    /// Only the records of these paths are read, in one pass on this actor.
     public func states(for paths: [String]) -> [String: FileState] {
-        let wanted = Set(paths)
-        let rows = (try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? []
-        var versions: [String: Int] = [:]
-        for file in (try? modelContext.fetch(FetchDescriptor<AnalysedFileModel>())) ?? [] {
-            versions[file.sha256] = file.version
+        let rows = pathRows(paths)
+        let shas = Set(rows.map(\.sha256))
+        var stored: [String: (version: Int, flags: RecordFlags?)] = [:]
+        let predicate = #Predicate<AnalysedFileModel> { shas.contains($0.sha256) }
+        for file in (try? modelContext.fetch(FetchDescriptor(predicate: predicate))) ?? [] {
+            stored[file.sha256] = (file.version, try? Self.decoder.decode(RecordFlags.self, from: file.payload))
         }
         var out: [String: FileState] = [:]
-        for row in rows where wanted.contains(row.path) {
-            out[row.path] = FileState(sha256: row.sha256, size: row.size, modified: row.modified, version: versions[row.sha256])
+        for row in rows {
+            let record = stored[row.sha256]
+            out[row.path] = FileState(
+                sha256: row.sha256,
+                size: row.size,
+                modified: row.modified,
+                version: record?.version,
+                hasEmbedding: record?.flags?.hasEmbedding,
+                peopleChecked: record?.flags?.peopleChecked,
+                hasFaces: record?.flags.map { !$0.faces.isEmpty }
+            )
         }
         return out
     }
 
     public func records(for paths: [String]) -> [String: AnalysisRecord] {
-        let wanted = Set(paths)
-        let rows = ((try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? []).filter { wanted.contains($0.path) }
+        let rows = pathRows(paths)
         let shas = Set(rows.map(\.sha256))
         var bySha: [String: AnalysisRecord] = [:]
         let predicate = #Predicate<AnalysedFileModel> { shas.contains($0.sha256) }
@@ -307,10 +343,18 @@ public actor AnalysisStore {
         try? modelContext.save()
     }
 
+    /// In key order, so grouping (which breaks ties by input order) gives the same people on every run.
     public func faces() -> [FaceInfo] {
-        ((try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? []).map {
-            FaceInfo(key: $0.key, sha256: $0.sha256, vectorRow: $0.vectorRow, quality: $0.quality, personID: $0.personID, pinned: $0.pinned,
-                     rejected: $0.rejected)
+        ((try? modelContext.fetch(FetchDescriptor<FaceModel>(sortBy: [SortDescriptor(\.key)]))) ?? []).map {
+            FaceInfo(
+                key: $0.key,
+                sha256: $0.sha256,
+                vectorRow: $0.vectorRow,
+                quality: $0.quality,
+                personID: $0.personID,
+                pinned: $0.pinned,
+                rejected: $0.rejected
+            )
         }
     }
 

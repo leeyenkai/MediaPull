@@ -109,7 +109,8 @@ final class SelfTestRunner {
             quit()
             return
         }
-        note("engines: \(app.engineVersions.map { "gallery-dl \($0.galleryDL ?? "?"), yt-dlp \($0.ytDLP ?? "?"), ffmpeg \($0.ffmpeg ?? "?")" } ?? "unknown")")
+        let versions = app.engineVersions.map { "gallery-dl \($0.galleryDL ?? "?"), yt-dlp \($0.ytDLP ?? "?"), ffmpeg \($0.ffmpeg ?? "?")" }
+        note("engines: \(versions ?? "unknown")")
 
         if model.browser.webView.responds(to: NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")) {
             model.browser.webView.perform(NSSelectorFromString("_setWindowOcclusionDetectionEnabled:"), with: false)
@@ -147,7 +148,8 @@ final class SelfTestRunner {
         }
         await waitUntil(timeout: 240) { app.jobs.activeCount == 0 }
         if model.browser.isShowingPDF || !model.extractedDocuments.isEmpty {
-            note("PDF jobs: " + app.jobs.jobs.filter { $0.kind == .scan }.map { "\($0.title): \($0.summary) \($0.state.label)" }.joined(separator: "; "))
+            note("PDF jobs: "
+                + app.jobs.jobs.filter { $0.kind == .scan }.map { "\($0.title): \($0.summary) \($0.state.label)" }.joined(separator: "; "))
         }
         let initial = model.items.count
         note("after load: \(initial) items, \(model.visible.count) shown")
@@ -185,7 +187,9 @@ final class SelfTestRunner {
         try? await Task.sleep(for: .seconds(2))
         let unknown = model.items.filter { $0.displaySize == nil }.count
         note("after probing: \(unknown) items still without a known size")
-        if let largest = model.visible.filter({ $0.kind == .image }).max(by: { ($0.displaySize?.pixels ?? 0) < ($1.displaySize?.pixels ?? 0) }) {
+        if let largest = model.visible.filter({ $0.kind == .image })
+            .max(by: { ($0.displaySize?.pixels ?? 0) < ($1.displaySize?.pixels ?? 0) })
+        {
             model.gridSelectionChanged([largest.id])
             model.gridRevision += 1
             try? await Task.sleep(for: .seconds(3))
@@ -303,7 +307,9 @@ final class SelfTestRunner {
             context.draw(full, in: CGRect(x: 0, y: 0, width: width, height: height))
             return context.makeImage()
         }
-        if let small { try? ImageEditing.write(small, format: .jpeg, metadataFrom: nil, to: folder.appendingPathComponent("resized copy.jpg")) }
+        if let small {
+            try? ImageEditing.write(small, format: .jpeg, metadataFrom: nil, to: folder.appendingPathComponent("resized copy.jpg"))
+        }
         model.library.selectedFolder = folder
         model.library.reload()
         await waitUntil(timeout: 120) { self.model.library.duplicates != nil && self.model.library.duplicateProgress == nil }
@@ -351,7 +357,8 @@ final class SelfTestRunner {
             let switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map { ($0.key, $0.default) })
             let started = Date()
             guard let job = app.engines.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: "1-3",
-                                                             from: nil, to: nil, onlyNew: false, root: root, window: model) else { continue }
+                                                             from: nil, to: nil, onlyNew: false, root: root, window: model)
+            else { continue }
             await waitUntil(timeout: 240) { job.state.isFinished }
             let folder = job.destination ?? library
             let files = (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
@@ -363,7 +370,10 @@ final class SelfTestRunner {
             let failure: String = job.failures.first.map { "; first failure: \($0.1)" } ?? ""
             let extra: String = job.notes.first.map { "; note: \($0)" } ?? ""
             let counts = "saved \(job.saved), duplicates \(job.duplicates), failed \(job.failed) in \(seconds) s"
-            note("gallery \(name) [\(site.category)/\(site.subcategory)]: \(job.state.label), \(counts); files \(kinds.isEmpty ? "none" : kinds) in \(place)\(failure)\(extra)")
+            note("""
+                gallery \(name) [\(site.category)/\(site.subcategory)]: \(job.state.label), \(counts); files \
+                \(kinds.isEmpty ? "none" : kinds) in \(place)\(failure)\(extra)
+                """)
         }
     }
 
@@ -374,7 +384,9 @@ final class SelfTestRunner {
             note("video download: lookup failed")
             return
         }
-        let heights = VideoDownloadFormat.allCases.map { "\($0.rawValue) \($0.heights(in: info.formats).map(String.init).joined(separator: "/"))" }
+        let heights = VideoDownloadFormat.allCases.map {
+            "\($0.rawValue) \($0.heights(in: info.formats).map(String.init).joined(separator: "/"))"
+        }
         note("video download: \(info.title) by \(info.uploader ?? "?"), \(info.formats.count) formats; \(heights.joined(separator: "; "))")
         model.showDownloads(page.absoluteString)
         try? await Task.sleep(for: .seconds(8))
@@ -427,7 +439,9 @@ final class SelfTestRunner {
         editor.selection = 1.0 ... 3.0
         await editor.saveTrim(replacing: false)
         let files = (try? FileManager.default.contentsOfDirectory(at: library, includingPropertiesForKeys: nil)) ?? []
-        for file in files.sorted(by: { $0.path < $1.path }) where file.lastPathComponent.contains("test clip") && file.pathExtension != "json" {
+        for file in files.sorted(by: { $0.path < $1.path })
+            where file.lastPathComponent.contains("test clip") && file.pathExtension != "json"
+        {
             var facts = file.lastPathComponent
             if file.pathExtension == "png", let image = ImageConversion.analyze(file) { facts += " \(image.width)x\(image.height)" }
             if file.pathExtension == "mp4" { facts += String(format: " %.2f s", await VideoTools.duration(of: file) ?? 0) }
@@ -522,9 +536,11 @@ final class SelfTestRunner {
             return
         }
         let analysis = ImageConversion.analyze(saved)
-        let sidecar = (try? Data(contentsOf: Sidecar.sidecarURL(for: saved))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let sidecar = (try? Data(contentsOf: Sidecar.sidecarURL(for: saved)))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         note("editor: \(before.width)x\(before.height) rotated and cropped to \(size?.label ?? "?"), saved \(saved.lastPathComponent) "
-            + "as \(analysis.map { "\($0.width)x\($0.height)" } ?? "?"), original kept: \(FileManager.default.fileExists(atPath: file.path)), "
+            + "as \(analysis.map { "\($0.width)x\($0.height)" } ?? "?"), original kept: "
+                + "\(FileManager.default.fileExists(atPath: file.path)), "
             + "sidecar width \(sidecar?["width"] ?? "none"), edited \(sidecar?["edited"] ?? "no")")
     }
 
@@ -574,20 +590,23 @@ final class SelfTestRunner {
             + "\(records.filter { $0.text != nil }.count), with faces \(records.filter { !$0.faces.isEmpty }.count), "
             + "with embeddings \(records.filter(\.hasEmbedding).count), places \(records.compactMap(\.place).count)")
         if let sample = records.first(where: { !$0.labels.isEmpty }) {
-            note("sample: \(sample.labels.prefix(5).map { "\($0.identifier) \(String(format: "%.2f", $0.confidence))" }.joined(separator: ", ")); "
+            note("sample: "
+                + "\(sample.labels.prefix(5).map { "\($0.identifier) \(String(format: "%.2f", $0.confidence))" }.joined(separator: ", ")); "
                 + "colour \(sample.colour?.rawValue ?? "none"); faces \(sample.faces.count)")
         }
         for query in ["bus", "a person playing tennis", "skiing in the snow", "dog"] {
             let scores = await app.analysis.meaningScores(query, entries: entries)
             var q = LibraryQuery()
             q.search = query
-            let found = q.apply(entries, context: .init(similarity: scores, similarityFloor: AnalysisService.floor(for: scores))).flatMap(\.items)
+            let found = q.apply(entries, context: .init(similarity: scores, similarityFloor: AnalysisService.floor(for: scores)))
+                .flatMap(\.items)
             note("search “\(query)”: \(found.count) results, first \(found.prefix(3).map(\.name).joined(separator: ", "))")
         }
         let similar = await app.analysis.similarGroups(entries)
         note("similar sets: \(Set(similar.values).count) sets covering \(similar.count) files")
-        note("people: \(app.analysis.people.filter { $0.faceCount > 0 }.map { "\($0.displayName) (\($0.faceCount))" }.prefix(8).joined(separator: ", ")); "
-            + "suggested names: \(app.analysis.suggestions.values.sorted().joined(separator: ", "))")
+        let found = app.analysis.people.filter { $0.faceCount > 0 }.map { "\($0.displayName) (\($0.faceCount))" }.prefix(8)
+        let suggested = app.analysis.suggestions.values.sorted().joined(separator: ", ")
+        note("people: \(found.joined(separator: ", ")); suggested names: \(suggested)")
 
         // A second scan finds nothing new to analyse.
         let jobsBefore = app.jobs.jobs.filter { $0.kind == .analyse }.count
@@ -612,7 +631,10 @@ final class SelfTestRunner {
         model.useSaveFolder(outside)
         try? await Task.sleep(for: .seconds(1))
         note("save folder: \(model.saveFolderName); shown in Library: \(model.library.shows(outside)); "
-            + "library folders unchanged: \(app.roots.count == rootsBefore); downloads go to \(app.destination(for: outside).url.lastPathComponent)")
+            + """
+                library folders unchanged: \(app.roots.count == rootsBefore); downloads go to \
+                \(app.destination(for: outside).url.lastPathComponent)
+                """)
         model.library.otherFolder = nil
         model.library.selectedFolder = library
         snapshot(to: out.appendingPathComponent("library-filtered.png"))
@@ -651,9 +673,9 @@ final class SelfTestRunner {
             snapshot(to: out.appendingPathComponent("organise-copy-preview.png"))
             model.organise.execute(pending.plan)
             await waitUntil(timeout: 120) { self.model.organise.working == nil }
-            let copies = FolderOperations.mediaFiles(in: sortedCopy, recursive: true).count
-            note("copy to target: \(copies) copies in \(Set(FolderOperations.mediaFiles(in: sortedCopy, recursive: true).map { $0.deletingLastPathComponent() }).count) folders; "
-                + "source unchanged: \(checksums() == before)")
+            let copied = FolderOperations.mediaFiles(in: sortedCopy, recursive: true)
+            let folders = Set(copied.map { $0.deletingLastPathComponent() }).count
+            note("copy to target: \(copied.count) copies in \(folders) folders; source unchanged: \(checksums() == before)")
             snapshot(to: out.appendingPathComponent("organise-copied.png"))
             if let entry = model.organise.history.first {
                 model.organise.undo(entry)
@@ -670,7 +692,8 @@ final class SelfTestRunner {
         await waitUntil(timeout: 60) { self.model.organise.pending != nil }
         if let pending = model.organise.pending {
             note("preview: \(pending.plan.title), \(pending.plan.moves.count) moves into \(pending.plan.destinations.count) folders, "
-                + "\(pending.plan.unsorted) unsorted: " + pending.plan.destinations.prefix(6).map { "\($0.folder.lastPathComponent) \($0.files.count)" }
+                + "\(pending.plan.unsorted) unsorted: "
+                + pending.plan.destinations.prefix(6).map { "\($0.folder.lastPathComponent) \($0.files.count)" }
                 .joined(separator: ", "))
             try? await Task.sleep(for: .seconds(1))
             snapshot(to: out.appendingPathComponent("organise-preview.png"))

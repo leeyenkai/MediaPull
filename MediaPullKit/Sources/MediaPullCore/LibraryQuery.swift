@@ -327,7 +327,7 @@ public struct LibraryQuery: Codable, Sendable, Hashable {
             func key(_ i: MediaEntry) -> String {
                 i.facts?.camera?.lowercased() ?? "\u{FFFF}"
             }
-            return items.sorted { key($0) == key($1) ? $0.date > $1.date : key($0) < key($1) }
+            return items.sorted { key($0) == key($1) ? $0.date > $1.date : (ascending ? key($0) < key($1) : key($0) > key($1)) }
         }
     }
 

@@ -147,25 +147,32 @@ public enum MP4Probe {
         let start = range.lowerBound
         guard start + 32 <= range.upperBound, start + 32 <= bytes.count else { return nil }
         let version = bytes[start]
+        // Zero or all ones means "unknown" (a fragmented MP4 keeps its length in the fragments): no length, not 0:00.
         if version == 1 {
-            guard start + 32 <= range.upperBound else { return nil }
             let timescale = read32(bytes, start + 20)
             let duration = read64(bytes, start + 24)
-            return timescale > 0 ? Double(duration) / Double(timescale) : nil
+            guard timescale > 0, duration != 0, duration != .max else { return nil }
+            return Double(duration) / Double(timescale)
         }
         let timescale = read32(bytes, start + 12)
         let duration = read32(bytes, start + 16)
-        return timescale > 0 ? Double(duration) / Double(timescale) : nil
+        guard timescale > 0, duration != 0, duration != .max else { return nil }
+        return Double(duration) / Double(timescale)
     }
 
     static func parseTKHD(_ bytes: [UInt8], _ range: Range<Int>) -> PixelSize? {
         let start = range.lowerBound
         guard start < range.upperBound, start < bytes.count else { return nil }
         let version = bytes[start]
+        let matrix = start + (version == 1 ? 52 : 40)
         let offset = start + (version == 1 ? 88 : 76)
         guard offset + 8 <= range.upperBound else { return nil }
         let width = Int(read32(bytes, offset) >> 16)
         let height = Int(read32(bytes, offset + 4) >> 16)
+        // A quarter turn in the display matrix (a and d zero, b and c not) shows the stored frame on its side,
+        // as phones record portrait video.
+        let a = read32(bytes, matrix), b = read32(bytes, matrix + 4), c = read32(bytes, matrix + 12), d = read32(bytes, matrix + 16)
+        if a == 0, d == 0, b != 0, c != 0 { return PixelSize(width: height, height: width) }
         return PixelSize(width: width, height: height)
     }
 

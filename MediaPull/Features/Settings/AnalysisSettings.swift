@@ -35,7 +35,8 @@ struct AnalysisSettings: View {
                     }))
                     .padding(.leading, 12)
                 }
-                Text("\(app.analysis.analysedCount) files analysed. Analysis finds content, text, places, colours and faces so you can search and sort. "
+                Text("\(app.analysis.analysedCount) files analysed. Analysis finds content, text, places, colours and faces so you can "
+                    + "search and sort. "
                     + "It runs on this Mac at low priority; nothing is uploaded and nothing is written into your folders.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Analysis") }
@@ -83,7 +84,10 @@ struct AnalysisSettings: View {
             Button("Delete", role: .destructive) { Task { await app.analysis.deleteAllAnalysis() } }
         } message: {
             Text(
-                "Search by content, the filters that need analysis, and people are emptied until media is analysed again. Your files are not touched."
+                """
+                    Search by content, the filters that need analysis, and people are emptied until media is analysed again. Your files \
+                    are not touched.
+                    """
             )
         }
     }
@@ -110,7 +114,8 @@ struct FaceSettings: View {
                 Section { FaceOptIn() }
             } else {
                 Section {
-                    Text("\(app.analysis.people.filter { $0.faceCount > 0 }.count) people found. Face data stays on this Mac and is never written "
+                    Text("\(app.analysis.people.filter { $0.faceCount > 0 }.count) people found. Face data stays on this Mac and is never "
+                        + "written "
                         + "into your folders, metadata files or exports.")
                         .font(.caption).foregroundStyle(.secondary)
                     Picker("Matching", selection: $preferences.faceMatchAdjustment) {
@@ -126,7 +131,8 @@ struct FaceSettings: View {
                         ForEach(GroupPhotoPlacement.allCases, id: \.self) { Text($0.label).tag($0) }
                     }
                     Toggle("Include unnamed people", isOn: $preferences.sortUnnamedPeople)
-                    Text("Copies in each person's folder are clones that take no extra space on Mac drives. In Archive-layout folders, photos of "
+                    Text("Copies in each person's folder are clones that take no extra space on Mac drives. In Archive-layout folders, "
+                        + "photos of "
                         + "several people go into one Group photos folder so each post is kept once.")
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Sort by Person") }
@@ -140,7 +146,10 @@ struct FaceSettings: View {
             Button("Delete All Face Data", role: .destructive) { Task { await app.analysis.deleteAllFaceData() } }
         } message: {
             Text(
-                "People, names, corrections and face measurements are removed and recognising people is turned off. Your photos are not touched."
+                """
+                    People, names, corrections and face measurements are removed and recognising people is turned off. Your photos are not \
+                    touched.
+                    """
             )
         }
     }

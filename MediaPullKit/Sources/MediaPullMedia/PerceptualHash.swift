@@ -106,10 +106,17 @@ public enum PerceptualHash {
         return table
     }()
 
-    /// The image drawn over white into an 8×8 RGB bitmap: 192 bytes.
-    private static func colorGrid(_ image: CGImage) -> [UInt8] {
-        guard let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
-                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    /// The image drawn over white into an 8×8 RGB bitmap: 192 bytes. Also the grid analysis names a colour from.
+    public static func colorGrid(_ image: CGImage) -> [UInt8] {
+        guard let context = CGContext(
+            data: nil,
+            width: 8,
+            height: 8,
+            bitsPerComponent: 8,
+            bytesPerRow: 32,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        )
         else { return [] }
         context.interpolationQuality = .high
         context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)

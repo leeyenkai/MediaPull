@@ -83,7 +83,8 @@ public actor EngineManager {
         for name in Self.updatable {
             let installed = (name == "gallery-dl" ? current.galleryDL : current.ytDLP) ?? "0"
             guard let url = URL(string: "https://pypi.org/pypi/\(name)/json") else { continue }
-            let (data, response) = try await gate.data(.get(url, purpose: .engineUpdate, context: RequestContext(accept: "application/json")))
+            let (data, response) = try await gate.data(.get(url, purpose: .engineUpdate,
+                                                            context: RequestContext(accept: "application/json")))
             guard response.statusCode == 200, let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let info = json["info"] as? [String: Any], let latest = info["version"] as? String,
                   let files = json["urls"] as? [[String: Any]]

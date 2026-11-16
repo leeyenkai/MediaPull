@@ -135,13 +135,21 @@ def _operation_names(data, headers):
     if isinstance(query, list):
         query = query[0] if query else None
     if isinstance(query, str) and query.strip():
-        document = re.sub(r"#[^\n]*", "", query)
-        if re.search(r"\b(mutation|subscription)\b", document, re.IGNORECASE):
+        if _is_write_query(query):
             names.append("Mutation")
         else:
-            head = document.strip().split("{", 1)[0].strip()
+            head = _without_comments(query).strip().split("{", 1)[0].strip()
             names.append(head.split("(")[0].replace("query", "", 1).strip() + "Query")
     return names
+
+
+def _without_comments(query):
+    return re.sub(r"#[^\n]*", "", query)
+
+
+def _is_write_query(query):
+    """A GraphQL document that changes something (a mutation) or keeps a connection open (a subscription)."""
+    return re.search(r"\b(mutation|subscription)\b", _without_comments(query), re.IGNORECASE) is not None
 
 
 def _parse_text_body(text):
@@ -275,8 +283,7 @@ def _check_body(rule, method, url, data, headers, parts):
         names = [str(_first(fields.get(k))) for k in ("operationName",) if fields.get(k)]
         names += [v for k, vs in parse_qs(parts.query).items() if k in ("operationName", "q") for v in vs]
         if isinstance(query, str) and query.strip():
-            document = re.sub(r"#[^\n]*", "", query)
-            if re.search(r"\b(mutation|subscription)\b", document, re.IGNORECASE):
+            if _is_write_query(query):
                 raise PolicyViolation(method, url, "GraphQL mutations are never sent")
         elif not names:
             raise PolicyViolation(method, url, "GraphQL request without a query or an operation name")
@@ -308,7 +315,9 @@ def _check_body(rule, method, url, data, headers, parts):
         if fields:
             raise PolicyViolation(method, url, "this token request carries no data")
     elif rule == "no_password":
-        pass
+        # These listings take an optional folder password; MediaPull never sends one.
+        if any("pass" in str(key).lower() for key in fields):
+            raise PolicyViolation(method, url, "no password is sent")
 
 
 def _report(exc):
@@ -390,3 +399,36 @@ def install(reporter=None, patch_ytdlp=True):
 
             guarded_urlopen._mediapull_guard = True
             cls.urlopen = guarded_urlopen
+
+    _guard_urllib_redirects()
+
+
+def _guard_urllib_redirects():
+    """urllib follows redirects inside its opener, past YoutubeDL.urlopen: when yt-dlp falls back to its urllib handler
+    (a proxy requests cannot use), each hop is checked here, as Session.send does for requests."""
+    import urllib.request
+
+    handlers = [urllib.request.HTTPRedirectHandler]
+    try:
+        from yt_dlp.networking import _urllib
+
+        handlers.append(_urllib.RedirectHandler)
+    except Exception:
+        pass
+    for handler in handlers:
+        original = handler.__dict__.get("redirect_request")
+        if original is None or getattr(original, "_mediapull_guard", False):
+            continue
+
+        def guarded_redirect(self, req, fp, code, msg, headers, newurl, _original=original):
+            new = _original(self, req, fp, code, msg, headers, newurl)
+            if new is not None:
+                try:
+                    check(new.get_method(), new.full_url, data=new.data, headers=dict(new.header_items()))
+                except PolicyViolation as exc:
+                    _report(exc)
+                    raise
+            return new
+
+        guarded_redirect._mediapull_guard = True
+        handler.redirect_request = guarded_redirect

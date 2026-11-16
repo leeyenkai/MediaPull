@@ -14,7 +14,7 @@ enum PreviewSubject: Hashable {
 
 /// What the editor was opened for.
 struct EditorRequest: Identifiable {
-    enum Subject {
+    enum Subject: Equatable {
         /// A file in a library folder: edits replace it (the original goes to the Trash) or make a copy.
         case file(URL)
         /// An extracted item that is not saved yet: edits apply when it is saved.
@@ -57,8 +57,14 @@ enum CropAspect: String, CaseIterable, Identifiable {
 }
 
 /// Crop, rotate, flip and rename (SPEC section 32).
+/// An editor that can hold changes not yet saved.
+@MainActor
+protocol UnsavedEditing: AnyObject {
+    var hasUnsavedChanges: Bool { get }
+}
+
 @Observable
-final class EditorModel {
+final class EditorModel: UnsavedEditing {
     let request: EditorRequest
     weak var window: WindowModel?
     var original: CGImage?
@@ -72,6 +78,7 @@ final class EditorModel {
     var isLoading = true
     var message: String?
     var isSaving = false
+    var hasUnsavedChanges: Bool { hasImageEdits || hasNameChange }
     private(set) var turns = 0
     private(set) var flipped = false
     private var sourceFile: URL?
@@ -94,7 +101,8 @@ final class EditorModel {
 
     var outputSize: PixelSize? {
         guard let working else { return nil }
-        return PixelSize(width: Int((crop.width * CGFloat(working.width)).rounded()), height: Int((crop.height * CGFloat(working.height)).rounded()))
+        return PixelSize(width: Int((crop.width * CGFloat(working.width)).rounded()),
+                         height: Int((crop.height * CGFloat(working.height)).rounded()))
     }
 
     var title: String {
@@ -157,16 +165,18 @@ final class EditorModel {
 
     /// Full-resolution redraws run off the main actor, one after another so they apply in order.
     @ObservationIgnored private var editChain: Task<Void, Never>?
+    /// Bumped by Reset: redraws started before it, still running or queued, must not bring their edit back.
+    @ObservationIgnored private var generation = 0
 
     private func transform(_ operation: @escaping @Sendable (CGImage) -> CGImage?, then: (() -> Void)? = nil) {
         let previous = editChain
+        let started = generation
         editChain = Task { [weak self] in
             await previous?.value
-            guard let current = self?.working else { return }
+            guard let current = self?.working, self?.generation == started else { return }
             let image = await Task.detached(priority: .userInitiated) { operation(current) }.value
-            // Reset cancels the chain; a redraw that finishes afterwards must not bring the edit back.
-            guard !Task.isCancelled else { return }
-            self?.working = image
+            guard let self, self.generation == started else { return }
+            self.working = image
             then?()
         }
     }
@@ -180,7 +190,11 @@ final class EditorModel {
         guard working != nil else { return }
         let quarter = clockwise ? 1 : -1
         // The aspect crop depends on the rotated size, so it is applied again once the new image is drawn.
-        transform({ ImageEditing.rotated($0, quarterTurns: quarter) }, then: { [weak self] in self?.applyAspect() })
+        transform {
+            ImageEditing.rotated($0, quarterTurns: quarter)
+        } then: { [weak self] in
+            self?.applyAspect()
+        }
         turns += quarter
         crop = clockwise ? CGRect(x: 1 - crop.maxY, y: crop.minX, width: crop.height, height: crop.width)
             : CGRect(x: crop.minY, y: 1 - crop.maxX, width: crop.height, height: crop.width)
@@ -195,7 +209,7 @@ final class EditorModel {
     }
 
     func reset() {
-        editChain?.cancel()
+        generation += 1
         editChain = nil
         working = original
         turns = 0
@@ -223,6 +237,12 @@ final class EditorModel {
     }
 
     // MARK: Saving
+
+    /// An extracted item keeps the new name for when it is saved, with no other change.
+    func keepNameOnly() {
+        guard case let .item(id) = request.subject, hasNameChange else { return }
+        window?.customNames[id] = cleanName
+    }
 
     private var cleanName: String {
         let text = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -253,12 +273,16 @@ final class EditorModel {
         do {
             if !hasImageEdits {
                 guard hasNameChange || asCopy else { return url }
-                let target = LibraryModel.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: asCopy ? "\(cleanName) copy" : cleanName,
-                                                                                                    ext: fileExtension)))
+                let wanted = folder.appendingPathComponent(FileNaming.fileName(
+                    stem: asCopy ? "\(cleanName) copy" : cleanName,
+                    ext: fileExtension
+                ))
+                let target = asCopy ? LibraryModel.uniqueURL(wanted) : LibraryModel.renameTarget(from: url, to: wanted)
                 if asCopy {
                     try manager.copyItem(at: url, to: target)
                 } else {
                     try manager.moveItem(at: url, to: target)
+                    AppModel.shared.noteMoved([(from: url.path, to: target.path)])
                 }
                 await moveSidecar(from: url, to: target, copy: asCopy, edited: nil)
                 return target
@@ -271,6 +295,7 @@ final class EditorModel {
             }
             target = LibraryModel.uniqueURL(target)
             try manager.moveItem(at: edited, to: target)
+            if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
             await moveSidecar(from: url, to: target, copy: asCopy, edited: target)
             return target
         } catch {
@@ -285,7 +310,8 @@ final class EditorModel {
         let oldSidecar = Sidecar.sidecarURL(for: source)
         guard manager.fileExists(atPath: oldSidecar.path) else { return }
         let newSidecar = Sidecar.sidecarURL(for: target)
-        guard var object = (try? Data(contentsOf: oldSidecar)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else {
+        guard var object = (try? Data(contentsOf: oldSidecar)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        else {
             if !copy { try? manager.moveItem(at: oldSidecar, to: newSidecar) }
             return
         }
@@ -303,7 +329,11 @@ final class EditorModel {
         if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
             guard (try? data.write(to: newSidecar, options: .atomic)) != nil else { return }
             if !copy, oldSidecar != newSidecar {
-                if edited == nil { try? manager.removeItem(at: oldSidecar) } else { try? manager.trashItem(at: oldSidecar, resultingItemURL: nil) }
+                if edited == nil {
+                    try? manager.removeItem(at: oldSidecar)
+                } else {
+                    try? manager.trashItem(at: oldSidecar, resultingItemURL: nil)
+                }
             }
         }
     }

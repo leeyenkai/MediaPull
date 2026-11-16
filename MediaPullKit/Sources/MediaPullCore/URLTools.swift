@@ -39,7 +39,8 @@ public enum URLNormalizer {
 
     /// A readable name for the file from the last path component, without extension.
     public static func baseName(of url: URL) -> String? {
-        if ["php", "asp", "aspx", "jsp", "cgi"].contains(url.pathExtension.lowercased()), let target = CDNRules.proxiedTarget(of: url) {
+        // Image proxies (thumb.php?src=…, /_next/image?url=…) are named after the image they serve.
+        if ["php", "asp", "aspx", "jsp", "cgi", ""].contains(url.pathExtension.lowercased()), let target = CDNRules.proxiedTarget(of: url) {
             return baseName(of: target)
         }
         // lastPathComponent is already decoded; decoding again would turn a literal "100%25" into "100%" and then fail.
@@ -47,7 +48,7 @@ public enum URLNormalizer {
         let trimmed = last.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed == "/" { return nil }
         if isGenericName(trimmed) {
-            let parent = url.deletingLastPathComponent().lastPathComponent.removingPercentEncoding ?? ""
+            let parent = url.deletingLastPathComponent().lastPathComponent
             if !parent.isEmpty, parent != "/", !isGenericName(parent) { return parent }
         }
         return trimmed
@@ -56,7 +57,7 @@ public enum URLNormalizer {
     /// Names that say nothing about the content, typical of stream playlists.
     static func isGenericName(_ name: String) -> Bool {
         let lower = name.lowercased()
-        let generic: Set<String> = [
+        let generic: Set = [
             "index", "master", "playlist", "manifest", "chunklist", "video", "stream", "media", "prog_index", "main", "default",
             "image", "img", "photo", "file", "download", "original", "source", "hls", "dash", "init",
         ]

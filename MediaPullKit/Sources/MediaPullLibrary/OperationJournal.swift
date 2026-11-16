@@ -83,6 +83,11 @@ public actor OperationJournal {
         folder.appendingPathComponent("\(id.uuidString).json")
     }
 
+    /// One entry, read from its own file rather than from every journal.
+    public func entry(_ id: UUID) -> JournalEntry? {
+        (try? Data(contentsOf: url(for: id))).flatMap { try? Self.decoder.decode(JournalEntry.self, from: $0) }
+    }
+
     func save(_ entry: JournalEntry) {
         if let data = try? Self.encoder.encode(entry) {
             try? data.write(to: url(for: entry.id), options: .atomic)
@@ -138,20 +143,15 @@ public actor OperationJournal {
                 break
             }
             do {
-                try fm.createDirectory(at: move.destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try makeMissingFolders(move.destination.deletingLastPathComponent(), entry: &entry)
+                let sidecar = MediaFiles.companion(of: move.source)
                 switch move.kind {
                 case .move:
                     try moveItem(move.source, to: move.destination, entry: &entry)
-                    let sidecar = Sidecar.sidecarURL(for: move.source)
-                    if fm.fileExists(atPath: sidecar.path) {
-                        try moveItem(sidecar, to: Sidecar.sidecarURL(for: move.destination), entry: &entry)
-                    }
+                    if let sidecar { try moveItem(sidecar, to: Sidecar.sidecarURL(for: move.destination), entry: &entry) }
                 case .clone:
                     try cloneItem(move.source, to: move.destination, entry: &entry)
-                    let sidecar = Sidecar.sidecarURL(for: move.source)
-                    if fm.fileExists(atPath: sidecar.path) {
-                        try cloneItem(sidecar, to: Sidecar.sidecarURL(for: move.destination), entry: &entry)
-                    }
+                    if let sidecar { try cloneItem(sidecar, to: Sidecar.sidecarURL(for: move.destination), entry: &entry) }
                 }
             } catch {
                 entry.failures.append("\(move.source.lastPathComponent): \(error.localizedDescription)")
@@ -163,11 +163,9 @@ public actor OperationJournal {
                 break
             }
             do {
+                let sidecar = MediaFiles.companion(of: item)
                 try trashItem(item, entry: &entry)
-                let sidecar = Sidecar.sidecarURL(for: item)
-                if fm.fileExists(atPath: sidecar.path) {
-                    try trashItem(sidecar, entry: &entry)
-                }
+                if let sidecar { try trashItem(sidecar, entry: &entry) }
             } catch { entry.failures.append("\(item.lastPathComponent): \(error.localizedDescription)") }
             tick()
         }
@@ -209,6 +207,21 @@ public actor OperationJournal {
                                  modified: isFolder ? nil : values?.contentModificationDate))
     }
 
+    /// Creates a destination folder that is not there (deleted after the preview) and journals each folder it makes, so
+    /// Undo removes them again once they are empty.
+    func makeMissingFolders(_ folder: URL, entry: inout JournalEntry) throws {
+        var missing: [URL] = []
+        var current = folder.standardizedFileURL
+        while !fm.fileExists(atPath: current.path), current.path != "/" {
+            missing.append(current)
+            current = current.deletingLastPathComponent()
+        }
+        for created in missing.reversed() {
+            try fm.createDirectory(at: created, withIntermediateDirectories: false)
+            entry.steps.append(.makeFolder(created.path))
+        }
+    }
+
     func cloneItem(_ from: URL, to: URL, entry: inout JournalEntry) throws {
         // COPYFILE_CLONE makes an APFS clone where the volume supports it, and a full copy elsewhere.
         let existed = fm.fileExists(atPath: to.path)
@@ -241,22 +254,37 @@ public actor OperationJournal {
 
     /// Reverses an entry's steps, newest first. Files changed or moved since are left where they are and reported.
     public func undo(_ id: UUID) -> UndoReport {
-        guard var entry = entries().first(where: { $0.id == id }), !entry.undone else { return UndoReport(
+        guard var entry = entry(id), !entry.undone else { return UndoReport(
             restored: 0,
             skipped: [],
             moves: []
         ) }
         var report = UndoReport(restored: 0, skipped: [], moves: [])
+        var left: [[JournalStep]] = []
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
         for unit in Self.units(entry.steps).reversed() {
-            guard undo(unit[0], report: &report) else { continue }
+            guard undo(unit[0], report: &report) else {
+                if canRetry(unit[0]) { left.append(unit) }
+                continue
+            }
             for step in unit.dropFirst() {
                 undo(step, report: &report)
             }
         }
-        entry.undone = true
+        // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
+        // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
+        entry.steps = left.reversed().flatMap { $0 }
+        entry.undone = left.isEmpty
         save(entry)
         return report
+    }
+
+    /// Whether a step that could not be undone might be later: its file's folder is not there at all.
+    private func canRetry(_ step: JournalStep) -> Bool {
+        switch step {
+        case let .move(_, to, _, _), let .clone(_, to): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
+        case .trash, .makeFolder: false
+        }
     }
 
     /// Steps grouped so each media step is followed by the step for its metadata file, as `run` records them.

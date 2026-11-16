@@ -23,6 +23,14 @@ check_only_in '^import SwiftData' 'MediaPullKit/Sources/MediaPullStore/' 'SwiftD
 check_only_in 'Process\(\)' 'MediaPullKit/Sources/MediaPullEngines/' 'Process'
 check_only_in 'AsyncImage\(|Data\(contentsOf: *URL\(string' 'NONE' 'Remote loading that bypasses the gate'
 check_only_in '^import AppKit' 'MediaPull/' 'AppKit'
+# WebKit: the MediaPullBrowser module and the browser pane's own files; everything else goes through MediaPullBrowser.
+webkit="$(grep -rlnE '^import WebKit' MediaPullKit/Sources MediaPull --include=*.swift \
+  | grep -vE '^(MediaPullKit/Sources/MediaPullBrowser/|MediaPull/Features/Browser/|MediaPull/Platform/)' || true)"
+if [[ -n "$webkit" ]]; then
+  echo "error: WebKit used outside MediaPullBrowser and the browser pane:"
+  echo "$webkit"
+  FAILED=1
+fi
 check_only_in '^import (Vision|CoreML)' 'MediaPullKit/Sources/MediaPullAnalysis/' 'Vision and Core ML'
 # Analysis runs offline (D-59): no online geocoding, map search, model downloads or Vision asset downloads.
 check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|downloadAssets|MLModelCollection|import CoreLocation|import MapKit' 'NONE' 'Online analysis'
@@ -33,6 +41,23 @@ fi
 if grep -rniE "local[c]hat" --include=* -r . --exclude-dir=.git --exclude-dir=.build 2>/dev/null | grep -v "scripts/check.sh"; then
   echo "error: references to other applications found"
   FAILED=1
+fi
+
+echo "== Style (swiftlint and swiftformat with the repository's settings)"
+if command -v swiftlint >/dev/null; then
+  style="$(swiftlint lint --quiet 2>/dev/null || true)"
+  if [[ -n "$style" ]]; then
+    echo "$style" | head -20
+    echo "error: swiftlint reported $(echo "$style" | wc -l | tr -d ' ') problems"
+    FAILED=1
+  fi
+else
+  echo "skipped: swiftlint is not installed"
+fi
+if command -v swiftformat >/dev/null; then
+  swiftformat MediaPull MediaPullKit --lint --quiet >/dev/null 2>&1 || { echo "error: swiftformat would change files (run swiftformat MediaPull MediaPullKit)"; FAILED=1; }
+else
+  echo "skipped: swiftformat is not installed"
 fi
 
 echo "== Swift tests"

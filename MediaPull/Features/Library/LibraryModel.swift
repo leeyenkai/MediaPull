@@ -40,7 +40,8 @@ final class FolderNode: Identifiable, Hashable {
     var children: [FolderNode]? {
         if let cachedChildren { return cachedChildren }
         let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
-        let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+        let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys,
+                                                                    options: [.skipsHiddenFiles])) ?? []
         let folders = entries.filter {
             let values = try? $0.resourceValues(forKeys: Set(keys))
             return values?.isDirectory == true && values?.isPackage != true
@@ -57,6 +58,49 @@ final class FolderNode: Identifiable, Hashable {
 @Observable
 final class LibraryModel: MediaGridOwner {
     @ObservationIgnored weak var window: WindowModel?
+    @ObservationIgnored private let listenerID = UUID()
+    @ObservationIgnored private var cachedTree: (key: String, nodes: [FolderNode])?
+
+    /// The library folders, then a save folder chosen outside the library (D-70). The nodes, and the subfolders each has
+    /// read, are kept until the tree changes, so a redraw does not read every open folder from disk again.
+    func treeNodes() -> [FolderNode] {
+        let roots = app.roots
+        let key = "\(treeRevision)|\(app.libraryRevision)|\(roots.map { "\($0.id)\($0.name)" })|\(otherFolder?.path ?? "")"
+        if let cachedTree, cachedTree.key == key { return cachedTree.nodes }
+        var nodes = roots.map { FolderNode(url: $0.url, name: $0.name, isRoot: true, rootID: $0.id) }
+        if let other = otherFolder, app.root(containing: other) == nil {
+            nodes.append(FolderNode(url: other, name: other.lastPathComponent, isRoot: true, rootID: nil))
+        }
+        cachedTree = (key, nodes)
+        return nodes
+    }
+    @ObservationIgnored private var changeTask: Task<Void, Never>?
+
+    init() {
+        // The folder's own watch sees only its direct contents; analysis watches the library recursively (FSEvents),
+        // which covers subfolders when they are included (R-1704).
+        AppModel.shared.analysis.onFolderChange[listenerID] = { [weak self] paths in self?.foldersChanged(paths) }
+    }
+
+    isolated deinit {
+        AppModel.shared.analysis.onFolderChange[listenerID] = nil
+    }
+
+    private func foldersChanged(_ paths: [String]) {
+        guard includeSubfolders, let folder = selectedFolder?.standardizedFileURL.path else { return }
+        if paths.contains(where: { $0.hasPrefix(folder + "/") }) { scheduleChangeReload() }
+    }
+
+    /// Bursts of changes (a download writing many files) reload once.
+    private func scheduleChangeReload() {
+        changeTask?.cancel()
+        changeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.reload()
+            self.treeRevision += 1
+        }
+    }
     var selectedFolder: URL? {
         didSet { if selectedFolder != oldValue { reload(); watch() } }
     }
@@ -106,7 +150,8 @@ final class LibraryModel: MediaGridOwner {
     var selection: Set<String> = []
     var revision = 0
     var treeRevision = 0
-    var cellSize: CGFloat = 104
+    /// The Library pane keeps one thumbnail size; zooming is for the Extracted pane (R-1001a).
+    let cellSize: CGFloat = 104
     var message: String?
     @ObservationIgnored private var watcher: DispatchSourceFileSystemObject?
     @ObservationIgnored private var details: [String: (PixelSize?, MediaFormat?)] = [:]
@@ -121,15 +166,18 @@ final class LibraryModel: MediaGridOwner {
         didSet { revision += 1 }
     }
     @ObservationIgnored private var duplicateTask: Task<Void, Never>?
+    /// The scan whose progress may show; a scan that was replaced or stopped reports into nothing.
+    @ObservationIgnored private var duplicateScanID = UUID()
 
     var shownFiles: [LibraryFile] {
-        let order = built.flatMap(\.items).map(\.path)
-        let byPath = Dictionary(files.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let queried = order.compactMap { byPath[$0] }
+        let queried = built.flatMap(\.items).compactMap { file($0.path) }
         guard showOnlyDuplicates, let duplicates else { return queried }
         // Copies sit next to each other.
         return queried.filter { duplicates.group(for: $0.url) != nil }
-            .sorted { (duplicates.groupOf[$0.url.standardizedFileURL.path] ?? 0, $0.name) < (duplicates.groupOf[$1.url.standardizedFileURL.path] ?? 0, $1.name) }
+            .sorted {
+                (duplicates.groupOf[$0.url.standardizedFileURL.path] ?? 0, $0.name)
+                    < (duplicates.groupOf[$1.url.standardizedFileURL.path] ?? 0, $1.name)
+            }
     }
 
     var sections: [GridSection] {
@@ -193,6 +241,8 @@ final class LibraryModel: MediaGridOwner {
 
     func scanDuplicates() {
         duplicateTask?.cancel()
+        let scanID = UUID()
+        duplicateScanID = scanID
         guard app.preferences.highlightDuplicates, let folder = selectedFolder, let root = app.root(containing: folder)?.url else {
             duplicates = nil
             duplicateProgress = nil
@@ -207,7 +257,7 @@ final class LibraryModel: MediaGridOwner {
             guard !Task.isCancelled else { return }
             let report = await finder.scan(root: root, sensitivity: sensitivity) { done, total in
                 Task { @MainActor in
-                    guard let self, !Task.isCancelled else { return }
+                    guard let self, self.duplicateScanID == scanID else { return }
                     self.duplicateProgress = total > 30 && done < total ? (done, total) : nil
                 }
             }
@@ -233,7 +283,8 @@ final class LibraryModel: MediaGridOwner {
             let loaded = await Task.detached(priority: .userInitiated) {
                 attached.map {
                     let sidecar = $0.source != nil || FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: $0.url).path)
-                    return LibraryFile(url: $0.url, name: $0.name, size: $0.size, modified: $0.modified, hasSidecar: sidecar, format: $0.format)
+                    return LibraryFile(url: $0.url, name: $0.name, size: $0.size, modified: $0.modified,
+                                       hasSidecar: sidecar, format: $0.format)
                 }
             }.value
             guard !Task.isCancelled, self.selectedFolder == folder else { return }
@@ -275,12 +326,10 @@ final class LibraryModel: MediaGridOwner {
         guard let folder = selectedFolder else { return }
         let descriptor = open(folder.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .rename, .delete], queue: .main)
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
+                                                               eventMask: [.write, .rename, .delete], queue: .main)
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated {
-                self?.reload()
-                self?.treeRevision += 1
-            }
+            MainActor.assumeIsolated { self?.scheduleChangeReload() }
         }
         source.setCancelHandler { close(descriptor) }
         source.resume()
@@ -293,7 +342,8 @@ final class LibraryModel: MediaGridOwner {
     }
 
     func promptForRoot() {
-        FolderPicker.chooseFolder(title: "Choose a Library Folder", prompt: "Add Folder", start: AppModel.suggestedRootURL.deletingLastPathComponent(),
+        FolderPicker.chooseFolder(title: "Choose a Library Folder", prompt: "Add Folder",
+                                  start: AppModel.suggestedRootURL.deletingLastPathComponent(),
                                   window: window?.hostWindow) { [weak self] url in
             guard let url else { return }
             Task {
@@ -336,12 +386,8 @@ final class LibraryModel: MediaGridOwner {
         guard !name.isEmpty, name != url.lastPathComponent else { return }
         let destination = url.deletingLastPathComponent().appendingPathComponent(name)
         do {
-            try FileManager.default.moveItem(at: url, to: destination)
-            let sidecar = Sidecar.sidecarURL(for: url)
-            if FileManager.default.fileExists(atPath: sidecar.path) {
-                try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
-            }
-            Task { await app.analysis.noteMoves([(from: url.path, to: destination.path)]) }
+            try MediaFiles.move(url, to: destination)
+            app.noteMoved([(from: url.path, to: destination.path)])
             selectedFolder = selectedFolder.map { Self.moved($0, from: url, to: destination) }
             otherFolder = otherFolder.map { Self.moved($0, from: url, to: destination) }
             treeRevision += 1
@@ -355,13 +401,11 @@ final class LibraryModel: MediaGridOwner {
     func trash(_ urls: [URL]) {
         for url in urls {
             do {
-                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                try MediaFiles.trash(url)
             } catch {
                 message = "\(url.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)"
                 continue
             }
-            let sidecar = Sidecar.sidecarURL(for: url)
-            if FileManager.default.fileExists(atPath: sidecar.path) { try? FileManager.default.trashItem(at: sidecar, resultingItemURL: nil) }
             // The save folder or one of its parents went to the Trash: save into the folder above instead.
             if let folder = selectedFolder, Self.isInside(folder, url) { selectedFolder = url.deletingLastPathComponent() }
             if let other = otherFolder, Self.isInside(other, url) { otherFolder = nil }
@@ -390,8 +434,11 @@ final class LibraryModel: MediaGridOwner {
         let target = app.target(for: folder)
         let converter = MediaConverter(ffmpeg: app.ffmpeg, svgRasterizer: SVGRasterizer.rasterize)
         let policy = app.preferences.conversion
+        let urls = Sidecar.withoutCompanions(urls)
         Task {
             var problems: [String] = []
+            var moved: [(from: String, to: String)] = []
+            defer { app.noteMoved(moved) }
             for url in urls {
                 if url.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL { continue }
                 var isDirectory: ObjCBool = false
@@ -405,13 +452,8 @@ final class LibraryModel: MediaGridOwner {
                         continue
                     }
                     if move {
-                        try await Self.offMain {
-                            try FileManager.default.moveItem(at: url, to: destination)
-                            let sidecar = Sidecar.sidecarURL(for: url)
-                            if !isFolder, FileManager.default.fileExists(atPath: sidecar.path) {
-                                try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
-                            }
-                        }
+                        try await Self.offMain { try MediaFiles.move(url, to: destination) }
+                        moved.append((from: url.path, to: destination.path))
                         continue
                     }
                     let format = MediaFormat.fromExtension(url.pathExtension)
@@ -430,13 +472,7 @@ final class LibraryModel: MediaGridOwner {
                             }
                         }
                     } else {
-                        try await Self.offMain {
-                            try FileManager.default.copyItem(at: url, to: destination)
-                            let sidecar = Sidecar.sidecarURL(for: url)
-                            if FileManager.default.fileExists(atPath: sidecar.path) {
-                                try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
-                            }
-                        }
+                        try await Self.offMain { try MediaFiles.copy(url, to: destination) }
                     }
                 } catch {
                     problems.append("\(url.lastPathComponent): \(error.localizedDescription)")
@@ -448,8 +484,14 @@ final class LibraryModel: MediaGridOwner {
         }
     }
 
-    nonisolated private static func offMain(_ work: @escaping @Sendable () throws -> Void) async throws {
+    nonisolated static func offMain(_ work: @escaping @Sendable () throws -> Void) async throws {
         try await Task.detached(priority: .userInitiated, operation: work).value
+    }
+
+    /// Where a rename lands: the name asked for when only its case changes (the volume sees the same file), otherwise
+    /// a free name.
+    static func renameTarget(from source: URL, to target: URL) -> URL {
+        source.standardizedFileURL.path.lowercased() == target.standardizedFileURL.path.lowercased() ? target : uniqueURL(target)
     }
 
     static func uniqueURL(_ url: URL) -> URL {
@@ -458,7 +500,8 @@ final class LibraryModel: MediaGridOwner {
         let ext = url.pathExtension
         var counter = 2
         while true {
-            let candidate = url.deletingLastPathComponent().appendingPathComponent(ext.isEmpty ? "\(stem) \(counter)" : "\(stem) \(counter).\(ext)")
+            let candidate = url.deletingLastPathComponent()
+                .appendingPathComponent(ext.isEmpty ? "\(stem) \(counter)" : "\(stem) \(counter).\(ext)")
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
             counter += 1
         }
@@ -539,13 +582,33 @@ final class LibraryModel: MediaGridOwner {
         QuickLook.shared.show(files.filter { selection.contains($0.id) }.map(\.url))
     }
 
+    /// Return renames and ⌘⌫ moves to the Trash, in the grid as in the folder tree (R-1707). The editor holds the name.
+    func gridReturn(_ id: String) {
+        guard let file = file(id) else { return }
+        window?.openEditor(EditorRequest(subject: .file(file.url)))
+    }
+
+    func gridDelete(_ ids: Set<String>) {
+        trash(files.filter { ids.contains($0.id) }.map(\.url))
+    }
+
     func gridAppeared(_: String) {}
 
     func gridWriter(_ id: String) -> NSPasteboardWriting? {
         file(id).map { $0.url as NSURL }
     }
 
+    /// Library items dragged to the Finder are copied with their metadata files (R-1801).
+    func gridCompanionWriters(_ ids: [String]) -> [NSPasteboardWriting] {
+        ids.compactMap { file($0) }.filter(\.hasSidecar).map { Sidecar.sidecarURL(for: $0.url) as NSURL }
+    }
+
     var gridAcceptsDrops: Bool { selectedFolder != nil }
+
+    func gridCanAccept(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.types?.contains(DragTypes.items) == true
+            || pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
 
     func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation) -> Bool {
         guard let folder = selectedFolder else { return false }
@@ -564,7 +627,8 @@ final class LibraryModel: MediaGridOwner {
         {
             let copies = NSMenu()
             for other in group.members where other != file.url.standardizedFileURL {
-                let relative = String(other.path.dropFirst(root.standardizedFileURL.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let relative = String(other.path.dropFirst(root.standardizedFileURL.path.count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 let kind = duplicates?.areIdentical(file.url, other) == true ? "Identical" : "Looks alike"
                 copies.addItem(ActionMenuItem("\(relative.isEmpty ? other.lastPathComponent : relative) (\(kind))") { [weak self] in
                     self?.reveal(other)
@@ -575,7 +639,9 @@ final class LibraryModel: MediaGridOwner {
             menu.addItem(item)
         }
         if chosen.count == 1, let file = chosen.first {
-            menu.addItem(ActionMenuItem(file.format?.kind == .image ? "Edit…" : (file.format?.kind == .video ? "Edit Video…" : "Rename…")) { [weak self] in
+            menu.addItem(ActionMenuItem(
+                file.format?.kind == .image ? "Edit…" : (file.format?.kind == .video ? "Edit Video…" : "Rename…")
+            ) { [weak self] in
                 self?.window?.openEditor(EditorRequest(subject: .file(file.url)))
             })
             if file.hasSidecar {

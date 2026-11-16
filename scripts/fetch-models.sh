@@ -89,8 +89,13 @@ if [ ! -f "$LOCK" ] || [ "${MEDIAPULL_UPDATE_MODELS_LOCK:-0}" = 1 ]; then
   { echo "# Analysis models and data, SHA-256 (written by scripts/fetch-models.sh)"; echo "$SOURCES"; echo "$PACKAGES"; echo "$CURRENT"; } > "$LOCK"
   echo "Recorded $(echo "$CURRENT" | wc -l | tr -d ' ') files in models.lock"
 else
-  if ! diff <(grep '^source ' "$LOCK") <(echo "$SOURCES") >/dev/null; then echo "error: GeoNames sources differ from models.lock" >&2; exit 1; fi
   if ! diff <(grep '^package ' "$LOCK") <(echo "$PACKAGES") >/dev/null; then echo "error: converted models differ from models.lock" >&2; exit 1; fi
+  if ! diff <(grep '^source ' "$LOCK") <(echo "$SOURCES") >/dev/null; then
+    # GeoNames replaces its files daily, so a copy fetched again (after macOS cleared the cache) never matches.
+    echo "error: GeoNames sources differ from models.lock; the models match. The bundle is built with today's places." >&2
+    echo "Run again with MEDIAPULL_UPDATE_MODELS_LOCK=1 to record today's GeoNames files in models.lock." >&2
+    exit 1
+  fi
   if ! diff <(grep -v '^#' "$LOCK" | grep -v '^source ' | grep -v '^package ') <(echo "$CURRENT") >/dev/null; then
     echo "error: staged models differ from models.lock (set MEDIAPULL_UPDATE_MODELS_LOCK=1 after a deliberate change)" >&2
     exit 1

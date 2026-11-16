@@ -31,7 +31,9 @@ struct SaveFolderMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(model.saveFolder.map { "Saving into \($0.path). Choose another folder here or in the Library pane." } ?? "Choose where to save")
+        .help(
+            model.saveFolder.map { "Saving into \($0.path). Choose another folder here or in the Library pane." } ?? "Choose where to save"
+        )
     }
 
     private func isCurrent(_ url: URL) -> Bool {

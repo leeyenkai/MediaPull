@@ -183,6 +183,29 @@ def test_signal_path_writes_a_parsable_line_without_the_lock():
     assert json.loads(lines[1]) == {"v": 1, "seq": 1, "type": "done", "status": "cancelled", "counts": {}}, lines
 
 
+
+def test_undated_items_are_kept_and_never_end_a_listing():
+    import datetime
+
+    from gallery_dl import dt
+
+    tracker = bridge.KnownTracker(set(), 0)
+    tracker.date_from = datetime.datetime(2026, 1, 1)
+    tracker.date_to = datetime.datetime(2026, 12, 31)
+    # A profile picture has no date: gallery-dl gives a false datetime of year 1, which must not read as "too old".
+    assert tracker.outside_dates({"date": dt.NONE}, "posts") is False
+    assert tracker.outside_dates({"post_date": dt.NONE, "date": dt.NONE}, "avatar") is False
+    assert tracker.outside_dates({"date": datetime.datetime(2026, 6, 1)}, "posts") is False
+    assert "date" not in bridge.item_meta("https://example.com/a.jpg", {"date": dt.NONE, "category": "instagram"})
+
+
+def test_each_file_of_a_post_has_its_own_key():
+    first = bridge.item_key({"category": "pixiv", "id": 1234, "num": 1}, "https://example.com/a.jpg")
+    second = bridge.item_key({"category": "pixiv", "id": 1234, "num": 2}, "https://example.com/b.jpg")
+    assert first == "pixiv:1234:1" and second == "pixiv:1234:2", (first, second)
+    assert bridge.item_key({"category": "site", "id": 99}, "https://example.com/c.jpg") == "site:99"
+    assert bridge.item_key({"category": "instagram", "media_id": "55", "num": 3}, "u") == "ig:55"
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

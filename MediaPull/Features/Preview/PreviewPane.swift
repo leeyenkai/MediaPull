@@ -187,7 +187,7 @@ struct ItemMediaPreview: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .onTapGesture(count: 2) { model.gridQuickLook() }
+        .onTapGesture(count: 2) { model.quickLook([item]) }
         .task(id: item.id) { await load() }
     }
 
@@ -268,7 +268,9 @@ struct FileMediaPreview: View {
                 switch format?.kind {
                 case .video, .audio: return (format?.kind, nil)
                 default:
-                    if format == .gif, ImageProbe.frameCount(from: (try? Data(contentsOf: url, options: .mappedIfSafe)) ?? Data()) > 1 { return (.animatedImage, nil) }
+                    if format == .gif, ImageProbe.frameCount(from: (try? Data(contentsOf: url, options: .mappedIfSafe)) ?? Data()) > 1 {
+                        return (.animatedImage, nil)
+                    }
                     return (.image, Thumbnailer.image(at: url, maxPixel: 2400))
                 }
             }.value
@@ -346,7 +348,9 @@ nonisolated enum FileFacts {
         let format = Sniffer.sniff(MediaConverter.head(of: url)).format ?? MediaFormat.fromExtension(url.pathExtension)
         if let format { rows.append(("Format", format.label)) }
         if let analysis = ImageConversion.analyze(url) { rows.append(("Dimensions", "\(analysis.width) × \(analysis.height) px")) }
-        if let size = values?.fileSize { rows.append(("File size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))) }
+        if let size = values?.fileSize {
+            rows.append(("File size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))
+        }
         if let date = values?.contentModificationDate { rows.append(("Date", date.formatted(date: .abbreviated, time: .shortened))) }
         rows.append(("Folder", url.deletingLastPathComponent().lastPathComponent))
         var caption: String?

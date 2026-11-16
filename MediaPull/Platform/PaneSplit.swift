@@ -29,14 +29,21 @@ final class PaneSplitController: NSViewController {
     private var visible: Set<PaneID> = []
     private static let resetNotification = Notification.Name("MediaPull.ResetPaneSizes")
 
+    private var resetObserver: (any NSObjectProtocol)?
+
     override func loadView() {
         view = NSView()
-        NotificationCenter.default.addObserver(forName: Self.resetNotification, object: nil, queue: .main) { [weak self] _ in
+        resetObserver = NotificationCenter.default
+            .addObserver(forName: Self.resetNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let arrangement = self.arrangement else { return }
                 self.rebuild(arrangement, visible: self.visible)
             }
         }
+    }
+
+    isolated deinit {
+        if let resetObserver { NotificationCenter.default.removeObserver(resetObserver) }
     }
 
     /// Forgets every saved divider position and lays the open windows out afresh.

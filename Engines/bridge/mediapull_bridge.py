@@ -60,7 +60,7 @@ class Emitter:
 
 def _json_default(value):
     if isinstance(value, datetime.datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
+        return value.strftime("%Y-%m-%d %H:%M:%S") if value else None
     if isinstance(value, (set, tuple)):
         return list(value)
     if isinstance(value, bytes):
@@ -490,6 +490,9 @@ def item_meta(url, kwdict):
                 continue
             value = str(value)
         if isinstance(value, datetime.datetime):
+            # gallery-dl marks a missing date with a false datetime (year 1): leave the date out instead.
+            if not value:
+                continue
             value = value.strftime("%Y-%m-%d %H:%M:%S")
         elif isinstance(value, (dict, list, tuple, set)):
             continue
@@ -513,7 +516,9 @@ def item_key(kwdict, url):
     for field in ("media_id", "id", "post_id"):
         value = kwdict.get(field)
         if value not in (None, ""):
-            suffix = f":{kwdict.get('num')}" if field == "post_id" and kwdict.get("num") else ""
+            # A post's files share its id on some sites (Pixiv, Kemono): the file's number in the post tells them apart
+            # (D-75). A media_id is already the file's own.
+            suffix = f":{kwdict.get('num')}" if field != "media_id" and kwdict.get("num") else ""
             return f"{category}:{value}{suffix}"
     return f"{category}:url:{hashlib.sha256(str(url).encode()).hexdigest()[:20]}"
 
@@ -596,7 +601,8 @@ class KnownTracker:
         from gallery_dl import exception
 
         date = kwdict.get("post_date") or kwdict.get("date")
-        if not isinstance(date, datetime.datetime):
+        # Undated items (a profile picture, gallery-dl's false "no date") are always kept and never end the listing.
+        if not isinstance(date, datetime.datetime) or not date:
             return False
         date = date.replace(tzinfo=None) if date.tzinfo is None else date.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         if self.date_to and date > self.date_to:
@@ -933,7 +939,6 @@ def op_supports(request):
         choices, defaults = content_choices(extr)
         found = {"category": extr.category, "subcategory": extr.subcategory,
                  "basecategory": getattr(extr, "basecategory", "") or "", "root": getattr(extr, "root", None),
-                 "cookies_domain": (getattr(extr, "cookies_domain", None) or "").lstrip("."),
                  "choices": choices, "defaults": defaults}
     EMITTER.emit("supports", url=url, supported=found is not None, **(found or {}))
     EMITTER.emit("done", status="completed", counts={})

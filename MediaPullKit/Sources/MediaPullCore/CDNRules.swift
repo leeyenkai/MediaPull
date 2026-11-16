@@ -18,15 +18,30 @@ public enum CDNRules {
         "disable", "output-quality", "output-format",
     ]
 
+    /// The rendition names in NYT image file names, each replaced by the larger renditions.
+    private static let nytRenditions = [
+        "articleLarge", "articleInline", "articleMedium", "superJumbo", "jumbo", #"master\d+"#, #"threeByTwo\w*"#, #"twoByThree\w*"#,
+        #"verticalTwoByThree\d*"#, #"horizontal\w*"#, #"mediumSquare\w*"#, #"smallSquare\w*"#, #"square\d+"#, "thumbLarge", "thumbStandard",
+        "thumbWide", "smallTwoByThree", #"mediumThreeByTwo\d*"#, #"largeHorizontal\d*"#, #"largeWidescreen\d*"#, #"videoSixteenByNine\w*"#,
+        "videoLarge", #"videoFifteenBySeven\d*"#, "sfSpan", "hpLarge", "hpSmall", "popup", #"blog\d+"#, "facebookJumbo", "filmstrip",
+        "moth", #"google\w+"#, #"watch\d+"#, "wide", #"mobileMaster\w*"#, "tmagArticle", "tmagSF", "slide", #"articleSixteenByNine\w*"#,
+        "threeByTwoSmallAt2X", "threeByTwoLargeAt2X", "threeByTwoMediumAt2X",
+    ]
     private static let nytRendition = try? NSRegularExpression(
-        pattern: #"^(.+)-(articleLarge|articleInline|articleMedium|superJumbo|jumbo|master\d+|threeByTwo\w*|twoByThree\w*|verticalTwoByThree\d*|horizontal\w*|mediumSquare\w*|smallSquare\w*|square\d+|thumbLarge|thumbStandard|thumbWide|smallTwoByThree|mediumThreeByTwo\d*|largeHorizontal\d*|largeWidescreen\d*|videoSixteenByNine\w*|videoLarge|videoFifteenBySeven\d*|sfSpan|hpLarge|hpSmall|popup|blog\d+|facebookJumbo|filmstrip|moth|google\w+|watch\d+|wide|mobileMaster\w*|tmagArticle|tmagSF|slide|articleSixteenByNine\w*|threeByTwoSmallAt2X|threeByTwoLargeAt2X|threeByTwoMediumAt2X)(-v\d+)?\.(jpg|jpeg|png|gif|webp)$"#
+        pattern: #"^(.+)-("# + nytRenditions.joined(separator: "|") + #")(-v\d+)?\.(jpg|jpeg|png|gif|webp)$"#
     )
     private static let wordpressSize = try? NSRegularExpression(pattern: #"-\d{2,5}x\d{2,5}(?=\.[A-Za-z0-9]{2,5}$)"#)
     private static let wordpressScaled = try? NSRegularExpression(pattern: #"-scaled(?=\.[A-Za-z0-9]{2,5}$)"#)
     private static let shopifySize = try? NSRegularExpression(
-        pattern: #"_(\d{1,5}x\d{0,5}|\d{0,5}x\d{1,5}|pico|icon|thumb|small|compact|medium|large|grande)(_crop_[a-z]+)?(@\dx)?(?=\.[A-Za-z0-9]{2,5}$)"#
+        pattern: #"_(\d{1,5}x\d{0,5}|\d{0,5}x\d{1,5}|pico|icon|thumb|small|compact|medium|large|grande)"#
+            + #"(_crop_[a-z]+)?(@\dx)?(?=\.[A-Za-z0-9]{2,5}$)"#
     )
-    private static let cloudinaryTransform = try? NSRegularExpression(pattern: #"^[a-z]{1,3}_[^/]+$"#)
+    /// A Cloudinary transformation segment: comma-separated parameters, each a known key such as w_, c_ or f_.
+    private static let cloudinaryTransform = try? NSRegularExpression(
+        // Possessive quantifiers: a hostile path cannot make the match backtrack exponentially.
+        pattern:
+            #"^(?:(?:w|h|c|g|q|f|e|r|a|o|b|x|y|z|t|l|u|d|ar|dpr|fl|bo|co|cs|dn|du|eo|so|ac|af|vc|vs|br|fps|ki|sp|pg|if)_[^,/]++,?+)++$"#
+    )
     private static let pinterestSize = try? NSRegularExpression(pattern: #"^(\d+x\d*|\d+x\d+_RS)$"#)
 
     static let proxyParameters: Set<String> = [
@@ -55,6 +70,8 @@ public enum CDNRules {
             return []
         }
         let items = components.queryItems ?? []
+        // Kept parameters stay exactly as encoded (R-909): decoding and re-encoding would turn "%2B" into "+".
+        let encodedItems = components.percentEncodedQueryItems ?? []
         // preview.redd.it always signs its resized copies; the original on i.redd.it needs no query at all.
         if host == "preview.redd.it" {
             var copy = components
@@ -83,16 +100,21 @@ public enum CDNRules {
         }
 
         if host == "pbs.twimg.com", path.hasPrefix("/media/") {
+            // The original is served as JPEG or PNG; any other format (webp) is a transcode, so try jpg then png (Appendix D).
             var copy = components
-            var query = items.filter { $0.name != "name" }
-            if !query.contains(where: { $0.name == "format" }) {
-                let ext = url.pathExtension.isEmpty ? "jpg" : url.pathExtension
-                copy.percentEncodedPath = (path as NSString).deletingPathExtension
-                query.append(URLQueryItem(name: "format", value: ext))
+            let served = items.first { $0.name == "format" }?.value?.lowercased()
+                ?? (url.pathExtension.isEmpty ? "jpg" : url.pathExtension.lowercased())
+            if items.first(where: { $0.name == "format" }) == nil { copy.percentEncodedPath = (path as NSString).deletingPathExtension }
+            let kept = encodedItems.filter { $0.name != "name" && $0.name != "format" }
+            // A webp copy is tried as jpg only: offering png too would win the lossless tie-break and save a PNG
+            // decoded from a JPEG original.
+            for format in ["jpg", "png"].contains(served) ? [served] : ["jpg"] {
+                copy.percentEncodedQueryItems = kept + [
+                    URLQueryItem(name: "format", value: format),
+                    URLQueryItem(name: "name", value: "orig")
+                ]
+                add(copy.string, "twitter")
             }
-            query.append(URLQueryItem(name: "name", value: "orig"))
-            copy.queryItems = query
-            add(copy.string, "twitter")
             return results
         }
 
@@ -130,7 +152,8 @@ public enum CDNRules {
         }
         if host.range(of: #"^i\d\.wp\.com$"#, options: .regularExpression) != nil {
             var copy = components
-            copy.queryItems = items.filter { $0.name == "ssl" }.isEmpty ? nil : items.filter { $0.name == "ssl" }
+            let ssl = encodedItems.filter { $0.name == "ssl" }
+            copy.percentEncodedQueryItems = ssl.isEmpty ? nil : ssl
             add(copy.string, "wordpress")
         }
 
@@ -150,8 +173,8 @@ public enum CDNRules {
             let changed = regex.stringByReplacingMatches(in: last, range: NSRange(last.startIndex..., in: last), withTemplate: "")
             var copy = components
             copy.percentEncodedPath = folder + "/" + changed
-            let kept = items.filter { !["width", "height", "crop"].contains($0.name.lowercased()) }
-            copy.queryItems = kept.isEmpty ? nil : kept
+            let kept = encodedItems.filter { !["width", "height", "crop"].contains($0.name.lowercased()) }
+            copy.percentEncodedQueryItems = kept.isEmpty ? nil : kept
             add(copy.string, "shopify")
         }
 
@@ -162,7 +185,6 @@ public enum CDNRules {
             if !(after.first?.hasPrefix("s--") ?? false) {
                 let kept = after.drop { segment in
                     regex.firstMatch(in: segment, range: NSRange(segment.startIndex..., in: segment)) != nil
-                        || segment.contains(",")
                 }
                 if kept.count < after.count, !kept.isEmpty {
                     var copy = components
@@ -173,10 +195,11 @@ public enum CDNRules {
         }
 
         if host.hasSuffix(".imgix.net") {
-            let kept = items.filter { !["w", "h", "q", "fit", "auto", "fm", "dpr", "crop", "max-w", "max-h", "rect"].contains($0.name.lowercased()) }
-            if kept.count < items.count {
+            let sizing: Set = ["w", "h", "q", "fit", "auto", "fm", "dpr", "crop", "max-w", "max-h", "rect"]
+            let kept = encodedItems.filter { !sizing.contains($0.name.lowercased()) }
+            if kept.count < encodedItems.count {
                 var copy = components
-                copy.queryItems = kept.isEmpty ? nil : kept
+                copy.percentEncodedQueryItems = kept.isEmpty ? nil : kept
                 add(copy.string, "imgix")
             }
             return results
@@ -198,8 +221,8 @@ public enum CDNRules {
         if results.isEmpty, !items.isEmpty, items.contains(where: { sizeParameters.contains($0.name.lowercased()) }),
            MediaFormat.fromExtension(url.pathExtension)?.kind == .image
         {
-            let kept = items.filter { !sizeParameters.contains($0.name.lowercased()) }
-            components.queryItems = kept.isEmpty ? nil : kept
+            let kept = encodedItems.filter { !sizeParameters.contains($0.name.lowercased()) }
+            components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
             add(components.string, "query")
         }
         return results
@@ -210,12 +233,15 @@ public enum CDNRules {
     public static func thumbnailURL(for url: URL, width: Int) -> URL? {
         guard let host = url.host?.lowercased() else { return nil }
         if host == "upload.wikimedia.org", !url.path.contains("/thumb/") {
-            let parts = url.path.split(separator: "/").map(String.init)
+            // The encoded path, so a name with "?" or "#" stays part of the path.
+            let encoded = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+            let parts = encoded.split(separator: "/").map(String.init)
             guard parts.count >= 4, let name = parts.last else { return nil }
             let ext = url.pathExtension.lowercased()
             guard ["jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "svg"].contains(ext) else { return nil }
             let suffix = ["svg", "tif", "tiff"].contains(ext) ? ".png" : ""
-            let path = "/" + parts.dropLast().prefix(2).joined(separator: "/") + "/thumb/" + parts.dropLast().dropFirst(2).joined(separator: "/")
+            let path = "/" + parts.dropLast().prefix(2).joined(separator: "/") + "/thumb/"
+                + parts.dropLast().dropFirst(2).joined(separator: "/")
                 + "/\(name)/\(width)px-\(name)\(suffix)"
             return URL(string: "https://upload.wikimedia.org" + path)
         }
@@ -251,8 +277,12 @@ public enum CDNRules {
             let parts = path.split(separator: "/").dropFirst()
             return "pin:" + parts.joined(separator: "/")
         }
-        if path.contains("/wp-content/uploads/"), let regex = wordpressSize {
-            let base = regex.stringByReplacingMatches(in: last, range: NSRange(last.startIndex..., in: last), withTemplate: "")
+        // The same renditions the candidate rule strips (-1024x683, -scaled), in both upload folders, so they merge (R-910).
+        if path.contains("/wp-content/uploads/") || path.contains("/wp-content/blogs.dir/") {
+            var base = last
+            for regex in [wordpressSize, wordpressScaled].compactMap({ $0 }) {
+                base = regex.stringByReplacingMatches(in: base, range: NSRange(base.startIndex..., in: base), withTemplate: "")
+            }
             return "wp:" + host + (path as NSString).deletingLastPathComponent + "/" + base
         }
         if host == "cdn.shopify.com" || path.contains("/cdn/shop/"), let regex = shopifySize {

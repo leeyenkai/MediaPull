@@ -40,7 +40,7 @@ let package = Package(
         .target(
             name: "MediaPullBrowser",
             dependencies: ["MediaPullCore", "MediaPullNet"],
-            resources: [.copy("Resources/extract.js"), .copy("Resources/guard.js")],
+            resources: [.copy("Resources/extract.js"), .copy("Resources/guard.js"), .copy("Resources/guard-page.js")],
             swiftSettings: settings
         ),
         .target(name: "MediaPullAnalysis", dependencies: ["MediaPullCore", "MediaPullMedia"], swiftSettings: settings),

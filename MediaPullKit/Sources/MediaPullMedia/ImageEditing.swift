@@ -57,7 +57,7 @@ public enum ImageEditing {
     }
 
     private static func context(width: Int, height: Int, like image: CGImage) -> CGContext? {
-        let hasAlpha = ![.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo)
+        let hasAlpha = ImageConversion.imageHasAlpha(image)
         let space = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
         let bits = image.bitsPerComponent > 8 ? 16 : 8
         let info = hasAlpha ? CGImageAlphaInfo.premultipliedLast.rawValue : CGImageAlphaInfo.noneSkipLast.rawValue

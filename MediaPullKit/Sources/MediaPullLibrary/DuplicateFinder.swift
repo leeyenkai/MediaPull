@@ -169,14 +169,19 @@ public actor DuplicateFinder {
                     buckets[band][(print.pHash >> UInt64(band * 8)) & 0xFF, default: []].append(position)
                 }
             }
-            var compared = Set<Int64>()
-            for band in buckets {
+            // A pair sharing several bytes meets in several bands; it is compared only in the first one, which needs no
+            // memory of compared pairs (a set of them grew to millions on large libraries).
+            func byte(_ hash: UInt64, _ band: Int) -> UInt64 { (hash >> UInt64(band * 8)) & 0xFF }
+            for (bandIndex, band) in buckets.enumerated() {
                 for members in band.values where members.count > 1 && members.count < 4000 {
                     for i in 0 ..< members.count {
                         for j in (i + 1) ..< members.count {
                             let a = members[i], b = members[j]
-                            let key = Int64(min(a, b)) << 32 | Int64(max(a, b))
-                            guard compared.insert(key).inserted else { continue }
+                            let first = printed[a].1.pHash, second = printed[b].1.pHash
+                            let metBefore = (0 ..< bandIndex).contains { earlier in
+                                byte(first, earlier) == byte(second, earlier) && (buckets[earlier][byte(first, earlier)]?.count ?? 0) < 4000
+                            }
+                            guard !metBefore else { continue }
                             if printed[a].1.distance(to: printed[b].1) <= threshold,
                                printed[a].1.colorDifference(to: printed[b].1, percentile: sensitivity.colorRule.percentile)
                                <= sensitivity.colorRule.threshold

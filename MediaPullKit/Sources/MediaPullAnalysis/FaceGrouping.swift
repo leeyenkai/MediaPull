@@ -28,10 +28,7 @@ public enum FaceGrouping {
     }
 
     static func normalized(_ v: [Float]) -> [Float] {
-        var norm: Float = 0
-        vDSP_svesq(v, 1, &norm, vDSP_Length(v.count))
-        let s = 1 / max(norm.squareRoot(), 1e-12)
-        return v.map { $0 * s }
+        ModelLoader.normalized(v)
     }
 
     /// New assignments for faces whose person changes. Faces already with a person keep it (incremental), new faces join
@@ -75,11 +72,15 @@ public enum FaceGrouping {
         var centroids = sums.mapValues(normalized)
         var result: [String: UUID?] = [:]
         // Best faces first, so poor crops join groups built from clear ones.
-        let order = work.indices.filter { work[$0].personID == nil }.sorted { work[$0].quality > work[$1].quality }
+        // Ties broken by key and by person id, never by dictionary order, so every run gives the same groups.
+        let order = work.indices.filter { work[$0].personID == nil }
+            .sorted { work[$0].quality == work[$1].quality ? work[$0].key < work[$1].key : work[$0].quality > work[$1].quality }
         var leftover: [Int] = []
         for i in order {
             var best: (UUID, Float)?
-            for (id, centroid) in centroids where constraints[id]?.allows(faces[i]) ?? true {
+            for (id, centroid) in centroids.sorted(by: { $0.key.uuidString < $1.key.uuidString })
+                where constraints[id]?.allows(faces[i]) ?? true
+            {
                 let s = dot(centroid, work[i].vector)
                 if s >= threshold, s > (best?.1 ?? -2) {
                     best = (id, s)

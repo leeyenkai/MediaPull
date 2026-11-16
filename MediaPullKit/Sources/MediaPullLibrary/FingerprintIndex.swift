@@ -35,13 +35,15 @@ public actor FingerprintIndex {
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
         var candidates: [URL] = []
         if recursive {
-            guard let enumerator = manager.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            guard let enumerator = manager.enumerator(at: folder, includingPropertiesForKeys: keys,
+                                                      options: [.skipsHiddenFiles, .skipsPackageDescendants])
             else { return nil }
             for case let url as URL in enumerator {
                 candidates.append(url)
             }
         } else {
-            candidates = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+            candidates = (try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
+                                                           options: [.skipsHiddenFiles])) ?? []
         }
         for url in candidates where Self.mediaExtensions.contains(url.pathExtension.lowercased()) {
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
@@ -91,12 +93,16 @@ public actor FingerprintIndex {
         }
     }
 
+    private var prunedAt = 0
+
     public func persist() {
         saveScheduled = false
         guard dirty, let storeURL else { return }
-        // Forget files that no longer exist, so the cache does not grow forever.
-        if entries.count > 50000 {
+        // Forget files that no longer exist, so the cache does not grow forever. Checking every entry is slow, so it
+        // happens when the cache has grown by a tenth since the last check, not at every save.
+        if entries.count > 50000, entries.count > prunedAt + prunedAt / 10 {
             entries = entries.filter { FileManager.default.fileExists(atPath: $0.key) }
+            prunedAt = entries.count
         }
         if let data = try? JSONEncoder().encode(entries) {
             try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)

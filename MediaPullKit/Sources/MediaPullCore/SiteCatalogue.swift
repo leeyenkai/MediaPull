@@ -41,7 +41,9 @@ public struct SiteCatalogue: Codable, Sendable {
     }
 
     public static func load(from url: URL?) -> SiteCatalogue {
-        guard let url, let data = try? Data(contentsOf: url), let catalogue = try? JSONDecoder().decode(SiteCatalogue.self, from: data) else {
+        guard let url, let data = try? Data(contentsOf: url),
+              let catalogue = try? JSONDecoder().decode(SiteCatalogue.self, from: data)
+        else {
             return SiteCatalogue()
         }
         return catalogue
@@ -109,6 +111,10 @@ public enum GalleryError {
     public static func describe(_ message: String, site: String, ownKey: Bool = false) -> String {
         let text = message.lowercased()
         func has(_ words: String...) -> Bool { words.contains { text.contains($0) } }
+        // Status codes as whole numbers, so "/post/14031" in an address does not read as a 403.
+        func code(_ codes: Int...) -> Bool {
+            codes.contains { text.range(of: "(?<![0-9])\($0)(?![0-9])", options: .regularExpression) != nil }
+        }
         if has("cloudflare", "challenge", "captcha", "anti-bot", "ddos-guard") {
             return "\(site) asked for a browser check. Open the page in the browser, let it load, then download again."
         }
@@ -122,18 +128,18 @@ public enum GalleryError {
                "cookies set", "cookie set", "authenticated cookies", "phpsessid", "authrequired", "authorizationerror") {
             return "\(site) needs you signed in for this. Sign in to \(site) in the browser, then download again."
         }
-        if has("429", "too many requests", "rate limit") {
+        if code(429) || has("too many requests", "rate limit") {
             return ownKey ? "\(site) is limiting the shared key. Add your own \(site) API key below, or wait a while and try again."
                 : "\(site) is limiting requests. Wait a while, then download again."
         }
-        if has("403", "forbidden", "401", "unauthorized", "blocked by network security") {
+        if code(403, 401) || has("forbidden", "unauthorized", "blocked by network security") {
             return ownKey ? "\(site) refused the request. Adding your own \(site) API key below usually fixes this."
                 : "\(site) refused the request. Open the page in the browser (signed in if needed), then download again."
         }
-        if has("notfounderror", "could not be found", "404", "not found") {
+        if code(404) || has("notfounderror", "could not be found", "not found") {
             return "Nothing was found at this address. It may be private, deleted or moved."
         }
-        if has("timed out", "connection", "max retries", "name resolution", "ssl", "5xx", "502", "503", "504") {
+        if code(502, 503, 504) || has("timed out", "connection", "max retries", "name resolution", "ssl", "5xx") {
             return "\(site) could not be reached. Try again later."
         }
         if has("unexpected error", "keyerror", "jsondecodeerror", "attributeerror", "typeerror") {

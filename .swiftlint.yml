@@ -1,0 +1,26 @@
+# MediaPull house style (CLAUDE.md): 140-column lines. Rules that disagree with how the codebase is written are off.
+included:
+  - MediaPull
+  - MediaPullKit/Sources
+  - MediaPullKit/Tests
+excluded:
+  - MediaPullKit/.build
+line_length:
+  warning: 140
+  error: 160
+  ignores_urls: true
+disabled_rules:
+  - trailing_comma
+  - opening_brace
+  - identifier_name
+  - type_name
+  - type_body_length
+  - file_length
+  - function_body_length
+  - cyclomatic_complexity
+  - function_parameter_count
+  - nesting
+  - large_tuple
+  - multiple_closures_with_trailing_closure
+  # Engine and ffmpeg output is decoded leniently on purpose (String(decoding:as:)): a stray byte must not lose the message.
+  - optional_data_string_conversion

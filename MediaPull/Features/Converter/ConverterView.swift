@@ -16,7 +16,10 @@ struct ConverterView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Converter").font(.title2.weight(.semibold))
-            Text("Drop WebP, AVIF, HEIC, JPEG XL, BMP or TIFF images, animated images, or WebM and MKV videos. MediaPull writes high-quality JPEG, PNG, GIF or MP4 copies and keeps the originals.")
+            Text("""
+                Drop WebP, AVIF, HEIC, JPEG XL, BMP or TIFF images, animated images, or WebM and MKV videos. MediaPull writes high-quality \
+                JPEG, PNG, GIF or MP4 copies and keeps the originals.
+                """)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

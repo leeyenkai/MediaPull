@@ -64,6 +64,8 @@ struct MainWindow: View {
         .onChange(of: app.preferences.theme) {
             model.gridRevision += 1
             model.library.revision += 1
+            model.organise.source.revision += 1
+            model.organise.target.revision += 1
         }
         .background(WindowAccessor { window in
             if model.hostWindow !== window { model.hostWindow = window }

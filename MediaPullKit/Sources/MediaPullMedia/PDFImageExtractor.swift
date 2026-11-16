@@ -109,7 +109,14 @@ public final class PDFImageExtractor {
             guard let dictionary = CGPDFStreamGetDictionary(stream) else { continue }
             switch Self.name(dictionary, "Subtype") {
             case "Image":
-                if let image = extractImage(stream, dictionary: dictionary, page: page) { results.append(image) }
+                // An image that could not be written takes neither a number nor its data's place, so a later copy of
+                // the same data is still saved and the numbering has no gaps.
+                let (index, seen) = (pageIndex, hashes)
+                if let image = extractImage(stream, dictionary: dictionary, page: page) {
+                    results.append(image)
+                } else {
+                    (pageIndex, hashes) = (index, seen)
+                }
             case "Form":
                 var nested: CGPDFDictionaryRef?
                 if CGPDFDictionaryGetDictionary(dictionary, "Resources", &nested), let nested {
@@ -142,9 +149,12 @@ public final class PDFImageExtractor {
             let hasMask = Self.hasStream(dictionary, "SMask")
             if colorSpace != 4, !hasMask {
                 let file = folder.appendingPathComponent(stem + ".jpg")
-                guard (try? data.write(to: file)) != nil else { return nil }
+                // The PDF keeps the image's colour profile beside the JPEG data; put it into the file (losslessly) so
+                // wide-colour pictures keep their colours (R-1602).
+                let bytes = Self.iccProfile(dictionary).map { Self.embedICC($0, in: data) } ?? data
+                guard (try? bytes.write(to: file)) != nil else { return nil }
                 return PDFExtractedImage(file: file, page: page, index: pageIndex, width: width, height: height, format: .jpeg,
-                                         bytes: Int64(data.count))
+                                         bytes: Int64(bytes.count))
             }
             // CMYK JPEGs and JPEGs with a soft mask are decoded and written as PNG.
             guard let source = CGImageSourceCreateWithData(cfData, nil), var image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
@@ -167,7 +177,8 @@ public final class PDFImageExtractor {
 
     private func writePNG(_ image: CGImage, stem: String, page: Int) -> PDFExtractedImage? {
         let file = folder.appendingPathComponent(stem + ".png")
-        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil)
+        else { return nil }
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
         let bytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
@@ -192,9 +203,20 @@ public final class PDFImageExtractor {
             guard maskWidth > 0, maskHeight > 0, (maskData as Data).count >= rowBytes * maskHeight,
                   let provider = CGDataProvider(data: maskData)
             else { return nil }
-            mask = CGImage(width: maskWidth, height: maskHeight, bitsPerComponent: bits, bitsPerPixel: bits, bytesPerRow: rowBytes,
-                           space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0), provider: provider, decode: nil,
-                           shouldInterpolate: true, intent: .defaultIntent)
+            mask = CGImage(
+                width: maskWidth,
+                height: maskHeight,
+                bitsPerComponent: bits,
+                bitsPerPixel: bits,
+                bytesPerRow: rowBytes,
+                // PDF samples are big-endian; 16-bit masks need the byte order said, as rawImage does.
+                           space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGBitmapInfo(rawValue: bits == 16 ? CGBitmapInfo.byteOrder16Big.rawValue : 0),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: true,
+                intent: .defaultIntent
+            )
         } else {
             mask = CGImageSourceCreateWithData(maskData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
         }
@@ -253,6 +275,48 @@ public final class PDFImageExtractor {
         return arraySpace(array)
     }
 
+    /// The ICC profile of an image whose colour space is ICCBased, when it is a profile this Mac can read.
+    static func iccProfile(_ dictionary: CGPDFDictionaryRef) -> Data? {
+        var array: CGPDFArrayRef?
+        var kind: UnsafePointer<CChar>?
+        var stream: CGPDFStreamRef?
+        guard CGPDFDictionaryGetArray(dictionary, "ColorSpace", &array), let array, CGPDFArrayGetName(array, 0, &kind), let kind,
+              String(cString: kind) == "ICCBased", CGPDFArrayGetStream(array, 1, &stream), let stream
+        else { return nil }
+        var format = CGPDFDataFormat.raw
+        guard let profile = CGPDFStreamCopyData(stream, &format), format == .raw, CGColorSpace(iccData: profile) != nil else { return nil }
+        return profile as Data
+    }
+
+    /// `jpeg` with `profile` added as APP2 ICC_PROFILE segments after its first APP0/APP1 segments; the image data is
+    /// untouched. A JPEG that already has a profile is returned as it is.
+    static func embedICC(_ profile: Data, in jpeg: Data) -> Data {
+        let bytes = [UInt8](jpeg)
+        guard bytes.count > 4, bytes[0] == 0xFF, bytes[1] == 0xD8, !profile.isEmpty else { return jpeg }
+        let signature = Array("ICC_PROFILE".utf8) + [0]
+        var offset = 2
+        // Skip the APP0 (JFIF) and APP1 (Exif) segments, which must come first; stop at anything else.
+        while offset + 4 <= bytes.count, bytes[offset] == 0xFF {
+            let marker = bytes[offset + 1]
+            let length = Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            guard length >= 2, offset + 2 + length <= bytes.count else { return jpeg }
+            if marker == 0xE2, Array(bytes[(offset + 4) ..< min(offset + 4 + signature.count, bytes.count)]) == signature { return jpeg }
+            guard marker == 0xE0 || marker == 0xE1 else { break }
+            offset += 2 + length
+        }
+        let chunkSize = 65535 - 2 - signature.count - 2
+        let chunks = stride(from: 0, to: profile.count, by: chunkSize).map {
+            profile[profile.startIndex + $0 ..< profile.startIndex + min($0 + chunkSize, profile.count)]
+        }
+        guard chunks.count <= 255 else { return jpeg }
+        var segments: [UInt8] = []
+        for (index, chunk) in chunks.enumerated() {
+            let length = 2 + signature.count + 2 + chunk.count
+            segments += [0xFF, 0xE2, UInt8(length >> 8), UInt8(length & 0xFF)] + signature + [UInt8(index + 1), UInt8(chunks.count)] + chunk
+        }
+        return Data(bytes[..<offset] + segments + bytes[offset...])
+    }
+
     static func deviceSpace(_ name: String) -> (CGColorSpace, Int)? {
         switch name {
         case "DeviceRGB", "CalRGB": (CGColorSpace(name: CGColorSpace.sRGB)!, 3)
@@ -271,7 +335,9 @@ public final class PDFImageExtractor {
             guard CGPDFArrayGetStream(array, 1, &stream), let stream, let dictionary = CGPDFStreamGetDictionary(stream) else { return nil }
             let components = integer(dictionary, "N") ?? 3
             var format = CGPDFDataFormat.raw
-            if let profile = CGPDFStreamCopyData(stream, &format), let space = CGColorSpace(iccData: profile), space.numberOfComponents == components {
+            if let profile = CGPDFStreamCopyData(stream, &format), let space = CGColorSpace(iccData: profile),
+               space.numberOfComponents == components
+            {
                 return (space, components)
             }
             return components == 1 ? deviceSpace("DeviceGray") : components == 4 ? deviceSpace("DeviceCMYK") : deviceSpace("DeviceRGB")
@@ -333,7 +399,7 @@ public final class PDFImageExtractor {
     }
 }
 
-private extension Optional where Wrapped == [CGFloat] {
+private extension [CGFloat]? {
     func withOptionalPointer<R>(_ body: (UnsafePointer<CGFloat>?) -> R) -> R {
         switch self {
         case let .some(values): values.withUnsafeBufferPointer { body($0.baseAddress) }

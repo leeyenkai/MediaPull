@@ -81,8 +81,7 @@ struct FolderTree: View {
     var body: some View {
         // Reading the revisions makes the tree rebuild its nodes (and re-read folders) after changes,
         // while expansion state, keyed by path, is kept.
-        let _ = (library.treeRevision, app.libraryRevision)
-        let rootNodes = topNodes
+        let rootNodes = library.treeNodes()
         List(selection: Binding(get: { library.selectedFolder?.path }, set: { path in
             library.selectedFolder = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
         })) {
@@ -103,15 +102,6 @@ struct FolderTree: View {
                 library.selectedFolder = app.defaultRoot?.url
             }
         }
-    }
-
-    /// The library folders, then a save folder chosen outside the library (D-70).
-    private var topNodes: [FolderNode] {
-        var nodes = app.roots.map { FolderNode(url: $0.url, name: $0.name, isRoot: true, rootID: $0.id) }
-        if let other = library.otherFolder, app.root(containing: other) == nil {
-            nodes.append(FolderNode(url: other, name: other.lastPathComponent, isRoot: true, rootID: nil))
-        }
-        return nodes
     }
 }
 
@@ -296,7 +286,9 @@ struct FolderContents: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
             }
-            if let warning = library.selectedFolder.flatMap({ app.root(containing: $0) }).flatMap({ AppModel.locationWarning(for: $0.url) }) {
+            if let warning = library.selectedFolder.flatMap({ app.root(containing: $0) })
+                .flatMap({ AppModel.locationWarning(for: $0.url) })
+            {
                 Text(warning)
                     .font(.caption)
                     .foregroundStyle(.orange)

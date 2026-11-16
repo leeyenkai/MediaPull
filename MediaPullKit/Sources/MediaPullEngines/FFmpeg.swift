@@ -108,7 +108,8 @@ public struct FFmpeg: Sendable {
     public func gif(fromConcatList list: URL, output: URL) async throws {
         _ = try await Self.run(ffmpeg, [
             "-hide_banner", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list.path,
-            "-filter_complex", "split[a][b];[a]palettegen=stats_mode=diff:max_colors=256[p];[b][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle",
+            "-filter_complex",
+            "split[a][b];[a]palettegen=stats_mode=diff:max_colors=256[p];[b][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle",
             "-loop", "0", output.path,
         ])
     }
@@ -144,13 +145,22 @@ public struct FFmpeg: Sendable {
             process.standardError = err
             process.standardInput = FileHandle.nullDevice
             let buffers = OutputBuffers()
-            out.fileHandleForReading.readabilityHandler = { handle in buffers.appendOut(handle.availableData) }
-            err.fileHandleForReading.readabilityHandler = { handle in buffers.appendErr(handle.availableData) }
+            // One reader per pipe, each reading to the end: output arrives whole and in order (readability handlers
+            // could still be running when the process ends, appending chunks out of order), and neither pipe fills up.
+            let readers = DispatchGroup()
+            let outHandle = out.fileHandleForReading, errHandle = err.fileHandleForReading
+            readers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                buffers.appendOut(outHandle.readDataToEndOfFile())
+                readers.leave()
+            }
+            readers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                buffers.appendErr(errHandle.readDataToEndOfFile())
+                readers.leave()
+            }
             process.terminationHandler = { finished in
-                out.fileHandleForReading.readabilityHandler = nil
-                err.fileHandleForReading.readabilityHandler = nil
-                buffers.appendOut(out.fileHandleForReading.readDataToEndOfFile())
-                buffers.appendErr(err.fileHandleForReading.readDataToEndOfFile())
+                readers.wait()
                 let result = buffers.result()
                 if box.isCancelled {
                     continuation.resume(throwing: CancellationError())
@@ -165,6 +175,9 @@ public struct FFmpeg: Sendable {
                 try process.run()
                 if box.isCancelled { process.terminate() }
             } catch {
+                // Close the write ends so the readers reach the end of their pipes and finish.
+                try? out.fileHandleForWriting.close()
+                try? err.fileHandleForWriting.close()
                 continuation.resume(throwing: FFmpegError.failed(error.localizedDescription))
             }
             }

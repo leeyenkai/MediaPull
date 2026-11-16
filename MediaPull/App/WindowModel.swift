@@ -115,12 +115,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var customNames: [String: String] = [:]
     var editorRequest: EditorRequest?
     /// The editor shown in the Preview pane, if any; set by the pane.
-    @ObservationIgnored weak var activeEditor: EditorModel?
+    /// The image or video editor open in the Preview pane, so selecting another item does not discard its changes.
+    @ObservationIgnored weak var activeEditor: (any UnsavedEditing)?
     @ObservationIgnored private var probing = Set<String>()
     @ObservationIgnored private var listenTask: Task<Void, Never>?
     @ObservationIgnored private var supportTask: Task<Void, Never>?
     @ObservationIgnored private var scrollTask: Task<Void, Never>?
     @ObservationIgnored private var scrollToken: UUID?
+    @ObservationIgnored private var lastBackgroundTab: (anchor: UUID, tab: UUID)?
     @ObservationIgnored private var supportCache: [String: String] = [:]
     @ObservationIgnored private var cookieJar = CookieJar()
     @ObservationIgnored private let vectorThumbnails = NSCache<NSString, Thumbnail>()
@@ -166,6 +168,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         tab.onURLChange = { [weak self, weak tab] url in
             guard let self, let tab, tab.id == self.selectedTabID else { return }
             self.updatePageState(for: url)
+            if self.filter.currentPageOnly { self.refilter() }
         }
         tab.onFinish = { [weak self, weak tab] url in
             guard let self, let tab else { return }
@@ -199,14 +202,17 @@ final class WindowModel: Identifiable, MediaGridOwner {
     }
 
     @discardableResult
-    func newTab(_ url: URL? = nil, select: Bool = true) -> BrowserController {
+    func newTab(_ url: URL? = nil, select: Bool = true, after source: UUID? = nil) -> BrowserController {
         let tab = BrowserController()
         wire(tab)
-        if let index = tabs.firstIndex(where: { $0.id == selectedTabID }) {
-            tabs.insert(tab, at: index + 1)
-        } else {
-            tabs.append(tab)
+        let anchor = source ?? selectedTabID
+        // Tabs opened in the background from one tab line up after each other, in the order they were opened.
+        var position = tabs.firstIndex { $0.id == anchor }.map { $0 + 1 } ?? tabs.count
+        if !select, let last = lastBackgroundTab, last.anchor == anchor, let index = tabs.firstIndex(where: { $0.id == last.tab }) {
+            position = index + 1
         }
+        tabs.insert(tab, at: min(position, tabs.count))
+        lastBackgroundTab = select ? nil : (anchor, tab.id)
         if let url { tab.load(url) }
         if select { selectTab(tab.id) }
         if url == nil, select { focusAddressToken += 1 }
@@ -216,6 +222,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
     func selectTab(_ id: UUID) {
         guard id != selectedTabID, tabs.contains(where: { $0.id == id }) else { return }
         stopAutoScroll()
+        lastBackgroundTab = nil
         selectedTabID = id
         addressMessage = nil
         if let url = browser.url {
@@ -282,9 +289,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
         pageKind = AddressInput.classify(url)
         siteExtractorCategory = nil
         supportTask?.cancel()
-        guard let host = url.host, url.scheme == "https" || url.scheme == "http", pageKind.instagramUsername == nil else { return }
-        if case .instagramPost = pageKind { return }
-        if host.hasSuffix("instagram.com") { return }
+        // Instagram has its own options (an account, a post, a hashtag), never a site extractor button.
+        guard let host = url.host, url.scheme == "https" || url.scheme == "http", !host.hasSuffix("instagram.com") else { return }
         let key = url.absoluteString
         if let cached = supportCache[key] {
             siteExtractorCategory = cached.isEmpty ? nil : cached
@@ -304,7 +310,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         app.browsing.recordVisit(url, title: tab.title)
         Task {
             cookieJar = await app.cookieJar()
-            if app.userAgent == nil { app.userAgent = await browser.userAgent() }
+            if app.userAgent == nil { app.userAgent = await tab.userAgent() }
             await app.engines.refreshSignIn()
         }
     }
@@ -316,8 +322,6 @@ final class WindowModel: Identifiable, MediaGridOwner {
         switch input {
         case .invalid:
             addressMessage = "Not a web address. Enter a URL such as example.com or an Instagram handle such as @nasa."
-        case let .handle(name):
-            browser.load(URL(string: "https://www.instagram.com/\(name)/")!)
         default:
             if let url = input.url { browser.load(url) }
         }
@@ -391,6 +395,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     func clear() {
         Task { await ingestor.clear() }
+        // The PDFs' images go with the list, so opening a PDF again extracts it again.
+        extractedDocuments.removeAll()
         states.removeAll()
         selection.removeAll()
         probing.removeAll()
@@ -411,8 +417,10 @@ final class WindowModel: Identifiable, MediaGridOwner {
     // MARK: Probing
 
     func requestContext(for url: URL, item: MediaItem) -> RequestContext {
-        var context = RequestContext(accept: item.kind == .image || item.kind == .animatedImage ? RequestContext.imageAccept : RequestContext.anyAccept,
-                                     userAgent: app.userAgent)
+        var context = RequestContext(
+            accept: item.kind == .image || item.kind == .animatedImage ? RequestContext.imageAccept : RequestContext.anyAccept,
+            userAgent: app.userAgent
+        )
         if let web = item.source.web {
             context.referer = URLNormalizer.referer(for: url, from: web.frameURL ?? web.pageURL)
             if URLNormalizer.isSameSite(web.pageURL, url) { context.cookieHeader = cookieJar.header(for: url) }
@@ -521,7 +529,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
     }
 
     func chooseSaveFolder(then action: (() -> Void)? = nil) {
-        FolderPicker.chooseFolder(title: "Choose Where to Save", prompt: "Choose", start: saveFolder, window: hostWindow) { [weak self] url in
+        FolderPicker.chooseFolder(title: "Choose Where to Save", prompt: "Choose", start: saveFolder,
+                                  window: hostWindow) { [weak self] url in
             guard let self, let url else { return }
             self.useSaveFolder(url)
             action?()
@@ -595,7 +604,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
         var secondary: [String] = []
         if let bytes = item.displayBytes { secondary.append(Format.bytes(bytes)) }
         if let duration = item.duration { secondary.append(Format.duration(duration)) }
-        if secondary.isEmpty { secondary.append(item.source.engine.map { $0.isInstagram ? $0.instagramSection.capitalized : $0.category } ?? item.host) }
+        if secondary.isEmpty {
+            secondary.append(item.source.engine.map { $0.isInstagram ? $0.instagramSection.capitalized : $0.category } ?? item.host)
+        }
         var info = GridCellInfo(title: nil, detail: parts.joined(separator: " · "), secondary: secondary.joined(separator: " · "))
         switch item.kind {
         case .video: info.kindSymbol = "play.fill"; info.placeholderSymbol = "film"
@@ -702,13 +713,17 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// Switches the Preview pane to a new subject, unless an edit with unsaved changes is open.
     func showInPreview(_ subject: PreviewSubject) {
         guard previewSubject != subject else { return }
-        if let editor = activeEditor, editor.hasImageEdits || editor.hasNameChange { return }
+        if activeEditor?.hasUnsavedChanges ?? false { return }
         editorRequest = nil
         previewSubject = subject
     }
 
     func gridQuickLook() {
-        let chosen = selectedItems
+        quickLook(selectedItems)
+    }
+
+    /// Quick Look for these items; the Preview pane passes the item it shows, whatever the grid selection is.
+    func quickLook(_ chosen: [MediaItem]) {
         guard !chosen.isEmpty else { return }
         QuickLook.shared.show { [weak self] in
             guard let self else { return [] }
@@ -765,6 +780,12 @@ final class WindowModel: Identifiable, MediaGridOwner {
     }
 
     func openEditor(_ request: EditorRequest) {
+        // An open edit with unsaved changes stays, as when another item is selected; Save or Cancel it first.
+        if activeEditor?.hasUnsavedChanges ?? false, editorRequest?.subject != request.subject {
+            showPreview = true
+            NSSound.beep()
+            return
+        }
         switch request.subject {
         case let .item(id): previewSubject = .item(id)
         case let .file(url): previewSubject = .file(url)
@@ -775,7 +796,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     /// Full-size downloads for the Preview pane and Quick Look; emptied at every launch.
     static var previewCache: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("MediaPull/Preview", isDirectory: true)
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MediaPull/Preview", isDirectory: true)
     }
 
     static var pdfCache: URL {
@@ -809,6 +831,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 guard Sniffer.sniff(MediaConverter.head(of: file)).isMarkup == false,
                       (try? Data(contentsOf: file, options: .alwaysMapped).prefix(5)) == Data("%PDF-".utf8)
                 else {
+                    self?.extractedDocuments.remove(url.absoluteString)
                     AppModel.shared.jobs.finish(job, .failed("The site did not return a PDF."))
                     return
                 }
@@ -841,18 +864,36 @@ final class WindowModel: Identifiable, MediaGridOwner {
     private func extractImages(from file: URL, documentURL: URL, title: String, job: Job) async {
         let folder = Self.pdfCache.appendingPathComponent(ShortHash.of(documentURL.absoluteString), isDirectory: true)
         let progress = ProgressBox()
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<[PDFExtractedImage], Error> in
-            Result {
-                try PDFImageExtractor.extract(pdf: file, to: folder, baseName: title, progress: { page, pages in
-                    progress.set(page, pages)
-                }, isCancelled: { progress.cancelled })
+        // The extraction runs detached, which does not inherit Cancel from the job's task: pass it on, and show the pages.
+        let shown = Task { [weak job] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(300))
+                let (page, pages) = progress.position
+                if pages > 0 { job?.fraction = Double(page) / Double(pages) }
             }
-        }.value
+        }
+        let result = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) { () -> Result<[PDFExtractedImage], Error> in
+                Result {
+                    try PDFImageExtractor.extract(pdf: file, to: folder, baseName: title, progress: { page, pages in
+                        progress.set(page, pages)
+                    }, isCancelled: { progress.cancelled })
+                }
+            }.value
+        } onCancel: {
+            progress.cancel()
+        }
+        shown.cancel()
+        if Task.isCancelled || job.state == .cancelled {
+            extractedDocuments.remove(documentURL.absoluteString)
+            app.jobs.finish(job, .cancelled)
+            return
+        }
         switch result {
         case let .success(images):
             let inputs = images.map {
-                DocumentImageInput(file: $0.file, documentURL: documentURL, documentTitle: title, page: $0.page, index: $0.index, width: $0.width,
-                                   height: $0.height, format: $0.format, bytes: $0.bytes)
+                DocumentImageInput(file: $0.file, documentURL: documentURL, documentTitle: title, page: $0.page, index: $0.index,
+                                   width: $0.width, height: $0.height, format: $0.format, bytes: $0.bytes)
             }
             await ingestor.ingest(documentImages: inputs)
             job.found = images.count
@@ -893,7 +934,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// app supplied, in the promised format.
     func writePromise(itemID: String, to url: URL, withSidecar: Bool) async -> Error? {
         guard let item = itemsByID[itemID] else { return CocoaError(.fileNoSuchFile) }
-        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-promise-\(UUID().uuidString)", isDirectory: true)
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MediaPull-promise-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: staging) }
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         let target = SaveTarget(folder: staging, layout: withSidecar ? .archive : .plain, autoSubfolders: false)
@@ -907,13 +949,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 // The promised name guessed the format. When the real one differs (a PNG promised as JPEG), keep the real file
                 // under its own extension rather than re-encoding it; never replace an existing file.
                 let actual = saved.pathExtension.lowercased()
-                var destination = url.pathExtension.lowercased() == actual ? url : url.deletingPathExtension().appendingPathExtension(actual)
+                var destination = url.pathExtension.lowercased() == actual
+                    ? url
+                    : url.deletingPathExtension().appendingPathExtension(actual)
                 destination = LibraryModel.uniqueURL(destination)
-                try FileManager.default.copyItem(at: saved, to: destination)
-                let sidecar = Sidecar.sidecarURL(for: saved)
-                if withSidecar, FileManager.default.fileExists(atPath: sidecar.path) {
-                    try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
-                }
+                let target = destination
+                // A video copied to another disk can take a while: not on the main actor.
+                try await LibraryModel.offMain { try MediaFiles.copy(saved, to: target, withSidecar: withSidecar) }
                 return nil
             } catch {
                 return error
@@ -963,7 +1005,11 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 menu.addItem(ActionMenuItem("Open Source Page") { [weak self] in self?.browser.load(page) })
             }
             menu.addItem(ActionMenuItem("Show in Preview") { [weak self] in self?.gridActivate(item.id) })
-            menu.addItem(ActionMenuItem(item.kind == .image ? "Edit…" : (item.kind == .video ? "Edit Video…" : "Rename…")) { [weak self] in self?.edit(item.id) })
+            menu.addItem(ActionMenuItem(
+                item.kind == .image ? "Edit…" : (item.kind == .video ? "Edit Video…" : "Rename…")
+            ) { [weak self] in
+                self?.edit(item.id)
+            })
             if let saved = states[item.id]?.savedURL {
                 menu.addItem(ActionMenuItem("Show Saved File in Finder") { NSWorkspace.shared.activateFileViewerSelecting([saved]) })
             }
@@ -998,6 +1044,8 @@ nonisolated final class ProgressBox: @unchecked Sendable {
     }
 
     var cancelled: Bool { lock.withLock { isCancelled } }
+
+    var position: (page: Int, pages: Int) { lock.withLock { (page, pages) } }
 
     func cancel() { lock.withLock { isCancelled = true } }
 }

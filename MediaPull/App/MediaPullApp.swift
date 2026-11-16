@@ -35,6 +35,10 @@ struct MediaPullApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { false }
 
+    func applicationWillTerminate(_: Notification) {
+        AppModel.shared.browsing.flush()
+    }
+
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         // Analysis picks up where it stopped at the next launch, so only other jobs ask before quitting.
         let running = AppModel.shared.jobs.jobs.filter { $0.state.isActive && $0.kind != .analyse }
@@ -50,7 +54,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             AppModel.shared.analysis.cancelScan()
             running.forEach { $0.cancel() }
-            return .terminateNow
+            // An Organise run stops between files and then saves its journal; quit once it has, so every step it took
+            // stays undoable (R-3807). A run that does not stop within a few seconds does not hold up quitting.
+            let organising = running.filter { $0.kind == .organise }.compactMap(\.task)
+            guard !organising.isEmpty else { return .terminateNow }
+            Task {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { for task in organising { await task.value } }
+                    group.addTask { try? await Task.sleep(for: .seconds(5)) }
+                    await group.next()
+                    group.cancelAll()
+                }
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
         }
         return .terminateCancel
     }
@@ -58,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct AppCommands: Commands {
     @FocusedValue(\.windowModel) private var window
+    /// The browser is on screen: Collect is shown.
+    private var browsing: Bool { window?.section == .collect }
     @Environment(\.openWindow) private var openWindow
 
     private func paneToggle(_ pane: PaneID, key: Character) -> some View {
@@ -70,9 +89,13 @@ struct AppCommands: Commands {
         CommandGroup(after: .newItem) {
             Button("New Tab") { window?.newTab() }
                 .keyboardShortcut("t")
-                .disabled(window == nil)
+                .disabled(!browsing)
             // Listed before the window's Close item, so ⌘W closes a tab first and the window with its last tab.
-            Button("Close Tab") { if let window { window.closeTab(window.selectedTabID) } }
+            // In Organise the browser is hidden: ⌘W closes the window rather than tabs no one can see.
+            Button(browsing || window == nil ? "Close Tab" : "Close Window") {
+                guard let window else { return }
+                if window.section == .collect { window.closeTab(window.selectedTabID) } else { window.hostWindow?.performClose(nil) }
+            }
                 .keyboardShortcut("w")
                 .disabled(window == nil)
             Button("Reopen Closed Tab") { window?.reopenClosedTab() }
@@ -139,7 +162,9 @@ struct AppCommands: Commands {
                 paneToggle(.extracted, key: "2")
                 paneToggle(.library, key: "3")
                 paneToggle(.downloads, key: "4")
-                Button(window?.showPreview ?? true ? "Hide Preview" : "Show Preview") { window?.setShowing(.preview, !(window?.showPreview ?? true)) }
+                Button(window?.showPreview ?? true ? "Hide Preview" : "Show Preview") {
+                    window?.setShowing(.preview, !(window?.showPreview ?? true))
+                }
                     .keyboardShortcut("i")
             }
             Menu("Arrange Panes") {
@@ -155,10 +180,13 @@ struct AppCommands: Commands {
             Divider()
             Button("Zoom In Page") { window?.browser.zoomIn() }
                 .keyboardShortcut("+")
+                .disabled(!browsing)
             Button("Zoom Out Page") { window?.browser.zoomOut() }
                 .keyboardShortcut("-")
+                .disabled(!browsing)
             Button("Actual Size") { window?.browser.resetZoom() }
                 .keyboardShortcut("0")
+                .disabled(!browsing)
             Button("Larger Thumbnails") { if let window { window.cellSize = min(WindowModel.zoomRange.upperBound, window.cellSize + 40) } }
                 .keyboardShortcut("+", modifiers: [.command, .option])
             Button("Smaller Thumbnails") { if let window { window.cellSize = max(WindowModel.zoomRange.lowerBound, window.cellSize - 40) } }
@@ -173,10 +201,13 @@ struct AppCommands: Commands {
         CommandMenu("Go") {
             Button("Back") { window?.browser.goBack() }
                 .keyboardShortcut("[")
+                .disabled(!browsing)
             Button("Forward") { window?.browser.goForward() }
                 .keyboardShortcut("]")
+                .disabled(!browsing)
             Button("Reload Page") { window?.browser.reloadOrStop() }
                 .keyboardShortcut("r")
+                .disabled(!browsing)
             Button("Open Address") {
                 window?.setShowing(.source, true)
                 window?.focusAddressToken += 1
@@ -191,7 +222,7 @@ struct AppCommands: Commands {
         CommandMenu("Bookmarks") {
             Button("Bookmark This Page…") { window?.bookmarkRequest += 1 }
                 .keyboardShortcut("d")
-                .disabled(window?.browser.url == nil)
+                .disabled(window?.browser.url == nil || !browsing)
             Button("Show Bookmarks") {
                 window?.browsingPanelTab = .bookmarks
                 window?.showBrowsingPanel = true
@@ -244,5 +275,4 @@ struct AppCommands: Commands {
             Button("MediaPull Walkthrough") { AppModel.shared.showWalkthrough(.tour) }
         }
     }
-
 }

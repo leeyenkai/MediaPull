@@ -81,9 +81,9 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         }
     }
 
-    func install(ruleList: WKContentRuleList?) {
+    func install(ruleList: UploadRules?) {
         guard let ruleList, !ruleListInstalled else { return }
-        webView.configuration.userContentController.add(ruleList)
+        webView.configuration.userContentController.add(ruleList.list)
         ruleListInstalled = true
     }
 
@@ -114,8 +114,11 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         if webView.isLoading { webView.stopLoading() } else { webView.reload() }
     }
 
+    /// Read in MediaPull's own script world: a page can redefine navigator.userAgent in its world, and this value goes
+    /// with every app download.
     func userAgent() async -> String? {
-        try? await webView.evaluateJavaScript("navigator.userAgent") as? String
+        try? await webView.callAsyncJavaScript("return navigator.userAgent", arguments: [:], in: nil, contentWorld: WebViewSetup.world)
+            as? String
     }
 
     // MARK: Extraction helpers
@@ -163,14 +166,15 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     func webView(_: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         let response = navigationResponse.response
+        let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
+        // A file the page offers as a download is saved, not shown, so it is not scanned as the page's PDF either.
+        if navigationResponse.isForMainFrame, !navigationResponse.canShowMIMEType || disposition.hasPrefix("attachment") {
+            return .download
+        }
         if navigationResponse.isForMainFrame {
             let isPDF = response.mimeType == "application/pdf"
             isShowingPDF = isPDF
             if isPDF, let url = response.url { onPDF?(url) }
-        }
-        let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
-        if navigationResponse.isForMainFrame, !navigationResponse.canShowMIMEType || disposition.hasPrefix("attachment") {
-            return .download
         }
         return .allow
     }
@@ -227,7 +231,15 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         lastError = error.localizedDescription
     }
 
+    /// Recent crashes of this tab's page, so a page that keeps crashing is not reloaded forever.
+    @ObservationIgnored private var crashes: [Date] = []
+
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        crashes = crashes.filter { Date().timeIntervalSince($0) < 60 } + [Date()]
+        guard crashes.count <= 2 else {
+            lastError = "This page stopped working. Reload it to try again."
+            return
+        }
         webView.reload()
     }
 

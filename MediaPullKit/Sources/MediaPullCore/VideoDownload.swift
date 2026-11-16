@@ -158,7 +158,7 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
     /// The video format yt-dlp would pick for a resolution: the tallest at or under it, then the highest frame rate and bitrate.
     public func chosenVideo(in formats: [VideoFormatInfo], height: Int?) -> VideoFormatInfo? {
         videoFormats(in: formats).filter { height == nil || ($0.height ?? 0) <= height! }.max { a, b in
-            ((a.height ?? 0), (a.fps ?? 0), (a.tbr ?? 0)) < ((b.height ?? 0), (b.fps ?? 0), (b.tbr ?? 0))
+            (a.height ?? 0, a.fps ?? 0, a.tbr ?? 0) < (b.height ?? 0, b.fps ?? 0, b.tbr ?? 0)
         }
     }
 

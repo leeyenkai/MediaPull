@@ -54,9 +54,16 @@ public struct OrganisePlan: Sendable {
         }
     }
 
-    /// Whether clones on this volume take no extra space; otherwise they are full copies.
+    /// Whether the copies take no extra space: the volume clones files and every source is on it. Copies from another
+    /// volume are full copies.
     public var clonesAreFree: Bool {
-        (try? root.resourceValues(forKeys: [.volumeSupportsFileCloningKey]).volumeSupportsFileCloning) ?? false
+        let keys: Set<URLResourceKey> = [.volumeSupportsFileCloningKey, .volumeIdentifierKey]
+        guard let values = try? root.resourceValues(forKeys: keys), values.volumeSupportsFileCloning == true,
+              let volume = values.volumeIdentifier as? NSObject
+        else { return false }
+        return moves.filter { $0.kind == .clone }.allSatisfy { move in
+            (try? move.source.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier as? NSObject) == volume
+        }
     }
 
     public var cloneBytes: Int64 {
@@ -360,8 +367,12 @@ public enum SortRules {
     }
 
     public static func byDate(_ item: MediaEntry, timeZone: TimeZone = .current) -> [[String]] {
-        let date = item.date
-        return [[formatter("yyyy", timeZone).string(from: date), formatter("yyyy-MM", timeZone).string(from: date)]]
+        // Calendar fields, not two formatters per file: sorting thousands of files by date stays quick.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.year, .month], from: item.date)
+        let year = String(format: "%04d", parts.year ?? 0)
+        return [[year, year + String(format: "-%02d", parts.month ?? 0)]]
     }
 
     public static func bySource(_ item: MediaEntry) -> [[String]] {

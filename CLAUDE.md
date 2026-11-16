@@ -77,14 +77,14 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 ## Rules
 
 - **Read-only contract (SPEC section 5) is non-negotiable.** MediaPull never uploads files from the Mac (the library or anything else) and never performs write actions on any account. The browser pane is the exception for what pages themselves send (sign-in forms, searches), never files. All Swift network traffic goes through `NetworkGate` (GET and HEAD only). Engine traffic goes through the bridge's egress guard. The browser pane has no file upload path. Every change that touches networking keeps the egress tests passing.
-- **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser`, `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`, AppKit only in the app's `Platform/` folder. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
+- **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser` and the browser pane (`Features/Browser`, `Platform/ReadOnlyWebView`), `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`, AppKit only in the app target (views built on it in `Platform/`). `scripts/check.sh` enforces these. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
 - **No third-party Swift packages.** Third-party code is limited to the pinned bundled engines and their runtime. Adding anything else needs explicit approval and a spec decision.
 - **Never name or reference other applications** in code, comments, docs, UI copy, identifiers or test fixtures. The Archive layout is described only as a gallery-dl-compatible metadata archive (SPEC section 15).
 - **Archive layout is a contract.** Do not change sidecar keys, date format, naming rules, the forbidden name pattern (R-1504) or reserved folder names (R-1505) without a decision entry and updated golden tests.
 - **Quality:** never re-encode when a lossless path exists; follow the conversion tables in SPEC section 16.
 - **Concurrency:** no image decoding, hashing, JSON parsing of page or engine output, or conversion on the main actor.
 - **Performance budgets** live in `scripts/perf-budgets.json` and are enforced in CI (SPEC section 22).
-- **Formatting:** swiftformat and swiftlint, 140-column lines. Few comments; explain why, not what.
+- **Formatting:** swiftformat and swiftlint with the repository's `.swiftformat` and `.swiftlint.yml` (`scripts/check.sh` runs both), 140-column lines. swiftformat's wrapping is off: wrap long lines by hand. Few comments; explain why, not what.
 - **User-facing copy:** plain and short, no exclamation marks, no emoji.
 - **Tests:** XCTest for Swift, table-driven where possible; never hit live sites in automated tests (use recorded fixtures and the `mediapull-test://` scheme handler).
 

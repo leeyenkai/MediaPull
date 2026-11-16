@@ -174,7 +174,7 @@ struct PersonRow: View {
             }
         }
         .task(id: person.id) {
-            if let first = await AppModel.shared.analysis.faces(of: person.id).first { face = (first.path, first.box) }
+            if let first = await AppModel.shared.analysis.faces(of: person.id, limit: 1).first { face = (first.path, first.box) }
         }
     }
 }
@@ -220,14 +220,16 @@ struct FaceOptIn: View {
         .shared
     }
 
-    static let limits = "Faces turned well away from the camera are matched less reliably, children's faces change with age and are confused more "
+    static let limits =
+        "Faces turned well away from the camera are matched less reliably, children's faces change with age and are confused more "
         + "often, and very small faces are not used. Corrections you make are kept."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Recognise people in your photos", systemImage: "person.2.badge.gearshape").font(.headline)
             Text("MediaPull can group photos of the same person so you can name them, find them and sort them into folders. "
-                + "Face data is biometric: it is computed and kept only on this Mac, never written into your folders, metadata files or exports, "
+                + "Face data is biometric: it is computed and kept only on this Mac, never written into your folders, metadata files or "
+                    + "exports, "
                 + "and can be deleted in one step at any time.")
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
@@ -241,7 +243,10 @@ struct FaceOptIn: View {
             Button("Delete All Face Data", role: .destructive) { Task { await app.analysis.deleteAllFaceData() } }
         } message: {
             Text(
-                "People, names, corrections and face measurements are removed and recognising people is turned off. Your photos are not touched."
+                """
+                    People, names, corrections and face measurements are removed and recognising people is turned off. Your photos are not \
+                    touched.
+                    """
             )
         }
     }

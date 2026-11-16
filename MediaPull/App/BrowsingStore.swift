@@ -13,6 +13,9 @@ final class BrowsingStore {
     @ObservationIgnored private var loaded = false
     /// Set when bookmarks change before the stored ones are loaded, so the stored ones do not overwrite them.
     @ObservationIgnored private var bookmarksEdited = false
+    /// History cleared before the stored history was loaded: applied to it, so cleared pages do not come back.
+    @ObservationIgnored private var clearsBeforeLoad: [Date?] = []
+    @ObservationIgnored private var unsaved = false
 
     init(persistent: Bool) {
         folder = persistent
@@ -25,16 +28,14 @@ final class BrowsingStore {
         }
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> (BookmarkCollection?, BrowsingHistory?) in
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                let bookmarks = (try? Data(contentsOf: folder.appendingPathComponent("bookmarks.json")))
-                    .flatMap { try? decoder.decode(BookmarkCollection.self, from: $0) }
-                let history = (try? Data(contentsOf: folder.appendingPathComponent("history.json")))
-                    .flatMap { try? decoder.decode(BrowsingHistory.self, from: $0) }
-                return (bookmarks, history)
+                (
+                    Self.read(BookmarkCollection.self, "bookmarks.json", in: folder),
+                    Self.read(BrowsingHistory.self, "history.json", in: folder)
+                )
             }.value
             // Anything recorded before loading finished is kept on top of what was on disk.
             if var stored = result.1 {
+                for since in clearsBeforeLoad { stored.clear(since: since) }
                 for entry in history.entries.reversed() {
                     stored.record(entry.url, title: entry.title, at: entry.lastVisit)
                 }
@@ -77,8 +78,7 @@ final class BrowsingStore {
     }
 
     func updateTitle(_ url: URL, title: String) {
-        guard rememberHistory else { return }
-        history.updateTitle(url, title: title)
+        guard rememberHistory, history.updateTitle(url, title: title) else { return }
         scheduleSave()
     }
 
@@ -113,7 +113,9 @@ final class BrowsingStore {
     }
 
     func clearHistory(_ range: ClearRange) {
-        history.clear(since: range.since)
+        let since = range.since
+        history.clear(since: since)
+        if !loaded { clearsBeforeLoad.append(since) }
         scheduleSave()
     }
 
@@ -121,21 +123,47 @@ final class BrowsingStore {
 
     private func scheduleSave() {
         guard let folder, loaded else { return }
+        unsaved = true
         saveTask?.cancel()
         let bookmarks = bookmarks
         let history = history
         saveTask = Task.detached(priority: .utility) {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            if let data = try? encoder.encode(bookmarks) {
-                try? data.write(to: folder.appendingPathComponent("bookmarks.json"), options: .atomic)
-            }
-            if let data = try? encoder.encode(history) {
-                try? data.write(to: folder.appendingPathComponent("history.json"), options: .atomic)
-            }
+            Self.write(bookmarks, history, to: folder)
         }
+    }
+
+    /// Writes what is not saved yet at once; the app calls this when it quits, inside the one-second delay.
+    func flush() {
+        guard let folder, loaded, unsaved else { return }
+        saveTask?.cancel()
+        Self.write(bookmarks, history, to: folder)
+        unsaved = false
+    }
+
+    nonisolated private static func write(_ bookmarks: BookmarkCollection, _ history: BrowsingHistory, to folder: URL) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if let data = try? encoder.encode(bookmarks) {
+            try? data.write(to: folder.appendingPathComponent("bookmarks.json"), options: .atomic)
+        }
+        if let data = try? encoder.encode(history) {
+            try? data.write(to: folder.appendingPathComponent("history.json"), options: .atomic)
+        }
+    }
+
+    /// A file that exists but cannot be read is set aside (name.damaged-<date>.json), never written over.
+    nonisolated private static func read<Value: Decodable>(_ type: Value.Type, _ name: String, in folder: URL) -> Value? {
+        let file = folder.appendingPathComponent(name)
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let value = try? decoder.decode(type, from: data) { return value }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let aside = folder.appendingPathComponent((name as NSString).deletingPathExtension + ".damaged-\(stamp).json")
+        try? FileManager.default.moveItem(at: file, to: aside)
+        return nil
     }
 }

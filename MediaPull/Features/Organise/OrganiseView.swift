@@ -36,7 +36,8 @@ struct OrganiseFolderPane: View {
     private func openDropped(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         Task {
-            if let data = await provider.loadData(type: UTType.fileURL.identifier), let url = URL(dataRepresentation: data, relativeTo: nil),
+            if let data = await provider.loadData(type: UTType.fileURL.identifier),
+               let url = URL(dataRepresentation: data, relativeTo: nil),
                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
             {
                 organise.open(url, in: pane)
@@ -73,8 +74,8 @@ struct OrganiseFolderPane: View {
                             .padding(.vertical, 6)
                         Divider()
                         ZStack {
-                            MediaGrid(sections: pane.gridSections, selection: pane.selection, cellSize: pane.cellSize, revision: pane.revision,
-                                      owner: pane)
+                            MediaGrid(sections: pane.gridSections, selection: pane.selection, cellSize: pane.cellSize,
+                                      revision: pane.revision, owner: pane)
                             if pane.shown.isEmpty, !pane.loading {
                                 Text(pane.entries.isEmpty ? "No media in this folder." : "Nothing matches the search and filters.")
                                     .font(.callout).foregroundStyle(.secondary).allowsHitTesting(false)
@@ -103,7 +104,9 @@ struct OrganiseFolderPane: View {
     }
 
     private var subtitle: String {
-        var parts = [pane.shown.count == pane.entries.count ? "\(pane.entries.count) files" : "\(pane.shown.count) of \(pane.entries.count) files"]
+        var parts = [
+            pane.shown.count == pane.entries.count ? "\(pane.entries.count) files" : "\(pane.shown.count) of \(pane.entries.count) files"
+        ]
         if pane.subfolderCount > 0 { parts.append("\(pane.subfolderCount) folder\(pane.subfolderCount == 1 ? "" : "s")") }
         if !pane.selection.isEmpty { parts.append("\(pane.selection.count) selected") }
         return parts.joined(separator: " · ")
@@ -179,6 +182,8 @@ struct OrganiseTree: View {
     var root: URL
 
     var body: some View {
+        // A view body cannot discard with `_ =`; reading the revision rebuilds the tree after changes.
+        // swiftlint:disable:next redundant_discardable_let
         let _ = pane.treeRevision
         let node = FolderNode(url: root, isRoot: true)
         List(selection: Binding(get: { pane.folder?.path }, set: { path in
@@ -224,11 +229,13 @@ struct OrganiseFolderRow: View {
             Task {
                 var urls: [URL] = []
                 for provider in providers {
-                    if let data = await provider.loadData(type: UTType.fileURL.identifier), let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    if let data = await provider.loadData(type: UTType.fileURL.identifier),
+                       let url = URL(dataRepresentation: data, relativeTo: nil)
+                    {
                         urls.append(url)
                     }
                 }
-                organise.drop(urls, into: node.url)
+                organise.drop(Sidecar.withoutCompanions(urls), into: node.url)
             }
             return true
         }
@@ -240,7 +247,9 @@ struct OrganiseFolderRow: View {
             if !node.isRoot {
                 Button("Remove Folder, Keep Contents") { organise.removeFolder(node.url) }
                 Menu("Merge Into") {
-                    if let target = organise.targetFolder, target != node.url { Button("Target: \(target.lastPathComponent)") { organise.merge(node.url, into: target) } }
+                    if let target = organise.targetFolder, target != node.url {
+                        Button("Target: \(target.lastPathComponent)") { organise.merge(node.url, into: target) }
+                    }
                     ForEach(organise.siblings(of: node.url), id: \.self) { other in
                         Button(other.lastPathComponent) { organise.merge(node.url, into: other) }
                     }
@@ -337,8 +346,12 @@ struct OrganiseWorkPane: View {
                         Divider()
                         Text("\(organise.source.selectedURLs.count) selected in the source").font(.callout.weight(.semibold))
                         HStack {
-                            Button("Copy to \(target.lastPathComponent)") { organise.run(FolderOperations.copy(organise.source.selectedURLs, to: target)) }
-                            Button("Move to \(target.lastPathComponent)") { organise.run(FolderOperations.move(organise.source.selectedURLs, to: target)) }
+                            Button("Copy to \(target.lastPathComponent)") {
+                                organise.run(FolderOperations.copy(organise.source.selectedURLs, to: target))
+                            }
+                            Button("Move to \(target.lastPathComponent)") {
+                                organise.run(FolderOperations.move(organise.source.selectedURLs, to: target))
+                            }
                         }
                         .controlSize(.small)
                     }
@@ -351,7 +364,9 @@ struct OrganiseWorkPane: View {
     private var scope: String {
         let source = organise.source
         let count = source.selection.isEmpty ? source.shown.count : source.selection.count
-        let what = source.selection.isEmpty ? "the \(count) file\(count == 1 ? "" : "s") shown" : "the \(count) selected file\(count == 1 ? "" : "s")"
+        let what = source.selection.isEmpty
+            ? "the \(count) file\(count == 1 ? "" : "s") shown"
+            : "the \(count) selected file\(count == 1 ? "" : "s")"
         guard let destination = organise.destination else { return "Choose a target folder first." }
         return "Sort \(what) into folders in “\(destination.lastPathComponent)” by"
     }
@@ -366,7 +381,10 @@ struct OrganiseWorkPane: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(entry.title).lineLimit(1)
-                        Text("\(entry.date.formatted(date: .abbreviated, time: .shortened)) · \(entry.fileCount) file\(entry.fileCount == 1 ? "" : "s")")
+                        Text("""
+                            \(entry.date.formatted(date: .abbreviated, time: .shortened)) · \(entry.fileCount) \
+                            file\(entry.fileCount == 1 ? "" : "s")
+                            """)
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -386,15 +404,27 @@ struct OrganiseWorkPane: View {
 struct PlanPreview: View {
     @Bindable var organise: OrganiseModel
     let pending: PendingPlan
+    /// What the copies cost: it reads every copied file's size and volume, so it is worked out once, off the main actor.
+    @State private var copyNote: String?
 
     var body: some View {
         let plan = pending.plan
+        let destinations = plan.destinations
         VStack(alignment: .leading, spacing: 10) {
             Text(plan.title).font(.title3.weight(.semibold))
-            Text(summary(plan)).font(.callout).fixedSize(horizontal: false, vertical: true)
-            if let note = pending.note { Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            Text(summary(plan, folders: destinations.count)).font(.callout).fixedSize(horizontal: false, vertical: true)
+                .task(id: pending.id) {
+                    guard plan.cloneCount > 0 else { return }
+                    let count = plan.cloneCount
+                    let cost = await Task.detached(priority: .userInitiated) { plan.clonesAreFree ? nil : plan.cloneBytes }.value
+                    copyNote = cost.map { "\(count) cop\(count == 1 ? "y" : "ies") will use \(Format.bytes($0))." }
+                        ?? "\(count) cop\(count == 1 ? "y" : "ies") will be made, taking no extra space."
+                }
+            if let note = pending.note {
+                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             List {
-                ForEach(plan.destinations.prefix(200), id: \.folder) { destination in
+                ForEach(destinations.prefix(200), id: \.folder) { destination in
                     HStack(spacing: 10) {
                         HStack(spacing: 3) {
                             ForEach(destination.files.prefix(3), id: \.self) { url in PreviewThumb(url: url) }
@@ -402,12 +432,14 @@ struct PlanPreview: View {
                         .frame(width: 3 * 37, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(relative(destination.folder, to: plan.root)).lineLimit(1).truncationMode(.middle)
-                            Text("\(destination.files.count) file\(destination.files.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+                            Text("\(destination.files.count) file\(destination.files.count == 1 ? "" : "s")")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
                 if !plan.foldersToTrash.isEmpty {
-                    Label("\(plan.foldersToTrash.count) emptied folder\(plan.foldersToTrash.count == 1 ? "" : "s") to the Trash", systemImage: "trash")
+                    Label("\(plan.foldersToTrash.count) emptied folder\(plan.foldersToTrash.count == 1 ? "" : "s") to the Trash",
+                          systemImage: "trash")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -429,16 +461,19 @@ struct PlanPreview: View {
         return moves == 0 ? "Apply" : "Move \(moves) File\(moves == 1 ? "" : "s")"
     }
 
-    private func summary(_ plan: OrganisePlan) -> String {
+    private func summary(_ plan: OrganisePlan, folders: Int) -> String {
         var parts: [String] = []
         let moves = plan.moves.filter { $0.kind == .move }.count
-        if moves > 0 { parts.append("\(moves) file\(moves == 1 ? "" : "s") will move into \(plan.destinations.count) folder\(plan.destinations.count == 1 ? "" : "s").") }
+        if moves > 0 { parts.append("\(moves) file\(moves == 1 ? "" : "s") will move into \(folders) folder\(folders == 1 ? "" : "s").") }
         if plan.cloneCount > 0 {
-            parts.append(plan.clonesAreFree ? "\(plan.cloneCount) cop\(plan.cloneCount == 1 ? "y" : "ies") will be made, taking no extra space."
-                : "\(plan.cloneCount) cop\(plan.cloneCount == 1 ? "y" : "ies") will use \(Format.bytes(plan.cloneBytes)).")
+            parts.append(copyNote ?? "\(plan.cloneCount) cop\(plan.cloneCount == 1 ? "y" : "ies") will be made.")
         }
         if plan.unsorted > 0 {
-            parts.append(plan.unchanged >= plan.unsorted ? "\(plan.unsorted) stay where they are." : "\(plan.unsorted) go to “\(FolderNames.unsorted)”.")
+            parts.append(
+                plan.unchanged >= plan.unsorted
+                    ? "\(plan.unsorted) stay where they are."
+                    : "\(plan.unsorted) go to “\(FolderNames.unsorted)”."
+            )
         }
         if plan.renamed > 0 { parts.append("\(plan.renamed) get a number because the name is taken.") }
         return parts.isEmpty ? "Nothing to move." : parts.joined(separator: " ")

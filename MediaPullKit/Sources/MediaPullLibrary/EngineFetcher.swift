@@ -29,18 +29,23 @@ public struct BridgeEngineFetcher: EngineFetching {
     public let cookies: @Sendable (_ registrableDomain: String) async -> [CookieRecord]
     public let userAgent: String?
     public let onCheckpoint: @Sendable (String, URL?) -> Void
+    /// Cookies the engine refreshed (Instagram rotates its own), with the ones it was given, to go back to the browser
+    /// (R-1103).
+    public let cookiesUpdated: @Sendable (_ updated: [CookieRecord], _ original: [CookieRecord]) async -> Void
 
     public init(
         client: BridgeClient,
         video: VideoCodecPolicy,
         userAgent: String?,
         cookies: @escaping @Sendable (String) async -> [CookieRecord],
+        cookiesUpdated: @escaping @Sendable ([CookieRecord], [CookieRecord]) async -> Void = { _, _ in },
         onCheckpoint: @escaping @Sendable (String, URL?) -> Void = { _, _ in }
     ) {
         self.client = client
         self.video = video
         self.userAgent = userAgent
         self.cookies = cookies
+        self.cookiesUpdated = cookiesUpdated
         self.onCheckpoint = onCheckpoint
     }
 
@@ -57,6 +62,7 @@ public struct BridgeEngineFetcher: EngineFetching {
         var isInstagram = false
         // The post address may list several files (or a whole profile, for a site scan); the item's own key picks its file.
         var wantedKey: String?
+        var originalCookies: [CookieRecord] = []
         let selector = video.selector(av1Decodable: FFmpeg.canDecodeAV1)
         switch item.source {
         case let .engine(context):
@@ -70,7 +76,8 @@ public struct BridgeEngineFetcher: EngineFetching {
             if let num = context.num { request.filter = "num == \(num)" }
             let domain = PublicSuffix.shared.registrableDomain(URL(string: postURL)?.host ?? "instagram.com")
             isInstagram = context.category == "instagram" || domain == "instagram.com"
-            try CookieFile.write(await cookies(domain), to: cookieFile)
+            originalCookies = await cookies(domain)
+            try CookieFile.write(originalCookies, to: cookieFile)
             request.cookies = cookieFile.path
             request.userAgent = userAgent
             request.setPacing([2, 4])
@@ -91,35 +98,54 @@ public struct BridgeEngineFetcher: EngineFetching {
         request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort)
 
         var file: URL?
+        var others: [URL] = []
         var failure: String?
-        events: for try await event in client.run(request, workingDirectory: staging) {
-            switch event {
-            case let .file(found):
-                guard found.isInside(staging) else { continue }
-                if let wantedKey, found.key == wantedKey {
-                    file = found.path
-                    break events
+        do {
+            events: for try await event in client.run(request, workingDirectory: staging) {
+                switch event {
+                case let .file(found):
+                    guard found.isInside(staging) else { continue }
+                    guard let wantedKey else {
+                        if file == nil { file = found.path }
+                        continue
+                    }
+                    if found.key == wantedKey {
+                        file = found.path
+                        break events
+                    }
+                    others.append(found.path)
+                case let .progress(received, total, _):
+                    if let received, let total, total > 0 { progress(Double(received) / Double(total)) }
+                case let .checkpoint(kind, url, message):
+                    // Only Instagram has a cooldown and a sign-in to send the person to; any other site's limit is a failure.
+                    guard isInstagram else {
+                        failure = message
+                        continue
+                    }
+                    onCheckpoint(kind, url)
+                    throw EngineFetchError.checkpoint(kind: kind, url: url, message: message)
+                case let .error(_, message, _, fatal):
+                    if fatal || failure == nil { failure = message }
+                case let .policyViolation(method, host, _, reason):
+                    failure = "Blocked a \(method) request to \(host): \(reason)"
+                default:
+                    break
                 }
-                if file == nil { file = found.path }
-            case let .progress(received, total, _):
-                if let received, let total, total > 0 { progress(Double(received) / Double(total)) }
-            case let .checkpoint(kind, url, message):
-                // Only Instagram has a cooldown and a sign-in to send the person to; any other site's limit is a failure.
-                guard isInstagram else {
-                    failure = message
-                    continue
-                }
-                onCheckpoint(kind, url)
-                throw EngineFetchError.checkpoint(kind: kind, url: url, message: message)
-            case let .error(_, message, _, fatal):
-                if fatal || failure == nil { failure = message }
-            case let .policyViolation(method, host, _, reason):
-                failure = "Blocked a \(method) request to \(host): \(reason)"
-            default:
-                break
             }
+        } catch {
+            await writeBack(cookieFile, original: originalCookies)
+            throw error
         }
+        await writeBack(cookieFile, original: originalCookies)
+        // Without the item's own key, a file is taken only when the address held nothing else: never another post's file.
+        if file == nil, others.count == 1 { file = others[0] }
         if let file, FileManager.default.fileExists(atPath: file.path) { return file }
         throw failure.map { EngineFetchError.failed($0) } ?? EngineFetchError.nothingDownloaded
+    }
+
+    private func writeBack(_ cookieFile: URL, original: [CookieRecord]) async {
+        guard !original.isEmpty else { return }
+        let updated = CookieFile.read(cookieFile)
+        if !updated.isEmpty { await cookiesUpdated(updated, original) }
     }
 }

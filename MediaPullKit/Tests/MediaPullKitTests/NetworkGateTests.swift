@@ -90,8 +90,8 @@ final class RedirectingProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var seen: [URLRequest] = []
     static let lock = NSLock()
 
-    override class func canInit(with _: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override static func canInit(with _: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         Self.lock.withLock { Self.seen.append(request) }

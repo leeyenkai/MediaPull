@@ -88,7 +88,6 @@ struct JobRow: View {
         .padding(.vertical, 4)
     }
 
-    @ViewBuilder
     private var actions: some View {
         HStack(spacing: 6) {
             if let url = job.destination, job.saved + job.duplicates > 0 {

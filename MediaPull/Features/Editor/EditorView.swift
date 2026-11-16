@@ -48,7 +48,9 @@ struct EditorView: View {
                         .keyboardShortcut("[", modifiers: [.command, .option])
                     Button { model.rotate(clockwise: true) } label: { Label("Rotate Right", systemImage: "rotate.right") }
                         .keyboardShortcut("]", modifiers: [.command, .option])
-                    Button { model.flip() } label: { Label("Flip", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right") }
+                    Button { model.flip() } label: {
+                        Label("Flip", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                    }
                     Picker("Crop", selection: Binding(get: { model.aspect }, set: { model.aspect = $0; model.applyAspect() })) {
                         ForEach(CropAspect.allCases) { Text($0.label).tag($0) }
                     }
@@ -122,7 +124,7 @@ struct EditorView: View {
                 }
             }
             Button("Keep Name Only") {
-                if model.hasNameChange { model.window?.customNames[itemID] = FileNaming.sanitize(model.name, maxBytes: 200) }
+                model.keepNameOnly()
                 dismiss()
             }
             .disabled(!model.hasNameChange || model.hasImageEdits)
@@ -139,8 +141,7 @@ struct EditorView: View {
     }
 
     private func finish(_ url: URL) {
-        model.window?.library.reload()
-        model.window?.library.refreshTree()
+        // Every window's Library and folder tree reload once on this (LibraryPane watches it).
         app.libraryRevision += 1
         model.window?.editorRequest = nil
         model.window?.previewSubject = .file(url)

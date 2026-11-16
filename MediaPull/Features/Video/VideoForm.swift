@@ -77,7 +77,6 @@ struct VideoForm: View {
         .task(id: url) { await lookUp() }
     }
 
-    @ViewBuilder
     private var moreOptions: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Whole playlist or channel", isOn: $extras.playlist)
@@ -120,6 +119,7 @@ struct VideoForm: View {
         info = nil
         failure = nil
         height = nil
+        thumbnail = nil
         extras.playlist = Self.looksLikeList(url)
         switch await app.engines.videoInfo(for: url) {
         case let .success(found):
@@ -210,6 +210,7 @@ struct VideoForm: View {
             chosen.dateBefore = formatter.string(from: before)
         }
         chosen.rateLimit = speed > 0 ? speed * 1_000_000 : nil
-        app.engines.saveVideo(info, pageURL: url, format: format, height: format.isAudioOnly ? nil : height, extras: chosen, root: root, window: model)
+        app.engines.saveVideo(info, pageURL: url, format: format, height: format.isAudioOnly ? nil : height,
+                              extras: chosen, root: root, window: model)
     }
 }

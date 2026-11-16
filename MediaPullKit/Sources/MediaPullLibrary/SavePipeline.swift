@@ -106,8 +106,8 @@ public final class SavePipeline: Sendable {
                 let item = items[next]
                 next += 1
                 group.addTask {
-                    let outcome = await self.saveOne(item, index: item.discoveryIndex + 1, target: target, settings: settings, context: context,
-                                                     saveDate: saveDate, events: events)
+                    let outcome = await self.saveOne(item, index: item.discoveryIndex + 1, target: target, settings: settings,
+                                                     context: context, saveDate: saveDate, events: events)
                     return (item.id, outcome)
                 }
             }
@@ -213,7 +213,8 @@ public final class SavePipeline: Sendable {
             if case .cannotDecode = issue {
                 var policy = settings.conversion
                 policy.video = .keepOriginal
-                guard let kept = try? await converter.convert(file, policy: policy, layout: target.layout, workDirectory: workDirectory) else {
+                guard let kept = try? await converter.convert(file, policy: policy, layout: target.layout, workDirectory: workDirectory)
+                else {
                     return (.failed(issue.localizedDescription), nil)
                 }
                 conversion = kept
@@ -223,8 +224,8 @@ public final class SavePipeline: Sendable {
         } catch {
             return (.failed(error.localizedDescription), nil)
         }
-        let result = await finalize(conversion, item: item, sourceURL: item.best?.url, lastModified: nil, target: target, settings: settings,
-                                    index: index, saveDate: Date(), nameOverride: nameOverride)
+        let result = await finalize(conversion, item: item, sourceURL: item.best?.url, lastModified: nil, target: target,
+                                    settings: settings, index: index, saveDate: Date(), nameOverride: nameOverride)
         await self.index.persist()
         return result
     }
@@ -254,7 +255,8 @@ public final class SavePipeline: Sendable {
             try data.write(to: destination)
         } else {
             do {
-                let response = try await gate.download(request(for: variant, item: item, context: context), to: destination) { received, total in
+                let response = try await gate.download(request(for: variant, item: item, context: context),
+                                                       to: destination) { received, total in
                     progress(total.map { Double(received) / Double(max($0, 1)) })
                 }
                 modified = (response.value(forHTTPHeaderField: "Last-Modified")).flatMap(Self.parseHTTPDate)
@@ -296,8 +298,10 @@ public final class SavePipeline: Sendable {
     }
 
     func request(for variant: MediaVariant, item: MediaItem, context: SaveContext) -> GatedRequest {
-        var headers = RequestContext(accept: item.kind == .image || item.kind == .animatedImage ? RequestContext.imageAccept : RequestContext.anyAccept,
-                                     userAgent: context.userAgent)
+        var headers = RequestContext(
+            accept: item.kind == .image || item.kind == .animatedImage ? RequestContext.imageAccept : RequestContext.anyAccept,
+            userAgent: context.userAgent
+        )
         switch item.source {
         case let .web(web):
             headers.referer = URLNormalizer.referer(for: variant.url, from: web.frameURL ?? web.pageURL)
@@ -376,7 +380,8 @@ public final class SavePipeline: Sendable {
         let scopeIsAccount = target.layout == .archive && target.autoSubfolders
         let scope = scopeIsAccount ? Self.accountFolder(folder, target: target) : folder
         func existingCopy() async -> (SaveOutcome, String?)? {
-            guard let existing = await self.index.duplicate(sha256: sha, size: size, in: scope, recursive: scopeIsAccount) else { return nil }
+            guard let existing = await self.index.duplicate(sha256: sha, size: size, in: scope, recursive: scopeIsAccount)
+            else { return nil }
             if writesSidecar {
                 let sidecarURL = Sidecar.sidecarURL(for: existing)
                 if !manager.fileExists(atPath: sidecarURL.path) {
@@ -397,8 +402,8 @@ public final class SavePipeline: Sendable {
         return outcome
 
         func placeNew() async -> (SaveOutcome, String?) {
-            let name = ArchivePlanner.fileName(for: item, info: info, layout: target.layout, settings: settings, index: index, saveDate: saveDate,
-                                               override: nameOverride)
+            let name = ArchivePlanner.fileName(for: item, info: info, layout: target.layout, settings: settings, index: index,
+                                               saveDate: saveDate, override: nameOverride)
             let placed: URL
             do {
                 guard let result = try place(conversion.url, in: folder, name: name, conflict: settings.conflict) else {

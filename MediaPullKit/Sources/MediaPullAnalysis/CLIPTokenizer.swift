@@ -11,6 +11,8 @@ public final class CLIPTokenizer: @unchecked Sendable {
     public let contextLength: Int
     let startToken: Int32
     let endToken: Int32
+    // A fixed pattern that compiles; a failure would be a programming error, found by the tokenizer tests.
+    // swiftlint:disable:next force_try
     let pattern = try! NSRegularExpression(
         pattern: #"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"#,
         options: [.caseInsensitive]

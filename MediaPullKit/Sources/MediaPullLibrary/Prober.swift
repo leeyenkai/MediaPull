@@ -77,7 +77,9 @@ public actor MediaProber {
                 var more = GatedRequest.get(variant.url, purpose: .probe, context: context)
                 let end = min(total, 1_048_576) - 1
                 more.range = "bytes=\(data.count)-\(end)"
-                if let (extra, extraResponse) = try? await gate.head(more, maxBytes: Int(end) - data.count + 1), extraResponse.statusCode == 206 {
+                if let (extra, extraResponse) = try? await gate.head(more, maxBytes: Int(end) - data.count + 1),
+                   extraResponse.statusCode == 206
+                {
                     result.pixelSize = ImageProbe.size(from: data + extra, complete: Int64(data.count + extra.count) >= total)
                 }
             }
@@ -105,7 +107,7 @@ public actor MediaProber {
         }
     }
 
-    static func totalSize(_ response: HTTPURLResponse, received: Int) -> Int64? {
+    static func totalSize(_ response: HTTPURLResponse, received _: Int) -> Int64? {
         if let range = response.value(forHTTPHeaderField: "Content-Range"), let slash = range.lastIndex(of: "/") {
             return Int64(range[range.index(after: slash)...])
         }
@@ -117,7 +119,8 @@ public actor MediaProber {
 
     static func analyze(_ data: Data, total: Int64?, contentType: String?) -> ProbeResult {
         let sniff = Sniffer.sniff(data)
-        var result = ProbeResult(format: sniff.format ?? contentType.flatMap(MediaFormat.fromMIME), byteCount: total, isMarkup: sniff.isMarkup)
+        var result = ProbeResult(format: sniff.format ?? contentType.flatMap(MediaFormat.fromMIME), byteCount: total,
+                                 isMarkup: sniff.isMarkup)
         guard let format = result.format else { return result }
         switch format.kind {
         case .image, .animatedImage:
@@ -206,12 +209,17 @@ public actor ThumbnailLoader {
         let stamp = "\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
         let stampedKey = "\(key)#\(stamp)" as NSString
         if let hit = cache.object(forKey: stampedKey) { return hit }
-        await acquire()
-        defer { release() }
-        let image = await Self.decodeLocal(file, maxPixel: maxPixel)
-        guard let image else { return nil }
-        let thumbnail = Thumbnail(image)
-        cache.setObject(thumbnail, forKey: stampedKey, cost: image.width * image.height * 4)
+        // Two cells asking for the same file share one decode.
+        if let running = inflight[stampedKey as String] { return await running.value }
+        let task = Task<Thumbnail?, Never> {
+            await self.acquire()
+            defer { self.release() }
+            return await Self.decodeLocal(file, maxPixel: maxPixel).map(Thumbnail.init)
+        }
+        inflight[stampedKey as String] = task
+        let thumbnail = await task.value
+        inflight[stampedKey as String] = nil
+        if let thumbnail { cache.setObject(thumbnail, forKey: stampedKey, cost: thumbnail.image.width * thumbnail.image.height * 4) }
         return thumbnail
     }
 

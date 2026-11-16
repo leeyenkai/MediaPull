@@ -34,7 +34,10 @@ struct TourPage: Identifiable {
         TourPage(id: 4, pane: .source, symbol: "arrow.down.circle", title: "Download from hundreds of sites",
                  text: "The Downloads pane (⌥⌘4) follows the page you are on: whole Instagram, Bluesky or ArtStation profiles, "
                      + "galleries, and videos and playlists from YouTube and other video sites, each with its own options. "
-                     + "Sign in to a site in the browser to include what only signed-in visitors see. Later downloads fetch only what is new."),
+                     + """
+                         Sign in to a site in the browser to include what only signed-in visitors see. Later downloads fetch only what is \
+                         new.
+                         """),
         TourPage(id: 5, pane: nil, symbol: "rectangle.3.group", title: "Make it yours",
                  text: "Drag the dividers to resize panes. Move or stack them with the arrange button in each title bar or "
                      + "View > Arrange Panes, and choose a theme in Settings > Appearance."),

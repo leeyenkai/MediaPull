@@ -34,17 +34,26 @@ protocol MediaGridOwner: AnyObject {
     func gridActivate(_ id: String)
     func gridQuickLook()
     func gridWriter(_ id: String) -> NSPasteboardWriting?
+    /// More files that travel with a drag of these items, such as their metadata files (R-1801).
+    func gridCompanionWriters(_ ids: [String]) -> [NSPasteboardWriting]
     func gridMenu(_ ids: Set<String>) -> NSMenu?
     func gridAppeared(_ id: String)
     func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation) -> Bool
     var gridAcceptsDrops: Bool { get }
     func gridCanAccept(_ pasteboard: NSPasteboard) -> Bool
+    /// Return on a selected item; Activate (open) unless the owner renames instead.
+    func gridReturn(_ id: String)
+    /// ⌘⌫ on the selection.
+    func gridDelete(_ ids: Set<String>)
     /// A trackpad pinch over the grid; `amount` is the event's magnification.
     func gridMagnify(_ amount: CGFloat)
 }
 
 extension MediaGridOwner {
     func gridCanAccept(_: NSPasteboard) -> Bool { true }
+    func gridCompanionWriters(_: [String]) -> [NSPasteboardWriting] { [] }
+    func gridReturn(_ id: String) { gridActivate(id) }
+    func gridDelete(_: Set<String>) {}
     func gridMagnify(_: CGFloat) {}
 }
 
@@ -92,15 +101,17 @@ struct MediaGrid: NSViewRepresentable {
     func updateNSView(_: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.owner = owner
-        if let owner, owner.gridAcceptsDrops {
-            coordinator.collection?.registerForDraggedTypes([.fileURL, DragTypes.items]
-                + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
+        // Files and Extracted items only: no grid can take file promises from other apps (R-1801). Registered once.
+        if let owner, owner.gridAcceptsDrops, !coordinator.registeredDrops {
+            coordinator.collection?.registerForDraggedTypes([.fileURL, DragTypes.items])
+            coordinator.registeredDrops = true
         }
         coordinator.update(sections: sections, selection: selection, cellSize: cellSize, revision: revision)
     }
 
     @MainActor
     final class Coordinator: NSObject, NSCollectionViewDelegate, NSCollectionViewDelegateFlowLayout {
+        var registeredDrops = false
         weak var collection: MediaCollectionView?
         weak var owner: (any MediaGridOwner)?
         var dataSource: NSCollectionViewDiffableDataSource<String, String>?
@@ -118,7 +129,8 @@ struct MediaGrid: NSViewRepresentable {
                 return item
             }
             source.supplementaryViewProvider = { [weak self] view, kind, indexPath in
-                let header = view.makeSupplementaryView(ofKind: kind, withIdentifier: GridHeaderView.identifier, for: indexPath) as? GridHeaderView
+                let header = view.makeSupplementaryView(ofKind: kind, withIdentifier: GridHeaderView.identifier, for: indexPath)
+                    as? GridHeaderView
                 if let self, indexPath.section < self.sections.count {
                     header?.label.stringValue = self.sections[indexPath.section].title
                 }
@@ -209,9 +221,24 @@ struct MediaGrid: NSViewRepresentable {
             return owner?.gridWriter(id)
         }
 
-        func collectionView(_: NSCollectionView, validateDrop draggingInfo: NSDraggingInfo,
-                            proposedIndexPath _: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
-                            dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation
+        func collectionView(
+            _: NSCollectionView,
+            draggingSession session: NSDraggingSession,
+            willBeginAt _: NSPoint,
+            forItemsAt indexPaths: Set<IndexPath>
+        )
+        {
+            let extras = owner?.gridCompanionWriters(indexPaths.compactMap { id(at: $0) }) ?? []
+            // writeObjects adds items after the ones already on the drag pasteboard.
+            if !extras.isEmpty { session.draggingPasteboard.writeObjects(extras) }
+        }
+
+        func collectionView(
+            _: NSCollectionView,
+            validateDrop draggingInfo: NSDraggingInfo,
+            proposedIndexPath _: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+            dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
+        ) -> NSDragOperation
         {
             guard owner?.gridAcceptsDrops ?? false, owner?.gridCanAccept(draggingInfo.draggingPasteboard) ?? false else { return [] }
             if draggingInfo.draggingSource as? NSCollectionView === collection { return [] }
@@ -251,7 +278,11 @@ final class MediaCollectionView: NSCollectionView {
             return
         }
         if event.keyCode == 36, let first = selectionIndexPaths.first, let id = coordinator?.id(at: first) {
-            coordinator?.owner?.gridActivate(id)
+            coordinator?.owner?.gridReturn(id)
+            return
+        }
+        if event.keyCode == 51, event.modifierFlags.contains(.command), let ids = coordinator?.selectedIDs(), !ids.isEmpty {
+            coordinator?.owner?.gridDelete(ids)
             return
         }
         super.keyDown(with: event)

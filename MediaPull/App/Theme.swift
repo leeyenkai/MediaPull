@@ -57,7 +57,8 @@ enum AppTheme: String, CaseIterable, Identifiable {
 
     /// The full-strength gradient, for swatches and accents.
     var gradient: LinearGradient {
-        LinearGradient(colors: colors.isEmpty ? [.accentColor, .accentColor.opacity(0.7)] : colors, startPoint: .leading, endPoint: .trailing)
+        LinearGradient(colors: colors.isEmpty ? [.accentColor, .accentColor.opacity(0.7)] : colors,
+                       startPoint: .leading, endPoint: .trailing)
     }
 
     /// A quiet wash behind pane titles that keeps text legible in light and dark appearances.

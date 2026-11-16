@@ -221,18 +221,24 @@ struct StartPage: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("MediaPull")
                         .font(.largeTitle.weight(.semibold))
-                    Text("Browse any page and every image and video on it appears in Extracted Media, including the ones that load as you scroll. Save them into a folder, or download whole profiles, galleries and videos from hundreds of sites.")
+                    Text("""
+                        Browse any page and every image and video on it appears in Extracted Media, including the ones that load as you \
+                        scroll. Save them into a folder, or download whole profiles, galleries and videos from hundreds of sites.
+                        """)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 StartBookmarks(model: model)
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Try").font(.headline)
-                    StartRow(symbol: "globe", title: "Open a web page", detail: "Type an address above, for example nytimes.com/international") {
+                    StartRow(symbol: "globe", title: "Open a web page",
+                             detail: "Type an address above, for example nytimes.com/international") {
                         model.focusAddressToken += 1
                     }
-                    StartRow(symbol: "arrow.down.circle", title: "Or download from one of the supported sites",
-                             detail: "Instagram, YouTube, Bluesky, Pinterest and hundreds more: whole profiles, galleries, videos and playlists") {
+                    StartRow(
+                        symbol: "arrow.down.circle", title: "Or download from one of the supported sites",
+                        detail: "Instagram, YouTube, Bluesky, Pinterest and hundreds more: whole profiles, galleries, videos and playlists"
+                    ) {
                         model.showDownloads("")
                     }
                     StartRow(symbol: "folder", title: "Organise a folder",
@@ -247,7 +253,10 @@ struct StartPage: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Read-only", systemImage: "lock.shield")
                         .font(.headline)
-                    Text("MediaPull only reads from the web. It never uploads files and never likes, follows or posts anything. Pages you browse here can still send their own forms, such as a sign-in form.")
+                    Text("""
+                        MediaPull only reads from the web. It never uploads files and never likes, follows or posts anything. Pages you \
+                        browse here can still send their own forms, such as a sign-in form.
+                        """)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

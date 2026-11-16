@@ -3,7 +3,6 @@ import MediaPullCore
 import MediaPullEngines
 import MediaPullNet
 import SwiftUI
-import WebKit
 
 /// Settings (SPEC section 20).
 struct SettingsView: View {
@@ -107,7 +106,10 @@ struct GeneralSettings: View {
             Section("Browser") {
                 Toggle("Remember browsing history", isOn: $preferences.rememberHistory)
                 HStack {
-                    Text("\(app.browsing.history.entries.count) pages in history, \(app.browsing.bookmarks.folders.reduce(0) { $0 + $1.bookmarks.count }) bookmarks. Both stay on this Mac.")
+                    Text("""
+                        \(app.browsing.history.entries.count) pages in history, \
+                        \(app.browsing.bookmarks.folders.reduce(0) { $0 + $1.bookmarks.count }) bookmarks. Both stay on this Mac.
+                        """)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Menu("Clear History") {
@@ -144,7 +146,8 @@ struct GeneralSettings: View {
                     }
                 }
                 Button("Add Folder…") {
-                    FolderPicker.chooseFolder(title: "Add a Library Folder", prompt: "Add", start: AppModel.suggestedRootURL, window: nil) { url in
+                    FolderPicker.chooseFolder(title: "Add a Library Folder", prompt: "Add",
+                                              start: AppModel.suggestedRootURL, window: nil) { url in
                         if let url { Task { await app.addRoot(url) } }
                     }
                 }
@@ -153,7 +156,10 @@ struct GeneralSettings: View {
                 Picker("Layout for new folders", selection: $preferences.defaultLayout) {
                     ForEach(SaveLayout.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                Text("Archive keeps a small JSON file next to each item with its caption, date, source and post grouping, in the format gallery-dl uses. Media-library and archiving tools can import these folders with their details intact.")
+                Text("""
+                    Archive keeps a small JSON file next to each item with its caption, date, source and post grouping, in the format \
+                    gallery-dl uses. Media-library and archiving tools can import these folders with their details intact.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("When a file name is taken", selection: $preferences.conflict) {
@@ -218,7 +224,10 @@ struct ConversionSettings: View {
     var body: some View {
         Form {
             Section("Images") {
-                Text("WebP, AVIF, HEIC and JPEG XL images are converted: lossy images to JPEG at maximum quality, lossless or transparent images to PNG. Colour profiles and photo metadata are kept.")
+                Text("""
+                    WebP, AVIF, HEIC and JPEG XL images are converted: lossy images to JPEG at maximum quality, lossless or transparent \
+                    images to PNG. Colour profiles and photo metadata are kept.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Keep WebP, AVIF and HEIC as they are in Plain folders", isOn: $preferences.keepOriginalModernImages)
@@ -257,14 +266,16 @@ struct InstagramSettings: View {
                 }
                 Button("Clear Instagram Session") {
                     Task {
-                        await CookieBridge.clearWebsiteData(matching: ["instagram", "facebook", "fbcdn", "cdninstagram"],
-                                                            in: WKWebsiteDataStore.default())
+                        await CookieBridge.clearWebsiteData(matching: ["instagram", "facebook", "fbcdn", "cdninstagram"])
                         await app.engines.refreshSignIn()
                         cleared = true
                     }
                 }
                 if cleared { Text("Instagram data was removed from MediaPull.").font(.caption).foregroundStyle(.secondary) }
-                Text("MediaPull never sees your password. Your session stays in this app's browser and is shared with the download engine only while a job runs.")
+                Text("""
+                    MediaPull never sees your password. Your session stays in this app's browser and is shared with the download engine \
+                    only while a job runs.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -273,7 +284,9 @@ struct InstagramSettings: View {
                 ForEach(InstagramContent.allCases.filter { $0.group != .yours }, id: \.self) { content in
                     Toggle(content.label, isOn: Binding(
                         get: { preferences.defaultContent.contains(content) },
-                        set: { on in if on { preferences.defaultContent.insert(content) } else { preferences.defaultContent.remove(content) } }
+                        set: { on in
+                            if on { preferences.defaultContent.insert(content) } else { preferences.defaultContent.remove(content) }
+                        }
                     ))
                 }
                 Button("Restore Defaults") {
@@ -283,13 +296,20 @@ struct InstagramSettings: View {
                     ForEach(PacingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 Toggle("Sort into folders by type", isOn: $preferences.typeSubfolders)
-                Text("posts, reels, stories, highlights and profile pictures folders inside each account folder. Stories and highlights always get their own folders.")
+                Text("""
+                    posts, reels, stories, highlights and profile pictures folders inside each account folder. Stories and highlights \
+                    always get their own folders.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Stepper("Stop a sync after \(preferences.stopAfterKnown) posts already saved", value: $preferences.stopAfterKnown, in: 3 ... 60)
+                Stepper("Stop a sync after \(preferences.stopAfterKnown) posts already saved",
+                        value: $preferences.stopAfterKnown, in: 3 ... 60)
             }
             Section {
-                Text("Automated collection may breach Instagram's terms. The signed-in account bears any limits or checks Instagram applies, and you are responsible for respecting the rights of the people whose media you save.")
+                Text("""
+                    Automated collection may breach Instagram's terms. The signed-in account bears any limits or checks Instagram applies, \
+                    and you are responsible for respecting the rights of the people whose media you save.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -339,18 +359,31 @@ struct EngineSettings: View {
                 HStack {
                     Button("Use Previous Version") {
                         Task {
-                            try? await app.engineManager?.usePreviousVersions()
+                            do {
+                                try await app.engineManager?.usePreviousVersions()
+                                app.engineMessage = "Using the previous engine versions."
+                            } catch {
+                                app.engineMessage = "The previous versions could not be used: \(error.localizedDescription)"
+                            }
                             await app.refreshEngineVersions()
                         }
                     }
                     Button("Reset to Built-In Engines") {
                         Task {
-                            try? await app.engineManager?.resetToBuiltIn()
+                            do {
+                                try await app.engineManager?.resetToBuiltIn()
+                                app.engineMessage = "Using the engines built into MediaPull."
+                            } catch {
+                                app.engineMessage = "The engines could not be reset: \(error.localizedDescription)"
+                            }
                             await app.refreshEngineVersions()
                         }
                     }
                 }
-                Text("Updates are downloaded from PyPI, checked against their published checksums and tested before they are used. Instagram changes often, so keeping the engines current keeps pulls working.")
+                Text("""
+                    Updates are downloaded from PyPI, checked against their published checksums and tested before they are used. Instagram \
+                    changes often, so keeping the engines current keeps pulls working.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -360,7 +393,10 @@ struct EngineSettings: View {
                         NSWorkspace.shared.open(folder)
                     }
                 }
-                Text("gallery-dl (GPL-2.0), yt-dlp (Unlicense), Python (PSF), ffmpeg (LGPL-2.1) and their dependencies are included unmodified.")
+                Text("""
+                    gallery-dl (GPL-2.0), yt-dlp (Unlicense), Python (PSF), ffmpeg (LGPL-2.1) and their dependencies are included \
+                    unmodified.
+                    """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -396,7 +432,7 @@ struct AdvancedSettings: View {
             Section("Website data") {
                 Button("Clear All Website Data") {
                     Task {
-                        await CookieBridge.clearWebsiteData(matching: nil, in: WKWebsiteDataStore.default())
+                        await CookieBridge.clearWebsiteData(matching: nil)
                         await app.engines.refreshSignIn()
                     }
                 }

@@ -141,11 +141,13 @@ public struct InstagramAccountInfo: Sendable, Equatable {
 
 public struct PullOptions: Codable, Sendable, Equatable {
     public var content: Set<InstagramContent>
+    /// No longer read: the save folder decides the layout (D-70). Kept, and still written, so options stored by
+    /// earlier versions decode and earlier versions can read new ones.
     public var layout: SaveLayout
     public var rootID: UUID?
     public var pacing: PacingPreset
 
-    public init(content: Set<InstagramContent>, layout: SaveLayout, rootID: UUID?, pacing: PacingPreset) {
+    public init(content: Set<InstagramContent>, layout: SaveLayout = .archive, rootID: UUID?, pacing: PacingPreset) {
         self.content = content
         self.layout = layout
         self.rootID = rootID
@@ -304,7 +306,9 @@ public actor AppStore {
     }
 
     public func accounts() -> [InstagramAccountInfo] {
-        let models = (try? modelContext.fetch(FetchDescriptor<InstagramAccountModel>(sortBy: [SortDescriptor(\.lastPullAt, order: .reverse)]))) ?? []
+        let models = (try? modelContext.fetch(
+            FetchDescriptor<InstagramAccountModel>(sortBy: [SortDescriptor(\.lastPullAt, order: .reverse)])
+        )) ?? []
         return models.map(Self.info)
     }
 
@@ -328,7 +332,8 @@ public actor AppStore {
     }
 
     public func updateAccount(_ username: String, userID: String? = nil, fullName: String? = nil, options: PullOptions? = nil,
-                              newestSavedDate: Date? = nil, resumeCursor: String?? = nil, lastResult: String? = nil, pulledNow: Bool = false)
+                              newestSavedDate: Date? = nil, resumeCursor: String?? = nil, lastResult: String? = nil,
+                              pulledNow: Bool = false)
     {
         let model = accountModel(username)
         if let userID, !userID.isEmpty { model.userID = userID }

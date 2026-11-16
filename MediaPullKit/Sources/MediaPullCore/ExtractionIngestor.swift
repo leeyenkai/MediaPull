@@ -51,7 +51,9 @@ public struct EngineItemInput: Sendable {
     public var isDash: Bool
     public var fallbackURL: URL?
 
-    public init(context: EngineContext, kind: MediaKind, engineURL: String, thumbURL: URL?, width: Int?, height: Int?, isDash: Bool, fallbackURL: URL?) {
+    public init(context: EngineContext, kind: MediaKind, engineURL: String, thumbURL: URL?,
+                width: Int?, height: Int?, isDash: Bool, fallbackURL: URL?)
+    {
         self.context = context
         self.kind = kind
         self.engineURL = engineURL
@@ -176,6 +178,12 @@ public actor ExtractionIngestor {
     @discardableResult
     public func ingest(json: String, frame: FrameInfo) -> Int {
         guard let data = json.data(using: .utf8), let batch = try? JSONDecoder().decode(RawBatch.self, from: data) else { return 0 }
+        // The page the batch says it came from (location.href when it was sent): a late batch from the previous page,
+        // arriving after the tab's address changed, still belongs to that page; pushState addresses are kept too.
+        var frame = frame
+        if frame.isMainFrame, let page = batch.page.flatMap(URL.init(string:)), page.scheme == "https" || page.scheme == "http" {
+            frame.pageURL = page
+        }
         var count = 0
         let base = frame.frameURL ?? frame.pageURL
         let frameKey = frame.frameURL?.absoluteString ?? frame.pageURL.absoluteString
@@ -219,7 +227,8 @@ public actor ExtractionIngestor {
            ![.img, .srcset, .picture].contains(origin), CDNRules.proxiedTarget(of: url) == nil
         { return false }
         var format = candidate.t.flatMap(MediaFormat.fromMIME) ?? URLNormalizer.formatFromExtension(of: url)
-        if format == nil, origin == .data, let mime = raw.dropFirst(5).split(separator: ";").first {
+        // The type ends at ";" (data:image/png;base64,…) or at "," (data:image/svg+xml,<svg…).
+        if format == nil, origin == .data, let mime = raw.dropFirst(5).split(whereSeparator: { $0 == ";" || $0 == "," }).first {
             format = MediaFormat.fromMIME(String(mime))
         }
         let kind = Self.kind(origin: origin, format: format)
@@ -244,8 +253,12 @@ public actor ExtractionIngestor {
         let assetKey = CDNRules.assetKey(for: url)
         var owners: [String] = []
         if let owner = variantOwner[variant.id] { owners.append(owner) }
-        if let groupKey, let owner = groupOwner[groupKey], let item = items[owner], Self.compatible(item.kind, kind) { owners.append(owner) }
-        if let assetKey, let owner = assetOwner[assetKey], let item = items[owner], Self.compatible(item.kind, kind) { owners.append(owner) }
+        if let groupKey, let owner = groupOwner[groupKey], let item = items[owner], Self.compatible(item.kind, kind) {
+            owners.append(owner)
+        }
+        if let assetKey, let owner = assetOwner[assetKey], let item = items[owner], Self.compatible(item.kind, kind) {
+            owners.append(owner)
+        }
         owners = Array(Set(owners)).sorted { (items[$0]?.discoveryIndex ?? 0) < (items[$1]?.discoveryIndex ?? 0) }
 
         let itemID: String
@@ -261,15 +274,19 @@ public actor ExtractionIngestor {
             items[itemID] = item
         } else {
             itemID = "w:" + variant.id
-            let context = WebContext(pageURL: frame.pageURL, pageTitle: title, frameURL: frame.frameURL, frameOrigin: frame.origin,
-                                     isMainFrame: frame.isMainFrame)
-            var item = MediaItem(
+            let context = WebContext(
+                pageURL: frame.pageURL,
+                pageTitle: title,
+                frameURL: frame.frameURL,
+                frameOrigin: frame.origin,
+                isMainFrame: frame.isMainFrame
+            )
+            let item = MediaItem(
                 id: itemID, kind: kind, variants: [variant], source: .web(context), discoveryIndex: nextIndex,
                 group: frame.pageURL.absoluteString, groupTitle: title ?? frame.pageURL.host ?? "Page",
                 alt: candidate.alt?.nonEmpty, flags: flags
             )
             nextIndex += 1
-            addDerived(for: variant, to: &item)
             items[itemID] = item
         }
         if var item = items[itemID] {
@@ -384,9 +401,14 @@ public actor ExtractionIngestor {
 
     static func isTracker(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        let target = host + url.path.lowercased()
-        return trackerHosts.contains { target == $0 || target.hasSuffix("." + $0) || host.hasSuffix("." + $0) || host == $0 || target.hasPrefix($0) }
-            || (host.hasSuffix("facebook.com") && url.path.hasPrefix("/tr"))
+        let path = url.path.lowercased()
+        // An entry is a domain (and its subdomains), optionally followed by a path prefix such as pinimg.com/ct.
+        return trackerHosts.contains { entry in
+            let parts = entry.split(separator: "/", maxSplits: 1)
+            let domain = String(parts[0])
+            guard host == domain || host.hasSuffix("." + domain) else { return false }
+            return parts.count == 1 || path.hasPrefix("/" + parts[1])
+        } || (host.hasSuffix("facebook.com") && url.path.hasPrefix("/tr"))
     }
 
     static func looksLikeIcon(_ url: URL) -> Bool {
@@ -407,11 +429,18 @@ public actor ExtractionIngestor {
     private func ingest(engineItem input: EngineItemInput) {
         let context = input.context
         if var existing = items[context.key] {
-            let fresh = input.makeItem(discoveryIndex: existing.discoveryIndex)
-            existing.variants = fresh.variants
-            existing.source = fresh.source
-            existing.bestID = fresh.bestID
+            // A refreshed listing replaces what the engine says about the item; an empty one keeps what was there.
+            var fresh = input.makeItem(discoveryIndex: existing.discoveryIndex)
+            guard !fresh.variants.isEmpty else { return }
+            for variant in existing.variants where !fresh.variants.contains(where: { $0.id == variant.id }) {
+                variantOwner[variant.id] = nil
+            }
+            fresh.group = existing.group
+            existing = fresh
             items[context.key] = existing
+            for variant in fresh.variants {
+                variantOwner[variant.id] = context.key
+            }
             return
         }
         let item = input.makeItem(discoveryIndex: nextIndex)
@@ -429,7 +458,8 @@ public actor ExtractionIngestor {
         for input in inputs {
             let id = "pdf:\(input.documentURL.absoluteString)#\(input.page)-\(input.index)"
             var variant = MediaVariant(id: input.file.absoluteString, url: input.file, format: input.format,
-                                       pixelSize: PixelSize(width: input.width, height: input.height), byteCount: input.bytes, origin: .document)
+                                       pixelSize: PixelSize(width: input.width, height: input.height), byteCount: input.bytes,
+                                       origin: .document)
             variant.check = .verified
             let context = WebContext(pageURL: input.documentURL, pageTitle: input.documentTitle, documentPage: input.page)
             var item = MediaItem(
@@ -527,7 +557,7 @@ public extension EngineItemInput {
         }
         let group = context.postID ?? context.postShortcode ?? context.key
         var title = context.username.map { "@\($0)" } ?? context.category.capitalized
-        if let date = context.date { title += " · " + DateFormats.utc("d MMM yyyy").string(from: date) }
+        if let date = context.date { title += " · " + DateFormats.string(date, format: "d MMM yyyy") }
         if let highlight = context.highlightTitle { title += " · \(highlight)" }
         var flags = Set<MediaFlag>()
         if context.pinned { flags.insert(.pinned) }
