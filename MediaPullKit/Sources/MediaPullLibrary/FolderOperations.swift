@@ -276,6 +276,12 @@ public enum FolderOperations {
         }
         var plan = OrganisePlan(title: "Rename \(item.lastPathComponent)", root: item.deletingLastPathComponent())
         guard newName != item.lastPathComponent, !newName.isEmpty else { return plan }
+        // A change of case only finds the item itself under the new name on case-insensitive volumes; it is not a collision.
+        let direct = item.deletingLastPathComponent().appendingPathComponent(newName)
+        if OperationJournal.sameFile(item.path, direct.path) {
+            plan.moves = [PlannedMove(source: item, destination: direct)]
+            return plan
+        }
         var taken = Set<String>()
         let dest = freeDestination(for: newName, in: item.deletingLastPathComponent(), taken: &taken)
         plan.moves = [PlannedMove(source: item, destination: dest.url)]
@@ -337,9 +343,16 @@ public enum FolderOperations {
 
 /// The folder each item goes to for the automatic sorts that need no outside knowledge.
 public enum SortRules {
-    public static func byDate(_ item: MediaEntry) -> [[String]] {
+    /// Folder names follow the Mac's time zone, so a morning photo is filed under its own day, not UTC's.
+    static func formatter(_ format: String, _ timeZone: TimeZone) -> DateFormatter {
+        let formatter = DateFormats.utc(format)
+        formatter.timeZone = timeZone
+        return formatter
+    }
+
+    public static func byDate(_ item: MediaEntry, timeZone: TimeZone = .current) -> [[String]] {
         let date = item.date
-        return [[DateFormats.utc("yyyy").string(from: date), DateFormats.utc("yyyy-MM").string(from: date)]]
+        return [[formatter("yyyy", timeZone).string(from: date), formatter("yyyy-MM", timeZone).string(from: date)]]
     }
 
     public static func bySource(_ item: MediaEntry) -> [[String]] {
@@ -358,14 +371,15 @@ public enum SortRules {
     }
 
     /// One folder per event: the first day, and the place when known.
-    public static func eventFolders(_ items: [MediaEntry], gap: TimeInterval) -> [String: [[String]]] {
+    public static func eventFolders(_ items: [MediaEntry], gap: TimeInterval, timeZone: TimeZone = .current) -> [String: [[String]]] {
+        let day = formatter("yyyy-MM-dd", timeZone), year = formatter("yyyy", timeZone)
         var query = LibraryQuery()
         query.eventGap = gap
         var result: [String: [[String]]] = [:]
         var used: [String: Int] = [:]
         for section in query.events(items).reversed() {
             guard let first = section.items.first else { continue }
-            var name = DateFormats.utc("yyyy-MM-dd").string(from: first.date)
+            var name = day.string(from: first.date)
             if let city = section.items.compactMap({ $0.record?.place?.city }).first {
                 name += " \(city)"
             }
@@ -374,7 +388,7 @@ public enum SortRules {
                 name += " (\(used[name]!))"
             }
             for item in section.items {
-                result[item.path] = [[DateFormats.utc("yyyy").string(from: first.date), name]]
+                result[item.path] = [[year.string(from: first.date), name]]
             }
         }
         return result

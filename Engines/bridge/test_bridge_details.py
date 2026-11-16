@@ -111,6 +111,78 @@ def test_site_choices_reach_gallery_dl_and_unknown_switches_do_not():
     assert processors[0]["name"] == "ugoira" and processors[0]["extension"] == "mp4"
 
 
+def test_messages_never_carry_query_secrets():
+    text = bridge._clean("HttpError: '401 Unauthorized' for 'https://api.example.com/v1/posts?api_key=K1&user_id=42&sig=S3' "
+                         "(https://cdn.example.com/a.jpg?token=T4#x) sessionid=abc; 'access_token': 'T5' password=P6")
+    for secret in ("K1", "42", "S3", "T4", "T5", "P6", "abc"):
+        assert secret not in text, text
+    assert "https://api.example.com/v1/posts?REDACTED" in text and "401 Unauthorized" in text, text
+    assert bridge._clean("no 'token' in the response") == "no 'token' in the response"
+
+
+def test_checkpoints_belong_to_instagram_only():
+    import logging
+
+    capture = Capture()
+    bridge.EMITTER = capture
+    handler = bridge.EventLogHandler()
+
+    def log(name, message):
+        handler.emit(logging.LogRecord(name, logging.ERROR, __file__, 1, message, None, None))
+
+    def reset(instagram):
+        bridge.STATE.update(checkpoint=None, errors=[], instagram=instagram)
+
+    reset(False)
+    log("deviantart", "HttpError: '429 Too Many Requests' for 'https://www.deviantart.com/api'")
+    log("deviantart", "Redirect to login page")
+    assert bridge.STATE["checkpoint"] is None and len(bridge.STATE["errors"]) == 2, bridge.STATE
+    reset(False)
+    log("instagram", "HttpError: '429 Too Many Requests' for 'https://www.instagram.com/api'")
+    assert bridge.STATE["checkpoint"]["kind"] == "rate_limit", bridge.STATE
+    reset(True)
+    log("downloader.http", "'429 Too Many Requests' for 'https://scontent.cdninstagram.com/a.jpg'")
+    assert bridge.STATE["checkpoint"]["kind"] == "rate_limit", bridge.STATE
+    reset(False)
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"url": "https://www.instagram.com/someone/"}, staging)
+        assert bridge.STATE["instagram"] is True
+        bridge.configure_gallery_dl({"url": "https://www.deviantart.com/someone"}, staging)
+        assert bridge.STATE["instagram"] is False
+    reset(False)
+
+
+def test_browser_user_agent_goes_with_cookies():
+    from gallery_dl import config
+
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"url": "https://www.deviantart.com/someone", "cookies": "/tmp/c.txt", "user_agent": "Browser/1.0"},
+                                    staging)
+        assert config.get(("extractor",), "user-agent") == "Browser/1.0"
+        bridge.configure_gallery_dl({"url": "https://www.instagram.com/someone/", "cookies": "/tmp/c.txt", "user_agent": "Browser/1.0"},
+                                    staging)
+        assert config.get(("extractor",), "user-agent") is None
+        assert "user-agent" not in config.get(("extractor",), "instagram")
+        bridge.configure_gallery_dl({"url": "https://www.deviantart.com/someone", "user_agent": "Browser/1.0"}, staging)
+        assert config.get(("extractor",), "user-agent") is None
+        bridge.configure_gallery_dl({"category": "reddit", "cookies": "/tmp/c.txt", "user_agent": "Browser/1.0",
+                                     "site_keys": {"client-id": "id"}}, staging)
+        assert config.get(("extractor",), "reddit")["user-agent"].startswith("macos:mediapull")
+    bridge.STATE["instagram"] = False
+
+
+def test_signal_path_writes_a_parsable_line_without_the_lock():
+    read_fd, write_fd = os.pipe()
+    emitter = bridge.Emitter(os.fdopen(write_fd, "w", buffering=1, encoding="utf-8"))
+    with emitter.lock:
+        emitter.stream.write('{"v": 1, "seq": 1, "type": "lo')
+        emitter.emit_last("done", status="cancelled", counts={})
+    emitter.stream.close()
+    with os.fdopen(read_fd, encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    assert json.loads(lines[1]) == {"v": 1, "seq": 1, "type": "done", "status": "cancelled", "counts": {}}, lines
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

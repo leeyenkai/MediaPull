@@ -8,12 +8,14 @@ public actor VectorStore {
     public let dimension: Int
     let vectorURL: URL
     let idURL: URL
+    let excludeFromBackup: Bool
     var ids: [Data] = []
     var rowByID: [Data: Int] = [:]
     var vectors: [UInt16] = []
 
     public init(folder: URL, name: String, dimension: Int, excludeFromBackup: Bool = false) {
         self.dimension = dimension
+        self.excludeFromBackup = excludeFromBackup
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         vectorURL = folder.appendingPathComponent("\(name).vec")
         idURL = folder.appendingPathComponent("\(name).ids")
@@ -33,15 +35,34 @@ public actor VectorStore {
         self.ids = ids
         self.vectors = vectors
         rowByID = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { _, b in b })
-        for url in [vectorURL, idURL] where excludeFromBackup {
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var target = url
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-            }
-            try? target.setResourceValues(values)
+        // A torn append leaves one file longer than the other; later rows must line up again.
+        if idData.count != rows * 32 {
+            Self.truncate(idURL, to: rows * 32)
         }
+        if vecData.count != rows * dimension * 2 {
+            Self.truncate(vectorURL, to: rows * dimension * 2)
+        }
+        if excludeFromBackup {
+            for url in [vectorURL, idURL] {
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    FileManager.default.createFile(atPath: url.path, contents: nil)
+                }
+                Self.exclude(url)
+            }
+        }
+    }
+
+    static func exclude(_ url: URL) {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var target = url
+        try? target.setResourceValues(values)
+    }
+
+    static func truncate(_ url: URL, to length: Int) {
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        try? handle.truncate(atOffset: UInt64(length))
+        try? handle.close()
     }
 
     public static func id(_ key: String) -> Data {
@@ -64,14 +85,17 @@ public actor VectorStore {
         let half = Half.bits(vector)
         if let row = rowByID[id] {
             vectors.replaceSubrange(row * dimension ..< (row + 1) * dimension, with: half)
-            rewrite()
+            // In place: Analyse Again replaces every face vector, and rewriting the whole file for each would not scale.
+            if !write(half.withUnsafeBufferPointer { Data(buffer: $0) }, to: vectorURL, at: row * dimension * 2) {
+                rewrite()
+            }
             return row
         }
         let row = ids.count
         ids.append(id)
         vectors.append(contentsOf: half)
         rowByID[id] = row
-        append(id: id, vector: half)
+        append(row: row, id: id, vector: half)
         return row
     }
 
@@ -136,22 +160,45 @@ public actor VectorStore {
         try? FileManager.default.removeItem(at: idURL)
     }
 
-    func append(id: Data, vector: [UInt16]) {
-        func add(_ data: Data, to url: URL) {
-            if let handle = try? FileHandle(forWritingTo: url) {
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-                try? handle.close()
-            } else {
-                try? data.write(to: url)
+    /// Writes row `row` at its own offset in both files, so rows stay aligned even after an earlier write failed.
+    /// When the vector cannot be written, the id is taken back so the files never disagree.
+    func append(row: Int, id: Data, vector: [UInt16]) {
+        guard write(id, to: idURL, at: row * 32) else {
+            Self.truncate(idURL, to: row * 32)
+            return
+        }
+        if !write(vector.withUnsafeBufferPointer { Data(buffer: $0) }, to: vectorURL, at: row * dimension * 2) {
+            Self.truncate(idURL, to: row * 32)
+            Self.truncate(vectorURL, to: row * dimension * 2)
+        }
+    }
+
+    func write(_ data: Data, to url: URL, at offset: Int) -> Bool {
+        if !FileManager.default.fileExists(atPath: url.path) {
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else { return false }
+            // Face files lose the exclusion whenever they are made again (D-61).
+            if excludeFromBackup {
+                Self.exclude(url)
             }
         }
-        add(id, to: idURL)
-        add(vector.withUnsafeBufferPointer { Data(buffer: $0) }, to: vectorURL)
+        guard let handle = try? FileHandle(forWritingTo: url) else { return false }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: UInt64(offset))
+            try handle.write(contentsOf: data)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func rewrite() {
         try? ids.reduce(Data(), +).write(to: idURL, options: .atomic)
         try? vectors.withUnsafeBufferPointer { Data(buffer: $0) }.write(to: vectorURL, options: .atomic)
+        // An atomic write replaces the file, and the exclusion with it.
+        if excludeFromBackup {
+            Self.exclude(idURL)
+            Self.exclude(vectorURL)
+        }
     }
 }

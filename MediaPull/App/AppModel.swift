@@ -226,6 +226,12 @@ final class AppModel {
 
     func installEngineUpdates() async {
         guard let engineManager else { return }
+        // A running engine would load half-replaced files (R-1306).
+        let engineKinds: Set<JobKind> = [.save, .pull, .scan, .stream, .engineUpdate]
+        guard !jobs.jobs.contains(where: { engineKinds.contains($0.kind) && $0.state.isActive }) else {
+            engineMessage = "Updates install once the current downloads finish."
+            return
+        }
         let job = Job(kind: .engineUpdate, title: "Updating download engines")
         job.state = .running
         jobs.add(job)
@@ -240,8 +246,6 @@ final class AppModel {
             }
         }
         engineUpdates = []
-        analysis.start(inMemory: SelfTestRunner.isActive)
-        Task { await journal.prune(olderThan: preferences.undoHistoryDays) }
         await refreshEngineVersions()
         engineMessage = messages.joined(separator: " ")
         job.notes = messages
@@ -319,7 +323,7 @@ final class AppModel {
             job.state = .running
             var inline: [String: Data] = [:]
             for item in items where item.best?.url.scheme == "blob" {
-                if let window, let data = await window.browser.readBlob(item.best!.url) { inline[item.id] = data }
+                if let window, let data = await window.tab(showing: item.source.pageURL).readBlob(item.best!.url) { inline[item.id] = data }
             }
             let context = SaveContext(cookies: await self.cookieJar(), userAgent: self.userAgent, inlineData: inline,
                                       nameOverrides: window?.customNames ?? [:])
@@ -347,6 +351,8 @@ final class AppModel {
                     }
                 }
             }
+            // Items a cancelled job never reached are no longer waiting.
+            window?.clearQueued(items.map(\.id).filter { outcomes[$0] == nil })
             for item in items {
                 guard let outcome = outcomes[item.id], let url = outcome.url, let engine = item.source.engine else { continue }
                 await store?.recordArchive(key: engine.key, account: engine.username ?? engine.category, path: url.path, sha256: "")

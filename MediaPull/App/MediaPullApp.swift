@@ -97,10 +97,10 @@ struct AppCommands: Commands {
             Divider()
             Button(window.map { "Save to “\($0.saveFolderName)”" } ?? "Save") { window?.saveItems() }
                 .keyboardShortcut("s")
-                .disabled(window?.selection.isEmpty ?? true)
+                .disabled(window?.selection.isEmpty ?? true || window?.section != .collect)
             Button("Save to…") { window?.saveTo() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(window?.selection.isEmpty ?? true)
+                .disabled(window?.selection.isEmpty ?? true || window?.section != .collect)
             Divider()
             Button("Add Library Folder…") { window?.library.promptForRoot() }
             Button("New Folder") {
@@ -115,7 +115,7 @@ struct AppCommands: Commands {
                 if let window, let id = window.selection.first, window.selection.count == 1 { window.edit(id) }
             }
             .keyboardShortcut("e")
-            .disabled(window?.selection.count != 1)
+            .disabled(window?.selection.count != 1 || window?.section != .collect)
             Button("Select All Media") { window?.selectAll() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
             Button("Deselect All Media") { window?.deselectAll() }

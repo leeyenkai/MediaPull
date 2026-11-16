@@ -5,10 +5,12 @@ requests.Session) or yt-dlp (through YoutubeDL.urlopen) is checked here first:
 
 - GET and HEAD to http and https URLs are allowed, without a body.
 - POST is allowed only for Instagram's GraphQL read endpoints (an operation name that is a query and
-  names no write action), YouTube's player and next endpoints, which read a video's details, and the
+  names no write action), YouTube's player, next and browse endpoints, which read a video's details or a
+  channel's or playlist's next page, and the
   read-only POSTs other sites need (READ_POSTS, D-72): listings, searches, file links and anonymous tokens,
   each audited against the bundled gallery-dl. Never logins, files, multipart or binary bodies, or a large body.
 - A few GETs that act on an account (READ_GETS_DENIED) are refused as well.
+- Every redirect hop is checked again, so a 307 or 308 cannot resend a permitted POST elsewhere.
 - Everything else raises PolicyViolation before any byte leaves the machine.
 """
 
@@ -25,9 +27,10 @@ DENIED_WORDS = re.compile(
 )
 POST_HOSTS = ("instagram.com",)
 POST_PATHS = ("/graphql/query", "/api/graphql")
-# YouTube's read endpoints for one video (D-55). Writing actions (like, subscribe, comment) live at other paths.
+# YouTube's read endpoints for one video (D-55) and for the next page of a channel or playlist (browse, R-3505).
+# Writing actions (like, subscribe, comment) live at other paths.
 YOUTUBE_HOSTS = ("youtube.com", "youtubei.googleapis.com")
-YOUTUBE_PATHS = ("/youtubei/v1/player", "/youtubei/v1/next")
+YOUTUBE_PATHS = ("/youtubei/v1/player", "/youtubei/v1/next", "/youtubei/v1/browse")
 BODY_TYPES_DENIED = ("multipart/", "application/octet-stream", "image/", "video/", "audio/")
 
 # Read-only POSTs that gallery-dl's site extractors need (D-72, docs/spikes/gallery-dl-post-audit.md): (hosts, path, body rule).
@@ -87,6 +90,11 @@ READ_POSTS = (
 )
 EHENTAI_METHODS = ("gdata", "gtoken", "showpage", "imagedispatch")
 INTERSTITIAL_FIELDS = {"imgContinue", "op", "id", "pre", "adb", "next"}
+SIGN_IN_KEYS = {"password", "pass", "passwd", "refresh_token", "otp"}
+# GraphQL operation names are checked word by word: a substring test would refuse reads such as SubredditQuery ("edit").
+GRAPHQL_WRITE_WORDS = {"add", "login", "logout", "signin", "signup", "register", "rate", "favorite", "favourite", "unlike", "unsave",
+                       "pin", "unpin", "hide", "watch", "unwatch"}
+GRAPHQL_WRITE_PREFIX = re.compile(r"(like|unlike|follow|unfollow|create|delete|update|add|remove|vote|report|save|mark|send)", re.I)
 # GETs that act on an account: thanking or liking a post.
 READ_GETS_DENIED = (
     (("vipergirls.to",), r"/post_thanks\.php", r"do=post_thanks_add"),
@@ -223,11 +231,42 @@ def _first(value):
     return value[0] if isinstance(value, list) and value else value
 
 
+def _keys(value, depth=0):
+    """Every key in a body, at any depth, including JSON documents held in string fields (GraphQL variables)."""
+    if depth > 12:
+        return set()
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "replace")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.startswith(("{", "[")):
+            return set()
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return set()
+    keys = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys.add(str(key).lower())
+            keys |= _keys(item, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            keys |= _keys(item, depth + 1)
+    return keys
+
+
+def _is_write_operation(name):
+    if re.search(r"(login|logout|mutation)", name, re.I) or GRAPHQL_WRITE_PREFIX.match(name):
+        return True
+    words = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+", name)
+    return any(DENIED_WORDS.fullmatch(word) or word.lower() in GRAPHQL_WRITE_WORDS for word in words)
+
+
 def _check_body(rule, method, url, data, headers, parts):
     """The body rules for READ_POSTS: each makes sure the request reads and never signs in or acts on an account."""
     fields = _fields(data)
-    lowered = {k.lower() for k in fields}
-    if {"password", "pass", "passwd", "refresh_token", "otp"} & lowered and rule != "guest":
+    if SIGN_IN_KEYS & _keys(fields) and rule != "guest":
         raise PolicyViolation(method, url, "sign-in requests are never sent")
     if rule is None:
         return
@@ -242,7 +281,7 @@ def _check_body(rule, method, url, data, headers, parts):
         elif not names:
             raise PolicyViolation(method, url, "GraphQL request without a query or an operation name")
         for name in names:
-            if re.search(r"(Login|Mutation|^(Like|Follow|Unfollow|Create|Delete|Update|Add|Remove|Vote|Report|Save|Mark|Send))", name):
+            if _is_write_operation(name):
                 raise PolicyViolation(method, url, f"operation {name} is not a read")
     elif rule == "client_credentials":
         if _first(fields.get("grant_type")) != "client_credentials":
@@ -309,6 +348,21 @@ def install(reporter=None, patch_ytdlp=True):
 
         guarded_request._mediapull_guard = True
         requests.Session.request = guarded_request
+
+    # Redirects go through Session.send (resolve_redirects), never through Session.request.
+    if not getattr(requests.Session.send, "_mediapull_guard", False):
+        original_send = requests.Session.send
+
+        def guarded_send(self, request, **kwargs):
+            try:
+                check(request.method, request.url, data=request.body, headers=request.headers)
+            except PolicyViolation as exc:
+                _report(exc)
+                raise
+            return original_send(self, request, **kwargs)
+
+        guarded_send._mediapull_guard = True
+        requests.Session.send = guarded_send
 
     if patch_ytdlp:
         try:

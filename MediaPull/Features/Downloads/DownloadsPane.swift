@@ -162,7 +162,7 @@ struct DownloadsPane: View {
     private var form: some View {
         switch downloads.target {
         case .empty:
-            hint("Open a page, or type an address, @account or #hashtag.")
+            hint("Open a page in the browser, or type an address, @account or #hashtag. Instagram, YouTube, Bluesky, Pinterest, ArtStation and hundreds of other sites work here.")
         case let .instagram(draft):
             InstagramForm(model: model, draft: Binding(get: { draft }, set: { downloads.target = .instagram($0) }))
                 .id(draft.username + (draft.hashtag ?? "") + (draft.postURL?.absoluteString ?? ""))

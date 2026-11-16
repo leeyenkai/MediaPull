@@ -31,9 +31,10 @@ struct TourPage: Identifiable {
         TourPage(id: 3, pane: .library, symbol: "folder.badge.plus", title: "Save into your folders",
                  text: "Drag items onto a Library folder or press ⌘S. MediaPull saves the largest version as JPEG, PNG, GIF or MP4, "
                      + "and in Archive folders adds a small metadata file next to each one."),
-        TourPage(id: 4, pane: .source, symbol: "person.crop.rectangle.stack", title: "Pull Instagram accounts",
-                 text: "Sign in once in the browser, then choose Pull Account (⇧⌘P) for posts, Reels, stories, highlights and the "
-                     + "profile picture. Requests are paced, and later pulls only fetch what is new."),
+        TourPage(id: 4, pane: .source, symbol: "arrow.down.circle", title: "Download from hundreds of sites",
+                 text: "The Downloads pane (⌥⌘4) follows the page you are on: whole Instagram, Bluesky or ArtStation profiles, "
+                     + "galleries, and videos and playlists from YouTube and other video sites, each with its own options. "
+                     + "Sign in to a site in the browser to include what only signed-in visitors see. Later downloads fetch only what is new."),
         TourPage(id: 5, pane: nil, symbol: "rectangle.3.group", title: "Make it yours",
                  text: "Drag the dividers to resize panes. Move or stack them with the arrange button in each title bar or "
                      + "View > Arrange Panes, and choose a theme in Settings > Appearance."),
@@ -94,15 +95,15 @@ struct WalkthroughView: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
             Text("Welcome to MediaPull").font(.largeTitle.weight(.semibold))
-            Text("Collect the images and videos from any web page, or pull a whole Instagram account, into your own folders at the "
-                + "highest quality available.")
+            Text("Collect the images and videos from any web page, or download whole profiles, galleries and videos from hundreds "
+                + "of sites, into your own folders at the highest quality available.")
                 .fixedSize(horizontal: false, vertical: true)
             Label("Only reads from the web. MediaPull never uploads files and never posts, likes or follows.", systemImage: "lock.shield")
             Label("Saves normal JPEG, PNG, GIF and MP4 files. WebP and other modern formats are converted for you.", systemImage: "photo")
             Spacer(minLength: 0)
             Text("Would you like a one-minute tour? You can skip it and open it later from Settings.")
                 .foregroundStyle(.secondary)
-            Text("Automated collection may breach some sites' terms, including Instagram's. You are responsible for respecting the "
+            Text("Automated collection may breach some sites' terms. You are responsible for respecting the "
                 + "rights of the people whose media you save.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -155,12 +156,12 @@ struct WalkthroughView: View {
 
     private var instagram: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Instagram (optional)").font(.title2.weight(.semibold))
-            Text("To pull an account's posts, Reels, stories and highlights, sign in to Instagram in MediaPull's browser. Your "
-                + "password goes only to Instagram; MediaPull never sees it.")
+            Text("Signing in to sites (optional)").font(.title2.weight(.semibold))
+            Text("Some sites, such as Instagram and Twitter, only show posts to signed-in visitors. Sign in to them in MediaPull's "
+                + "browser whenever you need to; your password goes only to the site, and MediaPull never sees it.")
                 .fixedSize(horizontal: false, vertical: true)
-            Text("MediaPull waits several seconds between requests so the account is not flagged. If Instagram asks you to confirm "
-                + "it is you, the page opens in the browser and pulls pause until you are done.")
+            Text("Downloads wait between requests so accounts are not flagged. If a site asks you to confirm it is you, the page "
+                + "opens in the browser and downloads pause until you are done.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Sign In to Instagram Now") { finish(signIn: true) }

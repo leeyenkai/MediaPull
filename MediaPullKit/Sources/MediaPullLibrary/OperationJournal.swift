@@ -109,11 +109,15 @@ public actor OperationJournal {
                                  undone: false, finished: false)
         let total = plan.foldersToCreate.count + plan.moves.count + plan.itemsToTrash.count + plan.foldersToTrash.count
         var done = 0
+        var lastSave = Date()
+        // A quit mid-operation must leave every step it took undoable (R-3807). Small journals are saved after every
+        // item; large ones, whose saves grow with them, a few times a second.
         func tick() {
             done += 1
             progress(done, total)
-            if done % 50 == 0 {
+            if entry.steps.count < 200 || Date().timeIntervalSince(lastSave) >= 0.2 {
                 save(entry)
+                lastSave = Date()
             }
         }
         save(entry)
@@ -217,6 +221,17 @@ public actor OperationJournal {
         var trashed: NSURL?
         try fm.trashItem(at: item, resultingItemURL: &trashed)
         entry.steps.append(.trash(original: item.path, trashed: (trashed as URL?)?.path ?? ""))
+        // Where an item went in the Trash cannot be found again, so it is saved straight away.
+        save(entry)
+    }
+
+    /// Whether two paths name the same file, as a case-only rename's old and new names do on most Mac volumes.
+    static func sameFile(_ a: String, _ b: String) -> Bool {
+        guard a.lowercased() == b.lowercased() else { return false }
+        let key: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+        guard let first = try? URL(fileURLWithPath: a).resourceValues(forKeys: key).fileResourceIdentifier,
+              let second = try? URL(fileURLWithPath: b).resourceValues(forKeys: key).fileResourceIdentifier else { return false }
+        return first.isEqual(second)
     }
 
     // MARK: Undo
@@ -228,72 +243,119 @@ public actor OperationJournal {
             skipped: [],
             moves: []
         ) }
-        var restored = 0
-        var skipped: [String] = []
-        var moves: [(String, String)] = []
-        for step in entry.steps.reversed() {
-            switch step {
-            case let .makeFolder(path):
-                // Only an empty folder this operation made is removed; anything put in it since keeps it.
-                let url = URL(fileURLWithPath: path)
-                if fm.fileExists(atPath: path), Self.holdsNoFiles(url), (try? fm.contentsOfDirectory(atPath: path))?
-                    .allSatisfy(FolderOperations.ignored.contains) == true
-                {
-                    try? fm.removeItem(at: url)
-                }
-            case let .move(from, to, size, modified):
-                let dest = URL(fileURLWithPath: to)
-                guard fm.fileExists(atPath: to) else { skipped.append("\(dest.lastPathComponent) is no longer at \(to)"); continue }
-                if let size {
-                    let values = try? dest.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-                    if values?.fileSize.map(Int64.init) != size
-                        || abs((values?.contentModificationDate ?? .distantPast).timeIntervalSince(modified ?? .distantPast)) > 1
-                    {
-                        skipped.append("\(dest.lastPathComponent) changed since, so it was left in place")
-                        continue
-                    }
-                }
-                guard !fm.fileExists(atPath: from)
-                else { skipped.append("\(dest.lastPathComponent): another file now has its old name"); continue }
-                do {
-                    try fm.createDirectory(at: URL(fileURLWithPath: from).deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try fm.moveItem(at: dest, to: URL(fileURLWithPath: from))
-                    if !to.hasSuffix(".json") {
-                        restored += 1
-                    }
-                    moves.append((to, from))
-                } catch { skipped.append("\(dest.lastPathComponent): \(error.localizedDescription)") }
-            case let .clone(_, to):
-                // The copy goes to the Trash rather than being deleted (R-3804).
-                if fm.fileExists(atPath: to) {
-                    do {
-                        try fm.trashItem(at: URL(fileURLWithPath: to), resultingItemURL: nil)
-                        if !to.hasSuffix(".json") {
-                            restored += 1
-                        }
-                    } catch { skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): \(error.localizedDescription)") }
-                }
-            case let .trash(original, trashed):
-                guard !trashed.isEmpty, fm.fileExists(atPath: trashed) else {
-                    skipped.append("\(URL(fileURLWithPath: original).lastPathComponent) is no longer in the Trash")
-                    continue
-                }
-                guard !fm.fileExists(atPath: original)
-                else { skipped.append("\(URL(fileURLWithPath: original).lastPathComponent) exists again"); continue }
-                do {
-                    try fm.createDirectory(
-                        at: URL(fileURLWithPath: original).deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
-                    if !original.hasSuffix(".json") {
-                        restored += 1
-                    }
-                } catch { skipped.append("\(URL(fileURLWithPath: original).lastPathComponent): \(error.localizedDescription)") }
+        var report = UndoReport(restored: 0, skipped: [], moves: [])
+        // A metadata file is undone with its media and only when the media went back, so the two stay together.
+        for unit in Self.units(entry.steps).reversed() {
+            guard undo(unit[0], report: &report) else { continue }
+            for step in unit.dropFirst() {
+                undo(step, report: &report)
             }
         }
         entry.undone = true
         save(entry)
-        return UndoReport(restored: restored, skipped: skipped, moves: moves)
+        return report
+    }
+
+    /// Steps grouped so each media step is followed by the step for its metadata file, as `run` records them.
+    static func units(_ steps: [JournalStep]) -> [[JournalStep]] {
+        func source(_ step: JournalStep) -> String? {
+            switch step {
+            case let .move(from, _, _, _), let .clone(from, _): from
+            case let .trash(original, _): original
+            case .makeFolder: nil
+            }
+        }
+        var units: [[JournalStep]] = []
+        for step in steps {
+            if let last = units.last, last.count == 1, let media = source(last[0]), let path = source(step),
+               Sidecar.sidecarURL(for: URL(fileURLWithPath: media)).path == path
+            {
+                units[units.count - 1].append(step)
+            } else {
+                units.append([step])
+            }
+        }
+        return units
+    }
+
+    /// Reverses one step. Returns whether it was put back (or there was nothing to put back), so its metadata file may follow.
+    @discardableResult
+    func undo(_ step: JournalStep, report: inout UndoReport) -> Bool {
+        switch step {
+        case let .makeFolder(path):
+            // Only an empty folder this operation made is removed; anything put in it since keeps it.
+            let url = URL(fileURLWithPath: path)
+            if fm.fileExists(atPath: path), Self.holdsNoFiles(url), (try? fm.contentsOfDirectory(atPath: path))?
+                .allSatisfy(FolderOperations.ignored.contains) == true
+            {
+                try? fm.removeItem(at: url)
+            }
+            return true
+        case let .move(from, to, size, modified):
+            let dest = URL(fileURLWithPath: to)
+            guard fm.fileExists(atPath: to) else {
+                report.skipped.append("\(dest.lastPathComponent) is no longer at \(to)")
+                return false
+            }
+            if let size {
+                let values = try? dest.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                if values?.fileSize.map(Int64.init) != size
+                    || abs((values?.contentModificationDate ?? .distantPast).timeIntervalSince(modified ?? .distantPast)) > 1
+                {
+                    report.skipped.append("\(dest.lastPathComponent) changed since, so it was left in place")
+                    return false
+                }
+            }
+            guard !fm.fileExists(atPath: from) || Self.sameFile(from, to) else {
+                report.skipped.append("\(dest.lastPathComponent): another file now has its old name")
+                return false
+            }
+            do {
+                try fm.createDirectory(at: URL(fileURLWithPath: from).deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: dest, to: URL(fileURLWithPath: from))
+                if !to.hasSuffix(".json") {
+                    report.restored += 1
+                }
+                report.moves.append((to, from))
+                return true
+            } catch {
+                report.skipped.append("\(dest.lastPathComponent): \(error.localizedDescription)")
+                return false
+            }
+        case let .clone(_, to):
+            // The copy goes to the Trash rather than being deleted (R-3804).
+            guard fm.fileExists(atPath: to) else { return true }
+            do {
+                try fm.trashItem(at: URL(fileURLWithPath: to), resultingItemURL: nil)
+                if !to.hasSuffix(".json") {
+                    report.restored += 1
+                }
+                return true
+            } catch {
+                report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): \(error.localizedDescription)")
+                return false
+            }
+        case let .trash(original, trashed):
+            let name = URL(fileURLWithPath: original).lastPathComponent
+            guard !trashed.isEmpty, fm.fileExists(atPath: trashed) else {
+                report.skipped.append("\(name) is no longer in the Trash")
+                return false
+            }
+            guard !fm.fileExists(atPath: original) else {
+                report.skipped.append("\(name) exists again")
+                return false
+            }
+            do {
+                try fm.createDirectory(at: URL(fileURLWithPath: original).deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
+                if !original.hasSuffix(".json") {
+                    report.restored += 1
+                }
+                return true
+            } catch {
+                report.skipped.append("\(name): \(error.localizedDescription)")
+                return false
+            }
+        }
     }
 }

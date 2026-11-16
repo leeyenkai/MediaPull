@@ -292,3 +292,81 @@ final class FolderOperationTests: XCTestCase {
         XCTAssertEqual(FolderNames.safe("Alice"), "Alice")
     }
 }
+
+extension FolderOperationTests {
+    func testUndoKeepsMetadataWithMediaThatStays() async throws {
+        // What happens to the moved file before undo, and where the file and its metadata file end up.
+        let cases: [(String, (URL) throws -> Void, [String])] = [
+            ("unchanged", { _ in }, ["sub/a.jpg", "sub/a.jpg.json"]),
+            ("changed", { try Data("changed contents".utf8).write(to: $0) }, ["a.jpg", "a.jpg.json"]),
+            ("old name taken", { url in
+                try Data("new".utf8).write(to: url.deletingLastPathComponent().appendingPathComponent("sub/a.jpg"))
+            }, ["a.jpg", "a.jpg.json", "sub/a.jpg"]),
+        ]
+        for (name, change, expected) in cases {
+            try? FileManager.default.removeItem(at: root)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            file("sub/a.jpg", "one", sidecar: true)
+            let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+            let entry = await journal.run(FolderOperations.move([root.appendingPathComponent("sub/a.jpg")], to: root))
+            XCTAssertEqual(tree(), ["a.jpg", "a.jpg.json"], name)
+            try change(root.appendingPathComponent("a.jpg"))
+            _ = await journal.undo(entry.id)
+            XCTAssertEqual(tree(), expected, name)
+        }
+    }
+
+    func testUndoLeavesMetadataInTheTrashWhenItsMediaCannotComeBack() async throws {
+        let a = file("a.jpg", "one", sidecar: true)
+        let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+        let entry = await journal.run(FolderOperations.trash([a]))
+        XCTAssertEqual(tree(), [])
+        file("a.jpg", "another file")
+        let report = await journal.undo(entry.id)
+        XCTAssertEqual(report.restored, 0)
+        XCTAssertEqual(tree(), ["a.jpg"], "the metadata file stays in the Trash with its media")
+        for case let .trash(_, trashed) in entry.steps {
+            try? FileManager.default.removeItem(atPath: trashed)
+        }
+    }
+
+    func testCaseOnlyRenameKeepsTheName() async {
+        file("photo.jpg", "one", sidecar: true)
+        file("other.jpg")
+        file("album/x.jpg")
+        let cases: [(String, String, String)] = [
+            ("photo.jpg", "Photo", "Photo.jpg"),
+            ("photo.jpg", "other.jpg", "other 2.jpg"),
+            ("album", "Album", "Album"),
+        ]
+        for (item, name, expected) in cases {
+            let plan = FolderOperations.rename(root.appendingPathComponent(item), to: name)
+            XCTAssertEqual(plan.moves.first?.destination.lastPathComponent, expected, "\(item) → \(name)")
+        }
+        let before = tree()
+        let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+        let entry = await journal.run(FolderOperations.rename(root.appendingPathComponent("photo.jpg"), to: "Photo.jpg"))
+        XCTAssertTrue(entry.failures.isEmpty, "\(entry.failures)")
+        XCTAssertEqual(tree(), ["Photo.jpg", "Photo.jpg.json", "album/x.jpg", "other.jpg"])
+        let report = await journal.undo(entry.id)
+        XCTAssertTrue(report.skipped.isEmpty, "\(report.skipped)")
+        XCTAssertEqual(tree(), before)
+    }
+
+    func testDateFoldersFollowTheLocalTimeZone() throws {
+        // 2026-03-31 23:00 UTC is already 1 April in Singapore and still 31 March in New York.
+        let date = Date(timeIntervalSince1970: 1_774_998_000)
+        let cases: [(String, [String], String)] = [
+            ("UTC", ["2026", "2026-03"], "2026-03-31"),
+            ("Asia/Singapore", ["2026", "2026-04"], "2026-04-01"),
+            ("America/New_York", ["2026", "2026-03"], "2026-03-31"),
+            ("Pacific/Kiritimati", ["2026", "2026-04"], "2026-04-01"),
+        ]
+        for (zone, month, day) in cases {
+            let timeZone = try XCTUnwrap(TimeZone(identifier: zone))
+            let item = entry("a.jpg", date: date)
+            XCTAssertEqual(SortRules.byDate(item, timeZone: timeZone), [month], zone)
+            XCTAssertEqual(SortRules.eventFolders([item], gap: 3600, timeZone: timeZone)[item.path], [["2026", day]], zone)
+        }
+    }
+}

@@ -349,7 +349,8 @@ final class LibraryModel: MediaGridOwner {
                 try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
             }
             Task { await app.analysis.noteMoves([(from: url.path, to: destination.path)]) }
-            if selectedFolder == url { selectedFolder = destination }
+            selectedFolder = selectedFolder.map { Self.moved($0, from: url, to: destination) }
+            otherFolder = otherFolder.map { Self.moved($0, from: url, to: destination) }
             treeRevision += 1
             reload()
         } catch {
@@ -363,10 +364,24 @@ final class LibraryModel: MediaGridOwner {
             try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
             let sidecar = Sidecar.sidecarURL(for: url)
             if FileManager.default.fileExists(atPath: sidecar.path) { try? FileManager.default.trashItem(at: sidecar, resultingItemURL: nil) }
-            if selectedFolder == url { selectedFolder = url.deletingLastPathComponent() }
+            // The save folder or one of its parents went to the Trash: save into the folder above instead.
+            if let folder = selectedFolder, Self.isInside(folder, url) { selectedFolder = url.deletingLastPathComponent() }
+            if let other = otherFolder, Self.isInside(other, url) { otherFolder = nil }
         }
         treeRevision += 1
         reload()
+    }
+
+    static func isInside(_ folder: URL, _ parent: URL) -> Bool {
+        let path = folder.standardizedFileURL.path, top = parent.standardizedFileURL.path
+        return path == top || path.hasPrefix(top + "/")
+    }
+
+    /// `folder` after `from` was renamed to `to`, when it is `from` or inside it.
+    static func moved(_ folder: URL, from: URL, to: URL) -> URL {
+        guard isInside(folder, from) else { return folder }
+        let rest = folder.standardizedFileURL.path.dropFirst(from.standardizedFileURL.path.count)
+        return URL(fileURLWithPath: to.standardizedFileURL.path + rest, isDirectory: true)
     }
 
     // MARK: Drops
@@ -488,7 +503,8 @@ final class LibraryModel: MediaGridOwner {
     func gridThumbnail(_ id: String, maxPixel: Int) async -> CGImage? {
         guard let file = files.first(where: { $0.id == id }) else { return nil }
         if details[id] == nil, file.format?.kind == .image || file.format?.kind == .animatedImage {
-            if let analysis = ImageConversion.analyze(file.url) {
+            let url = file.url
+            if let analysis = await Task.detached(priority: .utility, operation: { ImageConversion.analyze(url) }).value {
                 details[id] = (PixelSize(width: analysis.width, height: analysis.height), analysis.format)
                 revision += 1
             }

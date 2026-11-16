@@ -105,10 +105,10 @@ struct EditorView: View {
         switch model.request.subject {
         case .file:
             Button("Save as Copy") {
-                if let url = model.saveFile(asCopy: true) { finish(url) }
+                Task { if let url = await model.saveFile(asCopy: true) { finish(url) } }
             }
             Button("Save") {
-                if let url = model.saveFile(asCopy: false) { finish(url) }
+                Task { if let url = await model.saveFile(asCopy: false) { finish(url) } }
             }
             .buttonStyle(.borderedProminent)
             .disabled(!model.hasImageEdits && !model.hasNameChange)
@@ -117,7 +117,8 @@ struct EditorView: View {
                 FolderPicker.chooseFolder(title: "Save Edited Item", prompt: "Save Here", start: model.window?.saveFolder,
                                           window: model.window?.hostWindow) { url in
                     guard let url else { return }
-                    if model.saveItem(to: url) { dismiss() }
+                    model.window?.useSaveFolder(url)
+                    Task { if await model.saveItem(to: url) { dismiss() } }
                 }
             }
             Button("Keep Name Only") {
@@ -126,7 +127,7 @@ struct EditorView: View {
             }
             .disabled(!model.hasNameChange || model.hasImageEdits)
             Button("Save to “\(model.window?.saveFolderName ?? "Library")”") {
-                if model.saveItem(to: nil) { dismiss() }
+                Task { if await model.saveItem(to: nil) { dismiss() } }
             }
             .buttonStyle(.borderedProminent)
         }

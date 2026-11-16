@@ -46,6 +46,8 @@ public struct MediaConverter: Sendable {
         self.svgRasterizer = svgRasterizer
     }
 
+    /// Decodes and encodes whole images and runs ffmpeg: never on the caller's actor.
+    @concurrent
     public func convert(_ file: URL, policy: ConversionPolicy, layout: SaveLayout, workDirectory: URL) async throws -> ConversionResult {
         let head = Self.head(of: file)
         let sniff = Sniffer.sniff(head)

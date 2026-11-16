@@ -148,18 +148,39 @@ final class EditorModel {
 
     // MARK: Edits
 
+    /// Full-resolution redraws run off the main actor, one after another so they apply in order.
+    @ObservationIgnored private var editChain: Task<Void, Never>?
+
+    private func transform(_ operation: @escaping @Sendable (CGImage) -> CGImage?, then: (() -> Void)? = nil) {
+        let previous = editChain
+        editChain = Task { [weak self] in
+            await previous?.value
+            guard let current = self?.working else { return }
+            let image = await Task.detached(priority: .userInitiated) { operation(current) }.value
+            self?.working = image
+            then?()
+        }
+    }
+
+    /// Waits for any rotate or flip still being drawn.
+    func settled() async {
+        await editChain?.value
+    }
+
     func rotate(clockwise: Bool) {
-        guard let current = working else { return }
-        working = ImageEditing.rotated(current, quarterTurns: clockwise ? 1 : -1)
-        turns += clockwise ? 1 : -1
+        guard working != nil else { return }
+        let quarter = clockwise ? 1 : -1
+        // The aspect crop depends on the rotated size, so it is applied again once the new image is drawn.
+        transform({ ImageEditing.rotated($0, quarterTurns: quarter) }, then: { [weak self] in self?.applyAspect() })
+        turns += quarter
         crop = clockwise ? CGRect(x: 1 - crop.maxY, y: crop.minX, width: crop.height, height: crop.width)
             : CGRect(x: crop.minY, y: 1 - crop.maxX, width: crop.height, height: crop.width)
         applyAspect()
     }
 
     func flip() {
-        guard let current = working else { return }
-        working = ImageEditing.flippedHorizontally(current)
+        guard working != nil else { return }
+        transform { ImageEditing.flippedHorizontally($0) }
         flipped.toggle()
         crop = CGRect(x: 1 - crop.maxX, y: crop.minY, width: crop.width, height: crop.height)
     }
@@ -197,17 +218,22 @@ final class EditorModel {
         return FileNaming.sanitize(text.isEmpty ? originalName : text, maxBytes: 200)
     }
 
-    /// Writes the edited image to a new file in a cache folder.
-    private func writeEdited() throws -> URL {
-        guard let image = rendered() else { throw ImageConversionError.cannotWrite }
+    /// Writes the edited image to a new file in a cache folder, after any pending rotate or flip, off the main actor.
+    private func writeEdited() async throws -> URL {
+        await editChain?.value
+        guard let working else { throw ImageConversionError.cannotWrite }
         try FileManager.default.createDirectory(at: WindowModel.editsCache, withIntermediateDirectories: true)
         let output = WindowModel.editsCache.appendingPathComponent(UUID().uuidString + "." + format.fileExtension)
-        try ImageEditing.write(image, format: format, metadataFrom: sourceFile, to: output)
+        let (crop, format, source) = (crop, format, sourceFile)
+        try await Task.detached(priority: .userInitiated) {
+            guard let image = ImageEditing.cropped(working, to: crop) else { throw ImageConversionError.cannotWrite }
+            try ImageEditing.write(image, format: format, metadataFrom: source, to: output)
+        }.value
         return output
     }
 
     /// Library file: replace it (the original goes to the Trash) or save a copy next to it.
-    func saveFile(asCopy: Bool) -> URL? {
+    func saveFile(asCopy: Bool) async -> URL? {
         guard case let .file(url) = request.subject else { return nil }
         let folder = url.deletingLastPathComponent()
         let manager = FileManager.default
@@ -221,10 +247,10 @@ final class EditorModel {
                 } else {
                     try manager.moveItem(at: url, to: target)
                 }
-                moveSidecar(from: url, to: target, copy: asCopy, edited: nil)
+                await moveSidecar(from: url, to: target, copy: asCopy, edited: nil)
                 return target
             }
-            let edited = try writeEdited()
+            let edited = try await writeEdited()
             let stem = asCopy ? (hasNameChange ? cleanName : "\(cleanName) edited") : cleanName
             var target = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: format.fileExtension))
             if !asCopy {
@@ -232,7 +258,7 @@ final class EditorModel {
             }
             target = LibraryModel.uniqueURL(target)
             try manager.moveItem(at: edited, to: target)
-            moveSidecar(from: url, to: target, copy: asCopy, edited: target)
+            await moveSidecar(from: url, to: target, copy: asCopy, edited: target)
             return target
         } catch {
             message = error.localizedDescription
@@ -241,7 +267,7 @@ final class EditorModel {
     }
 
     /// Keeps the metadata file with its media file, updating size and checksum after edits.
-    private func moveSidecar(from source: URL, to target: URL, copy: Bool, edited: URL?) {
+    private func moveSidecar(from source: URL, to target: URL, copy: Bool, edited: URL?) async {
         let manager = FileManager.default
         let oldSidecar = Sidecar.sidecarURL(for: source)
         guard manager.fileExists(atPath: oldSidecar.path) else { return }
@@ -250,10 +276,15 @@ final class EditorModel {
             if !copy { try? manager.moveItem(at: oldSidecar, to: newSidecar) }
             return
         }
-        if let edited, let image = ImageConversion.analyze(edited) {
-            object["width"] = image.width
-            object["height"] = image.height
-            object["sha256"] = try? FileHasher.sha256(of: edited)
+        if let edited {
+            let facts = await Task.detached(priority: .userInitiated) {
+                (ImageConversion.analyze(edited).map { ($0.width, $0.height) }, try? FileHasher.sha256(of: edited))
+            }.value
+            if let size = facts.0 {
+                object["width"] = size.0
+                object["height"] = size.1
+            }
+            object["sha256"] = facts.1
             object["edited"] = true
         }
         if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
@@ -265,7 +296,7 @@ final class EditorModel {
     }
 
     /// Extracted item: remember the name, and save the edited image if there are edits.
-    func saveItem(to folder: URL?) -> Bool {
+    func saveItem(to folder: URL?) async -> Bool {
         guard case let .item(id) = request.subject, let window, let item = window.itemsByID[id] else { return false }
         if hasNameChange { window.customNames[id] = cleanName } else if name.isEmpty { window.customNames[id] = nil }
         guard let destination = folder ?? window.saveFolder else {
@@ -275,11 +306,13 @@ final class EditorModel {
         var toSave = item
         if hasImageEdits {
             do {
-                let edited = try writeEdited()
+                let edited = try await writeEdited()
                 var variant = MediaVariant(id: edited.absoluteString, url: edited, format: format, origin: item.best?.origin ?? .img)
                 variant.pixelSize = outputSize
                 toSave.variants = [variant]
                 toSave.bestID = variant.id
+                // The edited file is a temporary one: name the saved copy after the original, not after it.
+                window.customNames[id] = cleanName
             } catch {
                 message = error.localizedDescription
                 return false

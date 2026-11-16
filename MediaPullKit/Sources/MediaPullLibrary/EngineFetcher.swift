@@ -54,6 +54,7 @@ public struct BridgeEngineFetcher: EngineFetching {
         defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
 
         var request: BridgeRequest
+        var isInstagram = false
         let selector = video.selector(av1Decodable: FFmpeg.canDecodeAV1)
         switch item.source {
         case let .engine(context):
@@ -65,8 +66,10 @@ public struct BridgeEngineFetcher: EngineFetching {
             request.url = postURL
             if let num = context.num { request.filter = "num == \(num)" }
             let domain = PublicSuffix.shared.registrableDomain(URL(string: postURL)?.host ?? "instagram.com")
+            isInstagram = context.category == "instagram" || domain == "instagram.com"
             try CookieFile.write(await cookies(domain), to: cookieFile)
             request.cookies = cookieFile.path
+            request.userAgent = userAgent
             request.setPacing([2, 4])
         case let .web(context):
             request = BridgeRequest(op: "stream")
@@ -93,6 +96,11 @@ public struct BridgeEngineFetcher: EngineFetching {
             case let .progress(received, total, _):
                 if let received, let total, total > 0 { progress(Double(received) / Double(total)) }
             case let .checkpoint(kind, url, message):
+                // Only Instagram has a cooldown and a sign-in to send the person to; any other site's limit is a failure.
+                guard isInstagram else {
+                    failure = message
+                    continue
+                }
                 onCheckpoint(kind, url)
                 throw EngineFetchError.checkpoint(kind: kind, url: url, message: message)
             case let .error(_, message, _, fatal):

@@ -76,11 +76,13 @@ Analysis models and data bundled with MediaPull (personal use; see docs/spikes/a
 TXT
 
 # Check every staged file against the lock; record it when the lock has no entry (or MEDIAPULL_UPDATE_MODELS_LOCK=1).
-# The compiler writes a different coremldata.bin each time, so the converted packages it starts from are locked instead.
-LIST="$(cd "$BUNDLE" && find . -type f ! -name '.DS_Store' ! -name 'coremldata.bin' | LC_ALL=C sort)"
+# The compiler writes a different coremldata.bin each time, and coremltools stamps the conversion date into metadata.json
+# and generated identifiers into each package's Manifest.json; none of them affect the model. The compiled program and
+# weights are locked, and each converted package is locked by its weights.
+LIST="$(cd "$BUNDLE" && find . -type f ! -name '.DS_Store' ! -name 'coremldata.bin' ! -name 'metadata.json' | LC_ALL=C sort)"
 CURRENT="$(cd "$BUNDLE" && echo "$LIST" | while read -r f; do echo "$(shasum -a 256 "$f" | cut -c1-64)  ${f#./}"; done)"
 PACKAGES="$(cd "$CONVERTED" && for p in mobileclip2_s3_image mobileclip2_s3_text adaface_ir101_rgb scrfd_10g; do
-  echo "package $(cd "$p.mlpackage" && find . -type f ! -name '.DS_Store' | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -c1-64)  $p.mlpackage"
+  echo "package $(shasum -a 256 "$p.mlpackage/Data/com.apple.CoreML/weights/weight.bin" | cut -c1-64)  $p.mlpackage"
 done)"
 SOURCES="$(cd "$SRC" && shasum -a 256 geonames/cities1000.zip geonames/admin1CodesASCII.txt geonames/countryInfo.txt | sed 's/^/source /')"
 if [ ! -f "$LOCK" ] || [ "${MEDIAPULL_UPDATE_MODELS_LOCK:-0}" = 1 ]; then

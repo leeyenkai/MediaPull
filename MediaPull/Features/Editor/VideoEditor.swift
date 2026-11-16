@@ -110,24 +110,25 @@ final class VideoEditorModel {
                 let target = LibraryModel.uniqueURL(url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: stem, ext: "png")))
                 try FileManager.default.moveItem(at: still, to: target)
                 Self.writeSidecar(from: url, to: target, changes: [
-                    "width": size.width, "height": size.height, "sha256": (try? FileHasher.sha256(of: target)) ?? "",
+                    "width": size.width, "height": size.height, "sha256": await Self.checksum(target),
                     "edited": true, "frame_time": (time * 1000).rounded() / 1000,
                 ], dropping: ["num", "count", "duration"])
                 finishLibraryChange()
                 report("Saved the frame at \(Self.timestamp(time)) as \(target.lastPathComponent).")
             case let .item(id):
-                guard let window, var item = window.itemsByID[id] else { return }
-                var variant = MediaVariant(id: still.absoluteString, url: still, format: .png, origin: item.best?.origin ?? .video)
+                guard let window, let video = window.itemsByID[id] else { return }
+                var variant = MediaVariant(id: still.absoluteString, url: still, format: .png, origin: video.best?.origin ?? .video)
                 variant.pixelSize = size
-                item.kind = .image
-                item.variants = [variant]
-                item.bestID = variant.id
-                window.customNames[id] = stem
+                // A separate item: the video keeps its own name, saved state and preview.
+                let frameID = "\(id)#frame-\(Int((time * 1000).rounded()))"
+                let frame = MediaItem(id: frameID, kind: .image, variants: [variant], source: video.source,
+                                      discoveryIndex: video.discoveryIndex, group: video.group, groupTitle: video.groupTitle, alt: video.alt)
+                window.customNames[frameID] = stem
                 guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
                     return
                 }
-                _ = app.save([item], from: window, to: destination, title: "Saving a video frame")
+                _ = app.save([frame], from: window, to: destination, title: "Saving a video frame")
                 report("Saving the frame at \(Self.timestamp(time)) (\(size.width) × \(size.height)) to your library.")
             }
         } catch {
@@ -169,7 +170,7 @@ final class VideoEditorModel {
                 }
                 try manager.moveItem(at: trimmed, to: target)
                 Self.writeSidecar(from: url, to: target, changes: [
-                    "duration": (length * 1000).rounded() / 1000, "sha256": (try? FileHasher.sha256(of: target)) ?? "", "edited": true,
+                    "duration": (length * 1000).rounded() / 1000, "sha256": await Self.checksum(target), "edited": true,
                     "trimmed_from": [(selection.lowerBound * 1000).rounded() / 1000, (selection.upperBound * 1000).rounded() / 1000],
                 ], dropping: [], trashSource: replacing)
                 finishLibraryChange()
@@ -183,7 +184,8 @@ final class VideoEditorModel {
                 variant.pixelSize = item.best?.pixelSize
                 item.variants = [variant]
                 item.bestID = variant.id
-                if hasNameChange { window.customNames[id] = cleanName }
+                // The trimmed file is a temporary one: name the saved copy after the video, not after it.
+                window.customNames[id] = cleanName
                 guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
                     return
@@ -226,6 +228,11 @@ final class VideoEditorModel {
         app.libraryRevision += 1
     }
 
+    /// SHA-256 of a whole file, which can be gigabytes for a video: never on the main actor.
+    static func checksum(_ file: URL) async -> String {
+        await Task.detached(priority: .userInitiated) { (try? FileHasher.sha256(of: file)) ?? "" }.value
+    }
+
     /// Copies the video's metadata file for a derived file, with updated fields (SPEC R-3404).
     static func writeSidecar(from source: URL, to target: URL, changes: [String: Any], dropping: [String], trashSource: Bool = false) {
         let oldSidecar = Sidecar.sidecarURL(for: source)
@@ -241,7 +248,10 @@ final class VideoEditorModel {
         if let output = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
             try? output.write(to: Sidecar.sidecarURL(for: target), options: .atomic)
         }
-        if trashSource { try? FileManager.default.trashItem(at: oldSidecar, resultingItemURL: nil) }
+        // Replacing under the same name writes the new metadata to the old path: never trash what was just written.
+        if trashSource, oldSidecar.standardizedFileURL != Sidecar.sidecarURL(for: target).standardizedFileURL {
+            try? FileManager.default.trashItem(at: oldSidecar, resultingItemURL: nil)
+        }
     }
 }
 

@@ -69,6 +69,73 @@ class GuardTests:
             check("GET", "https://vipergirls.to/post_thanks.php?do=post_thanks_add&p=1")
         check("GET", "https://vipergirls.to/threads/1")
 
+    def test_graphql_persisted_writes_are_blocked_on_site_endpoints(self):
+        for url, name in (("https://api.cosmos.so/graphql", "likePhoto"), ("https://api.cosmos.so/graphql", "followUser"),
+                          ("https://api.cosmos.so/graphql", "addElementToCluster"), ("https://www.behance.net/v3/graphql", "SAVEPROJECT"),
+                          ("https://members.luscious.net/graphql/nobatch/?operationName=AlbumAddFavorite", None)):
+            data = {"operationName": name, "variables": {"id": 1}} if name else {"variables": {"id": 1}}
+            with self.assertRaises(PolicyViolation, msg=f"{url} {name}"):
+                check("POST", url, data=data)
+        for name in ("SubredditQuery", "RedditUserPostsQuery", "GetFollowingSubreddits", "GetUserPublicElementsV2", "Get_comicNode",
+                     "GetMoodboardItemsAndRecommendations"):
+            check("POST", "https://api.scrolller.com/admin", data={"operationName": name, "variables": {"id": 1}})
+
+    def test_sign_in_keys_are_found_at_any_depth(self):
+        for data in ({"variables": {"input": {"password": "x"}}, "operationName": "GetClusterBasic"},
+                     {"operationName": "GetClusterBasic", "variables": '{"auth": [{"refresh_token": "x"}]}'},
+                     '{"query": "query Q { a }", "variables": {"login": {"Password": "x"}}}'):
+            with self.assertRaises(PolicyViolation, msg=str(data)):
+                check("POST", "https://api.cosmos.so/graphql", data=data)
+        with self.assertRaises(PolicyViolation):
+            check("POST", "https://rule34.xyz/api/v2/post/search/root", data={"filter": {"otp": "1"}})
+
+    def test_youtube_channel_pages_are_read(self):
+        body = '{"context": {"client": {"clientName": "WEB"}}, "continuation": "abc"}'
+        check("POST", "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false", data=body)
+        with self.assertRaises(PolicyViolation):
+            check("POST", "https://www.youtube.com/youtubei/v1/browse/edit_playlist", data=body)
+
+    def test_every_redirect_hop_is_checked(self):
+        import io
+        import requests
+
+        reported = []
+        egress_guard.install(reported.append, patch_ytdlp=False)
+
+        class Redirecting(requests.adapters.BaseAdapter):
+            def __init__(self, status, location):
+                requests.adapters.BaseAdapter.__init__(self)
+                self.status, self.location, self.sent = status, location, []
+
+            def send(self, request, **kwargs):
+                self.sent.append((request.method, request.url))
+                response = requests.Response()
+                response.request, response.url, response.raw = request, request.url, io.BytesIO(b"")
+                if request.url.startswith("https://www.deviantart.com/"):
+                    response.status_code = self.status
+                    response.headers["Location"] = self.location
+                else:
+                    response.status_code = 200
+                return response
+
+            def close(self):
+                pass
+
+        for status in (307, 308):
+            adapter = Redirecting(status, "https://collector.example.invalid/token")
+            session = requests.Session()
+            session.mount("https://", adapter)
+            with self.assertRaises(PolicyViolation, msg=str(status)):
+                session.post("https://www.deviantart.com/oauth2/token", data={"grant_type": "client_credentials"})
+            self.assertEqual(adapter.sent, [("POST", "https://www.deviantart.com/oauth2/token")])
+        self.assertEqual(len(reported), 2)
+        # A 303 turns the POST into a GET, which may go anywhere.
+        adapter = Redirecting(303, "https://images.example.invalid/a.png")
+        session = requests.Session()
+        session.mount("https://", adapter)
+        session.post("https://www.deviantart.com/oauth2/token", data={"grant_type": "client_credentials"})
+        self.assertEqual(adapter.sent[-1], ("GET", "https://images.example.invalid/a.png"))
+
     def test_graphql_mutation_documents_are_blocked(self):
         ig = "https://www.instagram.com/graphql/query"
         with self.assertRaises(PolicyViolation):

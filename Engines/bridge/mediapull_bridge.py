@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import traceback
+import weakref
 
 PROTOCOL = 1
 VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "webm", "mkv"}
@@ -45,6 +46,16 @@ class Emitter:
             except (BrokenPipeError, ValueError):
                 os._exit(0)
 
+    def emit_last(self, _event_type, **fields):
+        """For signal handlers: never takes the lock (the signal may land inside emit) and writes past the buffer. The
+        leading newline ends any line the interrupted emit left half written, so this one still parses."""
+        event = {"v": PROTOCOL, "seq": self.seq + 1, "type": _event_type}
+        event.update(fields)
+        try:
+            os.write(self.stream.fileno(), ("\n" + json.dumps(event, default=_json_default) + "\n").encode("utf-8"))
+        except (OSError, ValueError):
+            pass
+
 
 def _json_default(value):
     if isinstance(value, datetime.datetime):
@@ -58,7 +69,30 @@ def _json_default(value):
 
 EMITTER = None
 STATE = {"checkpoint": None, "errors": [], "private": False, "not_found": False, "outdated": False,
-         "violations": 0, "cursors": {}}
+         "violations": 0, "cursors": {}, "instagram": False}
+# Helper processes the engines start (ffmpeg), so a cancelled job stops them too.
+CHILDREN = weakref.WeakSet()
+
+
+def track_children():
+    if getattr(subprocess.Popen.__init__, "_mediapull", False):
+        return
+    original = subprocess.Popen.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        CHILDREN.add(self)
+
+    init._mediapull = True
+    subprocess.Popen.__init__ = init
+
+
+def stop_children():
+    for child in list(CHILDREN):
+        try:
+            child.terminate()
+        except Exception:
+            pass
 
 
 # MARK: Logging and classification
@@ -73,9 +107,24 @@ CHECKPOINT_PATTERNS = (
 )
 
 
+# Signed URLs and API keys travel in query strings (api_key, token, sig, user_id...), and engine errors quote whole addresses.
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"<>()\[\]]+)[?#][^\s'\"<>()\[\]]*", re.I)
+_SECRET_FIELD = re.compile(
+    r"\b((?:sessionid|csrftoken|ds_user_id|fb_dtsg|lsd|api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|"
+    r"refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|signature|sig|user[_-]?id|session[_-]?id|cookie)"
+    r"['\"]?\s*[=:]\s*['\"]?)[^&;,\s'\"}]+", re.I)
+
+
 def _clean(text):
-    text = re.sub(r"(sessionid|csrftoken|ds_user_id|fb_dtsg|lsd)=[^&;\s]+", r"\1=REDACTED", text)
+    text = _URL_QUERY.sub(r"\1?REDACTED", str(text))
+    text = _SECRET_FIELD.sub(r"\1REDACTED", text)
     return text[:2000]
+
+
+def _is_instagram_url(url):
+    from urllib.parse import urlsplit
+    host = (urlsplit(str(url)).hostname or "").lower()
+    return host == "instagram.com" or host.endswith(".instagram.com")
 
 
 class EventLogHandler(logging.Handler):
@@ -90,7 +139,9 @@ class EventLogHandler(logging.Handler):
         if record.levelno >= logging.WARNING:
             EMITTER.emit("log", level=level, logger=record.name, message=_clean(message))
         lowered = message.lower()
-        for pattern, kind in CHECKPOINT_PATTERNS:
+        # Checkpoints pause Instagram (cooldown, sign-in); another site's 429 or login is an ordinary error.
+        instagram = STATE["instagram"] or record.name == "instagram"
+        for pattern, kind in CHECKPOINT_PATTERNS if instagram else ():
             if pattern.search(message):
                 if kind == "rate_limit" and record.levelno < logging.ERROR and "waiting" in lowered:
                     return
@@ -202,6 +253,8 @@ def inside_staging(path):
 
 def configure_gallery_dl(request, staging):
     STAGING["root"] = staging
+    urls = [url for url in (request.get("urls") or [request.get("url")]) if url]
+    STATE["instagram"] = request.get("op") == "account" or request.get("category") == "instagram" or any(map(_is_instagram_url, urls))
     from gallery_dl import config, output
 
     config.clear()
@@ -248,11 +301,13 @@ def configure_gallery_dl(request, staging):
         for key, value in (request.get("site_keys") or {}).items():
             if key in SITE_KEY_NAMES and isinstance(value, str) and value.strip():
                 section[key] = value.strip()
-        if site == "reddit" and section.get("client-id"):
-            section["user-agent"] = "macos:mediapull:1.6 (personal media archive)"
-        # Signed-in sessions and challenge cookies are tied to the browser that made them.
-        if request.get("cookies") and request.get("user_agent"):
-            section["user-agent"] = request["user_agent"]
+    # Signed-in sessions and challenge cookies are tied to the browser that made them. Instagram is left out: gallery-dl
+    # imitates a whole Chrome browser there (headers and TLS), and another browser's user agent would contradict it.
+    if request.get("cookies") and request.get("user_agent") and not STATE["instagram"]:
+        (extractor.setdefault(site, {}) if site else extractor)["user-agent"] = request["user_agent"]
+    if site == "reddit" and extractor.get("reddit", {}).get("client-id"):
+        # Reddit's API with the person's own app wants an app user agent, and does not use the browser's cookies.
+        extractor["reddit"]["user-agent"] = "macos:mediapull:1.6 (personal media archive)"
     if request.get("cookies"):
         extractor["cookies"] = request["cookies"]
         extractor["cookies-update"] = True
@@ -1145,11 +1200,13 @@ def main():
     EMITTER = Emitter(os.fdopen(events_fd, "w", buffering=1, encoding="utf-8"))
 
     def on_signal(signum, frame):
-        EMITTER.emit("done", status="cancelled", counts={})
+        stop_children()
+        EMITTER.emit_last("done", status="cancelled", counts={})
         os._exit(130)
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
+    track_children()
 
     try:
         request = read_request()

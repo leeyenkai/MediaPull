@@ -183,3 +183,141 @@ final class SimilarSetTests: XCTestCase {
         XCTAssertNil(groups[4])
     }
 }
+
+final class AnalysisFixTests: XCTestCase {
+    var folder: URL!
+
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("analysis-fix-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    func testPathMovesFollowFoldersInOrder() {
+        let moves: [(from: String, to: String)] = [
+            ("/lib/A", "/lib/B"),
+            ("/lib/B/x.jpg", "/lib/C/x.jpg"),
+            ("/lib/old.jpg", "/lib/new.jpg"),
+        ]
+        let remap = PathMoves(moves)
+        let cases: [(String, String?)] = [
+            ("/lib/A", "/lib/B"),
+            ("/lib/A/x.jpg", "/lib/C/x.jpg"),
+            ("/lib/A/sub/y.jpg", "/lib/B/sub/y.jpg"),
+            ("/lib/AB/z.jpg", nil),
+            ("/lib/old.jpg", "/lib/new.jpg"),
+            ("/lib/old.jpg.json", nil),
+            ("/other/A/x.jpg", nil),
+        ]
+        for (path, expected) in cases {
+            XCTAssertEqual(remap.destination(of: path), expected, path)
+        }
+        // Undo applies the reverse moves, newest first, and every path comes back.
+        let back = PathMoves(moves.reversed().map { (from: $0.to, to: $0.from) })
+        for (path, expected) in cases {
+            if let expected {
+                XCTAssertEqual(back.destination(of: expected), path, expected)
+            }
+        }
+    }
+
+    func testStoresFollowRenamedFolders() async throws {
+        let analysis = try AnalysisStore.make(folder: nil)
+        var facts = MediaFacts()
+        facts.pixelWidth = 10
+        await analysis.save(AnalysisRecord(sha256: "abc", facts: facts))
+        await analysis.setPath("/lib/Trip/a.jpg", sha256: "abc", size: 1, modified: Date())
+        await analysis.setPath("/lib/Trip/day 2/b.jpg", sha256: "abc", size: 1, modified: Date())
+        await analysis.movePaths([(from: "/lib/Trip", to: "/lib/Holiday")])
+        var records = await analysis.records(for: ["/lib/Holiday/a.jpg", "/lib/Holiday/day 2/b.jpg", "/lib/Trip/a.jpg"])
+        XCTAssertEqual(Set(records.keys), ["/lib/Holiday/a.jpg", "/lib/Holiday/day 2/b.jpg"])
+        await analysis.movePaths([(from: "/lib/Holiday", to: "/lib/Trip")])
+        records = await analysis.records(for: ["/lib/Trip/a.jpg", "/lib/Trip/day 2/b.jpg"])
+        XCTAssertEqual(records.count, 2)
+
+        let app = try AppStore.make(inMemory: true)
+        let trip = folder.appendingPathComponent("Trip"), holiday = folder.appendingPathComponent("Holiday")
+        try FileManager.default.createDirectory(at: trip, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: trip.appendingPathComponent("a.jpg"))
+        await app.recordArchive(key: "k1", account: "someone", path: trip.appendingPathComponent("a.jpg").path, sha256: "abc")
+        try FileManager.default.moveItem(at: trip, to: holiday)
+        await app.moveArchivePaths([(from: trip.path, to: holiday.path)])
+        let archived = await app.isArchived("k1")
+        XCTAssertEqual(archived, holiday.appendingPathComponent("a.jpg").path)
+    }
+
+    func testVectorStoreRealignsAfterATornAppend() async throws {
+        let a: [Float] = [1, 0, 0, 0], b: [Float] = [0, 1, 0, 0], c: [Float] = [0, 0, 1, 0]
+        // Bytes left over from an append that stopped part way: an id without its vector, or a vector without its id.
+        let cases: [(String, String, Int)] = [("ids", "id without vector", 32), ("vec", "vector without id", 8), ("ids", "half an id", 5)]
+        for (ext, name, bytes) in cases {
+            let sub = folder.appendingPathComponent(UUID().uuidString)
+            let store = VectorStore(folder: sub, name: "test", dimension: 4)
+            await store.put("a", a)
+            await store.put("b", b)
+            let handle = try FileHandle(forWritingTo: sub.appendingPathComponent("test.\(ext)"))
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(repeating: 7, count: bytes))
+            try handle.close()
+            let reloaded = VectorStore(folder: sub, name: "test", dimension: 4)
+            let count = await reloaded.count
+            XCTAssertEqual(count, 2, name)
+            let row = await reloaded.put("c", c)
+            XCTAssertEqual(row, 2, name)
+            let again = VectorStore(folder: sub, name: "test", dimension: 4)
+            for (key, vector) in [("a", a), ("b", b), ("c", c)] {
+                let stored = await again.vector(key)
+                XCTAssertEqual(stored, vector, "\(name): \(key)")
+            }
+        }
+    }
+
+    func testFaceVectorsStayExcludedFromBackups() async throws {
+        let store = VectorStore(folder: folder, name: "faces", dimension: 4, excludeFromBackup: true)
+        func excluded() throws -> [Bool] {
+            try ["faces.vec", "faces.ids"].map {
+                try folder.appendingPathComponent($0).resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup ?? false
+            }
+        }
+        XCTAssertEqual(try excluded(), [true, true])
+        await store.deleteAll()
+        await store.put("a", [1, 0, 0, 0])
+        XCTAssertEqual(try excluded(), [true, true], "made again after Delete All Face Data")
+        await store.put("a", [0, 1, 0, 0])
+        XCTAssertEqual(try excluded(), [true, true], "replaced when a vector is rewritten")
+    }
+
+    func testNotThisPersonSurvivesRegrouping() async throws {
+        func vector(_ noise: Int) -> [Float] {
+            FaceGrouping.normalized([1, 0, 0, Float(noise) * 0.05])
+        }
+        let person = UUID()
+        var faces = (0 ..< 3).map {
+            FaceGrouping.Face(key: "p\($0)", vector: vector($0), quality: 0.9, personID: person, pinned: false, rejected: [])
+        }
+        faces.append(FaceGrouping.Face(key: "f", vector: vector(1), quality: 0.95, personID: nil, pinned: false, rejected: [person]))
+        let regrouped = FaceGrouping.group(faces, threshold: 0.5, regroup: true)
+        let newID = regrouped["p0"] ?? person
+        XCTAssertNotNil(newID)
+        XCTAssertNotEqual(regrouped["f"] ?? nil, newID, "the rejected face stays out of the regrouped person")
+
+        // The store carries the correction over to the person's new id, so it survives the next regroup too.
+        let store = try AnalysisStore.make(folder: nil)
+        await store.addFaces((0 ..< 3).map { NewFace(key: "p\($0)", vectorRow: $0, quality: 0.9, pixelSize: 100) }
+            + [NewFace(key: "f", vectorRow: 3, quality: 0.95, pixelSize: 100)], sha256: "s")
+        await store.applyAssignments(["s|p0": person, "s|p1": person, "s|p2": person])
+        await store.reject(faceKeys: ["s|f"], from: person)
+        let replacement = UUID()
+        let snapshot = await store.faces()
+        let applied = await store.applyAssignments(["s|p0": replacement, "s|p1": replacement, "s|p2": replacement],
+                                                   ifUnchangedSince: snapshot)
+        XCTAssertTrue(applied)
+        let rejected = await store.faces().first { $0.key == "s|f" }?.rejected
+        XCTAssertEqual(rejected.map(Set.init), [person, replacement])
+        let stale = await store.applyAssignments(["s|f": replacement], ifUnchangedSince: snapshot)
+        XCTAssertFalse(stale, "a grouping from an old snapshot is not applied")
+    }
+}

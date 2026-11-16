@@ -504,11 +504,12 @@ final class SelfTestRunner {
             return
         }
         editor.rotate(clockwise: true)
+        await editor.settled()
         editor.aspect = .square
         editor.applyAspect()
         editor.name = "Edited by self-test"
         let size = editor.outputSize
-        guard let saved = editor.saveFile(asCopy: true) else {
+        guard let saved = await editor.saveFile(asCopy: true) else {
             note("editor: save failed: \(editor.message ?? "")")
             return
         }

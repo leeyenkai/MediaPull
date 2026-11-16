@@ -236,17 +236,23 @@ public actor AnalysisStore {
     /// Keeps records pointing at files that Organise or the Library moved (R-3804).
     public func movePaths(_ moves: [(from: String, to: String)]) {
         guard !moves.isEmpty else { return }
-        let map = Dictionary(moves.map { ($0.from, $0.to) }, uniquingKeysWith: { _, b in b })
-        let froms = Set(map.keys)
-        let predicate = #Predicate<FilePathModel> { froms.contains($0.path) }
-        for row in (try? modelContext.fetch(FetchDescriptor(predicate: predicate))) ?? [] {
-            guard let to = map[row.path] else { continue }
-            let toPath = to
-            let clash = #Predicate<FilePathModel> { $0.path == toPath }
-            for old in (try? modelContext.fetch(FetchDescriptor(predicate: clash))) ?? [] where old !== row {
-                modelContext.delete(old)
+        let remap = PathMoves(moves)
+        let rows = (try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? []
+        let moved = rows.compactMap { row in remap.destination(of: row.path).map { (row: row, to: $0) } }
+        guard !moved.isEmpty else { return }
+        // Paths are unique: a row already at a destination gives way, and of two rows moved to one path the last wins.
+        let movedRows = Set(moved.map { ObjectIdentifier($0.row) })
+        let destinations = Set(moved.map(\.to))
+        for row in rows where !movedRows.contains(ObjectIdentifier(row)) && destinations.contains(row.path) {
+            modelContext.delete(row)
+        }
+        var placed = Set<String>()
+        for (row, to) in moved.reversed() {
+            if placed.insert(to).inserted {
+                row.path = to
+            } else {
+                modelContext.delete(row)
             }
-            row.path = to
         }
         try? modelContext.save()
     }
@@ -270,6 +276,13 @@ public actor AnalysisStore {
         try? modelContext.delete(model: FaceModel.self)
         try? modelContext.delete(model: PersonModel.self)
         try? modelContext.delete(model: FilePathModel.self)
+        try? modelContext.delete(model: AnalysedFileModel.self)
+        try? modelContext.save()
+    }
+
+    /// Analyse Again: drops results so every file is analysed again. Paths, faces, people, names and corrections stay;
+    /// faces found again have the same keys, so they keep their person.
+    public func deleteResults() {
         try? modelContext.delete(model: AnalysedFileModel.self)
         try? modelContext.save()
     }
@@ -320,13 +333,23 @@ public actor AnalysisStore {
     }
 
     /// Applies the grouping: face key → person. New person ids are created as needed and numbered in order of size.
-    public func applyAssignments(_ assignments: [String: UUID?]) {
+    /// With `snapshot`, nothing is applied (and false returned) when the faces changed since it was taken, so a grouping
+    /// worked out from old faces never overwrites newer corrections.
+    @discardableResult
+    public func applyAssignments(_ assignments: [String: UUID?], ifUnchangedSince snapshot: [FaceInfo]? = nil) -> Bool {
+        if let snapshot, Set(faces()) != Set(snapshot) {
+            return false
+        }
         let faces = (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? []
         var known = Set(((try? modelContext.fetch(FetchDescriptor<PersonModel>())) ?? []).map(\.id))
         var next = (((try? modelContext.fetch(FetchDescriptor<PersonModel>())) ?? []).map(\.number).max() ?? 0) + 1
         var newCounts: [UUID: Int] = [:]
+        var successors: [UUID: Set<UUID>] = [:]
         for face in faces {
             guard let assigned = assignments[face.key] else { continue }
+            if let old = face.personID, let id = assigned {
+                successors[old, default: []].insert(id)
+            }
             face.personID = assigned
             if let id = assigned, !known.contains(id) {
                 newCounts[id, default: 0] += 1
@@ -344,10 +367,20 @@ public actor AnalysisStore {
                 counts[id, default: 0] += 1
             }
         }
+        var removed = Set<UUID>()
         for person in (try? modelContext.fetch(FetchDescriptor<PersonModel>())) ?? [] where counts[person.id] == nil && person.name == nil {
+            removed.insert(person.id)
             modelContext.delete(person)
         }
+        // "Not This Person" follows the faces of a person regrouping replaced, so the correction survives (R-3904).
+        for face in faces where !removed.isDisjoint(with: face.rejected) {
+            let inherited = face.rejected.filter(removed.contains).flatMap { successors[$0] ?? [] }
+            for id in Set(inherited) where !face.rejected.contains(id) && id != face.personID {
+                face.rejected.append(id)
+            }
+        }
         try? modelContext.save()
+        return true
     }
 
     public func rename(person id: UUID, to name: String?) {
@@ -367,10 +400,14 @@ public actor AnalysisStore {
 
     /// Merge: every face of `other` becomes `into`'s, pinned so regrouping keeps them together.
     public func merge(_ other: UUID, into target: UUID) {
-        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] where face.personID == other || face.personID == target {
-            face.personID = target
-            face.pinned = true
-            face.rejected.removeAll { $0 == target }
+        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] {
+            if face.personID == other || face.personID == target {
+                face.personID = target
+                face.pinned = true
+                face.rejected.removeAll { $0 == target }
+            } else if face.rejected.contains(other), !face.rejected.contains(target) {
+                face.rejected.append(target)
+            }
         }
         let predicate = #Predicate<PersonModel> { $0.id == other }
         if let person = try? modelContext.fetch(FetchDescriptor(predicate: predicate)).first {

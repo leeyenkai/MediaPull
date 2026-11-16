@@ -107,7 +107,7 @@ public final class SavePipeline: Sendable {
                 let position = next
                 next += 1
                 group.addTask {
-                    let outcome = await self.saveOne(item, index: position + 1, target: target, settings: settings, context: context,
+                    let outcome = await self.saveOne(item, index: item.discoveryIndex + 1, target: target, settings: settings, context: context,
                                                      saveDate: saveDate, events: events)
                     return (item.id, outcome)
                 }
@@ -447,6 +447,18 @@ public final class SavePipeline: Sendable {
         return target.folder.appendingPathComponent(components[rootComponents.count], isDirectory: true)
     }
 
+    /// "name 2.ext", shortening a name already at the length limit so the number always fits.
+    static func numbered(stem: String, ext: String, attempt: Int) -> String {
+        let suffix = " \(attempt)"
+        var base = stem
+        while !base.isEmpty {
+            let name = FileNaming.fileName(stem: base + suffix, ext: ext)
+            if (name as NSString).deletingPathExtension.hasSuffix(suffix) { return name }
+            base.removeLast()
+        }
+        return FileNaming.fileName(stem: suffix.trimmingCharacters(in: .whitespaces), ext: ext)
+    }
+
     /// Moves `file` into `folder` under `name` without ever overwriting. Returns nil when the
     /// conflict policy says to skip.
     func place(_ file: URL, in folder: URL, name: String, conflict: ConflictPolicy) throws -> URL? {
@@ -458,9 +470,10 @@ public final class SavePipeline: Sendable {
         let ext = (name as NSString).pathExtension
         let stem = (name as NSString).deletingPathExtension
         for attempt in 1 ... 500 {
-            let candidateName = attempt == 1 ? name : FileNaming.fileName(stem: "\(stem) \(attempt)", ext: ext)
+            let candidateName = attempt == 1 ? name : Self.numbered(stem: stem, ext: ext, attempt: attempt)
             let candidate = folder.appendingPathComponent(candidateName)
-            if manager.fileExists(atPath: candidate.path) {
+            // A metadata file left behind by a deleted file is never overwritten either (R-1402).
+            if manager.fileExists(atPath: candidate.path) || manager.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path) {
                 if conflict == .skip { return nil }
                 continue
             }

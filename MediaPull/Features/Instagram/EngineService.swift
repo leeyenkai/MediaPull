@@ -135,6 +135,7 @@ final class EngineService {
         defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
         try? CookieFile.write(await app.cookies(forDomain: "instagram.com"), to: cookieFile)
         request.cookies = cookieFile.path
+        request.userAgent = app.userAgent
         request.staging = app.enginePaths?.staging.appendingPathComponent(job).path
         do {
             var found = false
@@ -279,7 +280,10 @@ final class EngineService {
         }
         job.state = .running
         let work = UUID().uuidString
-        guard let staging = app.enginePaths?.staging.appendingPathComponent(work, isDirectory: true) else { return }
+        guard let staging = app.enginePaths?.staging.appendingPathComponent(work, isDirectory: true) else {
+            app.jobs.finish(job, .failed("The download engine is not available."))
+            return
+        }
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         let cookieFile = CookieFile.privateLocation(job: work)
         let originalCookies = await app.cookies(forDomain: "instagram.com")
@@ -323,6 +327,7 @@ final class EngineService {
             request.url = urls.first ?? profileURL.absoluteString
         }
         request.cookies = cookieFile.path
+        request.userAgent = app.userAgent
         request.staging = staging.path
         request.setPacing(draft.pacing.delay)
         let selector = app.preferences.video.selector(av1Decodable: FFmpeg.canDecodeAV1)
@@ -340,13 +345,14 @@ final class EngineService {
         }
         if resuming, let cursor = stored?.resumeCursor, draft.postURL == nil, !scanOnly { request.cursor = cursor }
 
+        // The folder decides the layout, not the draft (D-70).
         let target: SaveTarget? = root.map { root in
             if let tag = draft.hashtag {
-                return SaveTarget(folder: root.url, layout: draft.layout, autoSubfolders: true, collectionPath: [SaveTarget.tagsFolder, tag])
+                return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [SaveTarget.tagsFolder, tag])
             }
             return draft.postURL == nil && isAccount
-                ? SaveTarget(folder: root.url, layout: draft.layout, autoSubfolders: true, accountUsername: draft.folderName.nonEmpty ?? account)
-                : SaveTarget(folder: root.url, layout: draft.layout, autoSubfolders: true)
+                ? SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, accountUsername: draft.folderName.nonEmpty ?? account)
+                : SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true)
         }
         let settings = app.saveSettings
         let pipeline = app.pipeline()
@@ -503,6 +509,13 @@ final class EngineService {
         var request = BridgeRequest(op: "video_info")
         request.url = url.absoluteString
         request.userAgent = app.userAgent
+        // Members-only and age-checked videos list their formats only with the browser's sign-in for that site.
+        let cookieFile = CookieFile.privateLocation(job: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cookieFile.deletingLastPathComponent()) }
+        if let host = url.host {
+            let cookies = await app.cookies(forDomain: PublicSuffix.shared.registrableDomain(host))
+            if !cookies.isEmpty, (try? CookieFile.write(cookies, to: cookieFile)) != nil { request.cookies = cookieFile.path }
+        }
         var message = "No downloadable video was found on this page."
         do {
             for try await event in bridge.run(request) {
@@ -597,10 +610,16 @@ final class EngineService {
                                                      job: job)
                     {
                         saved[found.key] = url
-                        for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] { placeAttachment(path, kind: kind, beside: url) }
+                        for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] {
+                            await placeAttachment(path, kind: kind, beside: url)
+                        }
                     }
                 case let .attachment(key, path, kind) where path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/"):
-                    if let beside = saved[key] { placeAttachment(path, kind: kind, beside: beside) } else { waiting[key, default: []].append((path, kind)) }
+                    if let beside = saved[key] {
+                        await placeAttachment(path, kind: kind, beside: beside)
+                    } else {
+                        waiting[key, default: []].append((path, kind))
+                    }
                 case let .error(_, message, _, fatal):
                     if fatal || failure == nil { failure = message }
                 case let .policyViolation(method, host, _, reason):
@@ -673,7 +692,7 @@ final class EngineService {
     }
 
     /// Puts a subtitle, thumbnail or description file beside the saved video, named after it.
-    private func placeAttachment(_ path: URL, kind: String, beside video: URL) {
+    private func placeAttachment(_ path: URL, kind: String, beside video: URL) async {
         let stem = video.deletingPathExtension()
         let ext = path.pathExtension.lowercased()
         let name: String = if kind.hasPrefix("subtitles.") {
@@ -683,15 +702,21 @@ final class EngineService {
         } else {
             "\(stem.lastPathComponent).\(ext)"
         }
-        var destination = video.deletingLastPathComponent().appendingPathComponent(name)
+        let destination = video.deletingLastPathComponent().appendingPathComponent(name)
         // A WebP thumbnail is saved as JPEG, in keeping with the normal formats (R-1502).
-        if kind == "thumbnail", !["jpg", "jpeg", "png"].contains(ext), let analysis = ImageConversion.analyze(path) {
-            destination = destination.deletingPathExtension().appendingPathExtension("jpg")
-            if (try? ImageConversion.convertStill(path, to: ImageConversion.stillTarget(for: analysis), output: LibraryModel.uniqueURL(destination))) != nil {
-                return
-            }
+        if kind == "thumbnail", !["jpg", "jpeg", "png"].contains(ext),
+           await Self.convertToJPEG(path, output: LibraryModel.uniqueURL(destination.deletingPathExtension().appendingPathExtension("jpg")))
+        {
+            return
         }
         try? FileManager.default.moveItem(at: path, to: LibraryModel.uniqueURL(destination))
+    }
+
+    /// Decoding and encoding stay off the main actor.
+    @concurrent
+    private nonisolated static func convertToJPEG(_ path: URL, output: URL) async -> Bool {
+        guard let analysis = ImageConversion.analyze(path) else { return false }
+        return (try? ImageConversion.convertStill(path, to: ImageConversion.stillTarget(for: analysis), output: output)) != nil
     }
 
     // MARK: Site extractor
@@ -734,9 +759,18 @@ final class EngineService {
             var request = BridgeRequest(op: "scan")
             request.url = url.absoluteString
             request.cookies = cookieFile.path
+            request.userAgent = self.app.userAgent
+            request.category = category
+            if let keys = SiteKeys.forSite(category) {
+                let saved = SiteKeychain.keys(for: category, fields: keys.fields)
+                if !saved.isEmpty { request.siteKeys = saved }
+            }
             request.staging = staging?.path
             request.setPacing([1, 2])
+            let siteName = self.app.sites.name(SiteInfoKey(category: category))
+            let ownKey = SiteKeys.forSite(category) != nil
             var fatal: String?
+            var blocked = false
             var batch: [EngineItemInput] = []
             do {
                 for try await event in bridge.run(request, workingDirectory: staging) {
@@ -752,9 +786,21 @@ final class EngineService {
                     case let .wait(seconds, reason):
                         job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
                     case let .error(code, message, _, isFatal):
-                        if isFatal { fatal = self.describe(code: code, message: message) }
+                        guard isFatal else { continue }
+                        fatal = GalleryError.describe(self.describe(code: code, message: message), site: siteName, ownKey: ownKey)
+                    case let .checkpoint(_, _, message):
+                        blocked = true
+                        fatal = GalleryError.describe(message, site: siteName, ownKey: ownKey)
+                    case let .policyViolation(method, host, _, reason):
+                        blocked = true
+                        fatal = "MediaPull blocked a \(method) request to \(host): \(reason)"
                     case let .done(status, errors):
-                        if status == "failed", fatal == nil, job.found == 0 { fatal = errors.last ?? "The site extractor found nothing." }
+                        // A site that stops the scan part way is a failure, even with some items listed.
+                        if status == "blocked" { blocked = true }
+                        if status == "failed" || blocked, fatal == nil, job.found == 0 || blocked {
+                            fatal = errors.last.map { GalleryError.describe($0, site: siteName, ownKey: ownKey) }
+                                ?? (blocked ? "\(siteName) stopped the scan." : "The site extractor found nothing.")
+                        }
                     default:
                         if job.state != .running { job.state = .running }
                     }
@@ -765,7 +811,7 @@ final class EngineService {
             if !batch.isEmpty { window?.ingestEngine(batch) }
             if Task.isCancelled {
                 self.app.jobs.finish(job, .cancelled)
-            } else if let fatal, job.found == 0 {
+            } else if let fatal, job.found == 0 || blocked {
                 self.app.jobs.finish(job, .failed(fatal))
             } else {
                 self.app.jobs.finish(job, .completed)
@@ -795,7 +841,10 @@ final class EngineService {
             guard let self else { return }
             job.state = .running
             let work = UUID().uuidString
-            guard let staging = self.app.enginePaths?.staging.appendingPathComponent(work, isDirectory: true) else { return }
+            guard let staging = self.app.enginePaths?.staging.appendingPathComponent(work, isDirectory: true) else {
+                self.app.jobs.finish(job, .failed("The download engine is not available."))
+                return
+            }
             try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
             let cookieFile = CookieFile.privateLocation(job: work)
             defer {
@@ -880,6 +929,9 @@ final class EngineService {
                             job.failures.append((file.key, reason))
                         }
                         if let note, job.notes.count < 30 { job.notes.append(note) }
+                    case let .file(file):
+                        job.failed += 1
+                        job.failures.append((file.key, "The engine reported a file outside its working folder. It was left alone."))
                     case .skip:
                         job.skipped += 1
                     case let .wait(seconds, reason):

@@ -467,6 +467,23 @@ final class WindowModel: Identifiable, MediaGridOwner {
         gridRevision += 1
     }
 
+    /// The tab showing a page (blob media only exists in the page that made it), or the selected tab.
+    func tab(showing page: URL?) -> BrowserController {
+        guard let page else { return browser }
+        return tabs.first { $0.url == page } ?? browser
+    }
+
+    func clearQueued(_ ids: [String]) {
+        var changed = false
+        for id in ids {
+            if case .queued = states[id] {
+                states[id] = nil
+                changed = true
+            }
+        }
+        if changed { gridRevision += 1 }
+    }
+
     func apply(_ event: SaveEvent) {
         switch event {
         case let .started(id): states[id] = .saving(nil)
@@ -869,24 +886,20 @@ final class WindowModel: Identifiable, MediaGridOwner {
         let target = SaveTarget(folder: staging, layout: withSidecar ? .archive : .plain, autoSubfolders: false)
         let pipeline = app.pipeline()
         let context = SaveContext(cookies: await app.cookieJar(), userAgent: app.userAgent, nameOverrides: customNames)
-        let outcomes = await pipeline.save([item], target: target, settings: app.saveSettings, context: context, concurrency: 1) { [weak self] event in
-            Task { @MainActor in self?.apply(event) }
-        }
+        // The copy in the staging folder is temporary, so its events do not mark the item as saved.
+        let outcomes = await pipeline.save([item], target: target, settings: app.saveSettings, context: context, concurrency: 1) { _ in }
         switch outcomes[itemID] {
         case let .saved(saved), let .duplicate(saved):
             do {
-                try? FileManager.default.removeItem(at: url)
-                let wanted = url.pathExtension.lowercased()
+                // The promised name guessed the format. When the real one differs (a PNG promised as JPEG), keep the real file
+                // under its own extension rather than re-encoding it; never replace an existing file.
                 let actual = saved.pathExtension.lowercased()
-                let stillImage = ["jpg", "jpeg", "png"]
-                if wanted != actual, stillImage.contains(wanted), stillImage.contains(actual) {
-                    try ImageConversion.convertStill(saved, to: wanted == "png" ? .png : .jpeg, output: url)
-                } else {
-                    try FileManager.default.copyItem(at: saved, to: url)
-                }
+                var destination = url.pathExtension.lowercased() == actual ? url : url.deletingPathExtension().appendingPathExtension(actual)
+                destination = LibraryModel.uniqueURL(destination)
+                try FileManager.default.copyItem(at: saved, to: destination)
                 let sidecar = Sidecar.sidecarURL(for: saved)
                 if withSidecar, FileManager.default.fileExists(atPath: sidecar.path) {
-                    try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: url))
+                    try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
                 }
                 return nil
             } catch {

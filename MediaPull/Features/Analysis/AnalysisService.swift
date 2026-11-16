@@ -29,7 +29,11 @@ final class AnalysisService {
     @ObservationIgnored private var imageVectors: VectorStore?
     @ObservationIgnored private var faceVectors: VectorStore?
     @ObservationIgnored private var subjects: SubjectClassifier?
+    @ObservationIgnored private var subjectsKey: [String]?
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var regroupTask: Task<Void, Never>?
+    /// Deletions under way; no scan starts while one runs, so nothing is written into data being deleted.
+    @ObservationIgnored private var deletions = 0
     @ObservationIgnored private var scheduled: Task<Void, Never>?
     @ObservationIgnored private var rescanRequested = false
     @ObservationIgnored private var job: Job?
@@ -153,7 +157,7 @@ final class AnalysisService {
     }
 
     private func runScan() {
-        guard let store, let analyzer else { return }
+        guard let store, let analyzer, deletions == 0 else { return }
         isRunning = true
         let folders = scanFolders
         let wantFaces = preferences.facesEnabled && analyzer.faceEncoder != nil
@@ -407,8 +411,9 @@ final class AnalysisService {
     func subjects(for entries: [MediaEntry]) async -> [String: (String, Float)] {
         guard let analyzer, let encoder = analyzer.imageText, let imageVectors else { return [:] }
         let custom = preferences.customSubjects
-        if subjects == nil || subjects?.names.count != SubjectClassifier.standard.count + custom.count {
+        if subjects == nil || subjectsKey != custom {
             subjects = await Task.detached(priority: .userInitiated) { SubjectClassifier(encoder: encoder, custom: custom) }.value
+            subjectsKey = custom
         }
         guard let classifier = subjects else { return [:] }
         var out: [String: (String, Float)] = [:]
@@ -428,28 +433,45 @@ final class AnalysisService {
 
     // MARK: People (section 39)
 
+    /// Regroups faces. Runs one at a time (scan end, Regroup and a Matching change can overlap), and a result worked out
+    /// from faces that changed meanwhile (a correction, new faces, a deletion) is thrown away and worked out again.
     func regroupFaces(full: Bool) async {
-        guard let store, let faceVectors, preferences.facesEnabled else { return }
-        let faces = await store.faces()
-        let named = Set(people.filter { $0.name != nil }.map(\.id))
-        var input: [FaceGrouping.Face] = []
-        for face in faces {
-            guard let vector = await faceVectors.vector(row: face.vectorRow) else { continue }
-            input.append(FaceGrouping.Face(
-                key: face.key,
-                vector: vector,
-                quality: face.quality,
-                personID: face.personID,
-                pinned: face.pinned,
-                rejected: Set(face.rejected)
-            ))
+        let previous = regroupTask
+        let task = Task { [weak self] in
+            await previous?.value
+            await self?.performRegroup(full: full)
         }
-        let threshold = faceThreshold
-        let changes = await Task.detached(priority: .utility) {
-            FaceGrouping.group(input, threshold: threshold, minimumGroup: 2, regroup: full, named: named)
-        }.value
-        if !changes.isEmpty {
-            await store.applyAssignments(changes)
+        regroupTask = task
+        await task.value
+    }
+
+    private func performRegroup(full: Bool) async {
+        for _ in 0 ..< 3 {
+            guard let store, let faceVectors, preferences.facesEnabled else { return }
+            let faces = await store.faces()
+            let named = await Set(store.people().filter { $0.name != nil }.map(\.id))
+            var input: [FaceGrouping.Face] = []
+            for face in faces {
+                guard let vector = await faceVectors.vector(row: face.vectorRow) else { continue }
+                input.append(FaceGrouping.Face(
+                    key: face.key,
+                    vector: vector,
+                    quality: face.quality,
+                    personID: face.personID,
+                    pinned: face.pinned,
+                    rejected: Set(face.rejected)
+                ))
+            }
+            let threshold = faceThreshold
+            let changes = await Task.detached(priority: .utility) {
+                FaceGrouping.group(input, threshold: threshold, minimumGroup: 2, regroup: full, named: named)
+            }.value
+            if changes.isEmpty || !preferences.facesEnabled {
+                break
+            }
+            if await store.applyAssignments(changes, ifUnchangedSince: faces) {
+                break
+            }
         }
         await refreshPeople()
     }
@@ -557,14 +579,24 @@ final class AnalysisService {
         schedule(after: .milliseconds(200))
     }
 
+    /// Stops the scan and waits for the files it is analysing, which would otherwise write records, face vectors and faces
+    /// after the data they belong to was deleted (D-61). No scan starts until the deletion ends.
+    private func stopScanForDeletion() async {
+        deletions += 1
+        scheduled?.cancel()
+        scanTask?.cancel()
+        await scanTask?.value
+    }
+
     /// Delete All Face Data: faces, people, names, corrections and face vectors, in one step (D-61).
     func deleteAllFaceData(turnOff: Bool = true) async {
         if turnOff {
             preferences.facesEnabled = false
         }
-        cancelScan()
+        await stopScanForDeletion()
         await store?.deleteAllFaceData()
         await faceVectors?.deleteAll()
+        deletions -= 1
         // Files are checked for people again only after a new opt-in.
         people = []
         suggestions = [:]
@@ -573,14 +605,27 @@ final class AnalysisService {
 
     /// Delete All Analysis Data: everything in the Analysis folder.
     func deleteAllAnalysis() async {
-        cancelScan()
+        await stopScanForDeletion()
         await store?.deleteAll()
         await imageVectors?.deleteAll()
         await faceVectors?.deleteAll()
+        deletions -= 1
         people = []
         suggestions = [:]
         analysedCount = 0
         revision += 1
         peopleRevision += 1
+    }
+
+    /// Analyse Again: every file is analysed again from scratch. People, names and corrections are kept (faces found
+    /// again keep their keys and so their person); only results and image embeddings are dropped.
+    func analyseAgain() async {
+        await stopScanForDeletion()
+        await store?.deleteResults()
+        await imageVectors?.deleteAll()
+        deletions -= 1
+        analysedCount = 0
+        revision += 1
+        schedule(after: .milliseconds(200))
     }
 }

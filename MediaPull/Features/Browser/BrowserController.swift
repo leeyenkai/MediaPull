@@ -181,8 +181,9 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
 
     func download(_ download: WKDownload, decideDestinationUsing _: URLResponse, suggestedFilename: String) async -> URL? {
         guard let chosen = await onChooseDownloadDestination?(suggestedFilename) else { return nil }
-        // The save panel already asked about replacing; WebKit refuses to write over an existing file.
-        try? FileManager.default.removeItem(at: chosen)
+        // The save panel already asked about replacing; WebKit refuses to write over an existing file. The old one goes to the
+        // Trash, never away for good (R-1703).
+        if FileManager.default.fileExists(atPath: chosen.path) { try? FileManager.default.trashItem(at: chosen, resultingItemURL: nil) }
         downloadDestinations[ObjectIdentifier(download)] = chosen
         return chosen
     }

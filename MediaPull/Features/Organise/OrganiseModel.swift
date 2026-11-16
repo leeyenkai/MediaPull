@@ -335,7 +335,6 @@ final class OrganiseModel {
             var recent = app.preferences.recentOrganiseFolders.filter { $0 != folder.path }
             recent.insert(folder.path, at: 0)
             app.preferences.recentOrganiseFolders = Array(recent.prefix(10))
-            if same(target.root, folder) { target.root = nil }
         }
         pending = nil
         updateAnalysisFolders()
@@ -401,7 +400,7 @@ final class OrganiseModel {
         }
     }
 
-    func execute(_ plan: OrganisePlan) {
+    func execute(_ plan: OrganisePlan, then finished: (@MainActor () -> Void)? = nil) {
         pending = nil
         message = nil
         let journal = app.journal
@@ -429,6 +428,7 @@ final class OrganiseModel {
             await self.refreshHistory()
             self.working = nil
             self.showResults(of: plan)
+            finished?()
         }
     }
 
@@ -475,13 +475,13 @@ final class OrganiseModel {
         run(copy ? FolderOperations.copy(urls, to: folder) : FolderOperations.move(urls, to: folder))
     }
 
-    /// Makes "New Folder" and starts renaming it in place.
+    /// Makes "New Folder" through the journal, so it can be undone (R-3805), and starts renaming it in place.
     func newFolder(in parent: URL) {
         let plan = FolderOperations.newFolder(named: "New Folder", in: parent)
         guard let folder = plan.foldersToCreate.first else { return }
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        for pane in [source, target] { pane.treeRevision += 1 }
-        renaming = folder.path
+        execute(plan) { [weak self] in
+            if FileManager.default.fileExists(atPath: folder.path) { self?.renaming = folder.path }
+        }
     }
 
     func commitRename(_ url: URL, to name: String) {

@@ -221,7 +221,7 @@ struct StartPage: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("MediaPull")
                         .font(.largeTitle.weight(.semibold))
-                    Text("Browse any page and every image and video on it appears in Extracted Media, including the ones that load as you scroll. Drag them into a folder, or pull a whole Instagram account.")
+                    Text("Browse any page and every image and video on it appears in Extracted Media, including the ones that load as you scroll. Save them into a folder, or download whole profiles, galleries and videos from hundreds of sites.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -231,15 +231,13 @@ struct StartPage: View {
                     StartRow(symbol: "globe", title: "Open a web page", detail: "Type an address above, for example nytimes.com/international") {
                         model.focusAddressToken += 1
                     }
-                    StartRow(symbol: "person.crop.rectangle.stack", title: "Download an Instagram account",
-                             detail: "Posts, carousels, Reels, highlights and stories at the highest quality") {
+                    StartRow(symbol: "arrow.down.circle", title: "Or download from one of the supported sites",
+                             detail: "Instagram, YouTube, Bluesky, Pinterest and hundreds more: whole profiles, galleries, videos and playlists") {
                         model.showDownloads("")
                     }
-                    StartRow(symbol: "key.fill", title: app.engines.signedIn ? "Signed in to Instagram" : "Sign in to Instagram",
-                             detail: app.engines.signedIn ? "Your session stays in this app's browser only."
-                                 : "Instagram needs a signed-in session to list an account's posts.")
-                    {
-                        model.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!)
+                    StartRow(symbol: "folder", title: "Organise a folder",
+                             detail: "Sort photos by date, subject or person, in place or into a new folder") {
+                        model.section = .organise
                     }
                     StartRow(symbol: "arrow.triangle.2.circlepath", title: "Convert WebP, AVIF or HEIC files",
                              detail: "Drop files on the Converter to make high-quality JPEG or PNG copies") {

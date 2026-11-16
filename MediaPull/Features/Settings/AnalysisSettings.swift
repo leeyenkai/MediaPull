@@ -70,7 +70,8 @@ struct AnalysisSettings: View {
             } header: { Text("Organise") }
             Section {
                 HStack {
-                    Button("Analyse Again") { Task { await app.analysis.deleteAllAnalysis(); app.analysis.schedule() } }
+                    Button("Analyse Again") { Task { await app.analysis.analyseAgain() } }
+                        .help("Analyses every file again. People, their names and your corrections are kept.")
                     Button("Delete All Analysis Data…") { confirmDelete = true }
                 }
             } footer: {

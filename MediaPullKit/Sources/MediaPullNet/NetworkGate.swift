@@ -52,8 +52,13 @@ public struct CookieRecord: Codable, Hashable, Sendable {
         if isSecure, url.scheme != "https" { return false }
         if let expires, expires < Date() { return false }
         let domain = domain.lowercased()
-        let bare = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
-        guard host == bare || host.hasSuffix("." + bare) else { return false }
+        // A cookie set without a Domain attribute is stored without the leading dot and belongs to that host alone.
+        if domain.hasPrefix(".") {
+            let bare = String(domain.dropFirst())
+            guard host == bare || host.hasSuffix("." + bare) else { return false }
+        } else {
+            guard host == domain else { return false }
+        }
         let requestPath = url.path.isEmpty ? "/" : url.path
         return path.isEmpty || path == "/" || requestPath.hasPrefix(path)
     }
@@ -176,6 +181,42 @@ public enum RequestPolicy {
     }
 }
 
+/// What may follow a redirect (SPEC R-501). The cookie header was chosen for the first host, so it goes no further than
+/// that exact host, and a hop from https to http is refused while cookies are attached.
+public enum RedirectPolicy {
+    public static func nextHeaders(_ headers: [String: String], method: String, from: URL, to: URL) -> Result<[String: String], GateError> {
+        let hasCookie = headers.keys.contains { $0.lowercased() == "cookie" }
+        if hasCookie, from.scheme?.lowercased() == "https", to.scheme?.lowercased() != "https" {
+            return .failure(.denied("A redirect to an insecure address would have exposed cookies."))
+        }
+        var next = headers
+        if hasCookie, from.host?.lowercased() != to.host?.lowercased() {
+            next = next.filter { $0.key.lowercased() != "cookie" }
+        }
+        switch RequestPolicy.evaluate(method: method, url: to, headers: next, hasBody: false) {
+        case let .denied(reason): return .failure(.denied(reason))
+        case .allowed: return .success(next)
+        }
+    }
+
+    /// The request for the next hop, built from the headers MediaPull chose rather than those URLSession carried over.
+    public static func nextRequest(after current: URLRequest, headers: [String: String], proposed: URLRequest)
+        -> Result<(URLRequest, [String: String]), GateError>
+    {
+        guard let to = proposed.url, let from = current.url else { return .failure(.denied("The redirect has no address.")) }
+        let method = proposed.httpMethod ?? "GET"
+        return nextHeaders(headers, method: method, from: from, to: to).map { next in
+            var request = URLRequest(url: to, cachePolicy: current.cachePolicy, timeoutInterval: current.timeoutInterval)
+            request.httpMethod = method
+            request.httpShouldHandleCookies = false
+            for (name, value) in next {
+                request.setValue(value, forHTTPHeaderField: name)
+            }
+            return (request, next)
+        }
+    }
+}
+
 public enum GateError: LocalizedError, Sendable, Equatable {
     case denied(String)
     case http(Int)
@@ -244,14 +285,24 @@ public actor NetworkGate {
     public func entries() -> [EgressEntry] { log }
 
     private func record(_ request: GatedRequest) -> Int {
+        record(method: request.method.rawValue, url: request.url, purpose: request.purpose)
+    }
+
+    private func record(method: String, url: URL, purpose: RequestPurpose) -> Int {
         counter += 1
-        let entry = EgressEntry(
-            id: counter, time: Date(), method: request.method.rawValue, host: request.url.host ?? "",
-            path: request.url.path, purpose: request.purpose
-        )
+        let entry = EgressEntry(id: counter, time: Date(), method: method, host: url.host ?? "", path: url.path, purpose: purpose)
         log.append(entry)
         if log.count > Self.logCapacity { log.removeFirst(log.count - Self.logCapacity) }
         return counter
+    }
+
+    private func hop(from previous: Int, status: Int, to url: URL, method: String, purpose: RequestPurpose) -> Int {
+        finish(previous, status: status, bytes: nil)
+        return record(method: method, url: url, purpose: purpose)
+    }
+
+    private func logHop(_ purpose: RequestPurpose) -> RedirectGuard.Log {
+        { [self] previous, status, url, method in await hop(from: previous, status: status, to: url, method: method, purpose: purpose) }
     }
 
     private func finish(_ id: Int, status: Int?, bytes: Int64?) {
@@ -271,21 +322,22 @@ public actor NetworkGate {
     /// The whole body of a small response.
     public func data(_ request: GatedRequest) async throws -> (Data, HTTPURLResponse) {
         let urlRequest = try prepare(request)
-        let id = record(request)
+        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose))
         let host = request.url.host ?? ""
         await limiter.acquire(host)
         defer { Task { await limiter.release(host) } }
         do {
-            let (data, response) = try await session.data(for: urlRequest)
+            let (data, response) = try await session.data(for: urlRequest, delegate: hops)
             guard let http = response as? HTTPURLResponse else { throw GateError.notHTTP }
-            finish(id, status: http.statusCode, bytes: Int64(data.count))
+            finish(hops.currentID, status: http.statusCode, bytes: Int64(data.count))
+            try hops.checkRefusal()
             return (data, http)
         } catch let error as GateError {
-            // An HTTP status was already recorded; keep it in the request log.
-            if case .http = error {} else { finish(id, status: nil, bytes: nil) }
+            // An HTTP status, or the redirect that was refused, is already in the request log.
+            if case .http = error {} else if error != hops.refusal { finish(hops.currentID, status: nil, bytes: nil) }
             throw error
         } catch {
-            finish(id, status: nil, bytes: nil)
+            finish(hops.currentID, status: nil, bytes: nil)
             throw Self.mapped(error)
         }
     }
@@ -295,13 +347,18 @@ public actor NetworkGate {
         var request = request
         if request.method == .get, request.range == nil { request.range = "bytes=0-\(maxBytes - 1)" }
         let urlRequest = try prepare(request)
-        let id = record(request)
+        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose))
         let host = request.url.host ?? ""
         await limiter.acquire(host)
         defer { Task { await limiter.release(host) } }
         do {
-            let (bytes, response) = try await session.bytes(for: urlRequest)
+            let (bytes, response) = try await session.bytes(for: urlRequest, delegate: hops)
             guard let http = response as? HTTPURLResponse else { throw GateError.notHTTP }
+            if hops.refusal != nil {
+                bytes.task.cancel()
+                finish(hops.currentID, status: http.statusCode, bytes: nil)
+                try hops.checkRefusal()
+            }
             var data = Data()
             data.reserveCapacity(min(maxBytes, 65536))
             if request.method == .get, (200 ..< 300).contains(http.statusCode) {
@@ -311,14 +368,14 @@ public actor NetworkGate {
                 }
             }
             bytes.task.cancel()
-            finish(id, status: http.statusCode, bytes: Int64(data.count))
+            finish(hops.currentID, status: http.statusCode, bytes: Int64(data.count))
             return (data, http)
         } catch let error as GateError {
-            // An HTTP status was already recorded; keep it in the request log.
-            if case .http = error {} else { finish(id, status: nil, bytes: nil) }
+            // An HTTP status, or the redirect that was refused, is already in the request log.
+            if case .http = error {} else if error != hops.refusal { finish(hops.currentID, status: nil, bytes: nil) }
             throw error
         } catch {
-            finish(id, status: nil, bytes: nil)
+            finish(hops.currentID, status: nil, bytes: nil)
             throw Self.mapped(error)
         }
     }
@@ -330,17 +387,17 @@ public actor NetworkGate {
         progress: @escaping @Sendable (Int64, Int64?) -> Void = { _, _ in }
     ) async throws -> HTTPURLResponse {
         let urlRequest = try prepare(request)
-        let id = record(request)
+        let delegate = DownloadProgressDelegate(request: urlRequest, id: record(request), log: logHop(request.purpose), progress: progress)
         let host = request.url.host ?? ""
         await limiter.acquire(host)
         defer { Task { await limiter.release(host) } }
-        let delegate = DownloadProgressDelegate(progress: progress)
         do {
             let (location, response) = try await session.download(for: urlRequest, delegate: delegate)
             guard let http = response as? HTTPURLResponse else { throw GateError.notHTTP }
             guard (200 ..< 300).contains(http.statusCode) else {
                 try? FileManager.default.removeItem(at: location)
-                finish(id, status: http.statusCode, bytes: nil)
+                finish(delegate.currentID, status: http.statusCode, bytes: nil)
+                try delegate.checkRefusal()
                 throw GateError.http(http.statusCode)
             }
             let manager = FileManager.default
@@ -348,14 +405,14 @@ public actor NetworkGate {
             try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try manager.moveItem(at: location, to: destination)
             let size = (try? manager.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
-            finish(id, status: http.statusCode, bytes: size)
+            finish(delegate.currentID, status: http.statusCode, bytes: size)
             return http
         } catch let error as GateError {
-            // An HTTP status was already recorded; keep it in the request log.
-            if case .http = error {} else { finish(id, status: nil, bytes: nil) }
+            // An HTTP status, or the redirect that was refused, is already in the request log.
+            if case .http = error {} else if error != delegate.refusal { finish(delegate.currentID, status: nil, bytes: nil) }
             throw error
         } catch {
-            finish(id, status: nil, bytes: nil)
+            finish(delegate.currentID, status: nil, bytes: nil)
             throw Self.mapped(error)
         }
     }
@@ -367,12 +424,63 @@ public actor NetworkGate {
     }
 }
 
-final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+/// Checks every redirect hop against the request policy and logs it (SPEC R-501). URLSession would otherwise follow a 3xx
+/// anywhere, with the Cookie and Referer headers MediaPull set by hand for the first host.
+class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    typealias Log = @Sendable (_ previous: Int, _ status: Int, _ next: URL, _ method: String) async -> Int
+
+    private struct State {
+        var id: Int
+        var request: URLRequest
+        var headers: [String: String]
+        var refusal: GateError?
+    }
+
+    private let lock = NSLock()
+    private var state: State
+    private let log: Log
+
+    init(request: URLRequest, id: Int, log: @escaping Log) {
+        state = State(id: id, request: request, headers: request.allHTTPHeaderFields ?? [:])
+        self.log = log
+    }
+
+    /// The request log entry of the hop the answer came from.
+    var currentID: Int { lock.withLock { state.id } }
+    var refusal: GateError? { lock.withLock { state.refusal } }
+
+    func checkRefusal() throws {
+        if let refusal { throw refusal }
+    }
+
+    // The completion-handler form: the async form of this callback crashes the compiler's Objective-C thunk.
+    func urlSession(_: URLSession, task _: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest proposed: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void)
+    {
+        let current = lock.withLock { state }
+        switch RedirectPolicy.nextRequest(after: current.request, headers: current.headers, proposed: proposed) {
+        case let .failure(error):
+            lock.withLock { state.refusal = error }
+            completionHandler(nil)
+        case let .success((next, headers)):
+            guard let url = next.url else { return completionHandler(nil) }
+            let status = response.statusCode
+            Task {
+                let id = await log(current.id, status, url, next.httpMethod ?? "GET")
+                lock.withLock { state = State(id: id, request: next, headers: headers) }
+                completionHandler(next)
+            }
+        }
+    }
+}
+
+final class DownloadProgressDelegate: RedirectGuard, URLSessionDownloadDelegate, @unchecked Sendable {
     let progress: @Sendable (Int64, Int64?) -> Void
     private var last = Date.distantPast
 
-    init(progress: @escaping @Sendable (Int64, Int64?) -> Void) {
+    init(request: URLRequest, id: Int, log: @escaping Log, progress: @escaping @Sendable (Int64, Int64?) -> Void) {
         self.progress = progress
+        super.init(request: request, id: id, log: log)
     }
 
     func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}

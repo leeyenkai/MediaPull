@@ -46,14 +46,30 @@ public enum FaceGrouping {
                 work[i].personID = nil
             }
         }
+        // Regrouping gives freed faces new ids, so "Not This Person" is checked against the people the group's faces
+        // belonged to before (`origins`), both ways: a face never joins a group holding faces of a person it rejected,
+        // nor a group with a face that rejected its own person (R-3904).
+        struct Constraints {
+            var origins: Set<UUID> = []
+            var rejects: Set<UUID> = []
+
+            func allows(_ face: Face) -> Bool {
+                face.rejected.isDisjoint(with: origins) && !(face.personID.map(rejects.contains) ?? false)
+            }
+
+            mutating func add(_ face: Face) {
+                if let id = face.personID {
+                    origins.insert(id)
+                }
+                rejects.formUnion(face.rejected)
+            }
+        }
         var sums: [UUID: [Float]] = [:]
-        var counts: [UUID: Int] = [:]
-        for face in work {
+        var constraints: [UUID: Constraints] = [:]
+        for (i, face) in work.enumerated() {
             if let id = face.personID {
-                add(face.vector, to: &sums[id, default: zeros(face.vector.count)]); counts[
-                    id,
-                    default: 0
-                ] += 1
+                add(face.vector, to: &sums[id, default: zeros(face.vector.count)])
+                constraints[id, default: Constraints(origins: [id])].add(faces[i])
             }
         }
         var centroids = sums.mapValues(normalized)
@@ -63,7 +79,7 @@ public enum FaceGrouping {
         var leftover: [Int] = []
         for i in order {
             var best: (UUID, Float)?
-            for (id, centroid) in centroids where !work[i].rejected.contains(id) {
+            for (id, centroid) in centroids where constraints[id]?.allows(faces[i]) ?? true {
                 let s = dot(centroid, work[i].vector)
                 if s >= threshold, s > (best?.1 ?? -2) {
                     best = (id, s)
@@ -72,7 +88,7 @@ public enum FaceGrouping {
             if let (id, _) = best {
                 work[i].personID = id
                 add(work[i].vector, to: &sums[id]!)
-                counts[id]! += 1
+                constraints[id]?.add(faces[i])
                 centroids[id] = normalized(sums[id]!)
                 result[work[i].key] = id
             } else {
@@ -80,10 +96,10 @@ public enum FaceGrouping {
             }
         }
         // The rest: greedy grouping among themselves.
-        var groups: [(centroid: [Float], sum: [Float], members: [Int])] = []
+        var groups: [(centroid: [Float], sum: [Float], members: [Int], constraints: Constraints)] = []
         for i in leftover {
             var best: (Int, Float)?
-            for (g, group) in groups.enumerated() {
+            for (g, group) in groups.enumerated() where group.constraints.allows(faces[i]) {
                 let s = dot(group.centroid, work[i].vector)
                 if s >= threshold, s > (best?.1 ?? -2) {
                     best = (g, s)
@@ -93,8 +109,11 @@ public enum FaceGrouping {
                 add(work[i].vector, to: &groups[g].sum)
                 groups[g].members.append(i)
                 groups[g].centroid = normalized(groups[g].sum)
+                groups[g].constraints.add(faces[i])
             } else {
-                groups.append((work[i].vector, work[i].vector, [i]))
+                var constraints = Constraints()
+                constraints.add(faces[i])
+                groups.append((work[i].vector, work[i].vector, [i], constraints))
             }
         }
         for group in groups {
