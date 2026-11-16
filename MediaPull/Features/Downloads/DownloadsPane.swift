@@ -37,6 +37,7 @@ final class DownloadsModel {
         if !fromBrowser { followsBrowser = text.isEmpty }
         address = text
         checkTask?.cancel()
+        checking = false
         let input = AddressInput.parse(text.hasPrefix("#") ? "https://www.instagram.com/explore/tags/\(text.dropFirst())/" : text)
         if let tag = Self.hashtag(text) {
             var draft = app.engines.draft(username: "")
@@ -219,7 +220,6 @@ struct GalleryForm: View {
                 }
                 Spacer()
                 Button("Download") { start() }
-                    .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(!choices.isEmpty && downloads.include.isEmpty || model.saveFolder == nil)
             }

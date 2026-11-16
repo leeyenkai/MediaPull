@@ -37,15 +37,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         // Analysis picks up where it stopped at the next launch, so only other jobs ask before quitting.
-        AppModel.shared.analysis.cancelScan()
         let running = AppModel.shared.jobs.jobs.filter { $0.state.isActive && $0.kind != .analyse }
-        guard !running.isEmpty, !SelfTestRunner.isActive else { return .terminateNow }
+        guard !running.isEmpty, !SelfTestRunner.isActive else {
+            AppModel.shared.analysis.cancelScan()
+            return .terminateNow
+        }
         let alert = NSAlert()
         alert.messageText = "\(running.count) job\(running.count == 1 ? " is" : "s are") still running"
         alert.informativeText = "Quitting stops them. Instagram pulls can be resumed later and continue where they stopped."
         alert.addButton(withTitle: "Quit")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
+            AppModel.shared.analysis.cancelScan()
             running.forEach { $0.cancel() }
             return .terminateNow
         }

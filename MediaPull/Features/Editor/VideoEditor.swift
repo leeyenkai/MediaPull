@@ -138,6 +138,11 @@ final class VideoEditorModel {
 
     // MARK: Trimming
 
+    func clearSelection() {
+        selection = nil
+        stage?.clearTrim()
+    }
+
     func chooseTrim() async {
         guard let stage else { return }
         if let range = await stage.trim(duration: duration) {
@@ -301,7 +306,7 @@ struct VideoEditorView: View {
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                        Button("Clear") { model.selection = nil }
+                        Button("Clear") { model.clearSelection() }
                     } else {
                         Text("Length \(VideoEditorModel.timestamp(model.duration))")
                             .monospacedDigit()

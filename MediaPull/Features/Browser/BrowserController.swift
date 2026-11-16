@@ -22,6 +22,7 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     var lastError: String?
     @ObservationIgnored var onMessage: ((ExtractionMessage) -> Void)?
     @ObservationIgnored var onCommit: ((URL) -> Void)?
+    @ObservationIgnored var onURLChange: ((URL) -> Void)?
     @ObservationIgnored var onFinish: ((URL) -> Void)?
     /// A file the page offers for download: where to save it (nil cancels), then the result (SPEC R-807).
     @ObservationIgnored var onChooseDownloadDestination: ((String) async -> URL?)?
@@ -71,8 +72,13 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     }
 
     private func syncState(_ view: WKWebView) {
+        let changed = url != view.url
         url = view.url
-        if let url = view.url { addressText = url.absoluteString }
+        if let url = view.url {
+            addressText = url.absoluteString
+            // Also fires for same-document navigations (pushState), which never reach didCommit.
+            if changed { onURLChange?(url) }
+        }
     }
 
     func install(ruleList: WKContentRuleList?) {

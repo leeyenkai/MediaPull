@@ -205,6 +205,7 @@ public enum FolderOperations {
     /// `source`'s contents moved into `target`; folders with the same name are merged too. `source` then goes to the Trash.
     public static func merge(_ source: URL, into target: URL) -> OrganisePlan {
         var plan = OrganisePlan(title: "Merge \(source.lastPathComponent) into \(target.lastPathComponent)", root: target)
+        guard !contains(source, target), !contains(target, source) else { return plan }
         var taken = Set<String>()
         func merge(_ from: URL, _ to: URL) {
             for child in children(from) {
@@ -226,10 +227,18 @@ public enum FolderOperations {
         return plan
     }
 
+    /// Whether `url` is `folder` or lies inside it. A folder is never moved, copied or merged into itself, which would
+    /// recurse until the path is too long.
+    static func contains(_ folder: URL, _ url: URL) -> Bool {
+        let top = folder.standardizedFileURL.path, path = url.standardizedFileURL.path
+        return path == top || path.hasPrefix(top.hasSuffix("/") ? top : top + "/")
+    }
+
     public static func move(_ items: [URL], to folder: URL) -> OrganisePlan {
         var plan = OrganisePlan(title: items.count == 1 ? "Move \(items[0].lastPathComponent)" : "Move \(items.count) Items", root: folder)
         var taken = Set<String>()
-        for item in items where item.deletingLastPathComponent().standardizedFileURL != folder.standardizedFileURL {
+        let target = folder.standardizedFileURL
+        for item in items where item.deletingLastPathComponent().standardizedFileURL != target && !contains(item, folder) {
             let dest = freeDestination(for: item.lastPathComponent, in: folder, taken: &taken)
             if dest.renamed {
                 plan.renamed += 1
@@ -243,7 +252,7 @@ public enum FolderOperations {
     public static func copy(_ items: [URL], to folder: URL) -> OrganisePlan {
         var plan = OrganisePlan(title: items.count == 1 ? "Copy \(items[0].lastPathComponent)" : "Copy \(items.count) Items", root: folder)
         var taken = Set<String>()
-        for item in items {
+        for item in items where !contains(item, folder) {
             let dest = freeDestination(for: item.lastPathComponent, in: folder, taken: &taken)
             if dest.renamed { plan.renamed += 1 }
             plan.moves.append(PlannedMove(source: item, destination: dest.url, kind: .clone))

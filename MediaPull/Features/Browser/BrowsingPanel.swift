@@ -287,17 +287,14 @@ struct BookmarkStar: View {
     @State private var editing = false
     @State private var title = ""
     @State private var folder: UUID?
+    /// The bookmark being edited, fixed when the editor opens so a redirect cannot change which one is edited.
+    @State private var bookmarkID: UUID?
     private var store: BrowsingStore { AppModel.shared.browsing }
 
     var body: some View {
         let existing = store.bookmark(for: model.browser.url)
         Button {
-            guard let url = model.browser.url else { return }
-            if existing == nil { store.addBookmark(title: model.browser.title, url: url) }
-            let saved = store.bookmark(for: url)
-            title = saved?.bookmark.title ?? ""
-            folder = saved?.folder.id
-            editing = true
+            openEditor()
         } label: {
             Image(systemName: existing == nil ? "star" : "star.fill")
                 .foregroundStyle(existing == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
@@ -305,14 +302,7 @@ struct BookmarkStar: View {
         .buttonStyle(.plain)
         .disabled(model.browser.url == nil)
         .help(existing == nil ? "Bookmark this page (⌘D)" : "Edit bookmark")
-        .onChange(of: model.bookmarkRequest) { _, _ in
-            guard let url = model.browser.url else { return }
-            if store.bookmark(for: url) == nil { store.addBookmark(title: model.browser.title, url: url) }
-            let saved = store.bookmark(for: url)
-            title = saved?.bookmark.title ?? ""
-            folder = saved?.folder.id
-            editing = true
-        }
+        .onChange(of: model.bookmarkRequest) { _, _ in openEditor() }
         .popover(isPresented: $editing, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Bookmark").font(.headline)
@@ -324,7 +314,7 @@ struct BookmarkStar: View {
                 }
                 HStack {
                     Button("Remove", role: .destructive) {
-                        if let id = store.bookmark(for: model.browser.url)?.bookmark.id { store.edit { $0.remove(id) } }
+                        if let id = bookmarkID { store.edit { $0.remove(id) } }
                         editing = false
                     }
                     Spacer()
@@ -337,13 +327,23 @@ struct BookmarkStar: View {
         }
     }
 
+    private func openEditor() {
+        guard let url = model.browser.url else { return }
+        if store.bookmark(for: url) == nil { store.addBookmark(title: model.browser.title, url: url) }
+        let saved = store.bookmark(for: url)
+        bookmarkID = saved?.bookmark.id
+        title = saved?.bookmark.title ?? ""
+        folder = saved?.folder.id
+        editing = true
+    }
+
     private func commit() {
-        if let saved = store.bookmark(for: model.browser.url) {
+        if let id = bookmarkID {
             let name = title
             let target = folder
             store.edit {
-                $0.rename(saved.bookmark.id, to: name)
-                if let target { $0.move(saved.bookmark.id, to: target) }
+                $0.rename(id, to: name)
+                if let target { $0.move(id, to: target) }
             }
         }
         editing = false

@@ -113,7 +113,7 @@ struct ExtractedHeader: View {
         if model.browser.isShowingPDF, let url = model.browser.url {
             Button("Extract Images from This PDF") {
                 model.extractedDocuments.remove(url.absoluteString)
-                model.extractPDF(remote: url)
+                model.extractPDF(remote: url, linkedFrom: nil)
             }
         }
     }
@@ -163,7 +163,7 @@ struct ExtractedHeader: View {
                         Button((url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent)
                             + (model.extractedDocuments.contains(url.absoluteString) ? " ✓" : ""))
                         {
-                            model.extractPDF(remote: url)
+                            model.extractPDF(remote: url, linkedFrom: model.browser.url)
                         }
                     }
                 }

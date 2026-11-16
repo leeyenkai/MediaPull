@@ -15,6 +15,8 @@ struct GridCellInfo: Equatable {
     var dimmed = false
     /// A coloured frame drawn when the cell is not selected, such as the duplicate highlight.
     var highlight: NSColor?
+    /// Changes when the file behind the cell changes in place, so its thumbnail is drawn again.
+    var stamp = ""
 }
 
 struct GridSection: Hashable {
@@ -107,7 +109,6 @@ struct MediaGrid: NSViewRepresentable {
         var cellSize: CGFloat = 0
         var revision = -1
         var applyingSelection = false
-        var indexOfID: [String: IndexPath] = [:]
 
         func makeDataSource() {
             guard let collection else { return }
@@ -148,16 +149,13 @@ struct MediaGrid: NSViewRepresentable {
             if structureChanged {
                 self.sections = sections
                 var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-                var seen = Set<String>()
-                indexOfID.removeAll(keepingCapacity: true)
-                for (sectionIndex, section) in sections.enumerated() where !seen.contains(section.id) {
-                    seen.insert(section.id)
-                    let ids = section.ids.filter { seen.insert($0).inserted }
+                // Section and item ids are tracked apart, so an item whose id equals a section id is still shown.
+                var seenSections = Set<String>()
+                var seenItems = Set<String>()
+                for section in sections where seenSections.insert(section.id).inserted {
+                    let ids = section.ids.filter { seenItems.insert($0).inserted }
                     snapshot.appendSections([section.id])
                     snapshot.appendItems(ids, toSection: section.id)
-                    for (index, id) in ids.enumerated() {
-                        indexOfID[id] = IndexPath(item: index, section: sectionIndex)
-                    }
                 }
                 dataSource.apply(snapshot, animatingDifferences: false)
             }
@@ -333,11 +331,14 @@ final class MediaGridItem: NSCollectionViewItem {
         if let info, info != self.info || changedItem {
             self.info = info
             cell.apply(info)
+        } else {
+            // A theme change reconfigures every cell without changing its info; the accent still has to follow.
+            cell.refreshAccent()
         }
         let scale = view.window?.backingScaleFactor ?? 2
         // Thumbnails are decoded in 128 px steps so zooming does not re-decode on every slider tick.
         let maxPixel = min(768, Int((cellSize * scale / 128).rounded(.up)) * 128)
-        let key = "\(id)#\(maxPixel)"
+        let key = "\(id)#\(maxPixel)#\(info?.stamp ?? "")"
         guard loadedFor != key else { return }
         if changedItem { cell.image = nil }
         loadedFor = key
@@ -440,6 +441,11 @@ final class MediaCellView: NSView {
         }
         setAccessibilityLabel([info.title, info.detail, info.secondary].compactMap { $0 }.joined(separator: ", "))
         needsLayout = true
+    }
+
+    func refreshAccent() {
+        progressLayer.strokeColor = AppTheme.currentAccent.cgColor
+        updateSelection()
     }
 
     private func updateSelection() {

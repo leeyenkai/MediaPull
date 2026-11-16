@@ -85,6 +85,10 @@ struct ConverterView: View {
 
     private func convert(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
+        guard nextToOriginals || destination != nil else {
+            results.insert(("", "Choose a folder for the converted files first."), at: 0)
+            return
+        }
         var policy = app.preferences.conversion
         policy.animated = animated
         policy.video = video

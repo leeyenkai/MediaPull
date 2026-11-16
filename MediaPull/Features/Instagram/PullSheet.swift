@@ -16,11 +16,13 @@ struct InstagramForm: View {
             if let tag = draft.hashtag {
                 Label("Posts tagged #\(tag), newest first, saved in \(SaveTarget.tagsFolder)/\(tag)", systemImage: "number")
                     .font(.callout)
+            } else if draft.postURL != nil {
+                Label("This post's photos and videos, at the highest quality", systemImage: "photo.on.rectangle")
+                    .font(.callout)
             } else {
                 HStack(alignment: .center) {
                     AccountCard(username: draft.username, showErrors: app.engines.signedIn)
                     Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
-                        .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canStart || model.saveFolder == nil)
                 }
@@ -36,7 +38,7 @@ struct InstagramForm: View {
                 .padding(8)
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
-            if draft.hashtag == nil {
+            if draft.hashtag == nil, draft.postURL == nil {
                 ForEach(InstagramContent.Group.allCases, id: \.self) { group in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -58,21 +60,7 @@ struct InstagramForm: View {
                     }
                 }
             }
-            LabeledContent("Posted") {
-                Picker("Posted", selection: $draft.dateWindow) {
-                    ForEach(InstagramDateWindow.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
-            if draft.dateWindow == .custom {
-                HStack {
-                    DatePicker("From", selection: $draft.dateFrom, in: ...Date(), displayedComponents: .date)
-                    DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
-                }
-            }
-            Toggle("Only new posts since the last pull", isOn: $draft.incremental)
-                .disabled(draft.hashtag == nil && draft.username.isEmpty)
+            if draft.postURL == nil { postedOptions }
             Toggle("Sort into folders by type (posts, reels, stories…)", isOn: Binding(
                 get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 }
             ))
@@ -92,7 +80,6 @@ struct InstagramForm: View {
                 .help("List the media without saving it, then pick what to save")
                 if draft.hashtag != nil || draft.username.isEmpty {
                     Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
-                        .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!canStart || model.saveFolder == nil)
                 }
@@ -107,8 +94,28 @@ struct InstagramForm: View {
         }
     }
 
+
+    @ViewBuilder
+    private var postedOptions: some View {
+        LabeledContent("Posted") {
+            Picker("Posted", selection: $draft.dateWindow) {
+                ForEach(InstagramDateWindow.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        if draft.dateWindow == .custom {
+            HStack {
+                DatePicker("From", selection: $draft.dateFrom, in: ...Date(), displayedComponents: .date)
+                DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
+            }
+        }
+        Toggle("Only new posts since the last pull", isOn: $draft.incremental)
+            .disabled(draft.hashtag == nil && draft.username.isEmpty)
+    }
+
     private var canStart: Bool {
-        if draft.hashtag != nil { return true }
+        if draft.hashtag != nil || draft.postURL != nil { return true }
         let chosen = draft.content.filter { $0.group == .yours ? app.engines.signedIn : !draft.username.isEmpty }
         return !chosen.isEmpty
     }

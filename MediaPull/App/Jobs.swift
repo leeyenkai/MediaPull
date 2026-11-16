@@ -144,7 +144,9 @@ final class JobCenter {
     }
 
     func finish(_ job: Job, _ state: JobState) {
-        if !job.state.isFinished || state != .cancelled { job.state = state }
+        // A job the person cancelled stays cancelled, even when its task then ends with an error.
+        if job.state != .cancelled, !job.state.isFinished || state != .cancelled { job.state = state }
+        let state = job.state
         job.finishedAt = Date()
         job.fraction = nil
         job.currentItem = nil

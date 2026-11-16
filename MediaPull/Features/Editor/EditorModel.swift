@@ -129,17 +129,24 @@ final class EditorModel {
         }
         name = originalName
         guard let sourceFile else { return }
-        let head = MediaConverter.head(of: sourceFile)
-        let sniffed = Sniffer.sniff(head).format ?? MediaFormat.fromExtension(sourceFile.pathExtension)
-        isImage = isImage && (sniffed?.kind == .image || sniffed?.kind == .animatedImage) && sniffed != .gif
-        if case .file = request.subject, sniffed == .gif || ImageProbe.frameCount(from: (try? Data(contentsOf: sourceFile)) ?? Data()) > 1 {
-            isImage = false
-        }
-        guard isImage else { return }
-        format = (sniffed == .jpeg) ? .jpeg : (sniffed?.isLosslessImage ?? false) ? .png
-            : ImageConversion.analyze(sourceFile).map { ImageConversion.stillTarget(for: $0) == .jpeg ? .jpeg : .png } ?? .png
-        if case .item = request.subject { fileExtension = format.fileExtension }
         let file = sourceFile
+        // Sniffing, counting frames and choosing the output format read the file, so they run off the main actor.
+        // Animated images of any format are rename-only: editing would keep just the first frame (R-3202).
+        let format = await Task.detached(priority: .userInitiated) { () -> MediaFormat? in
+            let sniffed = Sniffer.sniff(MediaConverter.head(of: file)).format ?? MediaFormat.fromExtension(file.pathExtension)
+            guard sniffed?.kind == .image || sniffed?.kind == .animatedImage, sniffed != .gif else { return nil }
+            let analysis = ImageConversion.analyze(file)
+            if analysis?.isAnimated ?? false { return nil }
+            if sniffed == .jpeg { return .jpeg }
+            if sniffed?.isLosslessImage ?? false { return .png }
+            return analysis.map { ImageConversion.stillTarget(for: $0) == .jpeg ? .jpeg : .png } ?? .png
+        }.value
+        guard isImage, let format else {
+            isImage = false
+            return
+        }
+        self.format = format
+        if case .item = request.subject { fileExtension = format.fileExtension }
         let image = await Task.detached(priority: .userInitiated) { ImageEditing.loadOriented(file) }.value
         original = image
         working = image
@@ -157,6 +164,8 @@ final class EditorModel {
             await previous?.value
             guard let current = self?.working else { return }
             let image = await Task.detached(priority: .userInitiated) { operation(current) }.value
+            // Reset cancels the chain; a redraw that finishes afterwards must not bring the edit back.
+            guard !Task.isCancelled else { return }
             self?.working = image
             then?()
         }
@@ -186,6 +195,8 @@ final class EditorModel {
     }
 
     func reset() {
+        editChain?.cancel()
+        editChain = nil
         working = original
         turns = 0
         flipped = false
@@ -234,7 +245,9 @@ final class EditorModel {
 
     /// Library file: replace it (the original goes to the Trash) or save a copy next to it.
     func saveFile(asCopy: Bool) async -> URL? {
-        guard case let .file(url) = request.subject else { return nil }
+        guard case let .file(url) = request.subject, !isSaving else { return nil }
+        isSaving = true
+        defer { isSaving = false }
         let folder = url.deletingLastPathComponent()
         let manager = FileManager.default
         do {
@@ -288,7 +301,7 @@ final class EditorModel {
             object["edited"] = true
         }
         if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
-            try? data.write(to: newSidecar, options: .atomic)
+            guard (try? data.write(to: newSidecar, options: .atomic)) != nil else { return }
             if !copy, oldSidecar != newSidecar {
                 if edited == nil { try? manager.removeItem(at: oldSidecar) } else { try? manager.trashItem(at: oldSidecar, resultingItemURL: nil) }
             }
@@ -297,7 +310,9 @@ final class EditorModel {
 
     /// Extracted item: remember the name, and save the edited image if there are edits.
     func saveItem(to folder: URL?) async -> Bool {
-        guard case let .item(id) = request.subject, let window, let item = window.itemsByID[id] else { return false }
+        guard case let .item(id) = request.subject, !isSaving, let window, let item = window.itemsByID[id] else { return false }
+        isSaving = true
+        defer { isSaving = false }
         if hasNameChange { window.customNames[id] = cleanName } else if name.isEmpty { window.customNames[id] = nil }
         guard let destination = folder ?? window.saveFolder else {
             message = "Choose a library folder first."

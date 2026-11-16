@@ -55,6 +55,13 @@ public enum CDNRules {
             return []
         }
         let items = components.queryItems ?? []
+        // preview.redd.it always signs its resized copies; the original on i.redd.it needs no query at all.
+        if host == "preview.redd.it" {
+            var copy = components
+            copy.host = "i.redd.it"
+            copy.queryItems = nil
+            return copy.url.map { [Candidate(url: $0, rule: "reddit")] } ?? []
+        }
         if items.contains(where: { signatureParameters.contains($0.name.lowercased()) }) { return [] }
         if host.hasSuffix("cdninstagram.com") || host.hasSuffix("fbcdn.net") { return [] }
 
@@ -185,14 +192,6 @@ public enum CDNRules {
                 copy.queryItems = nil
                 add(copy.string, "wikimedia")
             }
-            return results
-        }
-
-        if host == "preview.redd.it" {
-            var copy = components
-            copy.host = "i.redd.it"
-            copy.queryItems = nil
-            add(copy.string, "reddit")
             return results
         }
 

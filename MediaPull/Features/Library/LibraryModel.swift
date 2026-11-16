@@ -72,9 +72,18 @@ final class LibraryModel: MediaGridOwner {
         return path == other || path.hasPrefix(other + "/")
     }
 
-    var files: [LibraryFile] = []
+    var files: [LibraryFile] = [] {
+        didSet { fileIndex = Dictionary(files.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
     /// The files with what analysis knows about them, and the sections the sort and filters produce (section 37).
-    var entries: [MediaEntry] = []
+    var entries: [MediaEntry] = [] {
+        didSet { entryIndex = Dictionary(entries.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    /// Grid cells look files up by id for every cell, so lookups go through these instead of scanning the lists.
+    @ObservationIgnored private var fileIndex: [String: Int] = [:]
+    @ObservationIgnored private var entryIndex: [String: Int] = [:]
+
+    private func file(_ id: String) -> LibraryFile? { fileIndex[id].map { files[$0] } }
     var built: [LibrarySection] = []
     var query: LibraryQuery = AppModel.shared.preferences.libraryQuery {
         didSet {
@@ -221,10 +230,17 @@ final class LibraryModel: MediaGridOwner {
             guard !Task.isCancelled, let self, self.selectedFolder == folder else { return }
             let attached = await self.app.analysis.attach(listed)
             guard !Task.isCancelled, self.selectedFolder == folder else { return }
-            let loaded = attached.map {
-                LibraryFile(url: $0.url, name: $0.name, size: $0.size, modified: $0.modified,
-                            hasSidecar: $0.source != nil || FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: $0.url).path),
-                            format: $0.format)
+            let loaded = await Task.detached(priority: .userInitiated) {
+                attached.map {
+                    let sidecar = $0.source != nil || FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: $0.url).path)
+                    return LibraryFile(url: $0.url, name: $0.name, size: $0.size, modified: $0.modified, hasSidecar: sidecar, format: $0.format)
+                }
+            }.value
+            guard !Task.isCancelled, self.selectedFolder == folder else { return }
+            // A file changed in place (an edit saved over it) is measured again.
+            let previous = Dictionary(self.files.map { ($0.id, $0.modified) }, uniquingKeysWith: { first, _ in first })
+            for file in loaded where previous[file.id].map({ $0 != file.modified }) ?? false {
+                self.details[file.id] = nil
             }
             self.entries = attached
             self.files = loaded
@@ -251,29 +267,6 @@ final class LibraryModel: MediaGridOwner {
             self.entries = attached
             self.refilter()
         }
-    }
-
-    @concurrent
-    static func list(_ folder: URL) async -> ([LibraryFile], Int) {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
-        let entries = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
-        let names = Set(entries.map(\.lastPathComponent))
-        var files: [LibraryFile] = []
-        var folders = 0
-        for url in entries {
-            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
-            if values.isDirectory == true { folders += 1; continue }
-            guard values.isRegularFile == true else { continue }
-            let ext = url.pathExtension.lowercased()
-            guard ext != "json", let format = MediaFormat.fromExtension(ext) else { continue }
-            files.append(LibraryFile(
-                url: url, name: url.lastPathComponent, size: Int64(values.fileSize ?? 0),
-                modified: values.contentModificationDate ?? .distantPast, hasSidecar: names.contains(url.lastPathComponent + ".json"),
-                format: format
-            ))
-        }
-        files.sort { $0.name.localizedStandardCompare($1.name) == .orderedDescending }
-        return (files, folders)
     }
 
     private func watch() {
@@ -361,7 +354,12 @@ final class LibraryModel: MediaGridOwner {
     /// Moves files (with their sidecars) or folders to the Trash. Nothing is ever deleted outright.
     func trash(_ urls: [URL]) {
         for url in urls {
-            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                message = "\(url.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)"
+                continue
+            }
             let sidecar = Sidecar.sidecarURL(for: url)
             if FileManager.default.fileExists(atPath: sidecar.path) { try? FileManager.default.trashItem(at: sidecar, resultingItemURL: nil) }
             // The save folder or one of its parents went to the Trash: save into the folder above instead.
@@ -399,16 +397,20 @@ final class LibraryModel: MediaGridOwner {
                 var isDirectory: ObjCBool = false
                 FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
                 let destination = Self.uniqueURL(folder.appendingPathComponent(url.lastPathComponent))
+                let isFolder = isDirectory.boolValue
                 do {
-                    if isDirectory.boolValue, !move {
-                        try FileManager.default.copyItem(at: url, to: destination)
+                    // Copies of large videos take a while, so file operations run off the main actor.
+                    if isFolder, !move {
+                        try await Self.offMain { try FileManager.default.copyItem(at: url, to: destination) }
                         continue
                     }
                     if move {
-                        try FileManager.default.moveItem(at: url, to: destination)
-                        let sidecar = Sidecar.sidecarURL(for: url)
-                        if !isDirectory.boolValue, FileManager.default.fileExists(atPath: sidecar.path) {
-                            try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
+                        try await Self.offMain {
+                            try FileManager.default.moveItem(at: url, to: destination)
+                            let sidecar = Sidecar.sidecarURL(for: url)
+                            if !isFolder, FileManager.default.fileExists(atPath: sidecar.path) {
+                                try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
+                            }
                         }
                         continue
                     }
@@ -419,16 +421,21 @@ final class LibraryModel: MediaGridOwner {
                         let result = try await converter.convert(url, policy: policy, layout: .archive, workDirectory: work)
                         let output = Self.uniqueURL(folder.appendingPathComponent(
                             FileNaming.fileName(stem: url.deletingPathExtension().lastPathComponent, ext: result.format.fileExtension)))
-                        if result.converted {
-                            try FileManager.default.moveItem(at: result.url, to: output)
-                        } else {
-                            try FileManager.default.copyItem(at: url, to: output)
+                        let converted = result.converted, convertedURL = result.url
+                        try await Self.offMain {
+                            if converted {
+                                try FileManager.default.moveItem(at: convertedURL, to: output)
+                            } else {
+                                try FileManager.default.copyItem(at: url, to: output)
+                            }
                         }
                     } else {
-                        try FileManager.default.copyItem(at: url, to: destination)
-                        let sidecar = Sidecar.sidecarURL(for: url)
-                        if FileManager.default.fileExists(atPath: sidecar.path) {
-                            try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
+                        try await Self.offMain {
+                            try FileManager.default.copyItem(at: url, to: destination)
+                            let sidecar = Sidecar.sidecarURL(for: url)
+                            if FileManager.default.fileExists(atPath: sidecar.path) {
+                                try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: destination))
+                            }
                         }
                     }
                 } catch {
@@ -439,6 +446,10 @@ final class LibraryModel: MediaGridOwner {
             treeRevision += 1
             reload()
         }
+    }
+
+    nonisolated private static func offMain(_ work: @escaping @Sendable () throws -> Void) async throws {
+        try await Task.detached(priority: .userInitiated, operation: work).value
     }
 
     static func uniqueURL(_ url: URL) -> URL {
@@ -473,13 +484,14 @@ final class LibraryModel: MediaGridOwner {
     // MARK: Grid owner
 
     func gridInfo(_ id: String) -> GridCellInfo? {
-        guard let file = files.first(where: { $0.id == id }) else { return nil }
+        guard let file = file(id) else { return nil }
         var detail: [String] = []
-        if let facts = entries.first(where: { $0.path == id })?.facts, let w = facts.pixelWidth, let h = facts.pixelHeight {
+        if let facts = entryIndex[id].map({ entries[$0] })?.facts, let w = facts.pixelWidth, let h = facts.pixelHeight {
             detail.append("\(w) × \(h)")
         } else if let (size, _) = details[id], let size { detail.append(size.label) }
         detail.append(file.format?.label ?? file.url.pathExtension.uppercased())
         var info = GridCellInfo(title: file.name, detail: detail.joined(separator: " · "), secondary: Format.bytes(file.size))
+        info.stamp = "\(file.modified.timeIntervalSinceReferenceDate)-\(file.size)"
         switch file.format?.kind {
         case .video: info.kindSymbol = "play.fill"; info.placeholderSymbol = "film"
         case .audio: info.kindSymbol = "music.note"; info.placeholderSymbol = "waveform"
@@ -501,8 +513,9 @@ final class LibraryModel: MediaGridOwner {
     }
 
     func gridThumbnail(_ id: String, maxPixel: Int) async -> CGImage? {
-        guard let file = files.first(where: { $0.id == id }) else { return nil }
-        if details[id] == nil, file.format?.kind == .image || file.format?.kind == .animatedImage {
+        guard let file = file(id) else { return nil }
+        let measured = entryIndex[id].map { entries[$0] }?.facts?.pixelWidth != nil
+        if details[id] == nil, !measured, file.format?.kind == .image || file.format?.kind == .animatedImage {
             let url = file.url
             if let analysis = await Task.detached(priority: .utility, operation: { ImageConversion.analyze(url) }).value {
                 details[id] = (PixelSize(width: analysis.width, height: analysis.height), analysis.format)
@@ -518,7 +531,7 @@ final class LibraryModel: MediaGridOwner {
     }
 
     func gridActivate(_ id: String) {
-        guard let file = files.first(where: { $0.id == id }) else { return }
+        guard let file = file(id) else { return }
         NSWorkspace.shared.open(file.url)
     }
 
@@ -529,7 +542,7 @@ final class LibraryModel: MediaGridOwner {
     func gridAppeared(_: String) {}
 
     func gridWriter(_ id: String) -> NSPasteboardWriting? {
-        files.first { $0.id == id }.map { $0.url as NSURL }
+        file(id).map { $0.url as NSURL }
     }
 
     var gridAcceptsDrops: Bool { selectedFolder != nil }

@@ -18,7 +18,7 @@ final class QuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegat
         if !panel.isVisible { panel.makeKeyAndOrderFront(nil) }
     }
 
-    func show(loading _: Int, loader: @escaping () async -> [URL]) {
+    func show(loader: @escaping () async -> [URL]) {
         loading?.cancel()
         loading = Task { [weak self] in
             let files = await loader()

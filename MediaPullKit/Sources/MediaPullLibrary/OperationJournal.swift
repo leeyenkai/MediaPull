@@ -211,7 +211,10 @@ public actor OperationJournal {
 
     func cloneItem(_ from: URL, to: URL, entry: inout JournalEntry) throws {
         // COPYFILE_CLONE makes an APFS clone where the volume supports it, and a full copy elsewhere.
+        let existed = fm.fileExists(atPath: to.path)
         if copyfile(from.path, to.path, nil, copyfile_flags_t(COPYFILE_CLONE | COPYFILE_ALL | COPYFILE_RECURSIVE)) != 0 {
+            // A copy that failed part-way (a full disk) is not journaled, so undo could never remove what it left.
+            if !existed { try? fm.removeItem(at: to) }
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: to.path])
         }
         entry.steps.append(.clone(from: from.path, to: to.path))

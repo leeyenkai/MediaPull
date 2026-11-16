@@ -11,6 +11,8 @@ final class BrowsingStore {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private let folder: URL?
     @ObservationIgnored private var loaded = false
+    /// Set when bookmarks change before the stored ones are loaded, so the stored ones do not overwrite them.
+    @ObservationIgnored private var bookmarksEdited = false
 
     init(persistent: Bool) {
         folder = persistent
@@ -38,7 +40,7 @@ final class BrowsingStore {
                 }
                 history = stored
             }
-            if let stored = result.0, bookmarks == BookmarkCollection() { bookmarks = stored }
+            if let stored = result.0, !bookmarksEdited { bookmarks = stored }
             loaded = true
             scheduleSave()
         }
@@ -55,12 +57,14 @@ final class BrowsingStore {
     @discardableResult
     func addBookmark(title: String, url: URL, folder: UUID? = nil) -> Bookmark {
         let bookmark = bookmarks.add(title: title, url: url, to: folder)
+        bookmarksEdited = true
         scheduleSave()
         return bookmark
     }
 
     func edit(_ change: (inout BookmarkCollection) -> Void) {
         change(&bookmarks)
+        bookmarksEdited = true
         scheduleSave()
     }
 

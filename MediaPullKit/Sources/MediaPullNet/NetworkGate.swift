@@ -60,7 +60,8 @@ public struct CookieRecord: Codable, Hashable, Sendable {
             guard host == domain else { return false }
         }
         let requestPath = url.path.isEmpty ? "/" : url.path
-        return path.isEmpty || path == "/" || requestPath.hasPrefix(path)
+        // RFC 6265 path match: /foo matches /foo and /foo/bar, never /foobar.
+        return path.isEmpty || path == "/" || requestPath == path || requestPath.hasPrefix(path.hasSuffix("/") ? path : path + "/")
     }
 }
 
@@ -500,7 +501,6 @@ public actor HostLimiter {
     private var active: [String: Int] = [:]
     private var waiting: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var total = 0
-    private var totalWaiting: [(String, CheckedContinuation<Void, Never>)] = []
     public var perHost = 6
     public var maximum = 16
 

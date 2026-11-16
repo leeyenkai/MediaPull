@@ -104,7 +104,6 @@ public final class SavePipeline: Sendable {
             func addNext() {
                 guard next < items.count else { return }
                 let item = items[next]
-                let position = next
                 next += 1
                 group.addTask {
                     let outcome = await self.saveOne(item, index: item.discoveryIndex + 1, target: target, settings: settings, context: context,
@@ -477,6 +476,15 @@ public final class SavePipeline: Sendable {
                 if conflict == .skip { return nil }
                 continue
             }
+            // Saves run in parallel, and moveItem replaces a file another save placed after the check above;
+            // an exclusive rename fails instead, so two items with the same name both keep their files.
+            if renamex_np(staged.path, candidate.path, UInt32(RENAME_EXCL)) == 0 { return candidate }
+            let code = errno
+            if code == EEXIST {
+                if conflict == .skip { return nil }
+                continue
+            }
+            guard code == EXDEV else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
             do {
                 try manager.moveItem(at: staged, to: candidate)
                 return candidate

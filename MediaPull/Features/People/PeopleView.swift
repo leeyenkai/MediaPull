@@ -60,7 +60,11 @@ struct PeopleView: View {
         chosenFaces = []
         guard let id else { faces = []; return }
         nameDraft = app.analysis.people.first { $0.id == id }?.name ?? ""
-        Task { faces = await app.analysis.faces(of: id) }
+        Task {
+            // A slower load for a person selected earlier must not show that person's faces under this one.
+            let loaded = await app.analysis.faces(of: id)
+            if selected == id { faces = loaded }
+        }
     }
 
     @ViewBuilder

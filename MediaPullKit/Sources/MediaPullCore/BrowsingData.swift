@@ -36,6 +36,13 @@ public struct BookmarkCollection: Codable, Equatable, Sendable {
         self.folders = folders.isEmpty ? [BookmarkFolder(name: "Favourites")] : folders
     }
 
+    private enum CodingKeys: String, CodingKey { case folders }
+
+    /// A stored file with no folders (edited by hand or damaged) still gets the default folder.
+    public init(from decoder: Decoder) throws {
+        self.init(folders: try decoder.container(keyedBy: CodingKeys.self).decode([BookmarkFolder].self, forKey: .folders))
+    }
+
     public static func key(_ url: URL) -> String {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         components?.fragment = nil

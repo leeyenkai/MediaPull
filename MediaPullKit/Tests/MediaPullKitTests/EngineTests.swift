@@ -387,3 +387,30 @@ final class InstagramContentTests: XCTestCase {
         XCTAssertEqual(tray.instagramSection, "stories")
     }
 }
+
+final class PlacementTests: XCTestCase {
+    /// Saves run in parallel; items that want the same name must each keep their own file.
+    func testParallelPlacementNeverOverwrites() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("place-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pipeline = SavePipeline(gate: NetworkGate(), converter: MediaConverter(ffmpeg: nil), index: FingerprintIndex(storeURL: nil),
+                                    workDirectory: root.appendingPathComponent(".work"), engine: nil)
+        let count = 40
+        var sources: [URL] = []
+        for index in 0 ..< count {
+            let file = root.appendingPathComponent("source-\(index)")
+            try Data("file \(index)".utf8).write(to: file)
+            sources.append(file)
+        }
+        let placed = try await withThrowingTaskGroup(of: URL?.self) { group in
+            for file in sources {
+                group.addTask { try pipeline.place(file, in: root, name: "image.jpg", conflict: .number) }
+            }
+            return try await group.reduce(into: [URL]()) { if let url = $1 { $0.append(url) } }
+        }
+        XCTAssertEqual(Set(placed.map(\.lastPathComponent)).count, count)
+        let contents = try Set(placed.map { try String(contentsOf: $0, encoding: .utf8) })
+        XCTAssertEqual(contents.count, count)
+    }
+}

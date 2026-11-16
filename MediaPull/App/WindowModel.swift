@@ -90,7 +90,6 @@ final class WindowModel: Identifiable, MediaGridOwner {
     let downloads = DownloadsModel()
     /// Bumped to focus the Downloads pane's address field.
     var downloadsFocus = 0
-    /// The page whose video the Save Video sheet is for (SPEC section 35).
 
     /// Shows the Downloads pane set up for `address` (an @account, #hashtag or page address), or for the current page.
     func showDownloads(_ address: String? = nil, video: Bool = false) {
@@ -121,6 +120,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
     @ObservationIgnored private var listenTask: Task<Void, Never>?
     @ObservationIgnored private var supportTask: Task<Void, Never>?
     @ObservationIgnored private var scrollTask: Task<Void, Never>?
+    @ObservationIgnored private var scrollToken: UUID?
     @ObservationIgnored private var supportCache: [String: String] = [:]
     @ObservationIgnored private var cookieJar = CookieJar()
     @ObservationIgnored private let vectorThumbnails = NSCache<NSString, Thumbnail>()
@@ -163,6 +163,10 @@ final class WindowModel: Identifiable, MediaGridOwner {
             guard let self, let tab else { return }
             self.didCommit(url, in: tab)
         }
+        tab.onURLChange = { [weak self, weak tab] url in
+            guard let self, let tab, tab.id == self.selectedTabID else { return }
+            self.updatePageState(for: url)
+        }
         tab.onFinish = { [weak self, weak tab] url in
             guard let self, let tab else { return }
             self.didFinish(url, in: tab)
@@ -181,8 +185,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
             }
         }
         tab.onPDF = { [weak self] url in
+            // The PDF is the tab's own page (a top-level navigation), so it gets its own cookies and no referer from another tab.
             guard let self, self.extractionEnabled else { return }
-            self.extractPDF(remote: url)
+            self.extractPDF(remote: url, linkedFrom: nil)
         }
         tab.onOpenInNewTab = { [weak self] url, select in self?.newTab(url, select: select) }
         tab.onTitle = { [weak self] url, title in self?.app.browsing.updateTitle(url, title: title) }
@@ -213,9 +218,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
         stopAutoScroll()
         selectedTabID = id
         addressMessage = nil
-        let url = browser.url
-        pageKind = url.map(AddressInput.classify) ?? .invalid
-        siteExtractorCategory = url.flatMap { supportCache[$0.absoluteString] }.flatMap { $0.isEmpty ? nil : $0 }
+        if let url = browser.url {
+            updatePageState(for: url)
+        } else {
+            supportTask?.cancel()
+            pageKind = .invalid
+            siteExtractorCategory = nil
+        }
         if filter.currentPageOnly { refilter() }
     }
 
@@ -247,12 +256,6 @@ final class WindowModel: Identifiable, MediaGridOwner {
         selectTab(tabs[(index + offset + tabs.count) % tabs.count].id)
     }
 
-    func moveTab(_ id: UUID, to target: Int) {
-        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        let tab = tabs.remove(at: index)
-        tabs.insert(tab, at: min(max(target, 0), tabs.count))
-    }
-
     // MARK: Browser events
 
     private func receive(_ message: ExtractionMessage, from tab: BrowserController) {
@@ -271,6 +274,11 @@ final class WindowModel: Identifiable, MediaGridOwner {
         if filter.currentPageOnly { refilter() }
         addressMessage = nil
         if app.preferences.clearOnNavigation { clear() }
+        updatePageState(for: url)
+    }
+
+    /// The page kind and whether a site extractor supports the page, for the selected tab's address.
+    private func updatePageState(for url: URL) {
         pageKind = AddressInput.classify(url)
         siteExtractorCategory = nil
         supportTask?.cancel()
@@ -557,6 +565,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
             return
         }
         autoScrolling = true
+        scrollTask?.cancel()
+        let token = UUID()
+        scrollToken = token
         scrollTask = Task { [weak self] in
             var quiet = 0
             var lastCount = -1
@@ -569,7 +580,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 lastCount = count
                 if quiet >= 3 { break }
             }
-            self?.autoScrolling = false
+            // A cancelled run must not switch off a newer one.
+            if self?.scrollToken == token { self?.autoScrolling = false }
         }
     }
 
@@ -698,7 +710,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
     func gridQuickLook() {
         let chosen = selectedItems
         guard !chosen.isEmpty else { return }
-        QuickLook.shared.show(loading: chosen.count) { [weak self] in
+        QuickLook.shared.show { [weak self] in
             guard let self else { return [] }
             var files: [URL] = []
             for item in chosen.prefix(20) {
@@ -771,7 +783,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
     }
 
     /// Downloads a PDF from the web and lists the images inside it (SPEC section 31).
-    func extractPDF(remote url: URL) {
+    /// `page` is the page that links to the PDF, if any; it decides the referer and whether cookies are sent.
+    func extractPDF(remote url: URL, linkedFrom page: URL?) {
         guard extractedDocuments.insert(url.absoluteString).inserted else { return }
         let last = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
         let name = url.pathExtension.lowercased() == "pdf" ? (last as NSString).deletingPathExtension : (last.isEmpty ? "document" : last)
@@ -780,7 +793,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         app.jobs.add(job)
         let file = Self.pdfCache.appendingPathComponent(ShortHash.of(url.absoluteString) + ".pdf")
         var context = RequestContext(accept: "application/pdf,*/*;q=0.5", userAgent: app.userAgent)
-        if let page = browser.url, page != url {
+        if let page, page != url {
             context.referer = URLNormalizer.referer(for: url, from: page)
             if URLNormalizer.isSameSite(page, url) { context.cookieHeader = cookieJar.header(for: url) }
         } else {
@@ -821,7 +834,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     func extractAllDocuments() {
         for url in documents where !extractedDocuments.contains(url.absoluteString) {
-            extractPDF(remote: url)
+            extractPDF(remote: url, linkedFrom: browser.url)
         }
     }
 

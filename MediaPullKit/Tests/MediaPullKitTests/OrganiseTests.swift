@@ -256,6 +256,17 @@ final class FolderOperationTests: XCTestCase {
         XCTAssertEqual(Set(plan.foldersToTrash.map(\.lastPathComponent)), ["x", "B"])
     }
 
+    func testFolderIsNeverPlacedInsideItself() {
+        file("A/sub/1.jpg")
+        let folder = root.appendingPathComponent("A")
+        let inside = folder.appendingPathComponent("sub")
+        XCTAssertTrue(FolderOperations.copy([folder], to: inside).moves.isEmpty)
+        XCTAssertTrue(FolderOperations.copy([folder], to: folder).moves.isEmpty)
+        XCTAssertTrue(FolderOperations.move([folder], to: inside).moves.isEmpty)
+        XCTAssertTrue(FolderOperations.merge(folder, into: inside).moves.isEmpty)
+        XCTAssertEqual(FolderOperations.copy([folder], to: root.appendingPathComponent("A copy")).moves.count, 1)
+    }
+
     func testSortClonesGroupPhotosAndUsesUnsorted() async {
         let a = file("in/a.jpg", "a", sidecar: true)
         let b = file("in/b.jpg", "b")

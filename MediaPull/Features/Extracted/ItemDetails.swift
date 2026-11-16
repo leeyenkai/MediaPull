@@ -97,8 +97,8 @@ struct ItemDetails: View {
 
     private var plannedName: String? {
         let format = model.predictedFormat(item)
-        let root = model.saveFolder.flatMap { app.root(containing: $0) } ?? app.defaultRoot
-        let layout = root?.layout ?? app.preferences.defaultLayout
+        // The same rule saving uses (AppModel.target), so the planned name matches the saved one.
+        let layout = model.saveFolder.map { app.target(for: $0).layout } ?? app.defaultRoot?.layout ?? app.preferences.defaultLayout
         let info = FinalFileInfo(format: format, sha256: "0000000000", pixelSize: item.displaySize, duration: item.duration,
                                  sourceURL: item.best?.url, lastModified: nil,
                                  originalName: item.best.flatMap { URLNormalizer.baseName(of: $0.url) }, note: nil)

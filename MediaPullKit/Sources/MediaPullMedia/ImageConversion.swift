@@ -13,7 +13,8 @@ public struct ImageAnalysis: Sendable, Equatable {
     public var frameCount: Int
     public var isLossless: Bool
 
-    public var isAnimated: Bool { frameCount > 1 }
+    /// Several images in an ICO or TIFF are sizes or pages, not frames: those convert to a still of the first (largest) one.
+    public var isAnimated: Bool { frameCount > 1 && ![MediaFormat.ico, .tiff, .bmp].contains(format) }
 }
 
 public enum StillTarget: String, Sendable {

@@ -117,6 +117,8 @@ public enum BridgeError: LocalizedError {
 
 /// Runs one bridge process per job and streams its events (SPEC 13.3).
 public final class BridgeClient: Sendable {
+    /// Set once: a write to a pipe whose reader has gone then fails with EPIPE instead of ending the app.
+    static let ignoreBrokenPipes: Void = { signal(SIGPIPE, SIG_IGN) }()
     public let paths: EnginePaths
     static let log = Logger(subsystem: "app.mediapull", category: "engine")
 
@@ -183,7 +185,9 @@ public final class BridgeClient: Sendable {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.withoutEscapingSlashes]
             if let data = try? encoder.encode(request) {
-                input.fileHandleForWriting.write(data)
+                // A bridge that exits before reading must not take the app down with SIGPIPE or an exception.
+                _ = BridgeClient.ignoreBrokenPipes
+                try? input.fileHandleForWriting.write(contentsOf: data)
             }
             try? input.fileHandleForWriting.close()
 

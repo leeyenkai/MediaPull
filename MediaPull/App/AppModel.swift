@@ -121,9 +121,14 @@ final class AppModel {
         walkthrough = mode
     }
 
+    /// The main window in front, also while a sheet, popover, Settings or the Activity window is key.
     var frontWindow: WindowModel? {
-        let key = NSApp.keyWindow
-        return windows.first { $0.hostWindow === key } ?? windows.first
+        let models = windows
+        let candidates = [NSApp.keyWindow, NSApp.keyWindow?.sheetParent, NSApp.mainWindow].compactMap(\.self) + NSApp.orderedWindows
+        for candidate in candidates {
+            if let model = models.first(where: { $0.hostWindow === candidate }) { return model }
+        }
+        return models.first
     }
 
     // MARK: Library roots

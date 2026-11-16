@@ -40,6 +40,12 @@ final class VideoStage {
         return max(0, start) ... min(duration, end)
     }
 
+    /// Plays the whole video again after a selection is cleared.
+    func clearTrim() {
+        player.currentItem?.forwardPlaybackEndTime = .invalid
+        player.currentItem?.reversePlaybackEndTime = .invalid
+    }
+
     func stop() {
         player.pause()
         view.player = nil

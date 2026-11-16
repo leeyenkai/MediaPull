@@ -85,6 +85,7 @@ public enum AddressInput: Equatable, Sendable {
         if hostPart.contains(" ") { return false }
         if hostPart.hasPrefix("localhost") { return true }
         let labels = hostPart.split(separator: ":").first?.split(separator: ".") ?? []
+        if labels.count == 4, labels.allSatisfy({ Int($0).map { (0 ... 255).contains($0) } ?? false }) { return true }
         guard labels.count >= 2, let tld = labels.last, tld.count >= 2, tld.allSatisfy(\.isLetter) || tld.allSatisfy(\.isNumber) else {
             return false
         }

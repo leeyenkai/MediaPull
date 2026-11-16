@@ -138,6 +138,7 @@ final class OrganisePane: MediaGridOwner {
     func reload() {
         loadTask?.cancel()
         guard let folder else {
+            loading = false
             entries = []
             shown = []
             sections = []
@@ -367,7 +368,12 @@ final class OrganiseModel {
     private func foldersChanged(_ paths: [String]) {
         for pane in [source, target] {
             guard let folder = pane.folder?.path else { continue }
-            if paths.contains(where: { $0.hasPrefix(folder) || folder.hasPrefix($0.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) }) {
+            // A change inside the shown folder, or to a folder above it (renamed or moved to the Trash in the Finder).
+            let affected = paths.contains { path in
+                let event = path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+                return event.hasPrefix(folder) || folder.hasPrefix(event == "/" ? event : event + "/")
+            }
+            if affected {
                 pane.reload()
                 pane.treeRevision += 1
             }

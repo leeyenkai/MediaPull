@@ -101,6 +101,13 @@ final class CDNRuleTests: XCTestCase {
         let nextImage = URL(string: "https://site.example/_next/image?url=%2Fuploads%2Fhero.jpg&w=640&q=75")!
         XCTAssertEqual(CDNRules.proxiedTarget(of: nextImage)?.absoluteString, "https://site.example/uploads/hero.jpg")
         XCTAssertNil(CDNRules.proxiedTarget(of: URL(string: "https://site.example/page.php?src=home")!))
+        let reddit = try XCTUnwrap(URL(string: "https://preview.redd.it/abc123.jpg?width=640&auto=webp&s=0123456789abcdef"))
+        XCTAssertEqual(CDNRules.candidates(for: reddit).first?.url.absoluteString, "https://i.redd.it/abc123.jpg")
+    }
+
+    func testBaseNameDecodesOnce() throws {
+        XCTAssertEqual(URLNormalizer.baseName(of: try XCTUnwrap(URL(string: "https://example.com/a%20b.jpg"))), "a b")
+        XCTAssertEqual(URLNormalizer.baseName(of: try XCTUnwrap(URL(string: "https://example.com/sale-100%25.jpg"))), "sale-100%")
     }
 }
 
@@ -143,6 +150,9 @@ final class PolicyTests: XCTestCase {
 final class AddressTests: XCTestCase {
     func testClassification() {
         XCTAssertEqual(AddressInput.parse("@nasa"), .handle("nasa"))
+        for address in ["192.168.1.1", "10.0.0.1:8080/gallery"] {
+            if case .web = AddressInput.parse(address) {} else { XCTFail("\(address) should open as a web address") }
+        }
         if case let .instagramPost(code, url) = AddressInput.parse("https://www.instagram.com/reel/DLxYzAbCdEf/?igsh=abc") {
             XCTAssertEqual(code, "DLxYzAbCdEf")
             XCTAssertEqual(url.absoluteString, "https://www.instagram.com/reel/DLxYzAbCdEf/")
@@ -262,6 +272,8 @@ final class BrowsingDataTests: XCTestCase {
         XCTAssertNil(bookmarks.bookmark(for: page))
         let round = try JSONDecoder().decode(BookmarkCollection.self, from: JSONEncoder().encode(bookmarks))
         XCTAssertEqual(round, bookmarks)
+        let empty = try JSONDecoder().decode(BookmarkCollection.self, from: Data(#"{"folders":[]}"#.utf8))
+        XCTAssertEqual(empty.folders.map(\.name), ["Favourites"])
     }
 
     func testHistoryRecordsOncePerAddressAndClears() throws {

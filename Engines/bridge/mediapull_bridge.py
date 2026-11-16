@@ -41,7 +41,8 @@ class Emitter:
             event = {"v": PROTOCOL, "seq": self.seq, "type": _event_type}
             event.update(fields)
             try:
-                self.stream.write(json.dumps(event, default=_json_default, ensure_ascii=False) + "\n")
+                # ASCII only: U+2028, U+2029 and U+0085 in a caption would otherwise split the line on the Swift side.
+                self.stream.write(json.dumps(event, default=_json_default, ensure_ascii=True) + "\n")
                 self.stream.flush()
             except (BrokenPipeError, ValueError):
                 os._exit(0)

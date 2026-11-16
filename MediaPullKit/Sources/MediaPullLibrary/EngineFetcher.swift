@@ -55,10 +55,13 @@ public struct BridgeEngineFetcher: EngineFetching {
 
         var request: BridgeRequest
         var isInstagram = false
+        // The post address may list several files (or a whole profile, for a site scan); the item's own key picks its file.
+        var wantedKey: String?
         let selector = video.selector(av1Decodable: FFmpeg.canDecodeAV1)
         switch item.source {
         case let .engine(context):
             request = BridgeRequest(op: "fetch")
+            wantedKey = context.key
             let postURL = context.postURL?.absoluteString
                 ?? context.postShortcode.map { "https://www.instagram.com/p/\($0)/" }
                 ?? context.sourceURL?.absoluteString
@@ -89,10 +92,15 @@ public struct BridgeEngineFetcher: EngineFetching {
 
         var file: URL?
         var failure: String?
-        for try await event in client.run(request, workingDirectory: staging) {
+        events: for try await event in client.run(request, workingDirectory: staging) {
             switch event {
             case let .file(found):
-                if file == nil, found.isInside(staging) { file = found.path }
+                guard found.isInside(staging) else { continue }
+                if let wantedKey, found.key == wantedKey {
+                    file = found.path
+                    break events
+                }
+                if file == nil { file = found.path }
             case let .progress(received, total, _):
                 if let received, let total, total > 0 { progress(Double(received) / Double(total)) }
             case let .checkpoint(kind, url, message):

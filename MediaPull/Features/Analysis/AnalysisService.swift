@@ -150,6 +150,10 @@ final class AnalysisService {
 
     // MARK: Scanning
 
+    /// Files that gave no picture to embed (damaged, or a video format the system cannot open). Without this they would be
+    /// hashed and analysed again on every scan; they are tried again after the next launch.
+    @ObservationIgnored private var noPicture: Set<String> = []
+
     private struct Work: Sendable {
         var url: URL
         var size: Int64
@@ -163,7 +167,9 @@ final class AnalysisService {
         let wantFaces = preferences.facesEnabled && analyzer.faceEncoder != nil
         let images = imageVectors, faces = faceVectors
         scanTask = Task { [weak self] in
-            let (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil)
+            let skip = self?.noPicture ?? []
+            let (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
+                                                   noPicture: skip)
             await store.forget(paths: gone)
             guard let self else { return }
             if !work.isEmpty {
@@ -174,7 +180,7 @@ final class AnalysisService {
             var newFaces = 0
             var lastBump = Date()
             var iterator = work.makeIterator()
-            await withTaskGroup(of: Int.self) { group in
+            await withTaskGroup(of: (path: String, faces: Int, noPicture: Bool).self) { group in
                 func next() async -> Bool {
                     guard let item = iterator.next() else { return false }
                     await self.waitWhilePaused()
@@ -183,16 +189,19 @@ final class AnalysisService {
                     }
                     // Utility, not background: background priority was throttled about tenfold in the benchmark.
                     group.addTask(priority: .utility) {
-                        await Self.process(item, analyzer: analyzer, store: store, images: images, faces: faces, wantFaces: wantFaces)
+                        let result = await Self.process(item, analyzer: analyzer, store: store, images: images, faces: faces,
+                                                        wantFaces: wantFaces)
+                        return (item.url.path, result.faces, result.noPicture)
                     }
                     return true
                 }
                 for _ in 0 ..< 2 {
                     _ = await next()
                 }
-                while let added = await group.next() {
+                while let result = await group.next() {
                     done += 1
-                    newFaces += added
+                    newFaces += result.faces
+                    if result.noPicture { self.noPicture.insert(result.path) }
                     self.progress = (done, work.count)
                     self.job?.saved = done
                     self.job?.fraction = Double(done) / Double(max(work.count, 1))
@@ -223,7 +232,9 @@ final class AnalysisService {
 
     /// Files that need analysing (new, changed, analysed by an older version, or not yet checked for people), and paths gone from disk.
     @concurrent
-    private static func findWork(folders: [URL], store: AnalysisStore, wantFaces: Bool, embeddings: Bool) async -> ([Work], [String]) {
+    private static func findWork(folders: [URL], store: AnalysisStore, wantFaces: Bool, embeddings: Bool,
+                                 noPicture: Set<String>) async -> ([Work], [String])
+    {
         var files: [Work] = []
         for folder in folders {
             for url in FolderOperations.mediaFiles(in: folder, recursive: true) {
@@ -240,7 +251,7 @@ final class AnalysisService {
                   state.version == AnalysisRecord.currentVersion else { work.append(file); continue }
             if wantFaces || embeddings, let record = await store.record(sha256: state.sha256) {
                 if (wantFaces && !record.peopleChecked && !record.faces.isEmpty) ||
-                    (embeddings && !record.hasEmbedding)
+                    (embeddings && !record.hasEmbedding && !noPicture.contains(file.url.path))
                 {
                     work.append(file)
                 }
@@ -256,14 +267,14 @@ final class AnalysisService {
     /// Analyses one file, or only records its path when the same content was analysed before. Returns the faces added.
     @concurrent
     private static func process(_ item: Work, analyzer: Analyzer, store: AnalysisStore, images: VectorStore?, faces: VectorStore?,
-                                wantFaces: Bool) async -> Int
+                                wantFaces: Bool) async -> (faces: Int, noPicture: Bool)
     {
-        guard let sha = try? FileHasher.sha256(of: item.url) else { return 0 }
+        guard let sha = try? FileHasher.sha256(of: item.url) else { return (0, false) }
         if let existing = await store.record(sha256: sha), existing.version == AnalysisRecord.currentVersion,
            !(wantFaces && !existing.peopleChecked && !existing.faces.isEmpty), existing.hasEmbedding || images == nil
         {
             await store.setPath(item.url.path, sha256: sha, size: item.size, modified: item.modified)
-            return 0
+            return (0, false)
         }
         let output = await analyzer.analyse(item.url, sha256: sha, recogniseFaces: wantFaces)
         var record = output.record
@@ -283,7 +294,7 @@ final class AnalysisService {
         if !added.isEmpty {
             await store.addFaces(added, sha256: sha)
         }
-        return added.count
+        return (added.count, images != nil && output.embedding == nil)
     }
 
     /// Waits while analysis is paused by the person, by Low Power Mode, by heat or (if set) by running on battery (R-3603).

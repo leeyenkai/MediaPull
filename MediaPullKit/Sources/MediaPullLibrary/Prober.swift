@@ -182,10 +182,6 @@ public actor ThumbnailLoader {
         cache.totalCostLimit = budgetBytes
     }
 
-    public nonisolated func cachedThumbnail(_ key: String) -> Thumbnail? {
-        nil
-    }
-
     public func thumbnail(for url: URL, maxPixel: Int, context: RequestContext) async -> Thumbnail? {
         let key = "\(url.absoluteString)#\(maxPixel)" as NSString
         if let hit = cache.object(forKey: key) { return hit }
@@ -206,7 +202,6 @@ public actor ThumbnailLoader {
 
     public func localThumbnail(for file: URL, maxPixel: Int) async -> Thumbnail? {
         let key = "file:\(file.path)#\(maxPixel)" as NSString
-        if let hit = cache.object(forKey: key) { return hit }
         let values = try? file.resourceValues(forKeys: [.contentModificationDateKey])
         let stamp = "\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
         let stampedKey = "\(key)#\(stamp)" as NSString

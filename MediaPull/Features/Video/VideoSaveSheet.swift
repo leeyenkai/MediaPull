@@ -59,7 +59,6 @@ struct VideoForm: View {
                 HStack {
                     Spacer()
                     Button(extras.playlist ? "Download All" : "Download") { save() }
-                        .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(root == nil)
                 }

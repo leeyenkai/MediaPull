@@ -2,6 +2,7 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 import MediaPullCore
 
 /// Reads the facts analysis records without models: size, format, capture date, camera, GPS, animation, length (R-3601).
@@ -25,7 +26,9 @@ public enum MediaFactsReader {
         }
         facts.pixelWidth = width
         facts.pixelHeight = height
-        facts.isAnimated = CGImageSourceGetCount(source) > 1
+        // Sizes in an ICO or pages in a TIFF are not frames.
+        let type = CGImageSourceGetType(source) as String?
+        facts.isAnimated = CGImageSourceGetCount(source) > 1 && ![UTType.ico.identifier, UTType.tiff.identifier].contains(type)
         let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
         let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
         facts.cameraMake = (tiff[kCGImagePropertyTIFFMake] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)

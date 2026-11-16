@@ -29,7 +29,9 @@
   let total = 0;
   const seen = new Map();
   const groups = new WeakMap();
-  let nextGroup = 1;
+  // Group ids start at a random point in each document, so a reloaded page's groups never join the
+  // groups the previous load of the same address sent (the session keeps items across loads).
+  let nextGroup = Math.floor(Math.random() * 2 ** 30) * 2 ** 20 + 1;
 
   const idle = window.requestIdleCallback
     ? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
@@ -354,7 +356,8 @@
     idle(function step(deadline) {
       let count = 0;
       while (work.length && count < 2000 && (count < 200 || (deadline && deadline.timeRemaining && deadline.timeRemaining() > 2))) {
-        process(work.shift());
+        // One odd element must not stop the scanner for the rest of the document.
+        try { process(work.shift()); } catch (e) {}
         count++;
       }
       if (work.length) {

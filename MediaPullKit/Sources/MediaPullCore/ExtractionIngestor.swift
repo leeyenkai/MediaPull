@@ -223,7 +223,6 @@ public actor ExtractionIngestor {
             format = MediaFormat.fromMIME(String(mime))
         }
         let kind = Self.kind(origin: origin, format: format)
-        if kind == nil { return false }
         guard let kind else { return false }
 
         if url.scheme == "http" { flags.insert(.insecure) }

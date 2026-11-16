@@ -24,6 +24,9 @@ final class NetworkGateTests: XCTestCase {
         }
         XCTAssertFalse(cookie(".example.com", secure: true).matches(URL(string: "http://example.com/")!))
         XCTAssertFalse(cookie(".example.com", path: "/private").matches(URL(string: "https://example.com/public/a.jpg")!))
+        XCTAssertFalse(cookie(".example.com", path: "/private").matches(URL(string: "https://example.com/privateer/a.jpg")!))
+        XCTAssertTrue(cookie(".example.com", path: "/private").matches(URL(string: "https://example.com/private/a.jpg")!))
+        XCTAssertTrue(cookie(".example.com", path: "/private").matches(URL(string: "https://example.com/private")!))
         let jar = CookieJar(cookies: [cookie("www.example.com"), CookieRecord(name: "site", value: "2", domain: ".example.com", path: "/",
                                                                               isSecure: false, isHTTPOnly: false, expires: nil)])
         XCTAssertEqual(jar.header(for: URL(string: "https://cdn.example.com/a.jpg")!), "site=2")

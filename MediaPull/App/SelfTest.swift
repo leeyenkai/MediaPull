@@ -53,6 +53,12 @@ final class SelfTestRunner {
 
     private let model: WindowModel
     private var log: [String] = []
+    private var restorePreferences: () -> Void = {}
+
+    private func quit() {
+        restorePreferences()
+        NSApp.terminate(nil)
+    }
     private let started = Date()
     private static var running: SelfTestRunner?
 
@@ -87,7 +93,8 @@ final class SelfTestRunner {
         let savedTheme = app.preferences.theme
         let savedArrangement = app.preferences.paneArrangement
         let savedZoom = app.preferences.thumbnailSize
-        defer {
+        // NSApp.terminate exits without running defer blocks, so every exit restores these first.
+        restorePreferences = { [app] in
             app.preferences.thumbnailSize = savedZoom
             app.preferences.theme = savedTheme
             app.preferences.paneArrangement = savedArrangement
@@ -99,7 +106,7 @@ final class SelfTestRunner {
         }
         if let folder = Self.value(after: "--selftest-analyse") {
             await exerciseAnalysis(source: URL(fileURLWithPath: folder, isDirectory: true), library: library, out: out)
-            NSApp.terminate(nil)
+            quit()
             return
         }
         note("engines: \(app.engineVersions.map { "gallery-dl \($0.galleryDL ?? "?"), yt-dlp \($0.ytDLP ?? "?"), ffmpeg \($0.ffmpeg ?? "?")" } ?? "unknown")")
@@ -135,7 +142,7 @@ final class SelfTestRunner {
         if CommandLine.arguments.contains("--selftest-pdf-links") {
             note("PDF links on page: \(model.documents.count)")
             for url in model.documents.prefix(3) {
-                model.extractPDF(remote: url)
+                model.extractPDF(remote: url, linkedFrom: model.browser.url)
             }
         }
         await waitUntil(timeout: 240) { app.jobs.activeCount == 0 }
@@ -150,7 +157,7 @@ final class SelfTestRunner {
             guard let category = model.siteExtractorCategory else {
                 note("no site extractor for this page")
                 writeReport(to: out, url: url, initial: initial, afterScroll: initial, job: nil, library: library)
-                NSApp.terminate(nil)
+                quit()
                 return
             }
             note("site extractor: \(category)")
@@ -205,13 +212,9 @@ final class SelfTestRunner {
         writeReport(to: out, url: url, initial: initial, afterScroll: afterScroll, job: job, library: library)
         note("report written")
         try? await Task.sleep(for: .milliseconds(500))
-        app.preferences.theme = savedTheme
-        app.preferences.paneArrangement = savedArrangement
-        app.preferences.thumbnailSize = savedZoom
-        NSApp.terminate(nil)
+        quit()
     }
 
-    /// Opens the editor on the first saved image, rotates, crops to a square, renames and saves a copy.
     /// Tabs, the This Page filter, bookmarks, history, the panel and the walkthrough.
     private func exerciseBrowser(second: URL, out: URL) async {
         let app = AppModel.shared
@@ -256,7 +259,11 @@ final class SelfTestRunner {
         model.showBrowsingPanel = false
 
         let fileMenu = NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu
-        let order = fileMenu?.items.filter { $0.keyEquivalent == "w" }.map { "\($0.title) [\($0.keyEquivalentModifierMask.contains(.shift) ? "⇧⌘W" : "⌘W")]" }
+        let order = fileMenu?.items.filter { $0.keyEquivalent.lowercased() == "w" }.map { item in
+            let mask = item.keyEquivalentModifierMask
+            let keys = (mask.contains(.option) ? "⌥" : "") + (mask.contains(.shift) || item.keyEquivalent == "W" ? "⇧" : "") + "⌘W"
+            return "\(item.title) [\(keys)]"
+        }
         note("File menu items on W: \(order?.joined(separator: ", ") ?? "none")")
 
         app.showWalkthrough(.tour)
@@ -316,7 +323,6 @@ final class SelfTestRunner {
         snapshot(to: out.appendingPathComponent("window-duplicates.png"))
     }
 
-    /// Looks up a video page's formats, shows them in the Downloads pane, then saves it as 360p H.264 and as audio only.
     /// Downloads the first few items from each address in a list through the whole app (site choices, the bridge, the save
     /// pipeline and folders), and reports what was saved (SPEC R-1111b).
     private func exerciseGalleries(list: URL, library: URL, out: URL) async {
@@ -361,6 +367,7 @@ final class SelfTestRunner {
         }
     }
 
+    /// Looks up a video page's formats, shows them in the Downloads pane, then saves it as 360p H.264 and as audio only.
     private func exerciseVideoDownload(page: URL, library: URL, out: URL) async {
         let app = AppModel.shared
         guard case let .success(info) = await app.engines.videoInfo(for: page) else {
@@ -481,6 +488,7 @@ final class SelfTestRunner {
         Thread.sleep(forTimeInterval: 2.5)
     }
 
+    /// Opens the editor on the first saved image, rotates, crops to a square, renames and saves a copy.
     private func exerciseEditor(library: URL, out: URL) async {
         let images = (FileManager.default.enumerator(at: library, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
             .filter { ["jpg", "png"].contains($0.pathExtension.lowercased()) }

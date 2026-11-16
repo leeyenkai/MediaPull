@@ -42,7 +42,8 @@ public enum URLNormalizer {
         if ["php", "asp", "aspx", "jsp", "cgi"].contains(url.pathExtension.lowercased()), let target = CDNRules.proxiedTarget(of: url) {
             return baseName(of: target)
         }
-        let last = url.deletingPathExtension().lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        // lastPathComponent is already decoded; decoding again would turn a literal "100%25" into "100%" and then fail.
+        let last = url.deletingPathExtension().lastPathComponent
         let trimmed = last.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed == "/" { return nil }
         if isGenericName(trimmed) {

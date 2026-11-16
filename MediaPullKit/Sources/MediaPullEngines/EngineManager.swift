@@ -109,6 +109,10 @@ public actor EngineManager {
         _ = try await gate.download(.get(update.wheelURL, purpose: .engineUpdate), to: download)
         defer { try? FileManager.default.removeItem(at: download) }
         guard try FileHasher.sha256(of: download) == update.sha256.lowercased() else { throw EngineUpdateError.hashMismatch }
+        // The version comes from the package index and names a folder that is replaced, so it must be a plain version string.
+        guard !update.available.isEmpty, update.available.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || ".+-_".contains($0)) }),
+              !update.available.hasPrefix(".")
+        else { throw EngineUpdateError.installFailed("the update has an unexpected version number") }
         let target = paths.updates.appendingPathComponent("\(key)/\(update.available)", isDirectory: true)
         try? FileManager.default.removeItem(at: target)
         var request = BridgeRequest(op: "install_wheel")
