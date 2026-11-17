@@ -16,6 +16,8 @@ final class BrowsingStore {
     /// History cleared before the stored history was loaded: applied to it, so cleared pages do not come back.
     @ObservationIgnored private var clearsBeforeLoad: [Date?] = []
     @ObservationIgnored private var unsaved = false
+    /// Why bookmarks or history could not be saved the last time, shown in the Bookmarks and History panel.
+    var saveProblem: String?
 
     init(persistent: Bool) {
         folder = persistent
@@ -127,10 +129,11 @@ final class BrowsingStore {
         saveTask?.cancel()
         let bookmarks = bookmarks
         let history = history
-        saveTask = Task.detached(priority: .utility) {
+        saveTask = Task.detached(priority: .utility) { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            Self.write(bookmarks, history, to: folder)
+            let problem = Self.write(bookmarks, history, to: folder)
+            await MainActor.run { self?.saveProblem = problem }
         }
     }
 
@@ -138,31 +141,34 @@ final class BrowsingStore {
     func flush() {
         guard let folder, loaded, unsaved else { return }
         saveTask?.cancel()
-        Self.write(bookmarks, history, to: folder)
+        saveProblem = Self.write(bookmarks, history, to: folder)
         unsaved = false
     }
 
-    nonisolated private static func write(_ bookmarks: BookmarkCollection, _ history: BrowsingHistory, to folder: URL) {
+    /// Returns what went wrong, if anything: bookmarks that cannot be saved must not fail quietly.
+    nonisolated private static func write(_ bookmarks: BookmarkCollection, _ history: BrowsingHistory, to folder: URL) -> String? {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        if let data = try? encoder.encode(bookmarks) {
-            try? data.write(to: folder.appendingPathComponent("bookmarks.json"), options: .atomic)
-        }
-        if let data = try? encoder.encode(history) {
-            try? data.write(to: folder.appendingPathComponent("history.json"), options: .atomic)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try encoder.encode(bookmarks).write(to: folder.appendingPathComponent("bookmarks.json"), options: .atomic)
+            try encoder.encode(history).write(to: folder.appendingPathComponent("history.json"), options: .atomic)
+            return nil
+        } catch {
+            return "Bookmarks and history could not be saved: \(error.localizedDescription)"
         }
     }
 
     /// A file that exists but cannot be read is set aside (name.damaged-<date>.json), never written over.
     nonisolated private static func read<Value: Decodable>(_ type: Value.Type, _ name: String, in folder: URL) -> Value? {
         let file = folder.appendingPathComponent(name)
-        guard let data = try? Data(contentsOf: file) else { return nil }
+        guard let data = try? Data(contentsOf: file) else { return nil } // lint:allow main-io two small JSON files, once at launch
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let value = try? decoder.decode(type, from: data) { return value }
         let stamp = Int(Date().timeIntervalSince1970)
         let aside = folder.appendingPathComponent((name as NSString).deletingPathExtension + ".damaged-\(stamp).json")
+        // lint:allow main-io silent-write setting a damaged file aside is best effort; it is never written over either way
         try? FileManager.default.moveItem(at: file, to: aside)
         return nil
     }

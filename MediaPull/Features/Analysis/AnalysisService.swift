@@ -738,7 +738,7 @@ final class AnalysisService {
             // lint:allow main-io a few database files, once, at launch after a failure
             let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
             for name in names where name.hasPrefix("Analysis.store") {
-                // lint:allow silent-write the copy is best effort; opening a fresh database is what matters
+                // lint:allow silent-write main-io best effort, a few files once after a failure; a fresh database matters
                 try? fm.moveItem(at: folder.appendingPathComponent(name), to: folder.appendingPathComponent("\(name).damaged-\(stamp)"))
             }
             do {

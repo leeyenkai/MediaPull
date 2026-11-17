@@ -106,7 +106,7 @@ public actor FingerprintIndex {
         }
         if let data = try? JSONEncoder().encode(entries) {
             try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? data.write(to: storeURL, options: .atomic)
+            try? data.write(to: storeURL, options: .atomic) // lint:allow silent-write a cache; lost, it is worked out again
             dirty = false
         }
     }

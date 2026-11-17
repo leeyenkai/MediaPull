@@ -111,13 +111,14 @@ final class VideoEditorModel: UnsavedEditing {
                 let target = LibraryModel.uniqueURL(
                     url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: stem, ext: "png"))
                 )
-                try FileManager.default.moveItem(at: still, to: target)
-                Self.writeSidecar(from: url, to: target, changes: [
+                try await LibraryModel.offMain { try FileManager.default.moveItem(at: still, to: target) } // lint:allow main-io offMain
+                let problem = Self.writeSidecar(from: url, to: target, changes: [
                     "width": size.width, "height": size.height, "sha256": await Self.checksum(target),
                     "edited": true, "frame_time": (time * 1000).rounded() / 1000,
                 ], dropping: ["num", "count", "duration"])
                 finishLibraryChange()
-                report("Saved the frame at \(Self.timestamp(time)) as \(target.lastPathComponent).")
+                report("Saved the frame at \(Self.timestamp(time)) as \(target.lastPathComponent)."
+                    + (problem.map { " The metadata file could not be written: \($0)" } ?? ""))
             case let .item(id):
                 guard let window, let video = window.itemsByID[id] else { return }
                 var variant = MediaVariant(id: still.absoluteString, url: still, format: .png, origin: video.best?.origin ?? .video)
@@ -166,25 +167,24 @@ final class VideoEditorModel: UnsavedEditing {
             let length = await VideoTools.duration(of: trimmed) ?? (selection.upperBound - selection.lowerBound)
             switch request.subject {
             case let .file(url):
-                let manager = FileManager.default
                 let folder = url.deletingLastPathComponent()
-                var target: URL
-                if replacing {
-                    target = folder.appendingPathComponent(FileNaming.fileName(stem: cleanName, ext: url.pathExtension))
-                    try manager.trashItem(at: url, resultingItemURL: nil)
-                    target = LibraryModel.uniqueURL(target)
-                } else {
-                    let stem = hasNameChange ? cleanName : "\(cleanName)_trimmed"
-                    target = LibraryModel.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: url.pathExtension)))
-                }
-                let destination = target
-                // Moving from the cache to a library on another volume is a full copy: not on the main actor.
-                try await LibraryModel.offMain { try FileManager.default.moveItem(at: trimmed, to: destination) }
+                let stem = replacing ? cleanName : (hasNameChange ? cleanName : "\(cleanName)_trimmed")
+                let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: url.pathExtension))
+                // The original goes to the Trash when replaced; moving from the cache to a library on another volume is a
+                // full copy: not on the main actor.
+                let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
+                    if replacing { try FileManager.default.trashItem(at: url, resultingItemURL: nil) } // lint:allow main-io detached
+                    let target = LibraryModel.uniqueURL(wanted)
+                    try FileManager.default.moveItem(at: trimmed, to: target) // lint:allow main-io detached
+                    return target
+                }.value
                 if replacing { app.noteMoved([(from: url.path, to: target.path)]) }
-                Self.writeSidecar(from: url, to: target, changes: [
+                if let problem = Self.writeSidecar(from: url, to: target, changes: [
                     "duration": (length * 1000).rounded() / 1000, "sha256": await Self.checksum(target), "edited": true,
                     "trimmed_from": [(selection.lowerBound * 1000).rounded() / 1000, (selection.upperBound * 1000).rounded() / 1000],
-                ], dropping: [], trashSource: replacing)
+                ], dropping: [], trashSource: replacing) {
+                    report("Saved, but the metadata file could not be written: \(problem)")
+                }
                 finishLibraryChange()
                 window?.editorRequest = nil
                 window?.previewSubject = .file(target)
@@ -246,26 +246,33 @@ final class VideoEditorModel: UnsavedEditing {
         await Task.detached(priority: .userInitiated) { (try? FileHasher.sha256(of: file)) ?? "" }.value
     }
 
-    /// Copies the video's metadata file for a derived file, with updated fields (SPEC R-3404).
-    static func writeSidecar(from source: URL, to target: URL, changes: [String: Any], dropping: [String], trashSource: Bool = false) {
+    /// Copies the video's metadata file for a derived file, with updated fields (SPEC R-3404). Returns what went wrong, if
+    /// anything; a video with no metadata file needs none. Metadata files are a few kilobytes.
+    @discardableResult
+    static func writeSidecar(from source: URL, to target: URL, changes: [String: Any], dropping: [String], trashSource: Bool = false)
+        -> String?
+    {
         let oldSidecar = Sidecar.sidecarURL(for: source)
-        guard let data = try? Data(contentsOf: oldSidecar),
+        guard FileManager.default.fileExists(atPath: oldSidecar.path) else { return nil }
+        guard let data = try? Data(contentsOf: oldSidecar), // lint:allow main-io a few kilobytes
               var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
+        else { return "the original metadata file could not be read" }
         for key in dropping {
             object[key] = nil
         }
         for (key, value) in changes {
             object[key] = value
         }
-        if let output = try? JSONSerialization.data(withJSONObject: object,
-                                                    options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        {
-            try? output.write(to: Sidecar.sidecarURL(for: target), options: .atomic)
-        }
-        // Replacing under the same name writes the new metadata to the old path: never trash what was just written.
-        if trashSource, oldSidecar.standardizedFileURL != Sidecar.sidecarURL(for: target).standardizedFileURL {
-            try? FileManager.default.trashItem(at: oldSidecar, resultingItemURL: nil)
+        do {
+            let output = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            try output.write(to: Sidecar.sidecarURL(for: target), options: .atomic)
+            // Replacing under the same name writes the new metadata to the old path: never trash what was just written.
+            if trashSource, oldSidecar.standardizedFileURL != Sidecar.sidecarURL(for: target).standardizedFileURL {
+                try FileManager.default.trashItem(at: oldSidecar, resultingItemURL: nil) // lint:allow main-io one small file
+            }
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 }

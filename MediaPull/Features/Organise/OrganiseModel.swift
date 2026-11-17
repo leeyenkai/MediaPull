@@ -654,6 +654,7 @@ final class OrganiseModel {
     /// Folders next to `folder`, for Merge Into.
     func siblings(of folder: URL) -> [URL] {
         let parent = folder.deletingLastPathComponent()
+        // lint:allow main-io one folder's entries, when its menu opens
         let items = (try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isDirectoryKey],
                                                                    options: [.skipsHiddenFiles])) ?? []
         return items.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true && $0 != folder }
@@ -754,8 +755,14 @@ final class OrganiseModel {
 
     func layoutFor(_ folder: URL) -> SaveLayout {
         if let root = app.root(containing: folder) { return root.layout }
-        let hasSidecars = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.contains { $0.hasSuffix(".json") } ?? false
-        return hasSidecars ? .archive : .plain
+        // Names only, stopping at the first metadata file: once per planned change.
+        // lint:allow main-io names of one folder, no file is opened
+        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
+                                                    options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles])
+        while let url = walker?.nextObject() as? URL {
+            if url.pathExtension.lowercased() == "json" { return .archive }
+        }
+        return .plain
     }
 }
 

@@ -392,6 +392,7 @@ public final class SavePipeline: Sendable {
                 let sidecarURL = Sidecar.sidecarURL(for: existing)
                 if !manager.fileExists(atPath: sidecarURL.path) {
                     let sidecar = ArchivePlanner.sidecar(for: item, info: info, target: target, settings: settings)
+                    // lint:allow silent-write filling in a missing metadata file for a copy that exists is best effort
                     try? sidecar.encoded().write(to: sidecarURL, options: .atomic)
                 }
             }

@@ -214,7 +214,9 @@ public actor VectorStore {
     }
 
     func rewrite() {
+        // lint:allow silent-write a failed rewrite keeps the old files, which load aligned (see init); vectors are made again
         try? ids.reduce(Data(), +).write(to: idURL, options: .atomic)
+        // lint:allow silent-write as above
         try? vectors.withUnsafeBufferPointer { Data(buffer: $0) }.write(to: vectorURL, options: .atomic)
         // An atomic write replaces the file, and the exclusion with it.
         if excludeFromBackup {

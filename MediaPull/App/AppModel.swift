@@ -489,15 +489,18 @@ final class AppModel {
                     }
                     let folder = destination ?? file.deletingLastPathComponent()
                     let stem = file.deletingPathExtension().lastPathComponent
-                    var output = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: result.format.fileExtension))
-                    var counter = 2
-                    while FileManager.default.fileExists(atPath: output.path) {
-                        output = folder.appendingPathComponent(
-                            FileNaming.fileName(stem: "\(stem) \(counter)", ext: result.format.fileExtension)
-                        )
-                        counter += 1
-                    }
-                    try FileManager.default.moveItem(at: result.url, to: output)
+                    let ext = result.format.fileExtension, converted = result.url
+                    // The work folder is in Caches, so the move is a copy when the output is on another disk: off the main actor.
+                    let output = try await Task.detached(priority: .userInitiated) { () throws -> URL in
+                        var output = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: ext))
+                        var counter = 2
+                        while FileManager.default.fileExists(atPath: output.path) {
+                            output = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem) \(counter)", ext: ext))
+                            counter += 1
+                        }
+                        try FileManager.default.moveItem(at: converted, to: output) // lint:allow main-io in a detached task
+                        return output
+                    }.value
                     job.saved += 1
                     onResult(file, "Saved \(output.lastPathComponent)")
                 } catch {
@@ -517,6 +520,7 @@ final class AppModel {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue {
+                // lint:allow main-io nonisolated, called from a detached task
                 let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey],
                                                                 options: [.skipsHiddenFiles, .skipsPackageDescendants])
                 while let next = enumerator?.nextObject() as? URL {

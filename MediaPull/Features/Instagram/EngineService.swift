@@ -404,8 +404,13 @@ final class EngineService {
         if draft.incremental || resuming, draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
             let known = await app.store?.knownKeys(account: account) ?? []
             let knownFile = staging.appendingPathComponent("known.json")
-            if let data = try? JSONEncoder().encode(Array(known)) { try? data.write(to: knownFile) }
-            request.knownIDs = knownFile.path
+            do {
+                try JSONEncoder().encode(Array(known)).write(to: knownFile)
+                request.knownIDs = knownFile.path
+            } catch {
+                // Saved items are still recognised by their contents; the pull only cannot skip downloading them.
+                job.notes.append("Saved posts could not be listed for the engine (\(error.localizedDescription)), so every post is checked.")
+            }
             // A resumed pull continues from where it stopped and must not end early on known posts.
             request.stopAfterKnown = resuming ? nil : app.preferences.stopAfterKnown
         }
@@ -574,7 +579,7 @@ final class EngineService {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let target = LibraryModel.uniqueURL(directory.appendingPathComponent(name))
-            try FileManager.default.moveItem(at: file, to: target)
+            try FileManager.default.moveItem(at: file, to: target) // lint:allow main-io a small list or profile file
             return target
         } catch {
             return nil
@@ -685,7 +690,7 @@ final class EngineService {
                     {
                         saved[found.key] = url
                         for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] {
-                            await placeAttachment(path, kind: kind, beside: url)
+                            if let problem = await placeAttachment(path, kind: kind, beside: url) { job.notes.append(problem) }
                         }
                     }
                 case .file:
@@ -693,7 +698,7 @@ final class EngineService {
                     failure = "The engine reported a file outside its working folder. It was left alone."
                 case let .attachment(key, path, kind) where path.standardizedFileURL.path.hasPrefix(staging.standardizedFileURL.path + "/"):
                     if let beside = saved[key] {
-                        await placeAttachment(path, kind: kind, beside: beside)
+                        if let problem = await placeAttachment(path, kind: kind, beside: beside) { job.notes.append(problem) }
                     } else {
                         waiting[key, default: []].append((path, kind))
                     }
@@ -771,7 +776,8 @@ final class EngineService {
     }
 
     /// Puts a subtitle, thumbnail or description file beside the saved video, named after it.
-    private func placeAttachment(_ path: URL, kind: String, beside video: URL) async {
+    /// Returns what went wrong, so the job can say which file beside the video is missing.
+    private func placeAttachment(_ path: URL, kind: String, beside video: URL) async -> String? {
         let stem = video.deletingPathExtension()
         let ext = path.pathExtension.lowercased()
         let name = if kind.hasPrefix("subtitles.") {
@@ -786,9 +792,14 @@ final class EngineService {
         if kind == "thumbnail", !["jpg", "jpeg", "png"].contains(ext),
            await Self.convertToJPEG(path, output: LibraryModel.uniqueURL(destination.deletingPathExtension().appendingPathExtension("jpg")))
         {
-            return
+            return nil
         }
-        try? FileManager.default.moveItem(at: path, to: LibraryModel.uniqueURL(destination))
+        do {
+            try FileManager.default.moveItem(at: path, to: LibraryModel.uniqueURL(destination)) // lint:allow main-io a small side file
+            return nil
+        } catch {
+            return "\(name) could not be saved beside the video: \(error.localizedDescription)"
+        }
     }
 
     /// Decoding and encoding stay off the main actor.
@@ -953,8 +964,12 @@ final class EngineService {
             if onlyNew {
                 let known = await self.app.store?.knownKeys(account: account) ?? []
                 let knownFile = staging.appendingPathComponent("known.json")
-                if let data = try? JSONEncoder().encode(Array(known)) { try? data.write(to: knownFile) }
-                request.knownIDs = knownFile.path
+                do {
+                    try JSONEncoder().encode(Array(known)).write(to: knownFile)
+                    request.knownIDs = knownFile.path
+                } catch {
+                    job.notes.append("Saved items could not be listed for the engine (\(error.localizedDescription)), so every item is checked.")
+                }
             }
             let settings = self.app.saveSettings
             let pipeline = self.app.pipeline()

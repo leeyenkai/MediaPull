@@ -268,6 +268,7 @@ struct FileMediaPreview: View {
                 switch format?.kind {
                 case .video, .audio: return (format?.kind, nil)
                 default:
+                    // lint:allow main-io inside a detached task
                     if format == .gif, ImageProbe.frameCount(from: (try? Data(contentsOf: url, options: .mappedIfSafe)) ?? Data()) > 1 {
                         return (.animatedImage, nil)
                     }
@@ -355,6 +356,7 @@ nonisolated enum FileFacts {
         rows.append(("Folder", url.deletingLastPathComponent().lastPathComponent))
         var caption: String?
         let sidecar = Sidecar.sidecarURL(for: url)
+        // lint:allow main-io one metadata file of a few kilobytes
         if let data = try? Data(contentsOf: sidecar), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let user = object["username"] as? String, !user.isEmpty { rows.append(("Account", user)) }
             if let kind = object["subcategory"] as? String { rows.append(("Section", kind.capitalized)) }

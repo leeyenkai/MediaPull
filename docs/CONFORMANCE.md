@@ -23,10 +23,10 @@ change as the code.
 | R-307 | partial | `scripts/bundle-engines.sh`, `EngineSettings` | none | Licence texts are bundled; no notice of where to obtain source code; no test |
 | R-308 | amended | `Config/Info.plist`, `RequestPolicy.evaluate` | `testOnlyReadsAreAllowed` | D-77: arbitrary loads allowed for http media from any host; the gate still allows only GET and HEAD |
 | R-401 | built | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans |
-| R-402 | partial | `ExtractionIngestor`, `MediaProber`, `ThumbnailLoader` | none | Decoding, parsing and hashing run off the main actor by design; no test or lint checks it |
+| R-402 | built | `scripts/lint_invariants.py`, `LibraryModel.offMain`, `MediaListing.load` | `scripts/lint_invariants.py` | The main-io lint fails on file moves, copies, listings and reads in the app target unless justified (1.8) |
 | R-403 | partial | `BridgeClient.run`, `stop_children` | none | Bridge and ffmpeg run per job and are stopped with it; no test checks no process remains |
 | R-501 | built | `GatedRequest`, `NetworkGate`, `RedirectGuard`, `RedirectPolicy.nextHeaders` | `testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer`, `testCookiesStayBehindAndEveryHopIsLogged`, `testACutShortDownloadIsNotKept` | Per-hop Referer and same-origin cookies since 1.8; per-host limits follow redirects |
-| R-502 | partial | `RequestPolicy.evaluate`, `RedirectPolicy.nextHeaders` | `testOnlyReadsAreAllowed`, `testRedirectsAreCheckedAgainstThePolicy` | Plain http is allowed for every purpose, not only media; spec or code to decide |
+| R-502 | built | `RequestPolicy.urlRequest`, `RedirectGuard` | `testEngineUpdatesNeedHTTPS`, `testOnlyReadsAreAllowed` | Plain http is for media only (D-21); engine updates and their redirects are https only (1.8) |
 | R-503 | built | `NetworkGate.entries`, `NetworkGate.logCapacity`, `AdvancedSettings` | `testCookiesStayBehindAndEveryHopIsLogged` | 2,000-entry in-memory log shown as Network activity; never written to disk |
 | R-504 | amended | `WindowModel.previewFile`, `PlayerView` | `--selftest-video` | D-77: media is downloaded through the gate to a cache file before AVFoundation opens it |
 | R-505 | built | `Engines/bridge/egress_guard.py`, `READ_POSTS`, `install_guard` | `test_write_operations_are_blocked`, `test_audited_site_reads_are_allowed`, `test_uploads_and_other_methods_are_blocked` | Read-only POST list per D-72 (amends D-40), already in the spec text |
@@ -62,7 +62,7 @@ change as the code.
 | R-902 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | D-77: no inline SVG setting; manifests and media files reported, not stream segments |
 | R-903 | built | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | MutationObserver with filtered attributes, idle chunks of 2,000, load events captured |
 | R-904 | built | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | 50 ms first flush, 300 ms after, 500 candidates or 256 KB per message |
-| R-905 | partial | `ExtractionMessageHandler`, `ExtractionIngestor.ingest` | `testLateBatchKeepsItsOwnPage` | Frame origin from frameInfo, but the main-frame page URL is taken from the batch's own page field |
+| R-905 | built | `ExtractionIngestor.ingest`, `ExtractionIngestor.sameOrigin` | `testBatchPageMustMatchTheFrameOrigin` | A batch page address is believed only within the frame origin from WebKit (1.8) |
 | R-906 | built | `WindowModel.toggleAutoScroll`, `BrowserController.scrollStep` | `--selftest-url` | Stops after three quiet steps or when the person stops it |
 | R-907 | built | `ExtractionMessageHandler`, `ExtractionIngestor` | `testSrcsetCandidatesMergeAndRank` | Raw JSON handed to the ingestor actor; snapshots every 250 ms at most |
 | R-908 | built | `WindowModel.clear`, `MediaFilter`, `Preferences` | `--selftest-browser` | Accumulates until Cmd-K; grouped by page; This Page filter; Clear on navigation setting |
@@ -185,11 +185,11 @@ change as the code.
 | R-3504 | amended | `YOUTUBE_PATHS` | `test_youtube_video_reads_are_allowed_and_nothing_else`, `test_youtube_channel_pages_are_read` | D-72 adds /youtubei/v1/browse beside player and next |
 | R-3601 | built | `Analyzer.analyse`, `Thumbnailer.videoFrame` | `--selftest-analyse` | Videos are analysed a tenth of the way in (1.8) |
 | R-3602 | built | `Analyzer`, `scripts/models.lock` | `--selftest-analyse` | Bundled pinned models on Neural Engine and CPU; duplicates stay model-free |
-| R-3603 | partial | `AnalysisService`, `Analyzer.recogniseText` | `--selftest-analyse` | A failure to open the analysis store is silent (try?), so analysis quietly does nothing |
+| R-3603 | built | `AnalysisService.openStore`, `Analyzer.recogniseText` | `--selftest-analyse` | A damaged store is set aside and analysis starts again; Settings says so (1.8) |
 | R-3604 | built | `ScreenshotRule` | `testScreenshotRule` | Marker, file name and screen-size rules only |
 | R-3605 | built | `OfflineGeocoder` | `testGeocoderFindsTheNearestPlaceWithinFiftyKilometres` | Bundled GeoNames index, nearest place within 50 km |
 | R-3606 | built | `ColourName.dominant` | `testDominantColour` | Saturation-weighted 8x8 grid, fixed palette of twelve names |
-| R-3607 | partial | `AnalysisService.deleteAllAnalysis`, `AnalysisService.removeVectorFiles`, `AnalysisSettings` | `testVectorStoreRemovesRowsAndKeepsTheRest` | Vector files now removed by name (1.8); the button is labelled Analyse Again, not Rebuild |
+| R-3607 | built | `AnalysisService.deleteAllAnalysis`, `AnalysisService.removeVectorFiles`, `AnalysisSettings` | `testVectorStoreRemovesRowsAndKeepsTheRest`, `--selftest-analyse` | Every vector file removed; the button is named Analyse Again in the spec too (D-77 table) |
 | R-3701 | amended | `QueryBar`, `WindowModel.find`, `Preferences.libraryQuery` | `--selftest-analyse` | D-77: sort and filters kept between launches for the Library as a whole; Command-F focuses the search (1.8) |
 | R-3702 | built | `LibrarySort`, `MediaDates.effective`, `LibraryQuery.events` | `testDateFallsBackFromCaptureToMetadataToFile`, `testEventsSplitAtTheGap`, `testSortsBySizeAndSource` | All sorts, both directions, events at the gap |
 | R-3703 | built | `FilterMenu`, `LibraryQuery.apply`, `AnalysisService.queryContext`, `AnalysisService.forgetUnknownPeople` | `testFiltersCombine`, `--selftest-analyse` | Format filter added; unknown people dropped from filters; opened list folders use the same context (1.8) |
@@ -203,13 +203,13 @@ change as the code.
 | R-3805 | built | `OrganiseModel.autoSort`, `OrganisePlan` | `--selftest-analyse` | Sorts only what the Source shows; no matches means no plan and a message (1.8) |
 | R-3806 | built | `OperationJournal.undo`, `OperationJournal.redo`, `WindowModel.registerUndo`, `AppModel.applyChange` | `testRedoDoesTheChangeAgainAndCanBeUndone`, `testUndoOfACopyKeepsCopiesEditedSince`, `testUndoLeavesChangedFilesInPlace` | Every Library and Organise change undoable with ⌘Z and redoable with Shift-⌘Z (1.8) |
 | R-3807 | partial | `OrganiseModel.execute`, `OperationJournal` | `--selftest-analyse` | no test: Cancel of an Organise job and undoing a cancelled operation are not exercised |
-| R-3901 | partial | `FaceOptIn`, `FaceSettings`, `AnalysisService.deleteAllFaceData`, `AnalysisService.removeVectorFiles` | `--selftest-analyse`, `testFaceVectorsStayExcludedFromBackups` | Every face vector file removed (1.8); still no off switch apart from deleting all face data |
+| R-3901 | built | `FaceOptIn`, `FaceSettings`, `AnalysisService.deleteAllFaceData`, `AnalysisService.removeVectorFiles` | `--selftest-analyse`, `testFaceVectorsStayExcludedFromBackups` | Opt-in, off switch that keeps data, and Delete All removing every face file (1.8) |
 | R-3902 | built | `FaceDetector`, `FaceEncoder`, `FaceRules.minimumPixels` | `--selftest-analyse` | SCRFD with five landmarks, Vision fallback, 32 px floor, mirrored-crop fusion |
 | R-3903 | built | `FaceGrouping.group`, `AnalysisStore.pruneOrphans` | `testFaceGroupingRespectsCorrections`, `testOrphanedResultsFacesAndPeopleArePruned` | Faces of files that are gone are pruned after each scan (1.8) |
 | R-3904 | built | `PeopleView`, `AnalysisService.split`, `AnalysisService.notThisPerson`, `AnalysisStore.pruneOrphans` | `testNotThisPersonSurvivesRegrouping`, `testOrphanedResultsFacesAndPeopleArePruned` | Corrections persist; people of deleted files no longer linger (1.8) |
 | R-3905 | built | `NameSuggestion.suggest`, `NameSuggestion.looksLikeName` | `testNameSuggestion` | Suggested only; applied after one click on Use Name |
 | R-3906 | amended | `FolderOperations.sort`, `OrganiseModel.autoSort` | `testSortClonesGroupPhotosAndUsesUnsorted` | D-77: photos without a recognised person stay where they are |
-| R-3907 | partial | `FaceOptIn.limits` | | Limits text omits JPEG, blur, light and covering, and the 32 px figure |
+| R-3907 | built | `FaceOptIn.limits` | `--selftest-analyse` | Full limits text (1.8) |
 
 ## Settings and shortcuts (sections 20 and 21)
 

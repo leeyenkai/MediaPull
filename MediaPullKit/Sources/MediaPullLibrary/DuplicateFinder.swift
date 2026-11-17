@@ -265,7 +265,7 @@ public actor DuplicateFinder {
         cache = cache.filter { FileManager.default.fileExists(atPath: $0.key) }
         guard let data = try? JSONEncoder().encode(cache) else { return }
         try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: storeURL, options: .atomic)
+        try? data.write(to: storeURL, options: .atomic) // lint:allow silent-write a cache; lost, it is worked out again
     }
 }
 

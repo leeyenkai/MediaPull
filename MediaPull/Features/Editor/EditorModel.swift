@@ -280,7 +280,6 @@ final class EditorModel: UnsavedEditing {
         isSaving = true
         defer { isSaving = false }
         let folder = url.deletingLastPathComponent()
-        let manager = FileManager.default
         do {
             if !hasImageEdits {
                 guard hasNameChange || asCopy else { return url }
@@ -289,23 +288,25 @@ final class EditorModel: UnsavedEditing {
                     ext: fileExtension
                 ))
                 let target = asCopy ? LibraryModel.uniqueURL(wanted) : LibraryModel.renameTarget(from: url, to: wanted)
-                if asCopy {
-                    try manager.copyItem(at: url, to: target)
-                } else {
-                    try manager.moveItem(at: url, to: target)
-                    AppModel.shared.noteMoved([(from: url.path, to: target.path)])
+                // A copy of a large file to another disk takes a while: file operations run off the main actor.
+                try await LibraryModel.offMain {
+                    // lint:allow main-io inside offMain
+                    if asCopy { try FileManager.default.copyItem(at: url, to: target) } else { try FileManager.default.moveItem(at: url, to: target) }
                 }
+                if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
                 await moveSidecar(from: url, to: target, copy: asCopy, edited: nil)
                 return target
             }
             let edited = try await writeEdited()
             let stem = asCopy ? (hasNameChange ? cleanName : "\(cleanName) edited") : cleanName
-            var target = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: format.fileExtension))
-            if !asCopy {
-                try manager.trashItem(at: url, resultingItemURL: nil)
-            }
-            target = LibraryModel.uniqueURL(target)
-            try manager.moveItem(at: edited, to: target)
+            let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: format.fileExtension))
+            let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
+                // The original goes to the Trash (D-34), then the edit takes a free name next to it.
+                if !asCopy { try FileManager.default.trashItem(at: url, resultingItemURL: nil) } // lint:allow main-io detached
+                let target = LibraryModel.uniqueURL(wanted)
+                try FileManager.default.moveItem(at: edited, to: target) // lint:allow main-io detached
+                return target
+            }.value
             if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
             await moveSidecar(from: url, to: target, copy: asCopy, edited: target)
             return target
@@ -315,38 +316,40 @@ final class EditorModel: UnsavedEditing {
         }
     }
 
-    /// Keeps the metadata file with its media file, updating size and checksum after edits.
+    /// Keeps the metadata file with its media file, updating size and checksum after edits. A metadata file that cannot be
+    /// written is reported: the picture is saved, and the person should know its record did not follow.
     private func moveSidecar(from source: URL, to target: URL, copy: Bool, edited: URL?) async {
-        let manager = FileManager.default
         let oldSidecar = Sidecar.sidecarURL(for: source)
-        guard manager.fileExists(atPath: oldSidecar.path) else { return }
         let newSidecar = Sidecar.sidecarURL(for: target)
-        guard var object = (try? Data(contentsOf: oldSidecar)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
-        else {
-            if !copy { try? manager.moveItem(at: oldSidecar, to: newSidecar) }
-            return
-        }
-        if let edited {
-            let facts = await Task.detached(priority: .userInitiated) {
-                (ImageConversion.analyze(edited).map { ($0.width, $0.height) }, try? FileHasher.sha256(of: edited))
-            }.value
-            if let size = facts.0 {
-                object["width"] = size.0
-                object["height"] = size.1
-            }
-            object["sha256"] = facts.1
-            object["edited"] = true
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) {
-            guard (try? data.write(to: newSidecar, options: .atomic)) != nil else { return }
-            if !copy, oldSidecar != newSidecar {
-                if edited == nil {
-                    try? manager.removeItem(at: oldSidecar)
-                } else {
-                    try? manager.trashItem(at: oldSidecar, resultingItemURL: nil)
+        let problem = await Task.detached(priority: .userInitiated) { () -> String? in
+            let manager = FileManager.default
+            guard manager.fileExists(atPath: oldSidecar.path) else { return nil }
+            do {
+                // lint:allow main-io detached
+                guard var object = try JSONSerialization.jsonObject(with: Data(contentsOf: oldSidecar)) as? [String: Any] else {
+                    if !copy { try manager.moveItem(at: oldSidecar, to: newSidecar) } // lint:allow main-io detached
+                    return nil
                 }
+                if let edited {
+                    if let size = ImageConversion.analyze(edited) {
+                        object["width"] = size.width
+                        object["height"] = size.height
+                    }
+                    object["sha256"] = try? FileHasher.sha256(of: edited)
+                    object["edited"] = true
+                }
+                let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+                try data.write(to: newSidecar, options: .atomic)
+                if !copy, oldSidecar != newSidecar {
+                    // Renamed: the old record is no longer needed; edited: the original's record goes to the Trash with it.
+                    if edited == nil { try manager.removeItem(at: oldSidecar) } else { try manager.trashItem(at: oldSidecar, resultingItemURL: nil) } // lint:allow main-io detached
+                }
+                return nil
+            } catch {
+                return error.localizedDescription
             }
-        }
+        }.value
+        if let problem { message = "Saved, but the metadata file could not be updated: \(problem)" }
     }
 
     /// Extracted item: remember the name, and save the edited image if there are edits.

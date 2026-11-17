@@ -111,6 +111,7 @@ final class SelfTestRunner {
             quit()
             return
         }
+        await waitUntil(timeout: 20) { app.engineVersions != nil }
         let versions = app.engineVersions.map { "gallery-dl \($0.galleryDL ?? "?"), yt-dlp \($0.ytDLP ?? "?"), ffmpeg \($0.ffmpeg ?? "?")" }
         note("engines: \(versions ?? "unknown")")
 

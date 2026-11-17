@@ -104,9 +104,16 @@ public actor OperationJournal {
         (try? Data(contentsOf: url(for: id))).flatMap { try? Self.decoder.decode(JournalEntry.self, from: $0) }
     }
 
-    func save(_ entry: JournalEntry) {
-        if let data = try? Self.encoder.encode(entry) {
-            try? data.write(to: url(for: entry.id), options: .atomic)
+    /// Writes the entry's journal; false when it could not be written (a full disk), so `run` can say the change cannot
+    /// be undone instead of failing quietly.
+    @discardableResult
+    func save(_ entry: JournalEntry) -> Bool {
+        guard let data = try? Self.encoder.encode(entry) else { return false }
+        do {
+            try data.write(to: url(for: entry.id), options: .atomic)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -133,11 +140,15 @@ public actor OperationJournal {
         var lastSave = Date()
         // A quit mid-operation must leave every step it took undoable (R-3807). Small journals are saved after every
         // item; large ones, whose saves grow with them, a few times a second.
+        var journalFailed = false
         func tick() {
             done += 1
             progress(done, total)
             if entry.steps.count < 200 || Date().timeIntervalSince(lastSave) >= 0.2 {
-                save(entry)
+                if !save(entry), !journalFailed {
+                    journalFailed = true
+                    entry.failures.append("The undo record could not be saved, so this change may not be undoable.")
+                }
                 lastSave = Date()
             }
         }

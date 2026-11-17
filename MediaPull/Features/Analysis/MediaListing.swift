@@ -19,6 +19,7 @@ nonisolated enum MediaListing {
         var urls: [URL] = []
         var folders = 0
         var subfolders: [URL] = []
+        // lint:allow main-io @concurrent: runs off the main actor
         let top = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
         for url in top {
             guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]), values.isDirectory == true else {
@@ -29,6 +30,7 @@ nonisolated enum MediaListing {
         }
         subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         if recursive {
+            // lint:allow main-io @concurrent: runs off the main actor
             let walker = fm.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants])
             // Only media files count toward the limit: metadata files and other files would otherwise halve it.
             var media = 0

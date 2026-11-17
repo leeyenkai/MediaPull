@@ -25,12 +25,12 @@ RULES = [
     },
     {
         "id": "main-io",
-        "why": "file moves, copies, listings and reads block the main actor; use FileOps or run off the main actor",
+        "why": "file moves, copies, listings and reads block the main actor; run them off the main actor (LibraryModel.offMain or a detached task)",
         "pattern": re.compile(
             r"(?<![A-Za-z])(moveItem|copyItem|contentsOfDirectory|enumerator)\(|Data\(contentsOf|\.trashItem\("
         ),
         "paths": [APP],
-        "skip_files": ["MediaPull/App/SelfTest.swift", "MediaPull/App/FileOps.swift"],
+        "skip_files": ["MediaPull/App/SelfTest.swift"],
     },
     {
         "id": "unsafe-int",
@@ -55,7 +55,8 @@ RULES = [
     },
 ]
 
-ALLOW = re.compile(r"lint:allow\s+([\w-]+)\s+\S")
+ALLOW = re.compile(r"lint:allow\s+((?:[\w-]+\s+)+)\S")
+RULE_IDS = {"shortcut", "main-io", "unsafe-int", "icon-label", "silent-write"}
 
 
 def files(paths):
@@ -69,7 +70,8 @@ def files(paths):
 def allowed(lines, index, rule_id):
     for candidate in (lines[index], lines[index - 1] if index > 0 else ""):
         for match in ALLOW.finditer(candidate):
-            if match.group(1) == rule_id:
+            named = [word for word in match.group(1).split() if word in RULE_IDS]
+            if rule_id in named:
                 return True
     return False
 

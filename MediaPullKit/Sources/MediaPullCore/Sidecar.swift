@@ -138,12 +138,14 @@ public enum MediaFiles {
     public static func move(_ url: URL, to target: URL) throws {
         let sidecar = companion(of: url)
         try FileManager.default.moveItem(at: url, to: target)
+        // lint:allow silent-write documented above: the metadata file is best effort, the media file's error is thrown
         if let sidecar { try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: target)) }
     }
 
     public static func copy(_ url: URL, to target: URL, withSidecar: Bool = true) throws {
         let sidecar = withSidecar ? companion(of: url) : nil
         try FileManager.default.copyItem(at: url, to: target)
+        // lint:allow silent-write documented above: the metadata file is best effort, the media file's error is thrown
         if let sidecar { try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: target)) }
     }
 

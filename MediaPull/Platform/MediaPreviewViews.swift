@@ -58,7 +58,7 @@ struct AnimatedImageView: NSViewRepresentable {
     /// A long GIF can be many megabytes: it is read off the main actor.
     private func load(_ file: URL, into view: NSImageView) {
         Task { [weak view] in
-            let data = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: file) }.value
+            let data = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: file) }.value // lint:allow main-io detached
             guard let view, let data else { return }
             view.image = NSImage(data: data)
         }

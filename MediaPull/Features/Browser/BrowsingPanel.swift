@@ -20,6 +20,10 @@ struct BrowsingPanel: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .padding(10)
+            if let problem = AppModel.shared.browsing.saveProblem {
+                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    .padding(.horizontal, 10).padding(.bottom, 6)
+            }
             Divider()
             switch model.browsingPanelTab {
             case .bookmarks: BookmarksList(model: model)

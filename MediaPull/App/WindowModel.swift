@@ -902,7 +902,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
                     Task { @MainActor in job.fraction = total.map { Double(received) / Double(max($0, 1)) } }
                 }
                 guard Sniffer.sniff(MediaConverter.head(of: file)).isMarkup == false,
-                      (try? Data(contentsOf: file, options: .alwaysMapped).prefix(5)) == Data("%PDF-".utf8)
+                      (try? Data(contentsOf: file, options: .alwaysMapped).prefix(5)) == Data("%PDF-".utf8) // lint:allow main-io five mapped bytes
                 else {
                     self?.extractedDocuments.remove(url.absoluteString)
                     AppModel.shared.jobs.finish(job, .failed("The site did not return a PDF."))

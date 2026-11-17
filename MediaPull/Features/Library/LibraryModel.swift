@@ -554,7 +554,7 @@ final class LibraryModel: MediaGridOwner {
         source.standardizedFileURL.path.lowercased() == target.standardizedFileURL.path.lowercased() ? target : uniqueURL(target)
     }
 
-    static func uniqueURL(_ url: URL) -> URL {
+    nonisolated static func uniqueURL(_ url: URL) -> URL {
         guard FileManager.default.fileExists(atPath: url.path) else { return url }
         let stem = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
