@@ -236,6 +236,11 @@ final class AddressTests: XCTestCase {
         XCTAssertEqual(AddressInput.bareUsername(" NASA "), "nasa", "R-1104: a bare name in the Downloads pane")
         XCTAssertNil(AddressInput.bareUsername("example.com"), "a word with a dot is an address")
         XCTAssertNil(AddressInput.bareUsername("two words"))
+        XCTAssertEqual(AddressInput.several(in: "@nasa\nhttps://example.com/gallery  #sunset"),
+                       ["@nasa", "https://example.com/gallery", "#sunset"], "R-1111d: lines and spaces both separate")
+        XCTAssertNil(AddressInput.several(in: "https://example.com/one"), "one address is not a list")
+        XCTAssertNil(AddressInput.several(in: "red cats"), "words are not addresses")
+        XCTAssertNil(AddressInput.several(in: "https://example.com/a and more"))
         let story = URL(string: "https://www.instagram.com/stories/nasa/3512345678901234567/")!
         XCTAssertEqual(AddressInput.parse(story.absoluteString).instagramUsername, "nasa")
         if case let .instagramStories(_, url) = AddressInput.parse(story.absoluteString) {

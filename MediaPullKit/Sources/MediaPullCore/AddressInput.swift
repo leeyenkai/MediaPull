@@ -76,6 +76,19 @@ public enum AddressInput: Equatable, Sendable {
         }
     }
 
+    /// Two to 200 addresses separated by spaces or new lines, each a web address, @account or #hashtag (R-1111d); nil for
+    /// anything else, which is read as one address.
+    public static func several(in text: String) -> [String]? {
+        let parts = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 2, parts.count <= 200 else { return nil }
+        let all = parts.allSatisfy { part in
+            if part.hasPrefix("@") || part.hasPrefix("#") { return part.count > 1 }
+            if case .invalid = parse(part) { return false }
+            return true
+        }
+        return all ? parts : nil
+    }
+
     /// A bare Instagram username typed where only addresses and accounts are expected (the Downloads pane, R-1104); a
     /// word with a dot is read as a web address instead.
     public static func bareUsername(_ raw: String) -> String? {

@@ -71,6 +71,7 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `--selftest-duplicates`, `--selftest-video`, `--selftest-zoom <points>`, `--selftest-pullsheet <account>`,
   `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio), `--selftest-views` (Icon, List and Column views),
   `--selftest-galleries <file>` (downloads the first 3 items from each address in the file through the whole app),
+  `--selftest-update` (offline: a stand-in bridge replays an account update into an existing folder), `--selftest-downloads-list <a|b|c>`,
   `--selftest-analyse <folder>` (copies the folder into the test library, analyses it with faces on, checks no sockets open, searches,
   filters, sorts it in Organise and undoes the sort, comparing checksums)
   (theme and layout are restored afterwards).

@@ -145,6 +145,13 @@ final class SelfTestRunner {
             snapshot(to: out.appendingPathComponent("downloads-instagram.png"))
             note("downloads pane shown for @\(account)")
         }
+        if let list = Self.value(after: "--selftest-downloads-list") {
+            model.showDownloads(list.replacingOccurrences(of: "|", with: "\n"))
+            await waitUntil(timeout: 30) { !self.model.downloads.batch.contains { $0.kind == .checking } }
+            try? await Task.sleep(for: .seconds(1))
+            snapshot(to: out.appendingPathComponent("downloads-list.png"))
+            note("downloads list: " + model.downloads.batch.map { "\($0.text) = \($0.label)" }.joined(separator: "; "))
+        }
         if let second = Self.value(after: "--selftest-browser").flatMap(URL.init(string:)) {
             await exerciseBrowser(second: second, out: out)
         }

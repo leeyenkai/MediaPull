@@ -729,6 +729,8 @@ Below the options it lists the downloads in progress and just finished. Download
 
 **R-1111c** Other apps (D-82): **Download with MediaPull** in the Services menu, for selected text or a link in any app, brings MediaPull forward with the address in the front window's Downloads pane. A link dropped on the Downloads pane does the same. Nothing starts until the person clicks Download.
 
+**R-1111d** Several addresses at once: two to 200 addresses, @accounts or #hashtags typed or pasted into the Downloads field, separated by spaces or new lines, become a list. Each line says what it is (Instagram, a gallery on a named site, a video, or "Not recognised: skipped"), worked out locally. **Download All (N)** runs them one after another into the save folder, each with the options last chosen for its kind (the account's remembered choices, the site's parts and switches with only new items, the best MP4 video), waiting for each to finish; Instagram keeps its pace and one-at-a-time rule (R-1113). **Stop After This One** lets the current download finish and starts no more.
+
 ## 12. Site extractor scans
 
 **R-1201** After each committed navigation (debounced 1.5 s), MediaPull asks the bridge whether gallery-dl has an extractor for the URL (`supports` operation, local only, no network). Results are cached per URL. Instagram URLs are handled by section 11 instead.

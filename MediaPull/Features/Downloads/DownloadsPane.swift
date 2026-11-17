@@ -12,6 +12,8 @@ enum DownloadTarget: Equatable {
     case unknown(URL)
     /// Text that is not a web address, an @account or a #hashtag.
     case notAddress
+    /// Several addresses at once (R-1111d), listed in `DownloadsModel.batch`.
+    case list
     /// An Instagram page with no download of its own here (a location, the Reels feed, a highlight). Instagram traffic
     /// only goes through the Instagram options, which keep its pace, its one-at-a-time rule and its checkpoints (R-1113).
     case instagramPage(URL)
@@ -33,93 +35,101 @@ final class DownloadsModel {
     /// For a gallery: the parts of a profile and the site's switches, remembered per site.
     var include: Set<String> = []
     var switches: [String: Bool] = [:]
-    @ObservationIgnored private var checkTask: Task<Void, Never>?
+    @ObservationIgnored var checkTask: Task<Void, Never>?
+    /// Several addresses at once (R-1111d): each one and what it is, and whether Download All is running.
+    var batch: [BatchEntry] = []
+    var batchRunning = false
+    var batchStopping = false
 
     isolated deinit {
         checkTask?.cancel()
     }
-    private var app: AppModel { .shared }
+    var app: AppModel { .shared }
 
     /// Sets the address and works out how to download it: Instagram, a video, or any other site gallery-dl supports.
+    /// Several addresses typed or pasted at once become a list (R-1111d).
     func use(_ text: String, fromBrowser: Bool = false) {
         if fromBrowser, !followsBrowser { return }
         if !fromBrowser { followsBrowser = text.isEmpty }
         address = text
         checkTask?.cancel()
         checking = false
+        if !fromBrowser, !batchRunning, let parts = Self.addresses(in: text) {
+            useList(parts)
+            return
+        }
+        target = immediateTarget(text, typed: !fromBrowser)
+        guard case let .unknown(url) = target else { return }
+        checking = true
+        checkTask = Task { [weak self] in
+            // Each check starts the engine; wait for a pause in typing so only the finished address is checked.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            let site = await self?.app.engines.siteInfo(for: url)
+            guard let self, !Task.isCancelled, self.address == text else { return }
+            self.checking = false
+            if let site { self.useGallery(url, site: site) }
+        }
+    }
+
+    /// What an address is, without asking the engine: an Instagram download, a likely video, or a page still to check
+    /// (`.unknown`). `typed` allows a bare username (R-1104); the browser's own address never is one.
+    func immediateTarget(_ text: String, typed: Bool) -> DownloadTarget {
         var input = AddressInput.parse(text.hasPrefix("#") ? "https://www.instagram.com/explore/tags/\(text.dropFirst())/" : text)
-        // A bare username typed here is an Instagram account (R-1104); the browser's own address field never gets here.
-        if case .invalid = input, !fromBrowser, let name = AddressInput.bareUsername(text) { input = .handle(name) }
-        if let tag = Self.hashtag(text) {
+        if case .invalid = input, typed, let name = AddressInput.bareUsername(text) { input = .handle(name) }
+        func hashtagDraft(_ tag: String) -> DownloadTarget {
             var draft = app.engines.draft(username: "")
             draft.hashtag = tag
             draft.folderName = tag
             draft.incremental = false
-            target = .instagram(draft)
-            return
+            return .instagram(draft)
         }
+        if let tag = Self.hashtag(text) { return hashtagDraft(tag) }
         if case let .web(url) = input, let host = url.host?.lowercased(), host == "instagram.com" || host.hasSuffix(".instagram.com") {
             let parts = url.pathComponents.filter { $0 != "/" }
             if parts.count >= 3, parts[0] == "explore", parts[1] == "tags", let tag = Self.hashtag("#" + parts[2]) {
-                var draft = app.engines.draft(username: "")
-                draft.hashtag = tag
-                draft.folderName = tag
-                draft.incremental = false
-                target = .instagram(draft)
-            } else {
-                target = .instagramPage(url)
+                return hashtagDraft(tag)
             }
-            return
+            return .instagramPage(url)
         }
         switch input {
         case .invalid:
-            target = text.isEmpty ? .empty : .notAddress
-        case let .instagramPost(_, url):
-            target = .instagram(app.engines.draft(username: "", postURL: url))
+            return text.isEmpty ? .empty : .notAddress
+        case let .instagramPost(_, url), let .instagramHighlight(_, url):
+            return .instagram(app.engines.draft(username: "", postURL: url))
         case let .instagramStories(name, url):
             // A link to one story gets that story; a link to someone's stories gets their stories, not the whole account.
             let parts = url.pathComponents.filter { $0 != "/" }
             if parts.count >= 3, parts[2].allSatisfy(\.isNumber) {
-                target = .instagram(app.engines.draft(username: "", postURL: url))
-            } else {
-                var draft = app.engines.draft(username: name)
-                draft.content = [.stories]
-                draft.contentFromAddress = true
-                target = .instagram(draft)
+                return .instagram(app.engines.draft(username: "", postURL: url))
             }
+            var draft = app.engines.draft(username: name)
+            draft.content = [.stories]
+            draft.contentFromAddress = true
+            return .instagram(draft)
         case .instagramProfile, .handle:
-            target = .instagram(app.engines.draft(username: input.instagramUsername ?? ""))
-        case let .instagramHighlight(_, url):
-            target = .instagram(app.engines.draft(username: "", postURL: url))
+            return .instagram(app.engines.draft(username: input.instagramUsername ?? ""))
         case let .web(url):
-            if VideoPage.isLikely(url) {
-                target = .video(url)
-                return
-            }
-            target = .unknown(url)
-            checking = true
-            checkTask = Task { [weak self] in
-                // Each check starts the engine; wait for a pause in typing so only the finished address is checked.
-                try? await Task.sleep(for: .milliseconds(400))
-                guard !Task.isCancelled else { return }
-                let site = await self?.app.engines.siteInfo(for: url)
-                guard let self, !Task.isCancelled, self.address == text else { return }
-                self.checking = false
-                if let site { self.useGallery(url, site: site) }
-            }
+            return VideoPage.isLikely(url) ? .video(url) : .unknown(url)
         }
     }
 
     private func useGallery(_ url: URL, site: SiteInfo) {
+        (include, switches) = rememberedOptions(site)
+        target = .gallery(url, site: site)
+    }
+
+    /// The parts of a profile and the switches last chosen for a site, or its defaults.
+    func rememberedOptions(_ site: SiteInfo) -> (include: Set<String>, switches: [String: Bool]) {
         let prefs = app.preferences
         let choices = SiteCatalogue.visibleChoices(site.choices)
         let remembered = prefs.galleryChoices[site.category].map { Set($0).intersection(choices) }
-        include = remembered.flatMap { $0.isEmpty ? nil : $0 } ?? Set(site.defaults).intersection(choices)
+        let include = remembered.flatMap { $0.isEmpty ? nil : $0 } ?? Set(site.defaults).intersection(choices)
         let key = SiteInfoKey(category: site.category, baseCategory: site.baseCategory)
-        switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map {
+        let switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map {
             ($0.key, prefs.gallerySwitches[site.category]?[$0.key] ?? $0.default)
         })
-        target = .gallery(url, site: site)
+        return (include, switches)
     }
 
     /// Remembers the choices for the site, so the next download from it starts the same way.
@@ -201,6 +211,7 @@ struct DownloadsPane: View {
         case .instagram: "camera"
         case .video: "film"
         case .gallery: "photo.stack"
+        case .list: "list.bullet"
         default: "arrow.down.circle"
         }
     }
@@ -220,6 +231,8 @@ struct DownloadsPane: View {
             VideoForm(model: model, url: url).id(url)
         case let .gallery(url, site):
             GalleryForm(model: model, downloads: downloads, url: url, site: site).id(url)
+        case .list:
+            DownloadList(model: model, downloads: downloads)
         case .notAddress:
             hint("Enter a web address, an Instagram @account or a #hashtag.")
         case .instagramPage:
