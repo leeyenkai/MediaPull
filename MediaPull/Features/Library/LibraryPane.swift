@@ -186,6 +186,7 @@ struct FolderRow: View {
                 model.organise.open(node.url)
                 model.section = .organise
             }
+            Button("Check Folder") { library.checkFolder(node.url) }
             if let match = library.accountMatch(for: node.url) {
                 Divider()
                 Button("Update @\(match.account)") { library.update(match) }
@@ -337,6 +338,9 @@ struct FolderContents: View {
             if let message = library.message {
                 Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12)
             }
+            if library.checking || library.check != nil {
+                CheckBar(library: library)
+            }
             // Duplicates only take a line when there are some here, or while checking.
             if app.preferences.highlightDuplicates, library.selectedFolder != nil, !columns,
                library.duplicateProgress != nil || library.duplicatesHere > 0 || library.showOnlyDuplicates
@@ -442,6 +446,63 @@ struct DuplicateCommands: View {
 }
 
 /// Progress and counts for duplicate detection under the folder title.
+/// The result of Check Folder (R-1713), under the folder's title until another folder is chosen or it is closed.
+struct CheckBar: View {
+    @Bindable var library: LibraryModel
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if library.checking {
+                ProgressView().controlSize(.mini)
+                Text("Checking every file in this folder…")
+            } else if let report = library.check {
+                Image(systemName: report.isClean ? "checkmark.circle" : "exclamationmark.circle")
+                    .foregroundStyle(report.isClean ? Color.secondary : Color.orange)
+                Text(summary(report)).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                if !report.orphanedMetadata.isEmpty {
+                    Button("Trash Orphaned Metadata") {
+                        library.perform(FolderOperations.trash(report.orphanedMetadata)) { _ in
+                            library.checkFolder(report.folder)
+                        }
+                    }
+                    .help("Move the metadata files whose media file is gone to the Trash. Undo puts them back.")
+                }
+                let found = report.changed + report.withoutMetadata
+                if !found.isEmpty {
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(Array(found.prefix(200))) }
+                }
+                Button("Done") { library.check = nil }
+            }
+            Spacer(minLength: 0)
+        }
+        .controlSize(.mini)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 5)
+    }
+
+    private func summary(_ report: FolderCheck.Report) -> String {
+        func count(_ number: Int, _ one: String, _ many: String) -> String { "\(number.formatted()) \(number == 1 ? one : many)" }
+        var parts: [String] = []
+        if !report.changed.isEmpty {
+            parts.append(count(report.changed.count, "file changed", "files changed") + " since saved (edited, or damaged)")
+        }
+        if !report.withoutMetadata.isEmpty {
+            parts.append(count(report.withoutMetadata.count, "file has", "files have") + " no metadata file")
+        }
+        if !report.orphanedMetadata.isEmpty {
+            parts.append(count(report.orphanedMetadata.count, "metadata file has", "metadata files have") + " no media file")
+        }
+        if !report.notDownloaded.isEmpty {
+            parts.append(count(report.notDownloaded.count, "file is", "files are") + " only in iCloud")
+        }
+        let checked = "Checked " + count(report.checked, "file", "files")
+        return parts.isEmpty ? checked + ": everything matches what was saved." : checked + ": " + parts.joined(separator: "; ") + "."
+    }
+}
+
 struct DuplicateBar: View {
     @Bindable var library: LibraryModel
 
@@ -495,6 +556,9 @@ struct DuplicateBar: View {
         Toggle("Only Duplicates", isOn: $library.showOnlyDuplicates)
             .toggleStyle(.button)
             .controlSize(.mini)
+        Button("Trash Extra Copies…") { library.trashExtraCopies() }
+            .controlSize(.mini)
+            .help("Keep one file of each group (the largest picture) and move the others to the Trash. Undo puts them back.")
     }
 
     private func summary(here: Int, total: Int) -> String {

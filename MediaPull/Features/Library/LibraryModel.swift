@@ -135,7 +135,57 @@ final class LibraryModel: MediaGridOwner {
         }
     }
     var selectedFolder: URL? {
-        didSet { if selectedFolder != oldValue { reload(); watch(); findAccount() } }
+        didSet {
+            guard selectedFolder != oldValue else { return }
+            check = nil
+            reload()
+            watch()
+            findAccount()
+        }
+    }
+
+    /// The last Check Folder result for the selected folder (R-1713), and whether one is running.
+    var check: FolderCheck.Report?
+    var checking = false
+
+    /// Check Folder: reads every file once and reports what no longer matches what was saved; changes nothing (R-1713).
+    func checkFolder(_ folder: URL) {
+        selectedFolder = folder
+        check = nil
+        checking = true
+        let archive = app.root(containing: folder)?.layout == .archive
+        Task { [weak self] in
+            let report = await Task.detached(priority: .userInitiated) { FolderCheck.run(folder, archive: archive) }.value
+            guard let self else { return }
+            self.checking = false
+            if self.selectedFolder == folder { self.check = report }
+        }
+    }
+
+    /// Trash Extra Copies (R-3305): one file of each duplicate group here stays, the others go to the Trash as one
+    /// operation, after a confirmation; ⌘Z puts them all back.
+    func trashExtraCopies() {
+        guard let report = duplicates else { return }
+        let here = Set(files.map(\.url.standardizedFileURL.path))
+        let groups = report.groups.filter { $0.members.contains { here.contains($0.standardizedFileURL.path) } }
+        guard !groups.isEmpty else { return }
+        let members = groups.map(\.members)
+        let alike = groups.filter { !$0.identical }.count
+        Task { [weak self] in
+            let plan = await Task.detached(priority: .userInitiated) { ExtraCopies.plan(members) }.value
+            guard let self, !plan.trash.isEmpty else { return }
+            let alert = NSAlert()
+            alert.messageText = "Move \(plan.trash.count) extra cop\(plan.trash.count == 1 ? "y" : "ies") to the Trash?"
+            alert.informativeText = "One file of each of the \(groups.count) groups stays: the largest picture, then one with a "
+                + "metadata file, then the oldest. This frees \(Format.bytes(plan.bytes))."
+                + (alike > 0 ? " \(alike) of the groups only look alike, so their files are not identical." : "")
+                + " Undo puts everything back."
+            alert.addButton(withTitle: "Move to Trash")
+            alert.addButton(withTitle: "Cancel")
+            alert.buttons.first?.hasDestructiveAction = true
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            self.perform(FolderOperations.trash(plan.trash))
+        }
     }
 
     /// The Instagram account whose folder the selected folder is, or is inside (D-78), for the one-click Update (D-80).
@@ -848,6 +898,7 @@ final class LibraryModel: MediaGridOwner {
         }
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(folders) })
         if folders.count == 1, let folder = folders.first {
+            menu.addItem(ActionMenuItem("Check Folder") { [weak self] in self?.checkFolder(folder) })
             let items = accountMenuItems(for: folder)
             if !items.isEmpty { menu.addItem(.separator()) }
             items.forEach(menu.addItem)
