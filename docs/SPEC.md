@@ -1,6 +1,6 @@
 # MediaPull Specification
 
-Version 1.6 (1.5 implemented; 1.6 specified), 2026-11-15
+Version 1.7 (1.6 implemented; 1.7 adds Icon, List and Column views), 2026-11-17
 
 This document is the source of truth for MediaPull. Code follows the spec; when a request or an implementation detail conflicts with it, the conflict is raised and the spec is updated first.
 
@@ -10,7 +10,7 @@ Conventions:
 - **D-nn** is a recorded decision (section 27). Decisions can be changed, but only by editing this spec.
 - "Verify in M0" marks a detail that depends on third-party behaviour and must be confirmed by the engine spike before it is built on.
 
-## Implementation status (version 1.6)
+## Implementation status (version 1.7)
 
 MediaPull is a personal tool for archiving and collecting media, not a public release. The app, its engines and the read-only contract are implemented. Some supporting pieces described here were deliberately not built for personal use: the `mediapull-test://` fixture pages and the extraction tests that would use them (section 25), `scripts/perf-budgets.json` and CI enforcement (section 22, budgets were measured by hand instead), `docs/PRIVACY.md`, `scripts/sign-helpers.sh`, Developer ID signing and notarization (section 26; the app is signed for this Mac only).
 

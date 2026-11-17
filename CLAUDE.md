@@ -10,7 +10,7 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.6 implemented (on-device analysis, Library search and filters, the Organise section, people). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull).
+Status: version 1.7 implemented (on-device analysis, Library search and filters, the Organise section, people, Icon, List and Column views). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull).
 
 ## Stack
 
