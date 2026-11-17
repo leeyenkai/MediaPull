@@ -168,7 +168,7 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
             guard let format else { return nil }
             if let size = format.size { return size }
             guard let duration, let rate = format.tbr ?? format.abr, rate > 0 else { return nil }
-            return Int64(rate * 1000 / 8 * duration)
+            return SafeNumber.bytes(rate * 1000 / 8 * duration)
         }
         let audio = formats.filter { $0.isAudioOnly && !$0.drm && (self == .webm ? $0.ext == "webm" : $0.ext == "m4a") }
             .max { ($0.abr ?? 0) < ($1.abr ?? 0) }

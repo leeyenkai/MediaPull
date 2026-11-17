@@ -32,6 +32,10 @@ final class AnalysisService {
     @ObservationIgnored private var subjectsKey: [String]?
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var regroupTask: Task<Void, Never>?
+    /// Loads the models and reads the vector files; deletions wait for it, so files it reads are never brought back.
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    /// Where the vector files live (a temporary folder for self-tests).
+    @ObservationIgnored private var vectorFolder = AnalysisService.folder
     /// Deletions under way; no scan starts while one runs, so nothing is written into data being deleted.
     @ObservationIgnored private var deletions = 0
     @ObservationIgnored private var scheduled: Task<Void, Never>?
@@ -91,7 +95,8 @@ final class AnalysisService {
         let folder = inMemory ? FileManager.default.temporaryDirectory
             .appendingPathComponent("MediaPull-selftest-analysis-\(UUID().uuidString)")
             : Self.folder
-        Task {
+        vectorFolder = folder
+        loadTask = Task {
             let models = Self.modelsFolder
             // The vector stores read their whole files when made (hundreds of MB for a large library): off the main actor.
             let (loaded, images, faces) = await Task.detached(priority: .utility) { () -> (Analyzer, VectorStore?, VectorStore?) in
@@ -221,6 +226,12 @@ final class AnalysisService {
                 }
             }
             progress = nil
+            if !Task.isCancelled, deletions == 0 {
+                let pruned = await store.pruneOrphans()
+                await faces?.remove(pruned.faceKeys)
+                await images?.remove(pruned.sha256s)
+                if !pruned.faceKeys.isEmpty { await refreshPeople() }
+            }
             analysedCount = await store.fileCount()
             revision += 1
             finishJob(cancelled: Task.isCancelled)
@@ -260,10 +271,20 @@ final class AnalysisService {
                 work.append(file)
             }
         }
-        // Paths the store knows below these folders that are no longer on disk.
+        // Paths the store knows that are no longer on disk. A folder that cannot be listed (an ejected disk, a folder
+        // privacy settings block) proves nothing, so its paths are kept; paths outside every scanned folder (a closed
+        // Organise folder) are checked one by one, and kept while their disk is not mounted.
+        let fm = FileManager.default
+        let reachable = folders.filter { fm.isReadableFile(atPath: $0.path) }
+        let unreachable = folders.filter { !fm.isReadableFile(atPath: $0.path) }
         let known = await store.allPaths().keys
         let onDisk = Set(paths)
-        let gone = known.filter { path in !onDisk.contains(path) && folders.contains { path.hasPrefix($0.path + "/") } }
+        let gone = known.filter { path in
+            guard !onDisk.contains(path) else { return false }
+            if reachable.contains(where: { path.hasPrefix($0.path + "/") }) { return true }
+            if unreachable.contains(where: { path.hasPrefix($0.path + "/") }) { return false }
+            return Self.isGoneOutsideScan(path)
+        }
         return (work, Array(gone))
     }
 
@@ -292,11 +313,13 @@ final class AnalysisService {
                 added.append(NewFace(key: face.key, vectorRow: row, quality: face.box.quality ?? 0.5, pixelSize: face.box.pixelSize))
             }
         }
-        await store.save(record)
-        await store.setPath(item.url.path, sha256: sha, size: item.size, modified: item.modified)
+        // Faces first and the record last: a record saying people were checked must never exist without its faces,
+        // or a quit in between would skip the file for good.
         if !added.isEmpty {
             await store.addFaces(added, sha256: sha)
         }
+        await store.setPath(item.url.path, sha256: sha, size: item.size, modified: item.modified)
+        await store.save(record)
         return (added.count, images != nil && output.embedding == nil)
     }
 
@@ -466,7 +489,8 @@ final class AnalysisService {
             let named = await Set(store.people().filter { $0.name != nil }.map(\.id))
             var input: [FaceGrouping.Face] = []
             for face in faces {
-                guard let vector = await faceVectors.vector(row: face.vectorRow) else { continue }
+                // By key, not row: rows move when vectors of deleted files are removed.
+                guard let vector = await faceVectors.vector(face.key) else { continue }
                 input.append(FaceGrouping.Face(
                     key: face.key,
                     vector: vector,
@@ -616,6 +640,8 @@ final class AnalysisService {
     /// after the data they belong to was deleted (D-61). No scan starts until the deletion ends.
     private func stopScanForDeletion() async {
         deletions += 1
+        // A load still reading vector files would otherwise hand them back after they were deleted.
+        await loadTask?.value
         scheduled?.cancel()
         scanTask?.cancel()
         await scanTask?.value
@@ -629,6 +655,8 @@ final class AnalysisService {
         await stopScanForDeletion()
         await store?.deleteAllFaceData()
         await faceVectors?.deleteAll()
+        // Every face vector file, including those of an earlier face model or ones no store has loaded (D-61).
+        await Self.removeVectorFiles(prefix: "faces-", in: vectorFolder)
         deletions -= 1
         // Files are checked for people again only after a new opt-in.
         people = []
@@ -642,6 +670,8 @@ final class AnalysisService {
         await store?.deleteAll()
         await imageVectors?.deleteAll()
         await faceVectors?.deleteAll()
+        await Self.removeVectorFiles(prefix: "faces-", in: vectorFolder)
+        await Self.removeVectorFiles(prefix: "image-", in: vectorFolder)
         deletions -= 1
         people = []
         suggestions = [:]
@@ -660,5 +690,34 @@ final class AnalysisService {
         analysedCount = 0
         revision += 1
         schedule(after: .milliseconds(200))
+    }
+
+    /// The vector files with this prefix (for self-tests).
+    func vectorFileNames(prefix: String) -> [String] {
+        // lint:allow main-io self-test check of a small folder
+        ((try? FileManager.default.contentsOfDirectory(atPath: vectorFolder.path)) ?? []).filter { $0.hasPrefix(prefix) }
+    }
+
+    /// A path outside the scanned folders is gone only when its disk is mounted and the file is missing.
+    nonisolated static func isGoneOutsideScan(_ path: String) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: path) { return false }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        if parts.first == "Volumes", parts.count > 1 {
+            return fm.fileExists(atPath: "/Volumes/\(parts[1])")
+        }
+        return true
+    }
+
+    /// Removes `<prefix>*.vec` and `.ids` files, whichever model wrote them.
+    @concurrent
+    nonisolated static func removeVectorFiles(prefix: String, in folder: URL) async {
+        let fm = FileManager.default
+        // lint:allow main-io runs off the main actor (@concurrent)
+        let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix(prefix) && (name.hasSuffix(".vec") || name.hasSuffix(".ids")) {
+            // lint:allow silent-write a file that is already gone needs no report; one that stays is caught by the test
+            try? fm.removeItem(at: folder.appendingPathComponent(name))
+        }
     }
 }

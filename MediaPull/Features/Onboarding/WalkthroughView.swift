@@ -190,14 +190,14 @@ struct WalkthroughView: View {
             case .welcome:
                 Button("Skip Tour") { go(to: steps.firstIndex(of: .library) ?? 0) }
                 Button("Take the Tour") { go(to: step + 1) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.defaultAction) // lint:allow shortcut the walkthrough is a sheet
                     .buttonStyle(.borderedProminent)
             case .tour:
                 if step > 0 { Button("Back") { go(to: step - 1) } }
                 if mode == .tour {
                     if step < steps.count - 1 {
                         Button("Close") { close() }
-                            .keyboardShortcut(.cancelAction)
+                            .keyboardShortcut(.cancelAction) // lint:allow shortcut the walkthrough is a sheet
                     }
                 } else if step < steps.count - 1 {
                     Button("Skip") { go(to: steps.firstIndex(of: .library) ?? step + 1) }
@@ -205,17 +205,17 @@ struct WalkthroughView: View {
                 Button(step == steps.count - 1 ? "Done" : "Next") {
                     if step == steps.count - 1 { close() } else { go(to: step + 1) }
                 }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.defaultAction) // lint:allow shortcut the walkthrough is a sheet
                 .buttonStyle(.borderedProminent)
             case .library:
                 Button("Back") { go(to: step - 1) }
                 Button("Continue") { go(to: step + 1) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.defaultAction) // lint:allow shortcut the walkthrough is a sheet
                     .buttonStyle(.borderedProminent)
             case .instagram:
                 Button("Back") { go(to: step - 1) }
                 Button("Start Using MediaPull") { finish(signIn: false) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.defaultAction) // lint:allow shortcut the walkthrough is a sheet
                     .buttonStyle(.borderedProminent)
             }
         }

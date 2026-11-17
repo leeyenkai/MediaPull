@@ -1027,6 +1027,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | ⇧⌘Y | Save Video from This Page… |
 | ⌘O in Organise | Open Folder… |
 | ⌘Z / ⇧⌘Z in Organise | Undo / Redo the last operation |
+| ⌘Return / ⌘. in Organise | Apply / Discard the previewed change (only while Organise is shown; never Return or Escape, D-47) |
 | ⌘I | Show or hide the Preview pane |
 | ⌘K | Clear extracted media |
 | ⌘A / ⇧⌘A | Select all shown / deselect |

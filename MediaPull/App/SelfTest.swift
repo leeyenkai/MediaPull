@@ -691,6 +691,17 @@ final class SelfTestRunner {
             note("copy preview: no plan (\(model.organise.message ?? "no message"))")
         }
 
+        // A search that matches nothing must sort nothing, never the whole folder (1.8 audit).
+        model.organise.open(test, in: model.organise.target)
+        model.organise.source.query.search = "zzqx no such file"
+        await waitUntil(timeout: 30) { !self.model.organise.source.filtering }
+        model.organise.autoSort(.date)
+        try? await Task.sleep(for: .seconds(1))
+        note("sort with no matches: plan \(model.organise.pending == nil ? "none" : "MADE"), "
+            + "message \(model.organise.message ?? "none")")
+        model.organise.source.query.search = ""
+        await waitUntil(timeout: 30) { !self.model.organise.source.filtering }
+
         // In place: sort by subject, then undo.
         model.organise.open(test, in: model.organise.target)
         model.organise.autoSort(.subject)
@@ -728,7 +739,8 @@ final class SelfTestRunner {
         try? await Task.sleep(for: .seconds(8))
         snapshot(to: out.appendingPathComponent("downloads.png"))
         await app.analysis.deleteAllFaceData(turnOff: false)
-        note("face data deleted: \(app.analysis.people.isEmpty)")
+        let faceFiles = app.analysis.vectorFileNames(prefix: "faces-")
+        note("face data deleted: \(app.analysis.people.isEmpty), face vector files left: \(faceFiles.count)")
         writeLog(to: out)
     }
 

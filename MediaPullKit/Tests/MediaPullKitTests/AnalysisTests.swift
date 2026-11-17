@@ -321,3 +321,50 @@ final class AnalysisFixTests: XCTestCase {
         XCTAssertFalse(stale, "a grouping from an old snapshot is not applied")
     }
 }
+
+/// 1.8 audit: data of files that are gone does not linger, and deletions reach every file (D-60, D-61).
+final class AnalysisLifecycleTests: XCTestCase {
+    func testOrphanedResultsFacesAndPeopleArePruned() async throws {
+        let store = try AnalysisStore.make(folder: nil)
+        for sha in ["kept", "gone"] {
+            await store.addFaces([NewFace(key: "f", vectorRow: 0, quality: 1, pixelSize: 100)], sha256: sha)
+            await store.setPath("/lib/\(sha).jpg", sha256: sha, size: 1, modified: Date())
+            await store.save(AnalysisRecord(sha256: sha, facts: MediaFacts()))
+        }
+        let alice = UUID(), bob = UUID(), named = UUID()
+        await store.applyAssignments(["kept|f": alice, "gone|f": bob])
+        await store.applyAssignments(["gone|f": named])
+        await store.rename(person: named, to: "Named")
+        await store.forget(paths: ["/lib/gone.jpg"])
+        let pruned = await store.pruneOrphans()
+        XCTAssertEqual(pruned.faceKeys, ["gone|f"])
+        XCTAssertEqual(pruned.sha256s, ["gone"])
+        let faces = await store.faces()
+        XCTAssertEqual(faces.map(\.key), ["kept|f"])
+        let people = await store.people()
+        XCTAssertTrue(people.contains { $0.id == alice && $0.faceCount == 1 })
+        XCTAssertFalse(people.contains { $0.id == bob }, "an unnamed person with no faces left is removed")
+        XCTAssertTrue(people.contains { $0.id == named && $0.faceCount == 0 }, "a named person stays")
+        let goneRecord = await store.record(sha256: "gone")
+        let keptRecord = await store.record(sha256: "kept")
+        XCTAssertNil(goneRecord)
+        XCTAssertNotNil(keptRecord)
+    }
+
+    func testVectorStoreRemovesRowsAndKeepsTheRest() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("vec-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = VectorStore(folder: folder, name: "faces-x", dimension: 2)
+        await store.put("a", [1, 0])
+        await store.put("b", [0, 1])
+        await store.put("c", [0.6, 0.8])
+        await store.remove(["b", "missing"])
+        let count = await store.count
+        XCTAssertEqual(count, 2)
+        let reloaded = VectorStore(folder: folder, name: "faces-x", dimension: 2)
+        let a = await reloaded.vector("a"), b = await reloaded.vector("b"), c = await reloaded.vector("c")
+        XCTAssertEqual(a?[0] ?? 0, 1, accuracy: 0.01)
+        XCTAssertNil(b)
+        XCTAssertEqual(c?[1] ?? 0, 0.8, accuracy: 0.01)
+    }
+}

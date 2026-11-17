@@ -179,16 +179,16 @@ public enum BridgeEvent: Sendable {
             if case let .object(object) = value["meta"] ?? .null { meta = object }
             guard let path = string("path") else { return nil }
             return .file(BridgeFile(
-                key: string("key") ?? "", path: URL(fileURLWithPath: path), bytes: value["bytes"]?.double.map { Int64($0) },
+                key: string("key") ?? "", path: URL(fileURLWithPath: path), bytes: SafeNumber.bytes(value["bytes"]?.double),
                 subcategory: string("subcategory"), meta: meta
             ))
         case "skip":
             return .skip(key: string("key") ?? "", reason: string("reason") ?? "")
         case "progress":
-            return .progress(received: value["received"]?.double.map { Int64($0) }, total: value["total"]?.double.map { Int64($0) },
-                             speed: value["speed"]?.double)
+            return .progress(received: SafeNumber.bytes(value["received"]?.double), total: SafeNumber.bytes(value["total"]?.double),
+                             speed: SafeNumber.finite(value["speed"]?.double))
         case "wait":
-            return .wait(seconds: value["seconds"]?.double ?? 0, reason: string("reason") ?? "pacing")
+            return .wait(seconds: SafeNumber.finite(value["seconds"]?.double, in: 0 ... 86400) ?? 0, reason: string("reason") ?? "pacing")
         case "cursor":
             return .cursor(subcategory: string("subcategory") ?? "", value: string("value") ?? "")
         case "video_info":
@@ -199,8 +199,8 @@ public enum BridgeEvent: Sendable {
                     guard let id = entry["id"]?.string else { continue }
                     formats.append(VideoFormatInfo(
                         id: id, ext: entry["ext"]?.string ?? "", height: entry["height"]?.int, width: entry["width"]?.int,
-                        fps: entry["fps"]?.double, vcodec: entry["vcodec"]?.string ?? "none", acodec: entry["acodec"]?.string ?? "none",
-                        abr: entry["abr"]?.double, tbr: entry["tbr"]?.double, size: entry["size"]?.double.map { Int64($0) },
+                        fps: SafeNumber.finite(entry["fps"]?.double, in: 0 ... 1000), vcodec: entry["vcodec"]?.string ?? "none", acodec: entry["acodec"]?.string ?? "none",
+                        abr: SafeNumber.finite(entry["abr"]?.double, in: 0 ... 1e6), tbr: SafeNumber.finite(entry["tbr"]?.double, in: 0 ... 1e6), size: SafeNumber.bytes(entry["size"]?.double),
                         drm: entry["drm"]?.bool ?? false
                     ))
                 }
@@ -208,7 +208,7 @@ public enum BridgeEvent: Sendable {
             return .videoInfo(VideoInfo(
                 title: string("title") ?? "Video", uploader: string("uploader"), id: string("id"),
                 uploadDate: VideoInfo.date(uploadDate: string("upload_date"), timestamp: value["timestamp"]?.double), webpageURL: page,
-                extractor: string("extractor") ?? "", duration: value["duration"]?.double,
+                extractor: string("extractor") ?? "", duration: SafeNumber.finite(value["duration"]?.double, in: 0 ... 1e7),
                 thumbnail: string("thumbnail").flatMap(URL.init(string:)), description: string("description"), formats: formats
             ))
         case "attachment":

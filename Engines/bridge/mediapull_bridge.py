@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -29,6 +30,21 @@ SITE_OPTION_KEYS = {"videos", "audio", "gif", "livephoto", "covers", "quoted", "
                     "previews", "external"}
 
 
+def _finite(value):
+    """NaN and infinity are not JSON; site metadata can carry them, and the app would drop the whole event."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in value]
+    return value
+
+
+def _event_json(event):
+    return json.dumps(_finite(event), default=_json_default, ensure_ascii=True, allow_nan=False)
+
+
 class Emitter:
     def __init__(self, stream):
         self.stream = stream
@@ -42,7 +58,7 @@ class Emitter:
             event.update(fields)
             try:
                 # ASCII only: U+2028, U+2029 and U+0085 in a caption would otherwise split the line on the Swift side.
-                self.stream.write(json.dumps(event, default=_json_default, ensure_ascii=True) + "\n")
+                self.stream.write(_event_json(event) + "\n")
                 self.stream.flush()
             except (BrokenPipeError, ValueError):
                 os._exit(0)
@@ -53,7 +69,7 @@ class Emitter:
         event = {"v": PROTOCOL, "seq": self.seq + 1, "type": _event_type}
         event.update(fields)
         try:
-            os.write(self.stream.fileno(), ("\n" + json.dumps(event, default=_json_default) + "\n").encode("utf-8"))
+            os.write(self.stream.fileno(), ("\n" + _event_json(event) + "\n").encode("utf-8"))
         except (OSError, ValueError):
             pass
 
@@ -252,8 +268,26 @@ def inside_staging(path):
     return os.path.realpath(path).startswith(real_root.rstrip(os.sep) + os.sep)
 
 
+def harden_gallery_dl_paths():
+    """gallery-dl keeps `..` and `.` as folder names, and site metadata (a gallery title, a list formatted with `:I`)
+    can supply them, which would write files outside the job's folder. Every such segment becomes `_` before any file
+    is written (D-42)."""
+    from gallery_dl import path as gdl_path
+
+    if getattr(gdl_path.PathFormat.build_directory, "_mediapull", False):
+        return
+    original = gdl_path.PathFormat.build_directory
+
+    def build_directory(self, kwdict):
+        return [segment if segment.strip(" .") else "_" for segment in original(self, kwdict)]
+
+    build_directory._mediapull = True
+    gdl_path.PathFormat.build_directory = build_directory
+
+
 def configure_gallery_dl(request, staging):
     STAGING["root"] = staging
+    harden_gallery_dl_paths()
     urls = [url for url in (request.get("urls") or [request.get("url")]) if url]
     STATE["instagram"] = request.get("op") == "account" or request.get("category") == "instagram" or any(map(_is_instagram_url, urls))
     from gallery_dl import config, output
@@ -740,6 +774,11 @@ def make_jobs(request):
         def _emit_file(self, path, kwdict):
             url = kwdict.get("_url") or ""
             if not inside_staging(path):
+                # Cannot happen once folder names are cleaned; if it ever does, the stray file is not left behind.
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
                 EMITTER.emit("error", code="unsafe_path", message="A file path left the working folder", fatal=False)
                 return
             try:

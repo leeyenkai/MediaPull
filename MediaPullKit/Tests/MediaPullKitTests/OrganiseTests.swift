@@ -249,6 +249,38 @@ final class FolderOperationTests: XCTestCase {
         XCTAssertEqual(again.restored + again.skipped.count, 0, "a changed file is not offered again")
     }
 
+    /// 1.8 audit: undoing a copy (an import) must never trash a copy that was edited since (R-3806).
+    func testUndoOfACopyKeepsCopiesEditedSince() async throws {
+        file("in/a.jpg", "one", sidecar: true)
+        file("in/b.jpg", "two")
+        file("in/folder/c.jpg", "three")
+        let target = root.appendingPathComponent("library", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+        let entry = await journal.run(FolderOperations.copy(
+            [root.appendingPathComponent("in/a.jpg"), root.appendingPathComponent("in/b.jpg"), root.appendingPathComponent("in/folder")],
+            to: target
+        ))
+        XCTAssertTrue(entry.failures.isEmpty, "\(entry.failures)")
+        // Edited later (a different size), and a new file added inside the copied folder.
+        try Data("edited, longer contents".utf8).write(to: target.appendingPathComponent("a.jpg"))
+        try Data("new".utf8).write(to: target.appendingPathComponent("folder/new.jpg"))
+        let report = await journal.undo(entry.id)
+        XCTAssertEqual(report.skipped.count, 2, "\(report.skipped)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("a.jpg").path), "the edited copy stays")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("a.jpg.json").path), "and its metadata file")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.appendingPathComponent("b.jpg").path), "an untouched copy goes")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.appendingPathComponent("folder/new.jpg").path), "an added file stays")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.appendingPathComponent("folder/c.jpg").path), "copied files go")
+        XCTAssertEqual(tree().filter { $0.hasPrefix("in/") }, ["in/a.jpg", "in/a.jpg.json", "in/b.jpg", "in/folder/c.jpg"])
+    }
+
+    func testJournalsWithoutCopyStampsStillDecode() throws {
+        let old = #"[{"clone":{"from":"/a.jpg","to":"/b.jpg"}}]"#
+        let steps = try JSONDecoder().decode([JournalStep].self, from: Data(old.utf8))
+        XCTAssertEqual(steps, [.clone(from: "/a.jpg", to: "/b.jpg", files: nil)])
+    }
+
     /// A target that is not there (an unplugged drive) keeps its steps, so Undo works once it is back.
     func testUndoCanBeRetriedWhenTheFolderComesBack() async throws {
         file("in/a.jpg", "one")

@@ -196,7 +196,14 @@ public final class BridgeClient: Sendable {
             let reader = Task.detached {
                 do {
                     for try await line in output.fileHandleForReading.bytes.lines {
-                        guard let event = BridgeEvent.decode(line) else { continue }
+                        guard let event = BridgeEvent.decode(line) else {
+                            // A line that cannot be read may have been a file or the job's result: never drop it silently.
+                            if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                                continuation.yield(.error(code: "bad_event", message: "The engine sent a message MediaPull could not read.",
+                                                          key: nil, fatal: false))
+                            }
+                            continue
+                        }
                         if case .done = event { sawDone.withLock { $0 = true } }
                         continuation.yield(event)
                     }

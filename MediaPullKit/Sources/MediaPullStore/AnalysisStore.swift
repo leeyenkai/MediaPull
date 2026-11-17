@@ -303,6 +303,35 @@ public actor AnalysisStore {
         try? modelContext.save()
     }
 
+    /// After a scan: results and faces of content no known path holds any more (deleted, or moved out of every scanned
+    /// folder). Faces are biometric data and are not kept for files that are gone (D-61); people left with no faces and
+    /// no name go too. Returns the face keys and checksums whose vectors must be removed.
+    public func pruneOrphans() -> (faceKeys: [String], sha256s: [String]) {
+        let live = Set(((try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? []).map(\.sha256))
+        var shas: [String] = []
+        for file in (try? modelContext.fetch(FetchDescriptor<AnalysedFileModel>())) ?? [] where !live.contains(file.sha256) {
+            shas.append(file.sha256)
+            modelContext.delete(file)
+        }
+        var faceKeys: [String] = []
+        var remaining: [UUID: Int] = [:]
+        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] {
+            if live.contains(face.sha256) {
+                if let id = face.personID { remaining[id, default: 0] += 1 }
+            } else {
+                faceKeys.append(face.key)
+                modelContext.delete(face)
+            }
+        }
+        if !faceKeys.isEmpty {
+            for person in (try? modelContext.fetch(FetchDescriptor<PersonModel>())) ?? [] where remaining[person.id] == nil && person.name == nil {
+                modelContext.delete(person)
+            }
+        }
+        try? modelContext.save()
+        return (faceKeys, shas)
+    }
+
     public func fileCount() -> Int {
         (try? modelContext.fetchCount(FetchDescriptor<AnalysedFileModel>())) ?? 0
     }

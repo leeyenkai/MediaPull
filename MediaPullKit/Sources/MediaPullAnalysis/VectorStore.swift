@@ -153,6 +153,24 @@ public actor VectorStore {
         return out
     }
 
+    /// Removes the rows for `keys` and rewrites both files without them (files that are gone, D-60, D-61).
+    public func remove(_ keys: [String]) {
+        let doomed = Set(keys.map(Self.id)).intersection(rowByID.keys)
+        guard !doomed.isEmpty else { return }
+        var keptIDs: [Data] = []
+        var keptVectors: [UInt16] = []
+        keptIDs.reserveCapacity(ids.count - doomed.count)
+        keptVectors.reserveCapacity((ids.count - doomed.count) * dimension)
+        for (row, id) in ids.enumerated() where !doomed.contains(id) {
+            keptIDs.append(id)
+            keptVectors.append(contentsOf: vectors[row * dimension ..< (row + 1) * dimension])
+        }
+        ids = keptIDs
+        vectors = keptVectors
+        rowByID = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { _, b in b })
+        rewrite()
+    }
+
     public func deleteAll() {
         ids = []
         vectors = []

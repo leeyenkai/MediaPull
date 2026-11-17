@@ -206,6 +206,51 @@ def test_each_file_of_a_post_has_its_own_key():
     assert bridge.item_key({"category": "site", "id": 99}, "https://example.com/c.jpg") == "site:99"
     assert bridge.item_key({"category": "instagram", "media_id": "55", "num": 3}, "u") == "ig:55"
 
+
+def test_events_are_valid_json_even_with_nan_or_huge_numbers():
+    class Stream:
+        def __init__(self):
+            self.text = ""
+
+        def write(self, text):
+            self.text += text
+
+        def flush(self):
+            pass
+
+    stream = Stream()
+    emitter = bridge.Emitter(stream)
+    emitter.emit("file", path="/x", bytes=float("nan"),
+                 meta={"width": float("inf"), "list": [float("-inf"), 1.5], "size": 10 ** 30})
+    event = json.loads(stream.text)
+    assert event["bytes"] is None and event["meta"]["width"] is None, event
+    assert event["meta"]["list"] == [None, 1.5] and event["meta"]["size"] == 10 ** 30, event
+    assert "NaN" not in stream.text and "Infinity" not in stream.text
+
+
+def test_folder_names_from_site_metadata_never_leave_the_job_folder():
+    import tempfile as _tempfile
+    from gallery_dl import config, extractor, path
+
+    bridge.harden_gallery_dl_paths()
+    with _tempfile.TemporaryDirectory() as root:
+        job = os.path.join(root, "job")
+        config.clear()
+        config.set((), "extractor", {"base-directory": job, "directory": ["{category}", "{path:I}", "{title}"],
+                                     "filename": "{name}.{extension}"})
+        found = extractor.find("https://example.org/a.jpg")
+        if hasattr(found, "initialize"):
+            found.initialize()
+        fmt = path.PathFormat(found)
+        kwdict = {"category": "site", "path": ["..", "..", ".", "Elsewhere"], "title": " .. ", "name": "../../x",
+                  "extension": "jpg"}
+        fmt.set_directory(kwdict)
+        fmt.set_filename(kwdict)
+        fmt.build_path()
+        real = os.path.realpath(fmt.realpath)
+        assert real.startswith(os.path.realpath(job) + os.sep), real
+        config.clear()
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

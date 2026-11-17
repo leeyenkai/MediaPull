@@ -418,6 +418,7 @@ struct PlanPreview: View {
     let pending: PendingPlan
     /// What the copies cost: it reads every copied file's size and volume, so it is worked out once, off the main actor.
     @State private var copyNote: String?
+    private var organiseShown: Bool { organise.window?.section == .organise }
 
     var body: some View {
         let plan = pending.plan
@@ -457,10 +458,15 @@ struct PlanPreview: View {
             }
             .listStyle(.inset)
             HStack {
-                Button("Discard") { organise.pending = nil }.keyboardShortcut(.cancelAction)
+                // ⌘. and ⌘Return rather than Escape and Return, and only while Organise is shown: the section stays
+                // mounted behind Collect, where Return in the address field or a web form must never apply a sort (D-47).
+                Button("Discard") { organise.pending = nil }
+                    .keyboardShortcut(".", modifiers: .command, enabled: organiseShown)
+                    .help("Discard (⌘.)")
                 Spacer()
                 Button(applyTitle(plan)) { organise.execute(plan) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.return, modifiers: .command, enabled: organiseShown)
+                    .help("Apply (⌘Return)")
                     .buttonStyle(.borderedProminent)
             }
         }
@@ -518,5 +524,13 @@ struct PreviewThumb: View {
         .frame(width: 34, height: 34)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .task { image = await AppModel.shared.thumbnails.localThumbnail(for: url, maxPixel: 96)?.image }
+    }
+}
+
+private extension View {
+    /// A keyboard shortcut that exists only while `enabled`, so a hidden section's buttons never receive key presses.
+    @ViewBuilder
+    func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers, enabled: Bool) -> some View {
+        if enabled { keyboardShortcut(key, modifiers: modifiers) } else { self }
     }
 }

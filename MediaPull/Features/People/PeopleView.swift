@@ -26,7 +26,7 @@ struct PeopleView: View {
                         .help("Group faces again; names, merges and corrections are kept. " + FaceOptIn.limits)
                         .controlSize(inline ? .small : .regular)
                 }
-                if !inline { Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
+                if !inline { Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) } // lint:allow shortcut shown only in a sheet
             }
             if !app.preferences.facesEnabled {
                 FaceOptIn()

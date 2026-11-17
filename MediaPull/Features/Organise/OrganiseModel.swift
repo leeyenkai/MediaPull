@@ -136,6 +136,8 @@ final class OrganisePane: MediaGridOwner {
     @ObservationIgnored private var shownIndex: [String: Int] = [:]
 
     var loading = false
+    /// The shown files are being worked out from the entries (search and filters); `shown` is not current until it ends.
+    var filtering = false
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var filterTask: Task<Void, Never>?
 
@@ -187,6 +189,7 @@ final class OrganisePane: MediaGridOwner {
     func refilter() {
         filterTask?.cancel()
         let entries = entries, query = query
+        filtering = true
         filterTask = Task { [weak self] in
             guard let self else { return }
             var context = LibraryQuery.Context(similarityFloor: AnalysisService.meaningFloor)
@@ -203,6 +206,7 @@ final class OrganisePane: MediaGridOwner {
             self.sections = built
             self.shown = built.flatMap(\.items)
             self.shownIndex = Dictionary(self.shown.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { first, _ in first })
+            self.filtering = false
             self.revision += 1
         }
     }
@@ -637,17 +641,17 @@ final class OrganiseModel {
 
     /// Plans an automatic sort of the source pane's shown files (or its selection) and previews it in the Organise pane.
     func autoSort(_ kind: AutoSort) {
-        // Until a newly opened folder is listed, the pane still holds the previous folder's files: wait for the listing.
-        if source.loading {
+        // Until a newly opened folder is listed and filtered, the pane still holds the previous folder's files: wait.
+        if source.loading || source.filtering {
             working = "Reading the folder…"
             Task { [weak self] in
                 let deadline = Date().addingTimeInterval(60)
-                while self?.source.loading == true, Date() < deadline {
+                while self?.source.loading == true || self?.source.filtering == true, Date() < deadline {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
                 guard let self else { return }
                 self.working = nil
-                if self.source.loading {
+                if self.source.loading || self.source.filtering {
                     self.message = "The folder is taking a long time to read. Try again in a moment."
                 } else {
                     self.autoSort(kind)
@@ -655,10 +659,14 @@ final class OrganiseModel {
             }
             return
         }
-        let all = source.shown.isEmpty ? source.entries : source.shown
+        // Only what the pane shows: with a search or filters that match nothing, nothing is sorted (never the whole folder).
+        let all = source.shown
         let files = source.selection.isEmpty ? all : all.filter { source.selection.contains($0.path) }
         guard let destination, !files.isEmpty else {
-            message = destination == nil ? "Choose a target folder first." : "There is nothing to sort in this folder."
+            let narrowed = !source.query.filter.isEmpty || !source.query.search.trimmingCharacters(in: .whitespaces).isEmpty
+            message = destination == nil ? "Choose a target folder first."
+                : narrowed && !source.entries.isEmpty ? "No files match the search or filters."
+                : "There is nothing to sort in this folder."
             return
         }
         working = "Planning a sort by \(kind.label.lowercased())…"

@@ -5,8 +5,22 @@ import MediaPullCore
 public enum JournalStep: Codable, Sendable, Hashable {
     case makeFolder(String)
     case move(from: String, to: String, size: Int64?, modified: Date?)
-    case clone(from: String, to: String)
+    /// `files` records each copied file's size and date (relative paths; "" for a single file), so undo only takes back
+    /// copies nobody changed since. Journals from before 1.8 have none.
+    case clone(from: String, to: String, files: [CopyStamp]?)
     case trash(original: String, trashed: String)
+}
+
+public struct CopyStamp: Codable, Sendable, Hashable {
+    public var path: String
+    public var size: Int64
+    public var modified: Date
+
+    public init(path: String, size: Int64, modified: Date) {
+        self.path = path
+        self.size = size
+        self.modified = modified
+    }
 }
 
 public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
@@ -23,7 +37,7 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var fileCount: Int {
         steps.filter {
             switch $0 {
-            case let .move(from, _, _, _), let .clone(from, _): !from.hasSuffix(".json")
+            case let .move(from, _, _, _), let .clone(from, _, _): !from.hasSuffix(".json")
             default: false
             }
         }.count
@@ -230,7 +244,37 @@ public actor OperationJournal {
             if !existed { try? fm.removeItem(at: to) }
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: to.path])
         }
-        entry.steps.append(.clone(from: from.path, to: to.path))
+        entry.steps.append(.clone(from: from.path, to: to.path, files: Self.stamps(of: to)))
+    }
+
+    /// Size and date of a file, or of every file inside a folder (relative paths); nil when it cannot be read.
+    static func stamps(of url: URL) -> [CopyStamp]? {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey, .isRegularFileKey]
+        guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
+        if values.isDirectory != true {
+            return [CopyStamp(path: "", size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate ?? .distantPast)]
+        }
+        var out: [CopyStamp] = []
+        let base = url.standardizedFileURL.path + "/"
+        let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys)
+        while let file = walker?.nextObject() as? URL {
+            guard let item = try? file.resourceValues(forKeys: Set(keys)), item.isRegularFile == true else { continue }
+            let relative = String(file.standardizedFileURL.path.dropFirst(base.count))
+            out.append(CopyStamp(path: relative, size: Int64(item.fileSize ?? 0), modified: item.contentModificationDate ?? .distantPast))
+        }
+        return out
+    }
+
+    /// Files (relative paths; "" for the item itself) that differ from what was copied, or were added since.
+    static func changedFiles(in url: URL, recorded: [CopyStamp]) -> [String] {
+        guard let now = stamps(of: url) else { return [] }
+        guard !recorded.isEmpty else { return now.map(\.path) }
+        let before = Dictionary(recorded.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+        return now.filter { stamp in
+            guard let old = before[stamp.path], !FolderOperations.ignored.contains(URL(fileURLWithPath: stamp.path).lastPathComponent)
+            else { return !FolderOperations.ignored.contains(URL(fileURLWithPath: stamp.path).lastPathComponent) }
+            return old.size != stamp.size || abs(old.modified.timeIntervalSince(stamp.modified)) > 1
+        }.map(\.path)
     }
 
     func trashItem(_ item: URL, entry: inout JournalEntry) throws {
@@ -282,7 +326,7 @@ public actor OperationJournal {
     /// Whether a step that could not be undone might be later: its file's folder is not there at all.
     private func canRetry(_ step: JournalStep) -> Bool {
         switch step {
-        case let .move(_, to, _, _), let .clone(_, to): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
+        case let .move(_, to, _, _), let .clone(_, to, _): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
         case .trash, .makeFolder: false
         }
     }
@@ -291,7 +335,7 @@ public actor OperationJournal {
     static func units(_ steps: [JournalStep]) -> [[JournalStep]] {
         func source(_ step: JournalStep) -> String? {
             switch step {
-            case let .move(from, _, _, _), let .clone(from, _): from
+            case let .move(from, _, _, _), let .clone(from, _, _): from
             case let .trash(original, _): original
             case .makeFolder: nil
             }
@@ -353,19 +397,37 @@ public actor OperationJournal {
                 report.skipped.append("\(dest.lastPathComponent): \(error.localizedDescription)")
                 return false
             }
-        case let .clone(_, to):
-            // The copy goes to the Trash rather than being deleted (R-3804).
+        case let .clone(from, to, files):
+            // Copies go to the Trash rather than being deleted (R-3804), and only those nobody changed since: an
+            // imported photo that was edited afterwards stays (R-3806).
             guard fm.fileExists(atPath: to) else { return true }
-            do {
-                try fm.trashItem(at: URL(fileURLWithPath: to), resultingItemURL: nil)
-                if !to.hasSuffix(".json") {
-                    report.restored += 1
+            let target = URL(fileURLWithPath: to)
+            let recorded = files ?? Self.stamps(of: URL(fileURLWithPath: from)) ?? []
+            let changed = Self.changedFiles(in: target, recorded: recorded)
+            if changed.isEmpty {
+                do {
+                    try fm.trashItem(at: target, resultingItemURL: nil)
+                    if !to.hasSuffix(".json") {
+                        report.restored += 1
+                    }
+                    return true
+                } catch {
+                    report.skipped.append("\(target.lastPathComponent): \(error.localizedDescription)")
+                    return false
                 }
-                return true
-            } catch {
-                report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): \(error.localizedDescription)")
-                return false
             }
+            // A copied folder: unchanged files go to the Trash, the rest stay where they are.
+            if (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                let changedSet = Set(changed)
+                for stamp in recorded where !stamp.path.isEmpty && !changedSet.contains(stamp.path) {
+                    let file = target.appendingPathComponent(stamp.path)
+                    if fm.fileExists(atPath: file.path) { try? fm.trashItem(at: file, resultingItemURL: nil) }
+                }
+            }
+            report.skipped.append(changed.count == 1 && changed[0].isEmpty
+                ? "\(target.lastPathComponent) changed since it was copied, so it was kept"
+                : "\(changed.count) file\(changed.count == 1 ? "" : "s") in \(target.lastPathComponent) changed or were added since, so they were kept")
+            return false
         case let .trash(original, trashed):
             let name = URL(fileURLWithPath: original).lastPathComponent
             guard !trashed.isEmpty, fm.fileExists(atPath: trashed) else {
