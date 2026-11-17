@@ -11,7 +11,8 @@ extension AppModel {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         var lines = [
             "MediaPull diagnostics, \(Date().formatted(.iso8601))",
-            "Version \(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?")), macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
+            "Version \(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?")), "
+                + "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
             "",
             "Engines: Python \(engineVersions?.python ?? "?"), gallery-dl \(engineVersions?.galleryDL ?? "?"), "
                 + "yt-dlp \(engineVersions?.ytDLP ?? "?"), ffmpeg \(engineVersions?.ffmpeg ?? "?")",

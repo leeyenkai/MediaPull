@@ -383,7 +383,8 @@ public final class SavePipeline: Sendable {
 
         // Metadata files belong to the archive's formats only (R-1502); a WebM or audio file chosen by hand goes without one.
         let writesSidecar = target.layout == .archive && Self.archiveFormats.contains(info.format)
-        let scopeIsAccount = target.layout == .archive && target.autoSubfolders
+        // An existing account folder is searched whole in either layout (D-78): its files may sit in any subfolder.
+        let scopeIsAccount = (target.layout == .archive && target.autoSubfolders) || target.accountFolder != nil
         let scope = scopeIsAccount ? Self.accountFolder(folder, target: target) : folder
         func existingCopy() async -> (SaveOutcome, String?)? {
             guard let existing = await self.index.duplicate(sha256: sha, size: size, in: scope, recursive: scopeIsAccount)
@@ -457,6 +458,10 @@ public final class SavePipeline: Sendable {
     }
 
     static func accountFolder(_ folder: URL, target: SaveTarget) -> URL {
+        if let accountFolder = target.accountFolder {
+            let base = accountFolder.standardizedFileURL.path, path = folder.standardizedFileURL.path
+            if path == base || path.hasPrefix(base + "/") { return accountFolder }
+        }
         // The first folder below the chosen root: the account or site folder.
         let rootComponents = target.folder.standardizedFileURL.pathComponents
         let components = folder.standardizedFileURL.pathComponents

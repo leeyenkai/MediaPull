@@ -111,6 +111,11 @@ final class SelfTestRunner {
             quit()
             return
         }
+        if CommandLine.arguments.contains("--selftest-update") {
+            await exerciseUpdate(library: library, out: out)
+            quit()
+            return
+        }
         await waitUntil(timeout: 20) { app.engineVersions != nil }
         let versions = app.engineVersions.map { "gallery-dl \($0.galleryDL ?? "?"), yt-dlp \($0.ytDLP ?? "?"), ffmpeg \($0.ffmpeg ?? "?")" }
         note("engines: \(versions ?? "unknown")")
@@ -558,6 +563,136 @@ final class SelfTestRunner {
         var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / MemoryLayout<proc_fdinfo>.stride)
         let used = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, size)
         return fds.prefix(Int(used) / MemoryLayout<proc_fdinfo>.stride).filter { $0.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) }.count
+    }
+
+    /// Where `--selftest-update` points the engine paths: a stand-in bridge that replays recorded events offline.
+    static var replayBridge: URL {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0 ..< 3 {
+            url.deleteLastPathComponent()
+        }
+        return url.appendingPathComponent("Engines/selftest", isDirectory: true)
+    }
+
+    /// Updates an account folder offline (D-78 to D-81). The folder is called "alice old" and holds a post by its archive
+    /// name and a renamed one known only by its metadata; the record remembers a file the person deleted. Update must add
+    /// only the new post and story, into the folder's own type folders, with no copies and no nested folder; a second
+    /// Update adds nothing; Find Missing brings back the deleted file.
+    private func exerciseUpdate(library: URL, out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        guard let home = app.enginePaths?.engineHome, app.enginePaths?.bridgeDirectory == Self.replayBridge else {
+            note("update: FAIL the stand-in bridge is not in use")
+            return
+        }
+        let folder = library.appendingPathComponent("alice old", isDirectory: true)
+        let fixtures = out.appendingPathComponent("update-fixtures", isDirectory: true)
+        for directory in [folder.appendingPathComponent("posts"), fixtures, home] {
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        // A folder of web saves beside it must not make the library look like alice's folder.
+        let web = library.appendingPathComponent("example.com", isDirectory: true)
+        try? fm.createDirectory(at: web, withIntermediateDirectories: true)
+        try? Self.jpeg(9).write(to: web.appendingPathComponent("page.jpg"))
+        try? #"{"category":"example.com","subcategory":"page","username":"example.com","post_id":"1"}"#
+            .write(to: web.appendingPathComponent("page.jpg.json"), atomically: true, encoding: .utf8)
+
+        let ids = (1 ... 5).map { "30088112233445566\(String(format: "%02d", $0))" }
+        let posts = (1 ... 5).map { "31000000000000000\(String(format: "%02d", $0))" }
+        func meta(_ index: Int, subcategory: String = "posts") -> [String: Any] {
+            ["category": "instagram", "subcategory": subcategory, "username": "alice", "post_id": posts[index], "media_id": ids[index],
+             "num": 1, "count": 1, "date": "2024-0\(index + 1)-01 10:00:00",
+             "post_shortcode": InstagramIDs.shortcode(fromID: posts[index]) ?? "x",
+             "shortcode": InstagramIDs.shortcode(fromID: ids[index]) ?? "x"]
+        }
+        func sidecar(_ fields: [String: Any], for file: URL) {
+            try? JSONSerialization.data(withJSONObject: fields).write(to: Sidecar.sidecarURL(for: file))
+        }
+        // On disk: item 0 by its archive name; item 1 renamed, known from post_id and num (no media_id: older metadata).
+        let code0 = InstagramIDs.shortcode(fromID: ids[0]) ?? "x"
+        let byName = folder.appendingPathComponent("posts/2024-01-01_100000_\(code0)_01.jpg")
+        try? Self.jpeg(0).write(to: byName)
+        sidecar(meta(0), for: byName)
+        let renamed = folder.appendingPathComponent("posts/Beach.jpg")
+        try? Self.jpeg(1).write(to: renamed)
+        var older = meta(1)
+        older["media_id"] = nil
+        sidecar(older, for: renamed)
+        let before = [byName, renamed].map { (try? FileHasher.sha256(of: $0)) ?? "" }
+        // Item 4 was saved here once and deleted on purpose.
+        let record = await app.accountFolders.record(account: "alice", folder: folder)
+        await app.accountFolders.addKeys(["ig:\(ids[4])"], to: record.id)
+        await app.refreshAccountFolders()
+
+        var items: [[String: Any]] = []
+        for index in 0 ..< 5 {
+            let source = fixtures.appendingPathComponent("item\(index).jpg")
+            try? Self.jpeg(index).write(to: source)
+            items.append(["key": "ig:\(ids[index])", "source": source.path,
+                          "meta": meta(index, subcategory: index == 3 ? "stories" : "posts")])
+        }
+        let replay: [String: Any] = ["account": ["username": "alice", "user_id": "42", "post_count": 5, "is_private": false],
+                                     "items": items]
+        try? JSONSerialization.data(withJSONObject: replay).write(to: home.appendingPathComponent("replay.json"))
+
+        model.library.selectedFolder = folder.appendingPathComponent("posts")
+        await waitUntil(timeout: 20) { self.model.library.account != nil }
+        let shown = model.library.account
+        let button = shown.map { "Update @\($0.account) for \($0.folder.lastPathComponent)" } ?? "no Update button"
+        note("update: selected posts/ shows \(button)")
+        model.library.selectedFolder = library
+        try? await Task.sleep(for: .seconds(1))
+        note("update: library root shows \(model.library.account.map { "@\($0.account)" } ?? "no Update button") (expected none)")
+
+        func run(_ title: String, findMissing: Bool) async -> Job? {
+            let job = await app.engines.startUpdate(account: "alice", folder: folder, findMissing: findMissing, window: model)
+            await waitUntil(timeout: 120) { job?.state.isFinished ?? true }
+            note("update: \(title): saved \(job?.saved ?? -1), duplicates \(job?.duplicates ?? -1), skipped \(job?.skipped ?? -1), "
+                + "failed \(job?.failed ?? -1) – \(job?.state.label ?? "no job")")
+            return job
+        }
+        let first = await run("first Update", findMissing: false)
+        let tree = (fm.enumerator(atPath: folder.path)?.allObjects as? [String] ?? []).filter { !$0.hasSuffix(".json") }.sorted()
+        note("update: folder holds \(tree.joined(separator: ", "))")
+        let nested = fm.fileExists(atPath: folder.appendingPathComponent("alice").path)
+            || fm.fileExists(atPath: library.appendingPathComponent("alice").path)
+        let numbered = tree.contains { $0.range(of: #" \d+\.[a-z0-9]+$"#, options: .regularExpression) != nil }
+        let after = [byName, renamed].map { (try? FileHasher.sha256(of: $0)) ?? "" }
+        let story = tree.contains { $0.hasPrefix("stories/") }
+        let second = await run("second Update", findMissing: false)
+        let missing = await run("Find Missing", findMissing: true)
+        let code4 = InstagramIDs.shortcode(fromID: ids[4]) ?? "-"
+        let restored = fm.enumerator(atPath: folder.path)?.allObjects.contains { ($0 as? String)?.contains(code4) ?? false }
+        // An update that stopped part way (R-1904): the next one pulls from the top, then continues from where it stopped.
+        await app.accountFolders.update(record.id, cursor: .some("selftest-cursor"))
+        let pulls = { app.jobs.jobs.filter { $0.kind == .pull }.count }
+        let jobsBefore = pulls()
+        _ = await run("Update after a stop", findMissing: false)
+        await waitUntil(timeout: 120) { !app.jobs.jobs.contains { $0.kind == .pull && !$0.state.isFinished } }
+        let continued = pulls() - jobsBefore == 2
+        let cleared = await app.accountFolders.all().first { $0.id == record.id }?.cursor == nil
+        note("update: after a stop, \(pulls() - jobsBefore) jobs ran (top, then the rest); place cleared \(cleared)")
+        let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
+            && after == before && second?.saved == 0 && missing?.saved == 1 && restored == true && continued && cleared
+        note("update: \(passed ? "PASS" : "FAIL") (new items placed \(first?.saved ?? 0) of 2, story in stories/ \(story), "
+            + "nested folder \(nested), "
+            + "numbered copies \(numbered), existing files unchanged \(after == before), second Update saved \(second?.saved ?? -1), "
+            + "Find Missing restored the deleted file \(restored == true), resumed after a stop \(continued && cleared))")
+        writeLog(to: out)
+    }
+
+    /// A small JPEG in a colour of its own, so no two fixtures are the same picture.
+    static func jpeg(_ index: Int) -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 48, bitsPerSample: 8, samplesPerPixel: 3,
+                                   hasAlpha: false,
+                                   isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let colour = NSColor(hue: CGFloat(index) / 10, saturation: 0.8, brightness: 0.9, alpha: 1)
+        for x in 0 ..< 64 {
+            for y in 0 ..< 48 {
+                rep.setColor(x < 32 ? colour : colour.blended(withFraction: CGFloat(y) / 48, of: .black) ?? colour, atX: x, y: y)
+            }
+        }
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.95]) ?? Data()
     }
 
     /// Copies a folder of test media into the library, analyses it (faces included), searches, filters, sorts it in Organise and

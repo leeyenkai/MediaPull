@@ -77,7 +77,9 @@ public struct EnginePaths: Sendable {
     /// `active.json` says, so a new engine can be tested before it is made active (R-1305).
     public func pythonPaths(active override: [String: ActiveEngine]? = nil) -> [String] {
         var paths = [bridgeDirectory.path]
-        let active = override ?? (try? Data(contentsOf: activeFile)).flatMap { try? JSONDecoder().decode([String: ActiveEngine].self, from: $0) }
+        let active = override ?? (try? Data(contentsOf: activeFile)).flatMap {
+            try? JSONDecoder().decode([String: ActiveEngine].self, from: $0)
+        }
         for (_, engine) in (active ?? [:]).sorted(by: { $0.key < $1.key }) where FileManager.default.fileExists(atPath: engine.path) {
             paths.append(engine.path)
         }

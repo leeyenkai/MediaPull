@@ -302,7 +302,8 @@ struct OrganiseWorkPane: View {
                 HStack(alignment: .top, spacing: 8) {
                     Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
-                    Button { organise.message = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss Message").buttonStyle(.borderless)
+                    Button { organise.message = nil } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Dismiss Message").buttonStyle(.borderless)
                 }
                 .padding(12)
             }

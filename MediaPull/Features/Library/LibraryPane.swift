@@ -186,6 +186,14 @@ struct FolderRow: View {
                 model.organise.open(node.url)
                 model.section = .organise
             }
+            if let match = library.accountMatch(for: node.url) {
+                Divider()
+                Button("Update @\(match.account)") { library.update(match) }
+                Button("Find Missing from @\(match.account)") { library.update(match, findMissing: true) }
+            }
+            if case let inside = app.accountFolders(inside: node.url).count, inside > 1 {
+                Button("Update All Accounts (\(inside))") { library.updateAll(inside: node.url) }
+            }
             if node.isRoot, let root {
                 Divider()
                 Button("Rename in List") { library.rename(node.url) }
@@ -295,6 +303,13 @@ struct FolderContents: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if let match = library.account {
+                    Button("Update @\(match.account)") { library.update(match) }
+                        .controlSize(.small)
+                        .disabled(library.isUpdating(match.folder))
+                        .help("Add what @\(match.account) posted that “\(match.folder.lastPathComponent)” doesn't have yet. "
+                            + "Files you deleted from it stay deleted.")
+                }
                 if let folder = library.selectedFolder, !model.selection.isEmpty {
                     Button("Save \(model.selection.count) Here") { app.save(model.selectedItems, from: model, to: folder) }
                         .controlSize(.small)
@@ -377,6 +392,16 @@ struct FolderContents: View {
         if library.listingLimited { parts.append("only the first \(MediaListing.limit.formatted()) are listed") }
         if library.subfolderCount > 0 { parts.append("\(library.subfolderCount) folder\(library.subfolderCount == 1 ? "" : "s")") }
         if let root = library.selectedFolder.flatMap({ app.root(containing: $0) }) { parts.append(root.layout.label) }
+        if let match = library.account {
+            let record = app.accountFolder(containing: match.folder)
+            if record?.cursor != nil {
+                parts.append("@\(match.account): an earlier update stopped part way")
+            } else if let date = record?.lastUpdate {
+                parts.append("@\(match.account) updated \(date.formatted(.relative(presentation: .named)))")
+            } else {
+                parts.append("@\(match.account)")
+            }
+        }
         return parts.joined(separator: " · ")
     }
 }

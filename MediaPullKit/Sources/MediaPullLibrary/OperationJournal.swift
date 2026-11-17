@@ -506,7 +506,8 @@ public actor OperationJournal {
             }
             report.skipped.append(changed.count == 1 && changed[0].isEmpty
                 ? "\(target.lastPathComponent) changed since it was copied, so it was kept"
-                : "\(changed.count) file\(changed.count == 1 ? "" : "s") in \(target.lastPathComponent) changed or were added since, so they were kept")
+                : "\(changed.count) file\(changed.count == 1 ? "" : "s") in \(target.lastPathComponent) "
+                    + "changed or were added since, so they were kept")
             return false
         case let .trash(original, trashed):
             let name = URL(fileURLWithPath: original).lastPathComponent

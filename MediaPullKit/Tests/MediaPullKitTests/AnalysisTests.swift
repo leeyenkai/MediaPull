@@ -368,7 +368,7 @@ final class AnalysisLifecycleTests: XCTestCase {
         XCTAssertEqual(one.count, 1)
     }
 
-    func testVectorStoreRemovesRowsAndKeepsTheRest() async throws {
+    func testVectorStoreRemovesRowsAndKeepsTheRest() async {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("vec-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = VectorStore(folder: folder, name: "faces-x", dimension: 2)

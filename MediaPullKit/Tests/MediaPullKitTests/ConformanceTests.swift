@@ -89,7 +89,8 @@ final class ConformanceTests: XCTestCase {
         CGImageDestinationAddImage(destination, image(64, 64, space: CGColorSpace(name: CGColorSpace.displayP3)!), nil)
         try XCTSkipUnless(CGImageDestinationFinalize(destination), "HEIC cannot be written here")
         try ImageConversion.convertStill(input, to: .jpeg, output: output)
-        let converted = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+        let converted = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil)
+            .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
         XCTAssertEqual(converted.colorSpace?.name, CGColorSpace.displayP3)
     }
 
@@ -117,7 +118,9 @@ final class ConformanceTests: XCTestCase {
         let folder = try folder()
         try ImageConversion.writePNG(image(64, 64), to: folder.appendingPathComponent("f.png"))
         var wav = Data("RIFF".utf8)
-        func le32(_ value: Int) -> [UInt8] { [UInt8(value & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value >> 16 & 0xFF), UInt8(value >> 24 & 0xFF)] }
+        func le32(_ value: Int) -> [UInt8] {
+            [UInt8(value & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value >> 16 & 0xFF), UInt8(value >> 24 & 0xFF)]
+        }
         let samples = 22050
         wav += le32(36 + samples * 2) + Array("WAVEfmt ".utf8) + le32(16) + [1, 0, 1, 0] + le32(44100) + le32(88200) + [2, 0, 16, 0]
         wav += Array("data".utf8) + le32(samples * 2) + [UInt8](repeating: 0, count: samples * 2)
@@ -128,7 +131,8 @@ final class ConformanceTests: XCTestCase {
         _ = try await FFmpeg.run(ffmpeg.ffmpeg, ["-hide_banner", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list.path,
                                                  "-i", folder.appendingPathComponent("a.wav").path, "-c:v", "h264_videotoolbox",
                                                  "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-shortest", mkv.path])
-        let result = try await MediaConverter(ffmpeg: ffmpeg).convert(mkv, policy: ConversionPolicy(), layout: .archive, workDirectory: folder)
+        let result = try await MediaConverter(ffmpeg: ffmpeg).convert(mkv, policy: ConversionPolicy(), layout: .archive,
+                                                                      workDirectory: folder)
         let info = try await ffmpeg.probe(result.url)
         XCTAssertEqual(result.format, .mp4)
         XCTAssertEqual(info.audioCodec, "aac")

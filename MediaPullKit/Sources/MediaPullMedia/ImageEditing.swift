@@ -86,7 +86,7 @@ public enum ImageEditing {
 
         /// The EXIF orientation (1 to 8) for (rotation, mirrored).
         static func exif(_ rotation: Int, _ mirrored: Bool) -> Int {
-            switch ((((rotation % 4) + 4) % 4), mirrored) {
+            switch (((rotation % 4) + 4) % 4, mirrored) {
             case (0, false): 1
             case (0, true): 2
             case (2, false): 3

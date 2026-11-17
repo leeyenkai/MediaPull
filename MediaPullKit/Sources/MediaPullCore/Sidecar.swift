@@ -10,6 +10,8 @@ public struct Sidecar: Encodable, Equatable, Sendable {
     public var author: String?
     public var postShortcode: String?
     public var postID: String
+    /// Instagram's id of this one file (D-81), so a folder's files can be matched exactly; informational, like `extractor`.
+    public var mediaID: String?
     public var num: Int?
     public var count: Int?
     public var date: Date?
@@ -41,6 +43,7 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         case category, subcategory, username, author, num, count, date, description, width, height, duration, sha256, extractor
         case postShortcode = "post_shortcode"
         case postID = "post_id"
+        case mediaID = "media_id"
         case postURL = "post_url"
         case pageURL = "page_url"
         case sourceURL = "source_url"
@@ -61,6 +64,7 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         try container.encode(postID, forKey: .postID)
         try container.encodeIfPresent(author?.nonEmpty, forKey: .author)
         try container.encodeIfPresent(postShortcode?.nonEmpty, forKey: .postShortcode)
+        try container.encodeIfPresent(mediaID?.nonEmpty, forKey: .mediaID)
         if let num, let count {
             try container.encode(num, forKey: .num)
             try container.encode(count, forKey: .count)
@@ -90,6 +94,14 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         var data = try encoder.encode(self)
         data.append(0x0A)
         return data
+    }
+
+    /// Whether a file name is a metadata file: a media file's name plus `.json`.
+    public static func isSidecarName(_ name: String) -> Bool {
+        guard name.lowercased().hasSuffix(".json") else { return false }
+        let media = (name as NSString).deletingPathExtension
+        let ext = (media as NSString).pathExtension.lowercased()
+        return ext != "json" && MediaFormat.fromExtension(ext) != nil
     }
 
     public static func sidecarURL(for media: URL) -> URL {

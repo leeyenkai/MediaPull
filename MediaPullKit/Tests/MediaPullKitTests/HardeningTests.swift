@@ -76,7 +76,8 @@ final class BundledPinTests: XCTestCase {
         let script = try String(contentsOf: root.appendingPathComponent("scripts/fetch-engines.sh"), encoding: .utf8)
         var pinned: [String: String] = [:]
         for line in script.split(separator: "\n") {
-            let parts = line.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"")).split(separator: " ")
+            let parts = line.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                .split(separator: " ")
             guard parts.count == 3, parts[2].count == 64, parts[2].allSatisfy(\.isHexDigit) else { continue }
             pinned[String(parts[0])] = String(parts[1])
         }
@@ -103,7 +104,8 @@ final class ConversionFidelityTests: XCTestCase {
         let vp8l = chunk("VP8L", [0x2F, 0, 0, 0, 0])
         let body = Array("WEBP".utf8) + vp8x + iccp + vp8l
         let size = UInt32(body.count)
-        let file = Data(Array("RIFF".utf8) + [UInt8(size & 0xFF), UInt8(size >> 8 & 0xFF), UInt8(size >> 16 & 0xFF), UInt8(size >> 24)] + body)
+        let file = Data(Array("RIFF".utf8)
+            + [UInt8(size & 0xFF), UInt8(size >> 8 & 0xFF), UInt8(size >> 16 & 0xFF), UInt8(size >> 24)] + body)
         XCTAssertEqual(Sniffer.sniff(file).webp?.lossless, false, "the first 4 KB alone cannot see the lossless chunk")
         XCTAssertEqual(Sniffer.sniff(file, limit: 512 * 1024).webp?.lossless, true)
     }
@@ -157,7 +159,8 @@ final class ConversionFidelityTests: XCTestCase {
         turn.rotate(clockwise: true)
         try ImageEditing.writeReoriented(input, by: turn, to: output)
         func pixels(_ url: URL) -> Data? {
-            CGImageSourceCreateWithURL(url as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }?.dataProvider?.data as Data?
+            CGImageSourceCreateWithURL(url as CFURL, nil)
+                .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }?.dataProvider?.data as Data?
         }
         XCTAssertEqual(pixels(input), pixels(output), "the image data is copied, not encoded again")
         let analysis = try XCTUnwrap(ImageConversion.analyze(output))
@@ -237,7 +240,8 @@ final class VideoFidelityTests: XCTestCase {
                                                  "-c:v", "hevc_videotoolbox", "-tag:v", "hev1", "-pix_fmt", "yuv420p", hev1.path])
         let before = try await ffmpeg.probe(hev1)
         XCTAssertEqual(before.videoTag, "hev1")
-        let result = try await MediaConverter(ffmpeg: ffmpeg).convert(hev1, policy: ConversionPolicy(), layout: .archive, workDirectory: folder)
+        let result = try await MediaConverter(ffmpeg: ffmpeg).convert(hev1, policy: ConversionPolicy(), layout: .archive,
+                                                                      workDirectory: folder)
         let after = try await ffmpeg.probe(result.url)
         XCTAssertEqual(after.videoTag, "hvc1")
         XCTAssertEqual(after.videoCodec, "hevc")
@@ -251,14 +255,17 @@ final class VideoFidelityTests: XCTestCase {
         // One second of silence as WAV, encoded to AAC in an MP4 container (brand isom), as a page's audio may be.
         var wav = Data("RIFF".utf8)
         let samples = 44100
-        func le32(_ value: Int) -> [UInt8] { [UInt8(value & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value >> 16 & 0xFF), UInt8(value >> 24 & 0xFF)] }
+        func le32(_ value: Int) -> [UInt8] {
+            [UInt8(value & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value >> 16 & 0xFF), UInt8(value >> 24 & 0xFF)]
+        }
         wav += le32(36 + samples * 2) + Array("WAVEfmt ".utf8) + le32(16) + [1, 0, 1, 0] + le32(44100) + le32(88200) + [2, 0, 16, 0]
         wav += Array("data".utf8) + le32(samples * 2) + [UInt8](repeating: 0, count: samples * 2)
         let wavURL = folder.appendingPathComponent("a.wav")
         try wav.write(to: wavURL)
         let mp4 = folder.appendingPathComponent("audio.mp4")
         _ = try await FFmpeg.run(ffmpeg.ffmpeg, ["-hide_banner", "-nostdin", "-y", "-i", wavURL.path, "-c:a", "aac", mp4.path])
-        let result = try await MediaConverter(ffmpeg: ffmpeg).convert(mp4, policy: ConversionPolicy(), layout: .archive, workDirectory: folder)
+        let result = try await MediaConverter(ffmpeg: ffmpeg).convert(mp4, policy: ConversionPolicy(), layout: .archive,
+                                                                      workDirectory: folder)
         XCTAssertEqual(result.format, .m4a)
     }
 }

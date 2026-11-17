@@ -66,6 +66,13 @@ public enum PacingPreset: String, Codable, Sendable, CaseIterable {
         case .standard: [6, 12]
         }
     }
+
+    /// Roughly how many Instagram requests listing a whole account of `posts` posts takes, and how long at this pace
+    /// (R-1105): a page of 12 posts per request, plus the profile lookup; each request waits the average delay.
+    public func estimate(posts: Int) -> (requests: Int, seconds: Double) {
+        let requests = 1 + (max(posts, 0) + 11) / 12
+        return (requests, Double(requests) * (delay[0] + delay[1]) / 2)
+    }
 }
 
 /// Everything the save pipeline needs to know about conversions.

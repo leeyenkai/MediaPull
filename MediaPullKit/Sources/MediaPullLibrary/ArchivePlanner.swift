@@ -12,6 +12,11 @@ public struct SaveTarget: Sendable {
     public var accountUsername: String?
     /// Folders below `folder` for a pull that is not about one account, such as a hashtag (`Hashtags/<tag>`).
     public var collectionPath: [String]?
+    /// An existing folder of the account (D-78): its files go there whatever it is called, and duplicates are looked for
+    /// in all of it.
+    public var accountFolder: URL?
+    /// Whether that folder sorts by type (`posts/`, `reels/`), worked out from what it already holds; nil follows Settings.
+    public var typeSubfolders: Bool?
 
     public init(folder: URL, layout: SaveLayout, autoSubfolders: Bool, accountUsername: String? = nil, collectionPath: [String]? = nil) {
         self.folder = folder
@@ -90,7 +95,9 @@ public enum ArchivePlanner {
             let pinnedOwner = context.subcategory == "stories-tray" ? nil : target.accountUsername
             let owner = pinnedOwner ?? (context.isInstagram ? context.username : nil)
                 ?? context.sourceURL?.host ?? context.category
-            var folder = target.folder.appendingPathComponent(FileNaming.safeTopFolder(owner), isDirectory: true)
+            let intoAccountFolder = context.isInstagram && pinnedOwner != nil ? target.accountFolder : nil
+            var folder = intoAccountFolder ?? target.folder.appendingPathComponent(FileNaming.safeTopFolder(owner), isDirectory: true)
+            let byType = target.typeSubfolders ?? settings.typeSubfolders
             if context.isInstagram, ["tagged", "reposts"].contains(context.subcategory) {
                 return folder.appendingPathComponent(context.subcategory, isDirectory: true)
             }
@@ -102,11 +109,11 @@ public enum ArchivePlanner {
                     folder.appendPathComponent("highlights", isDirectory: true)
                     folder.appendPathComponent(FileNaming.sanitize(context.highlightTitle ?? context.postID ?? "highlight", maxBytes: 80),
                                                isDirectory: true)
-                case "reels" where settings.typeSubfolders:
+                case "reels" where byType:
                     folder.appendPathComponent("reels", isDirectory: true)
-                case "avatar" where settings.typeSubfolders:
+                case "avatar" where byType:
                     folder.appendPathComponent("profile pictures", isDirectory: true)
-                case "posts" where settings.typeSubfolders:
+                case "posts" where byType:
                     folder.appendPathComponent("posts", isDirectory: true)
                 default:
                     break
@@ -166,7 +173,8 @@ public enum ArchivePlanner {
             // Checked on the name as it will be written: cleaning (":" to "_", zero-width spaces removed) can turn an
             // allowed name into the forbidden pattern (R-1504, R-1510).
             let written = FileNaming.sanitize(stem, maxBytes: 255)
-            if written.range(of: #"^\d{4}-\d{2}-\d{2}_"#, options: .regularExpression) == nil || FileNaming.isForbiddenArchiveName(written) {
+            if written.range(of: #"^\d{4}-\d{2}-\d{2}_"#, options: .regularExpression) == nil
+                || FileNaming.isForbiddenArchiveName(written) {
                 stem = NameTemplate("{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{hash8}").render(context) + "_" + stem
             }
         }
@@ -203,6 +211,7 @@ public enum ArchivePlanner {
             var sidecar = Sidecar(category: engine.category, subcategory: subcategory, username: account, postID: postID)
             sidecar.author = engine.fullName ?? (engine.username != account ? engine.username : nil)
             sidecar.postShortcode = engine.postShortcode
+            if engine.isInstagram { sidecar.mediaID = engine.mediaID }
             if let count = engine.count, let num = engine.num { sidecar.num = num; sidecar.count = count }
             if engine.isInstagram, sidecar.num == nil { sidecar.num = 1; sidecar.count = 1 }
             sidecar.date = engine.date

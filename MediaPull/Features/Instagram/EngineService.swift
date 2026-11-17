@@ -57,6 +57,15 @@ struct PullDraft: Identifiable, Equatable {
     var folderName: String
     var incremental = true
     var pacing: PacingPreset
+    /// An existing folder of the account to update (D-78); nil lets the pull find one in the save folder.
+    var accountFolder: URL?
+    /// Walk every post and add what the folder lacks, including items deleted from it (D-79); otherwise only new items.
+    var findMissing = false
+    /// Continue an update that stopped part way, from where it stopped (R-1904).
+    var continueFromCursor = false
+    /// The content was chosen by the address (a story link pulls stories), so the account's remembered choices do not
+    /// replace it.
+    var contentFromAddress = false
 }
 
 /// The folder a download goes into, with the layout of the library folder holding it (D-70); any folder on the Mac works.
@@ -262,7 +271,7 @@ final class EngineService {
             return
         }
         if let options = info.options {
-            draft.content = options.content
+            if !draft.contentFromAddress { draft.content = options.content }
             draft.pacing = options.pacing
         }
         draft.incremental = info.lastPullAt != nil
@@ -280,7 +289,9 @@ final class EngineService {
         job.subtitle = draft.hashtag != nil ? "Posts with this hashtag"
             : InstagramContent.allCases.filter { draft.content.contains($0) }.map(\.label).joined(separator: ", ")
         app.jobs.add(job)
-        let root = (window?.saveFolder ?? app.defaultRoot?.url).map(app.destination(for:))
+        // An update writes into the account's folder, so that folder's library decides the layout, not the window's.
+        let root = (draft.accountFolder?.deletingLastPathComponent() ?? window?.saveFolder ?? app.defaultRoot?.url)
+            .map(app.destination(for:))
         if !scanOnly, root == nil {
             app.jobs.finish(job, .failed("Choose where to save first."))
             return job
@@ -289,8 +300,10 @@ final class EngineService {
             if let tag = draft.hashtag {
                 job.destination = root.url.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true).appendingPathComponent(tag)
             } else if draft.postURL == nil, !draft.username.isEmpty {
-                job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(draft.folderName.nonEmpty ?? draft.username),
-                                                                  isDirectory: true)
+                // The account's own folder, found when the pull starts (D-78).
+                job.destination = draft.accountFolder
+                    ?? root.url.appendingPathComponent(FileNaming.safeTopFolder(draft.folderName.nonEmpty ?? draft.username),
+                                                       isDirectory: true)
             } else {
                 job.destination = root.url
             }
@@ -412,31 +425,54 @@ final class EngineService {
         let dates = draft.dateWindow.bounds(from: draft.dateFrom, to: draft.dateTo)
         if let from = dates.from { request.dateFrom = ISO8601DateFormatter().string(from: from) }
         if let to = dates.to { request.dateTo = ISO8601DateFormatter().string(from: to) }
-        if draft.incremental || resuming, draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
-            let known = await app.store?.knownKeys(account: account) ?? []
+        // An account is pulled into its own folder (D-78): an existing one, found by what it holds whatever it is called,
+        // or a new one. What that folder already holds is what the engine skips (D-79); another folder of the same account
+        // never counts, so a new folder gets a complete copy.
+        let continuing = resuming || draft.continueFromCursor
+        var place: AccountPlace?
+        if isAccount, draft.postURL == nil, !scanOnly, let root {
+            place = await resolvePlace(account: account, draft: draft, root: root)
+            job.destination = place?.folder
+        }
+        if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
+            var known: Set<String> = []
+            if let place {
+                known = draft.findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
+            } else if draft.hashtag != nil, draft.incremental || resuming {
+                known = await app.store?.knownKeys(account: account) ?? []
+            }
             let knownFile = staging.appendingPathComponent("known.json")
             do {
                 try JSONEncoder().encode(Array(known)).write(to: knownFile)
                 request.knownIDs = knownFile.path
             } catch {
                 // Saved items are still recognised by their contents; the pull only cannot skip downloading them.
-                job.notes.append("Saved posts could not be listed for the engine (\(error.localizedDescription)), so every post is checked.")
+                job.notes.append("Saved posts could not be listed for the engine (\(error.localizedDescription)), "
+                    + "so every post is checked.")
             }
-            // A resumed pull continues from where it stopped and must not end early on known posts.
-            request.stopAfterKnown = resuming ? nil : app.preferences.stopAfterKnown
+            // Only an update of new posts ends early; finding missing items and continuing where a pull stopped walk on.
+            let earlyStop = draft.incremental && !draft.findMissing && !continuing
+            request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
         }
-        if resuming, let cursor = stored?.resumeCursor, draft.postURL == nil, !scanOnly { request.cursor = cursor }
+        let storedCursor = place?.record?.cursor ?? (place == nil ? stored?.resumeCursor : nil)
+        if continuing, let storedCursor, draft.postURL == nil, !scanOnly { request.cursor = storedCursor }
 
         // The folder decides the layout, not the draft (D-70).
         let target: SaveTarget? = root.map { root in
             if let tag = draft.hashtag {
                 return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [SaveTarget.tagsFolder, tag])
             }
-            return draft.postURL == nil && isAccount
-                ? SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true,
-                             accountUsername: draft.folderName.nonEmpty ?? account)
-                : SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true)
+            if let place {
+                // The metadata names the account; the folder can be called anything (D-78).
+                var target = SaveTarget(folder: place.folder.deletingLastPathComponent(), layout: root.layout, autoSubfolders: true,
+                                        accountUsername: account)
+                target.accountFolder = place.folder
+                target.typeSubfolders = place.sortsByType
+                return target
+            }
+            return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true)
         }
+        var savedKeys = Set<String>()
         let settings = app.saveSettings
         let pipeline = app.pipeline()
         var index = 0
@@ -484,11 +520,13 @@ final class EngineService {
                     switch outcome {
                     case let .saved(url):
                         job.saved += 1
+                        savedKeys.insert(file.key)
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
                         if let date = context.date, newest.map({ date > $0 }) ?? true { newest = date }
                     case let .duplicate(url):
                         job.duplicates += 1
+                        savedKeys.insert(file.key)
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
                     case let .skipped(reason):
@@ -505,7 +543,8 @@ final class EngineService {
                     else {
                         continue
                     }
-                    if let saved = fileAccountDocument(path, kind: kind, root: root, folder: draft.folderName.nonEmpty ?? account) {
+                    let folder = place?.folder ?? root.url.appendingPathComponent(FileNaming.safeTopFolder(account), isDirectory: true)
+                    if let saved = fileAccountDocument(path, kind: kind, into: folder) {
                         let what = kind == "profile" ? "profile information" : "\(kind) list (\(count) accounts)"
                         if job.notes.count < 30 { job.notes.append("Saved the \(what) as \(saved.lastPathComponent)") }
                     }
@@ -518,7 +557,14 @@ final class EngineService {
                         job.fraction = nil; job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))"
                     }
                 case let .cursor(subcategory, value):
-                    if subcategory == "posts", !scanOnly, isAccount { await app.store?.updateAccount(account, resumeCursor: .some(value)) }
+                    // Where the posts listing has got to, so an interruption can continue from there (R-1112). A pass from
+                    // the top while an earlier place is kept never replaces it: that place is continued afterwards.
+                    guard subcategory == "posts", !scanOnly, isAccount, continuing || storedCursor == nil else { break }
+                    if let record = place?.record {
+                        await app.accountFolders.update(record.id, cursor: .some(value))
+                    } else {
+                        await app.store?.updateAccount(account, resumeCursor: .some(value))
+                    }
                 case let .checkpoint(kind, url, message):
                     blocked = true
                     handleCheckpoint(kind: kind, url: url, message: message)
@@ -543,6 +589,20 @@ final class EngineService {
         await cookies.finish()
         await refreshSignIn()
         app.libraryRevision += 1
+        // What this pull saved into the folder is remembered there, so an item deleted on purpose stays deleted on the
+        // next Update (D-79). A new folder gets its record once it exists.
+        var record = place?.record
+        if record == nil, let place, !savedKeys.isEmpty, FileManager.default.fileExists(atPath: place.folder.path) {
+            record = await app.accountFolders.record(account: account, folder: place.folder)
+        }
+        if let record {
+            await app.accountFolders.addKeys(savedKeys, to: record.id)
+            if finishedCleanly, continuing || storedCursor == nil {
+                await app.accountFolders.update(record.id, cursor: .some(nil))
+            }
+            await app.accountFolders.update(record.id, lastUpdate: Date(), lastResult: job.summary)
+            await app.refreshAccountFolders()
+        }
         if Task.isCancelled || job.state == .cancelled {
             app.jobs.finish(job, .cancelled)
             return
@@ -568,19 +628,73 @@ final class EngineService {
         if let fatal { job.notes.append(fatal) }
         if !scanOnly, draft.postURL == nil, isAccount {
             if finishedCleanly {
-                await app.store?.updateAccount(account, newestSavedDate: newest, resumeCursor: .some(nil), lastResult: job.summary,
-                                               pulledNow: true)
+                await app.store?.updateAccount(account, newestSavedDate: newest, resumeCursor: place == nil ? .some(nil) : nil,
+                                               lastResult: job.summary, pulledNow: true)
             } else {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: job.summary)
             }
         }
         app.jobs.finish(job, .completed)
+        // An earlier update of this folder stopped part way: new posts are in now, so the rest continues from where it
+        // stopped (R-1904), as its own job.
+        if finishedCleanly, !continuing, storedCursor != nil, let place {
+            var next = draft
+            next.accountFolder = place.folder
+            next.continueFromCursor = true
+            next.findMissing = false
+            startPull(next, scanOnly: false, window: window)
+        }
+    }
+
+    /// Where an account pull goes and what is already there (D-78, D-79).
+    struct AccountPlace {
+        var folder: URL
+        var index: AccountFolders.Index
+        var record: AccountFolderRecord?
+        var sortsByType: Bool?
+    }
+
+    private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination) async -> AccountPlace {
+        let libraryRoot = app.root(containing: root.url)?.url
+        let chosen = draft.accountFolder
+        let saveFolder = root.url
+        let name = draft.folderName.nonEmpty ?? account
+        // Reading the folder (names, and a sample of metadata files) happens off the main actor.
+        let (folder, index, byType, existing) = await Task.detached(priority: .userInitiated) {
+            () -> (URL, AccountFolders.Index, Bool?, Bool) in
+            let resolved = chosen.map { (existing: Optional($0), parent: $0.deletingLastPathComponent()) }
+                ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: libraryRoot)
+            guard let existing = resolved.existing else {
+                return (resolved.parent.appendingPathComponent(FileNaming.safeTopFolder(name), isDirectory: true),
+                        AccountFolders.Index(), nil, false)
+            }
+            return (existing, AccountFolders.index(existing), AccountFolders.sortsByType(existing), true)
+        }.value
+        let record = existing ? await app.accountFolders.record(account: account, folder: folder) : nil
+        return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
+    }
+
+    /// Update an account's folder in one click (D-80): the account's remembered media choices and pace, no form. `findMissing`
+    /// walks every post and adds what the folder lacks instead of stopping at what is already there.
+    @discardableResult
+    func startUpdate(account: String, folder: URL, findMissing: Bool, window: WindowModel?) async -> Job? {
+        var draft = self.draft(username: account)
+        await applyStoredOptions(to: &draft)
+        // One click takes the account's media only: never its details, follower lists or the person's own saved posts.
+        draft.content = draft.content.filter(\.isProfileMedia)
+        if draft.content.isEmpty { draft.content = app.preferences.defaultContent.filter(\.isProfileMedia) }
+        draft.accountFolder = folder
+        draft.findMissing = findMissing
+        draft.incremental = !findMissing
+        draft.folderName = folder.lastPathComponent
+        // An earlier update that stopped part way needs nothing more: this pass covers the top, and the rest continues from
+        // where it stopped right after (runPull).
+        return startPull(draft, scanOnly: false, window: window)
     }
 
     /// Moves a followers or following list, or the profile, into `<account>/Account details/` with the date in its name.
-    private func fileAccountDocument(_ file: URL, kind: String, root: SaveDestination, folder: String) -> URL? {
-        let directory = root.url.appendingPathComponent(FileNaming.safeTopFolder(folder), isDirectory: true)
-            .appendingPathComponent(SaveTarget.accountDetailsFolder, isDirectory: true)
+    private func fileAccountDocument(_ file: URL, kind: String, into accountFolder: URL) -> URL? {
+        let directory = accountFolder.appendingPathComponent(SaveTarget.accountDetailsFolder, isDirectory: true)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -978,7 +1092,8 @@ final class EngineService {
                     try JSONEncoder().encode(Array(known)).write(to: knownFile)
                     request.knownIDs = knownFile.path
                 } catch {
-                    job.notes.append("Saved items could not be listed for the engine (\(error.localizedDescription)), so every item is checked.")
+                    job.notes.append("Saved items could not be listed for the engine (\(error.localizedDescription)), "
+                        + "so every item is checked.")
                 }
             }
             let settings = self.app.saveSettings

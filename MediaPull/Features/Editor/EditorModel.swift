@@ -290,8 +290,9 @@ final class EditorModel: UnsavedEditing {
                 let target = asCopy ? LibraryModel.uniqueURL(wanted) : LibraryModel.renameTarget(from: url, to: wanted)
                 // A copy of a large file to another disk takes a while: file operations run off the main actor.
                 try await LibraryModel.offMain {
+                    let manager = FileManager.default
                     // lint:allow main-io inside offMain
-                    if asCopy { try FileManager.default.copyItem(at: url, to: target) } else { try FileManager.default.moveItem(at: url, to: target) }
+                    if asCopy { try manager.copyItem(at: url, to: target) } else { try manager.moveItem(at: url, to: target) }
                 }
                 if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
                 await moveSidecar(from: url, to: target, copy: asCopy, edited: nil)
@@ -338,11 +339,16 @@ final class EditorModel: UnsavedEditing {
                     object["sha256"] = try? FileHasher.sha256(of: edited)
                     object["edited"] = true
                 }
-                let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+                let data = try JSONSerialization.data(withJSONObject: object,
+                                                      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
                 try data.write(to: newSidecar, options: .atomic)
                 if !copy, oldSidecar != newSidecar {
                     // Renamed: the old record is no longer needed; edited: the original's record goes to the Trash with it.
-                    if edited == nil { try manager.removeItem(at: oldSidecar) } else { try manager.trashItem(at: oldSidecar, resultingItemURL: nil) } // lint:allow main-io detached
+                    if edited == nil {
+                        try manager.removeItem(at: oldSidecar)
+                    } else {
+                        try manager.trashItem(at: oldSidecar, resultingItemURL: nil) // lint:allow main-io detached
+                    }
                 }
                 return nil
             } catch {

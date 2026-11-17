@@ -9,6 +9,7 @@ final class SidecarTests: XCTestCase {
         var sidecar = Sidecar(category: "instagram", subcategory: "posts", username: "example.account", postID: "3008811223344556677")
         sidecar.author = "Example Account"
         sidecar.postShortcode = "CnAbCdEfGh"
+        sidecar.mediaID = "3008811223344556678"
         sidecar.num = 2
         sidecar.count = 3
         sidecar.date = Date(timeIntervalSince1970: 1_672_971_730)
@@ -22,6 +23,7 @@ final class SidecarTests: XCTestCase {
         XCTAssertEqual(object["num"] as? Int, 2)
         XCTAssertEqual(object["count"] as? Int, 3)
         XCTAssertEqual(object["username"] as? String, "example.account")
+        XCTAssertEqual(object["media_id"] as? String, "3008811223344556678", "D-81: a string, like post_id")
         XCTAssertTrue(text.contains("https://www.instagram.com/p/CnAbCdEfGh/"), "Slashes must not be escaped")
         let keys = object.keys.sorted()
         let order = text.split(separator: "\n").compactMap { line -> String? in
@@ -72,8 +74,8 @@ final class NamingTests: XCTestCase {
         let variant = MediaVariant(id: url.absoluteString, url: url, format: .jpeg, origin: .img)
         let item = MediaItem(id: "a", kind: .image, variants: [variant], source: .web(WebContext(pageURL: URL(string: "https://example.com/")!)),
                              discoveryIndex: 0, group: "g", groupTitle: "t")
-        let info = FinalFileInfo(format: .jpeg, sha256: "abcdef0123456789", pixelSize: nil, duration: nil, sourceURL: url, lastModified: nil,
-                                 originalName: "a", note: nil)
+        let info = FinalFileInfo(format: .jpeg, sha256: "abcdef0123456789", pixelSize: nil, duration: nil, sourceURL: url,
+                                 lastModified: nil, originalName: "a", note: nil)
         for override in ["2023-01-06_18-42-10:UTC", "2023-01-06_18-42-10\u{200B}_UTC", ". .2023-01-06_18-42-10_UTC"] {
             let name = ArchivePlanner.fileName(for: item, info: info, layout: .archive, settings: SaveSettings(), index: 1,
                                                saveDate: Date(timeIntervalSince1970: 1_700_000_000), override: override)
@@ -231,6 +233,19 @@ final class PolicyTests: XCTestCase {
 final class AddressTests: XCTestCase {
     func testClassification() {
         XCTAssertEqual(AddressInput.parse("@nasa"), .handle("nasa"))
+        XCTAssertEqual(AddressInput.bareUsername(" NASA "), "nasa", "R-1104: a bare name in the Downloads pane")
+        XCTAssertNil(AddressInput.bareUsername("example.com"), "a word with a dot is an address")
+        XCTAssertNil(AddressInput.bareUsername("two words"))
+        let story = URL(string: "https://www.instagram.com/stories/nasa/3512345678901234567/")!
+        XCTAssertEqual(AddressInput.parse(story.absoluteString).instagramUsername, "nasa")
+        if case let .instagramStories(_, url) = AddressInput.parse(story.absoluteString) {
+            XCTAssertEqual(url.pathComponents.last, "3512345678901234567", "the story's id survives cleaning")
+        } else {
+            XCTFail("a story link is a story")
+        }
+        if case .instagramHighlight = AddressInput.parse("https://www.instagram.com/stories/highlights/1789/") {} else {
+            XCTFail("a highlight link is a highlight")
+        }
         for address in ["192.168.1.1", "10.0.0.1:8080/gallery"] {
             if case .web = AddressInput.parse(address) {} else { XCTFail("\(address) should open as a web address") }
         }

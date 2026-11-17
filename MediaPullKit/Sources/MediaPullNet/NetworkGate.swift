@@ -249,7 +249,8 @@ public enum GateError: LocalizedError, Sendable, Equatable {
         case let .http(status): Self.message(for: status)
         case .notHTTP: "The server did not answer with HTTP."
         case .cancelled: "Cancelled."
-        case let .tooLarge(limit): "The file is larger than MediaPull reads for this (\(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)))."
+        case let .tooLarge(limit):
+            "The file is larger than MediaPull reads for this (\(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)))."
         case let .truncated(received, expected):
             "The download was cut short (\(ByteCountFormatter.string(fromByteCount: received, countStyle: .file)) of "
                 + "\(ByteCountFormatter.string(fromByteCount: expected, countStyle: .file)))."

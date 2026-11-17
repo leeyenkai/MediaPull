@@ -580,6 +580,20 @@ def item_key(kwdict, url):
     return f"{category}:url:{hashlib.sha256(str(url).encode()).hexdigest()[:20]}"
 
 
+# Instagram parts whose files keep their place in a post: a carousel's items can be removed but never reordered or added
+# to, so a post's id with an item's number names that file. Stories and highlights shift as a tray changes, so they are
+# known only by their media id.
+POSITIONAL_SUBCATEGORIES = {"posts", "post", "reels", "reel", "tagged", "reposts", "user"}
+
+
+def positional_key(kwdict):
+    """`igp:<post_id>:<num>` for an Instagram post's file, the form a folder's metadata files give (D-79)."""
+    if kwdict.get("category") != "instagram" or kwdict.get("subcategory") not in POSITIONAL_SUBCATEGORIES:
+        return None
+    post, num = kwdict.get("post_id"), kwdict.get("num")
+    return f"igp:{post}:{num}" if post and num else None
+
+
 def item_event(url, kwdict):
     meta = item_meta(url, kwdict)
     extension = str(kwdict.get("extension") or "").lower()
@@ -646,7 +660,10 @@ class KnownTracker:
             self.post = post
             self.post_known = True
             self.post_pinned = bool(kwdict.get("pinned"))
-        is_known = key in self.known
+        # A file is known by its media id, or (Instagram posts) by its post and number, the form a folder's metadata
+        # files give when MediaPull did not record the media id (D-79).
+        alternative = positional_key(kwdict)
+        is_known = key in self.known or (alternative is not None and alternative in self.known)
         if not is_known:
             self.post_known = False
         if self.limit and self.run >= self.limit:

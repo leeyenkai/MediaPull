@@ -284,6 +284,16 @@ def test_instagram_is_gentle_by_default_and_never_retried():
         assert config.get(("extractor", "instagram"), "sleep-429") == 0
     config.clear()
 
+def test_posts_are_known_by_post_and_number_but_stories_only_by_media_id():
+    known = {"igp:3001:2", "igp:9000:1"}
+    tracker = bridge.KnownTracker(known, 0)
+    post_item = {"category": "instagram", "subcategory": "posts", "post_id": "3001", "num": 2, "media_id": "77"}
+    assert tracker.observe(post_item, bridge.item_key(post_item, "u")) is True
+    story = {"category": "instagram", "subcategory": "stories", "post_id": "9000", "num": 1, "media_id": "88"}
+    assert tracker.observe(story, bridge.item_key(story, "u")) is False
+    other = {"category": "instagram", "subcategory": "posts", "post_id": "3001", "num": 3, "media_id": "78"}
+    assert tracker.observe(other, bridge.item_key(other, "u")) is False
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

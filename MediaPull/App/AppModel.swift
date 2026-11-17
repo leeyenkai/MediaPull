@@ -50,6 +50,12 @@ final class AppModel {
     let journal = OperationJournal(folder: SelfTestRunner.isActive
         ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-journal-\(UUID().uuidString)")
         : OperationJournal.defaultFolder)
+    /// What MediaPull remembers about each Instagram account folder (D-79).
+    let accountFolders = AccountFolderStore(folder: SelfTestRunner.isActive
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-accounts-\(UUID().uuidString)")
+        : AccountFolderStore.defaultFolder)
+    /// The remembered account folders, for the Library's Update actions (D-80); refreshed after pulls and moves.
+    var accountFolderList: [AccountFolderRecord] = []
     var libraryRevision = 0
     @ObservationIgnored private var windowRefs: [UUID: WeakWindow] = [:]
     @ObservationIgnored lazy var engines = EngineService(app: self)
@@ -61,7 +67,14 @@ final class AppModel {
     }
 
     private init() {
-        let paths = EnginePaths.locate()
+        var paths = EnginePaths.locate()
+        // --selftest-update runs the update path offline: a stand-in bridge replays recorded events, and the engine folders
+        // live in a temporary folder so Application Support is left alone.
+        if SelfTestRunner.isActive, CommandLine.arguments.contains("--selftest-update") {
+            paths?.bridgeDirectory = SelfTestRunner.replayBridge
+            paths?.support = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MediaPull-selftest-engines-\(UUID().uuidString)")
+        }
         enginePaths = paths
         engineManager = paths.map { EngineManager(paths: $0) }
         ffmpeg = paths.map { FFmpeg(paths: $0) }
@@ -102,6 +115,7 @@ final class AppModel {
             self.store = store
             jobs.store = store
             await reloadRoots()
+            await refreshAccountFolders()
             if roots.isEmpty, preferences.onboardingDone, !SelfTestRunner.isActive {
                 await addDefaultRoot()
             }
@@ -210,7 +224,8 @@ final class AppModel {
             guard let url else { missing.insert(id); continue }
             let old = roots[index].url
             guard url.path != old.standardizedFileURL.path || stale else { continue }
-            let bookmark = (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)) ?? roots[index].bookmark
+            let bookmark = (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil))
+                ?? roots[index].bookmark
             await store.updateRoot(id, path: url.path, bookmark: bookmark)
             roots[index].path = url.path
             roots[index].bookmark = bookmark
@@ -386,7 +401,25 @@ final class AppModel {
         Task {
             await analysis.noteMoves(moves)
             await store?.moveArchivePaths(moves)
+            await accountFolders.moveFolders(moves)
+            await refreshAccountFolders()
         }
+    }
+
+    func refreshAccountFolders() async {
+        accountFolderList = await accountFolders.all()
+    }
+
+    /// The remembered account folder `folder` is, or is inside.
+    func accountFolder(containing folder: URL) -> AccountFolderRecord? {
+        let path = folder.standardizedFileURL.path
+        return accountFolderList.filter { path == $0.path || path.hasPrefix($0.path + "/") }.max { $0.path.count < $1.path.count }
+    }
+
+    /// The remembered account folders inside `folder` (not the folder itself).
+    func accountFolders(inside folder: URL) -> [AccountFolderRecord] {
+        let path = folder.standardizedFileURL.path
+        return accountFolderList.filter { $0.path.hasPrefix(path + "/") }
     }
 
     /// Starts a save job for items from a window (SPEC section 14).

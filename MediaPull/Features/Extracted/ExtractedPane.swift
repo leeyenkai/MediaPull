@@ -104,7 +104,8 @@ struct ExtractedHeader: View {
     }
 
     private var rescanButton: some View {
-        Button { model.browser.rescan() } label: { Image(systemName: "arrow.triangle.2.circlepath") }.accessibilityLabel("Look for Media Again")
+        Button { model.browser.rescan() } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+            .accessibilityLabel("Look for Media Again")
             .buttonStyle(.borderless)
             .help("Look for media on the page again")
     }

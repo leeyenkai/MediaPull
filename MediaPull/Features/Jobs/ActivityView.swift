@@ -1,3 +1,4 @@
+import MediaPullLibrary
 import SwiftUI
 
 /// The Activity window (SPEC section 19).
@@ -20,6 +21,19 @@ struct ActivityView: View {
                 Banner(symbol: "arrow.down.app", tint: .accentColor,
                        text: "Engine update available: " + updates.map { "\($0.name) \($0.available)" }.joined(separator: ", ")) {
                     SettingsLink { Text("Show") }
+                }
+            }
+            // R-1904: an update that stopped part way (quit, crash, cancelled) can be resumed from where it stopped.
+            ForEach(stoppedUpdates) { record in
+                Banner(symbol: "arrow.clockwise.circle", tint: .accentColor,
+                       text: "An update of @\(record.account) into “\((record.path as NSString).lastPathComponent)” stopped part way.") {
+                    Button("Resume") {
+                        Task {
+                            await app.engines.startUpdate(account: record.account,
+                                                          folder: URL(fileURLWithPath: record.path, isDirectory: true),
+                                                          findMissing: false, window: app.frontWindow)
+                        }
+                    }
                 }
             }
             if app.jobs.jobs.isEmpty {
@@ -47,6 +61,11 @@ struct ActivityView: View {
             .padding(8)
         }
         .frame(minWidth: 460, minHeight: 320)
+    }
+
+    private var stoppedUpdates: [AccountFolderRecord] {
+        let busy = Set(app.jobs.jobs.filter { $0.state.canCancel }.compactMap { $0.destination?.standardizedFileURL.path })
+        return app.accountFolderList.filter { $0.cursor != nil && !busy.contains($0.path) }
     }
 }
 
@@ -110,14 +129,16 @@ struct JobRow: View {
     private var actions: some View {
         HStack(spacing: 6) {
             if let url = job.destination, job.saved + job.duplicates > 0 {
-                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }.accessibilityLabel("Show in Finder")
+                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
+                    .accessibilityLabel("Show in Finder")
                     .help("Show in Finder")
             }
             if case .blocked = job.state, let resume = job.resume {
                 Button("Resume") { resume() }
             }
             if let toggle = job.pauseToggle, job.state.isActive || job.state == .paused {
-                Button { toggle() } label: { Image(systemName: job.state == .paused ? "play.circle" : "pause.circle") }.accessibilityLabel(job.state == .paused ? "Resume" : "Pause")
+                Button { toggle() } label: { Image(systemName: job.state == .paused ? "play.circle" : "pause.circle") }
+                    .accessibilityLabel(job.state == .paused ? "Resume" : "Pause")
                     .help(job.state == .paused ? "Resume" : "Pause")
             }
             if job.state.canCancel {

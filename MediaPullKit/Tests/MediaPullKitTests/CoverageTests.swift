@@ -92,7 +92,8 @@ final class IngestorCheckTests: XCTestCase {
         let ingestor = ExtractionIngestor(interval: .milliseconds(1))
         let item = #"{"u":"https://cdn.example.com/a.jpg","k":"img","w":400,"h":300}"#
         let spoofed = #"{"v":1,"page":"https://bank.example.net/","items":["# + item + "]}"
-        await ingestor.ingest(json: spoofed, frame: FrameInfo(frameURL: page, isMainFrame: true, origin: nil, pageURL: page, pageTitle: nil))
+        await ingestor.ingest(json: spoofed,
+                              frame: FrameInfo(frameURL: page, isMainFrame: true, origin: nil, pageURL: page, pageTitle: nil))
         let items = await ingestor.snapshot().items
         XCTAssertEqual(items.first?.source.pageURL, page)
     }

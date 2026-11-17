@@ -609,10 +609,10 @@ Instagram access runs through the bundled gallery-dl engine (D-04), driven by th
 - **Account card**: avatar, name, username, post count, private or public, followed state (from a quick `account` bridge call).
 - **Input**: a username, @handle or profile link, or a `#hashtag` (or a hashtag page link), which pulls the hashtag's posts instead of an account.
 - **Content** (R-1105a), in three groups, each choice remembered per account and with defaults in Settings > Instagram.
-- **Dates** (R-1105b): All Time (default), Past Month, Past Year or Custom, plus "Only new posts since the last pull" (on when a previous pull exists).
-- **Destination**: a library root and folder (default `<root>/<username>/`).
+- **Dates** (R-1105b): All Time (default), Past Month, Past Year or Custom, plus "Only new posts (stop at the posts the folder already has)" (on when a previous pull exists).
+- **Destination** *(Amended by D-78)*: the save folder (D-70). When it is, is inside, or contains the account's folder, that folder is updated; otherwise a new folder named after the account is made. A line under the save folder says which: "Adds only what "<folder>" doesn't have yet (N files there)" or "Saves into a new folder "<name>" in "<parent>"".
 - **Layout**: Archive (default) or Plain.
-- **Mode**: Incremental (default) or Verify (walk everything, download only what is missing on disk).
+- **Mode** *(Amended by D-79: there is no Mode row. Every pull skips what the folder has; Find Missing in the Library replaces Verify.)*: Incremental (default) or Verify (walk everything, download only what is missing on disk).
 - **Pacing**: Gentle (default) or Standard.
 - **Estimate**: approximate requests and time, computed from the post count and pacing.
 - Buttons: **Scan Only** and **Pull**.
@@ -665,7 +665,7 @@ Which `fetch` method the bridge uses (reusing the engine's downloaders on scanne
 
 ### 11.8 Incremental sync and pacing
 
-**R-1112** For incremental pulls, the bridge receives the set of already-archived media ids for the account and stops after 12 consecutive already-archived posts that are not pinned (Instagram shows up to 3 pinned posts first, out of date order). The resume cursor is saved after every page so an interrupted pull continues where it stopped, including after the app quits.
+**R-1112** *(Amended by D-79: the known set and the resume cursor belong to the account folder, not the account; the known set is sent on every pull into an account folder, and "Only new posts" decides only the early stop.)* For incremental pulls, the bridge receives the set of already-archived media ids for the account and stops after 12 consecutive already-archived posts that are not pinned (Instagram shows up to 3 pinned posts first, out of date order). The resume cursor is saved after every page so an interrupted pull continues where it stopped, including after the app quits.
 
 **R-1113** Pacing presets set the engine's delay between Instagram API requests: **Gentle** 8–15 s (default) and **Standard** 6–12 s, both with random jitter. CDN downloads run at most 2 at a time. Only one Instagram job runs at a time across all windows; others wait in the queue.
 
@@ -681,7 +681,7 @@ Which `fetch` method the bridge uses (reusing the engine's downloaders on scanne
 
 ### 11.10 Folders and naming
 
-**R-1115** Default destination layout for an account:
+**R-1115** *(Amended by D-78: `<root>/<username>/` is the folder of a new pull; an existing account folder is used whatever its name, and keeps its own choice of type folders, read from what it holds.)* Default destination layout for an account:
 
 ```
 <root>/<username>/
@@ -724,6 +724,8 @@ Below the options it lists the downloads in progress and just finished. Download
 - **Errors in plain words** (`GalleryError`): a browser check, a sign-in, an API key, a refusal, a limit, nothing found, or a changed site, each with what to do next.
 - **Dates, items, only new, folders.** As for Instagram: a date window, an item range, only what is new since the last download, and folders by part when several are chosen. Choices are remembered per site.
 - **Animations stored as frames** (pixiv, Danbooru) are turned into MP4 with the hardware encoder.
+
+**R-1111c** Other apps (D-82): **Download with MediaPull** in the Services menu, for selected text or a link in any app, brings MediaPull forward with the address in the front window's Downloads pane. A link dropped on the Downloads pane does the same. Nothing starts until the person clicks Download.
 
 ## 12. Site extractor scans
 
@@ -950,6 +952,8 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1711** Thumbnail size (R-1001a) applies to Icon view; ⌥⌘+ and ⌥⌘- are disabled in the other views.
 
+**R-1712** Account folders (D-78 to D-80): when the selected folder holds an Instagram account (or is inside its folder), the Library's title row shows **Update @name** and the subtitle adds "@name updated <when>" or "@name: an earlier update stopped part way". The folder's context menu (tree, List and Column views) has **Update @name** and **Find Missing from @name**, and a folder containing two or more remembered account folders has **Update All Accounts (N)**. Updates run as ordinary Instagram jobs in Activity, one at a time (R-1113). The button is disabled while that folder's update is queued or running.
+
 **R-1705** Quick Look (Space), Reveal in Finder (⌘R), Open With default app, Copy (file URLs).
 
 **R-1706** The selected folder is the save folder of Collect: Save, the Downloads pane and the editors all save there (D-70).
@@ -982,7 +986,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1903** *(Amended by D-77: Pause and Resume are offered for Analyse jobs; other jobs offer Cancel and Retry Failed (Instagram pulls continue from their cursor). Speed is not shown, and checkpoints are handled by the browser banner (R-808).)* The Activity panel (⇧⌘J) lists jobs with progress (items and bytes), current item, speed, and actions: Pause, Resume, Cancel, Retry Failed, Show Page (for checkpoints), Reveal Folder.
 
-**R-1904** Interrupted Pull jobs (app quit, crash, cancelled) keep their cursor; on next launch the panel offers "Resume Pull".
+**R-1904** *(Amended by D-80: the cursor is kept per account folder; the Activity window shows "An update of @name into "<folder>" stopped part way" with Resume, and the folder's Library subtitle says so. Any update of that folder also continues it.)* Interrupted Pull jobs (app quit, crash, cancelled) keep their cursor; on next launch the panel offers "Resume Pull".
 
 **R-1905** A local notification is posted when a job longer than 1 minute finishes or becomes blocked (setting, default on).
 
@@ -1178,7 +1182,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-34 | Editing a library file replaces it and moves the original to the Trash; "Save as Copy" keeps both. A rename alone never re-encodes. Edited images are written as JPEG at quality 1.0 or PNG, keeping EXIF except orientation. (Amended in 1.8: a JPEG that is only rotated or flipped keeps its image data exactly and gets a new orientation tag; only a crop re-encodes) | Simple, undoable through the Trash, no quality loss beyond the edit itself |
 | D-35 | A custom name for an extracted item is used when it is saved; in Archive folders the date prefix is added in front of it if missing, so the naming contract holds | Rename without breaking the archive format |
 | D-36 | Instagram requests are never retried automatically (no retries, no 429 back-off); error bodies are read for challenge, login, feedback and rate-limit signals; only the person's Resume reopens Instagram after a checkpoint | R-1114, after review |
-| D-37 | A resumed pull continues from the saved cursor (reported after every page) with the known-item list but without the early stop; a new pull never starts from a stale cursor | Interrupted pulls continue without re-fetching or skipping new posts |
+| D-37 | A resumed pull continues from the saved cursor (reported after every page) with the known-item list but without the early stop; a new pull never starts from a stale cursor (amended by D-80: an update of a folder with a stored cursor first pulls the newest posts with the early stop, then continues from the cursor) | Interrupted pulls continue without re-fetching or skipping new posts |
 | D-38 | The date window is applied by the bridge: old pinned posts are skipped instead of ending the listing | One old pinned post must not end a pull |
 | D-39 | The inspector and the editor sheet become one Preview pane, and panes can be arranged in columns and stacks | Requested: a separate preview pane and free pane positions |
 | D-40 | POST from the engines is allowed only to `instagram.com` and its subdomains at `/graphql/query` and `/api/graphql`; GET and HEAD may not carry a body; GraphQL documents containing `mutation` or `subscription` anywhere, denied words in any letter case, and multipart, binary or media bodies are refused | Code review found bypasses of R-505 |
@@ -1218,6 +1222,11 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-75 | A file from an engine is keyed by its post and its number in the post (`category:id:num`) whenever the post numbers its files, for `id` as well as `post_id`. Keys already recorded for such sites change once: their next incremental pull may fetch those files again, and they are recognised as duplicates, not saved twice | On sites that give every file of a post the post's id (Pixiv, Kemono), all files of a post had one key, so scans kept one and incremental pulls skipped the rest |
 | D-76 | The folder panes (Library, Organise Source and Target) and Extracted Media can be shown as Icons, a List or Columns, like the Finder (Extracted Media: Icons and List, since it is not a folder). Each pane keeps its own view; ⌘1 to ⌘3 switch the focused pane. Column view replaces the folder tree and the search and filter row, and sorts each column by name with folders first. Amends R-1701 and R-3802 | Requested: the same view choices as the Finder |
 | D-77 | Version 1.8 aligns the spec with the app where the app's behaviour is simpler and sound, instead of adding options that add little: R-305, R-306, R-308, R-504, R-803, R-902, R-911, R-918, R-919, R-1002, R-1005, R-1006, R-1605, R-1903, R-3701 and R-3906 are amended in place; Settings > Advanced keeps the network log and Export Diagnostics and drops download concurrency limits, the insecure-http switch and verbose engine logging; there is no separate Browser or Organise settings pane, no pop-up setting (pop-ups always open as tabs) and no inline-SVG setting | A requirement-by-requirement pass (docs/CONFORMANCE.md) found these written but never built; the person asked for a simple app without a pile of options |
+| D-78 | A folder holds an Instagram account when four in five of a sample of its metadata files name that account; the account folder is the highest such folder, so a folder renamed, moved in the Finder or made before 1.8 is still recognised. A pull of an account goes into its existing folder when the save folder is that folder, is inside it, or contains it (whatever it is called); otherwise a new folder is made beside any other account's folder, never inside it. The metadata always names the account, never the folder | Requested: fetch an account again into the folder that already has it, adding only what is missing, without ` 2` copies or a nested folder |
+| D-79 | Every pull into an account folder skips the items that folder already has, recognised from file names (`<date>_<code>_<NN>`, whose code is the media id) or, for renamed files, their metadata (`media_id`, or `post_id` and `num` for posts and Reels). MediaPull also remembers per folder (Application Support, found again through a bookmark) the items it ever saved there and where an interrupted update stopped. **Update** skips both, so files deleted from the folder on purpose stay deleted, and stops after 12 known posts. **Find Missing** walks the whole account and adds everything the folder lacks, including deleted files; it replaces the Verify mode. A different folder is independent: a pull into a new folder makes a complete copy | Chosen by the person: Update must never bring back deletions, and a second folder is a complete copy |
+| D-80 | An account folder selected in the Library shows **Update @name** in the pane's title row: one click starts an update with the account's remembered media choices and pace, without the form. The folder's context menu adds **Find Missing from @name**, and a folder that contains several remembered account folders has **Update All Accounts (N)**, run one after another. An update that stopped part way first pulls from the top with the early stop, then continues from where it stopped (amends D-37) | Requested: a one-click "fetch updated data" for folders that already hold an account |
+| D-81 | Instagram metadata files gain `media_id`, the id of the one file (a string, like `post_id`), so files can be matched exactly even after they are renamed. Informational, like `extractor`; older files without it are matched by name or by `post_id` and `num` | Exact matching for renamed files |
+| D-82 | MediaPull offers a Services menu entry and accepts dropped links, both of which only fill in the Downloads pane. There is no URL scheme or other way for another app to start a download | Requested: send a link from another app without copying and pasting; nothing outside MediaPull may start network work on its own |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1444,6 +1453,8 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 }
 ```
 
+`known_ids` lists item keys (`ig:<media_id>` for Instagram) and, for files of posts and Reels, `igp:<post_id>:<num>`; an item is known when either matches (D-79). Stories and highlights have no positional key, since their numbers change as the tray changes.
+
 `fetch` adds `"items": [...]` with item keys and the data returned by `scan`. `stream` takes `url`, `referer` and `cookies`. `supports` takes only `url`.
 
 ### A.2 Events (JSON Lines on standard output)
@@ -1516,6 +1527,7 @@ File `2023-01-06_022210_CnAbCdEfGh_02.jpg`, sidecar `2023-01-06_022210_CnAbCdEfG
   "description": "Morning walk by the river #autumn #walk",
   "extractor": "gallery-dl 1.32.19",
   "height": 1350,
+  "media_id": "3008811223344556678",
   "mediapull_version": "1.0",
   "num": 2,
   "post_id": "3008811223344556677",
@@ -1572,6 +1584,7 @@ File `2026-11-14_093000_0007_lake-at-dawn.jpg`:
 - `date` is always `YYYY-MM-DD HH:MM:SS` in UTC.
 - `num` and `count` appear together or not at all; `count` greater than 1 together with `post_shortcode` or `post_id` means the files form one post.
 - `username` and `author` are always strings when present.
+- `media_id` (Instagram, from 1.8) is the id of the one file, as a string (D-81); files saved earlier do not have it.
 
 ---
 

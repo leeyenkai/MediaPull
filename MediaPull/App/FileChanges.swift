@@ -33,6 +33,8 @@ extension AppModel {
         guard !moves.isEmpty else { return }
         await analysis.noteMoves(moves)
         await store?.moveArchivePaths(moves)
+        await accountFolders.moveFolders(moves)
+        await refreshAccountFolders()
     }
 }
 

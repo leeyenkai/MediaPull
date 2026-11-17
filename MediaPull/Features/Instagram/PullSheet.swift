@@ -9,6 +9,8 @@ import SwiftUI
 struct InstagramForm: View {
     @Bindable var model: WindowModel
     @Binding var draft: PullDraft
+    /// Where an account pull goes: into the folder that already holds the account, or a new one (D-78).
+    @State private var placeNote: String?
     private var app: AppModel { .shared }
 
     var body: some View {
@@ -16,8 +18,9 @@ struct InstagramForm: View {
             if let tag = draft.hashtag {
                 Label("Posts tagged #\(tag), newest first, saved in \(SaveTarget.tagsFolder)/\(tag)", systemImage: "number")
                     .font(.callout)
-            } else if draft.postURL != nil {
-                Label("This post's photos and videos, at the highest quality", systemImage: "photo.on.rectangle")
+            } else if let url = draft.postURL {
+                let what = url.path.contains("/highlights/") ? "highlight's" : url.path.hasPrefix("/stories/") ? "story's" : "post's"
+                Label("This \(what) photos and videos, at the highest quality", systemImage: "photo.on.rectangle")
                     .font(.callout)
             } else {
                 HStack(alignment: .center) {
@@ -69,11 +72,20 @@ struct InstagramForm: View {
                 get: { app.preferences.typeSubfolders }, set: { app.preferences.typeSubfolders = $0 }
             ))
             SaveFolderRow(model: model)
+            if let placeNote, draft.hashtag == nil, draft.postURL == nil, !draft.username.isEmpty {
+                Text(placeNote).font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Picker("Pace", selection: $draft.pacing) {
                     ForEach(PacingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 .fixedSize()
+                if draft.hashtag == nil, draft.postURL == nil, let posts = app.engines.accounts[draft.username]?.postCount {
+                    Text(estimateText(posts: posts))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("An update stops at the posts the folder already has, so it usually takes a minute or two.")
+                }
                 Spacer()
                 Button("List in Extracted Media") {
                     var scan = draft
@@ -96,6 +108,30 @@ struct InstagramForm: View {
             if copy.username == draft.username { draft = copy }
             await app.engines.lookup(draft.username)
         }
+        .task(id: "\(draft.username)|\(draft.folderName)|\(model.saveFolder?.path ?? "")") { await findPlace() }
+    }
+
+    private func findPlace() async {
+        guard !draft.username.isEmpty, let saveFolder = model.saveFolder else {
+            placeNote = nil
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        guard !Task.isCancelled else { return }
+        let account = draft.username
+        let name = FileNaming.safeTopFolder(draft.folderName.isEmpty ? account : draft.folderName)
+        let root = app.root(containing: saveFolder)?.url
+        let note = await Task.detached(priority: .utility) { () -> String in
+            let target = AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: root)
+            guard let existing = target.existing else {
+                return "Saves into a new folder “\(name)” in “\(target.parent.lastPathComponent)”."
+            }
+            let files = AccountFolders.index(existing).files
+            return "Adds only what “\(existing.lastPathComponent)” doesn't have yet "
+                + "(\(files.formatted()) file\(files == 1 ? "" : "s") there)."
+        }.value
+        guard !Task.isCancelled else { return }
+        placeNote = note
     }
 
     @ViewBuilder
@@ -113,9 +149,16 @@ struct InstagramForm: View {
                 DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
             }
         }
-        Toggle("Only new posts since the last pull", isOn: $draft.incremental)
+        Toggle("Only new posts (stop at the posts the folder already has)", isOn: $draft.incremental)
             .disabled(draft.hashtag == nil && draft.username.isEmpty)
         Text(InstagramNotice.quality).font(.caption).foregroundStyle(.secondary)
+    }
+
+    private func estimateText(posts: Int) -> String {
+        let estimate = draft.pacing.estimate(posts: posts)
+        let time = Duration.seconds(max(estimate.seconds, 60))
+            .formatted(.units(allowed: [.hours, .minutes], width: .wide, maximumUnitCount: 2))
+        return "Whole account: about \(estimate.requests) requests, \(time)"
     }
 
     private var canStart: Bool {

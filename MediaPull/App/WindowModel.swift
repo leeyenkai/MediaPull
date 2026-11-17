@@ -423,7 +423,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
         )
         if let web = item.source.web {
             context.referer = URLNormalizer.referer(for: url, from: web.frameURL ?? web.pageURL)
-            if URLNormalizer.mayCarryCookies(url, page: web.pageURL, frame: web.frameURL) { context.cookieHeader = cookieJar.header(for: url) }
+            if URLNormalizer.mayCarryCookies(url, page: web.pageURL, frame: web.frameURL) {
+                context.cookieHeader = cookieJar.header(for: url)
+            }
         } else if let engine = item.source.engine {
             if let agent = engine.headers.first(where: { $0.key.lowercased() == "user-agent" })?.value { context.userAgent = agent }
             if !engine.isInstagram, let source = engine.sourceURL { context.referer = URLNormalizer.referer(for: url, from: source) }
@@ -902,7 +904,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
                     Task { @MainActor in job.fraction = total.map { Double(received) / Double(max($0, 1)) } }
                 }
                 guard Sniffer.sniff(MediaConverter.head(of: file)).isMarkup == false,
-                      (try? Data(contentsOf: file, options: .alwaysMapped).prefix(5)) == Data("%PDF-".utf8) // lint:allow main-io five mapped bytes
+                      // lint:allow main-io five mapped bytes
+                      (try? Data(contentsOf: file, options: .alwaysMapped).prefix(5)) == Data("%PDF-".utf8)
                 else {
                     self?.extractedDocuments.remove(url.absoluteString)
                     AppModel.shared.jobs.finish(job, .failed("The site did not return a PDF."))
@@ -1174,7 +1177,6 @@ enum WindowSection: String, CaseIterable {
 
     var label: String { self == .collect ? "Collect" : "Organise" }
 }
-
 
 /// Extracted Media as a list (R-1709): one row per item, sorted by the pane's own sort.
 extension WindowModel: MediaListOwner {

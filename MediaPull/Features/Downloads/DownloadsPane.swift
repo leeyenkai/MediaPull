@@ -47,7 +47,9 @@ final class DownloadsModel {
         address = text
         checkTask?.cancel()
         checking = false
-        let input = AddressInput.parse(text.hasPrefix("#") ? "https://www.instagram.com/explore/tags/\(text.dropFirst())/" : text)
+        var input = AddressInput.parse(text.hasPrefix("#") ? "https://www.instagram.com/explore/tags/\(text.dropFirst())/" : text)
+        // A bare username typed here is an Instagram account (R-1104); the browser's own address field never gets here.
+        if case .invalid = input, !fromBrowser, let name = AddressInput.bareUsername(text) { input = .handle(name) }
         if let tag = Self.hashtag(text) {
             var draft = app.engines.draft(username: "")
             draft.hashtag = tag
@@ -74,13 +76,22 @@ final class DownloadsModel {
             target = text.isEmpty ? .empty : .notAddress
         case let .instagramPost(_, url):
             target = .instagram(app.engines.draft(username: "", postURL: url))
-        case .instagramProfile, .handle, .instagramStories:
-            target = .instagram(app.engines.draft(username: input.instagramUsername ?? ""))
-        case let .instagramHighlight(_, url), let .web(url):
-            if case .instagramHighlight = input {
-                target = .instagramPage(url)
-                return
+        case let .instagramStories(name, url):
+            // A link to one story gets that story; a link to someone's stories gets their stories, not the whole account.
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if parts.count >= 3, parts[2].allSatisfy(\.isNumber) {
+                target = .instagram(app.engines.draft(username: "", postURL: url))
+            } else {
+                var draft = app.engines.draft(username: name)
+                draft.content = [.stories]
+                draft.contentFromAddress = true
+                target = .instagram(draft)
             }
+        case .instagramProfile, .handle:
+            target = .instagram(app.engines.draft(username: input.instagramUsername ?? ""))
+        case let .instagramHighlight(_, url):
+            target = .instagram(app.engines.draft(username: "", postURL: url))
+        case let .web(url):
             if VideoPage.isLikely(url) {
                 target = .video(url)
                 return
@@ -138,7 +149,8 @@ struct DownloadsPane: View {
                 Text("Downloads").font(.headline)
                 Spacer()
                 PaneMenu(pane: .downloads, window: model)
-                Button { model.setShowing(.downloads, false) } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }.accessibilityLabel("Close Downloads")
+                Button { model.setShowing(.downloads, false) } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }
+                    .accessibilityLabel("Close Downloads")
                     .buttonStyle(.borderless)
                     .help("Close Downloads (⌥⌘4)")
             }
@@ -176,6 +188,12 @@ struct DownloadsPane: View {
         .onAppear { if let url = model.browser.url { downloads.use(url.absoluteString, fromBrowser: true) } }
         .onChange(of: model.browser.url) { _, url in if let url { downloads.use(url.absoluteString, fromBrowser: true) } }
         .onChange(of: model.downloadsFocus) { _, _ in focused = true }
+        // A link dropped here fills in the address; nothing starts until Download (R-1111c, D-82).
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: { ["http", "https"].contains($0.scheme?.lowercased() ?? "") }) else { return false }
+            downloads.use(url.absoluteString)
+            return true
+        }
     }
 
     private var symbol: String {
@@ -454,9 +472,11 @@ struct ActiveDownloads: View {
                             }
                         }
                         if job.state.canCancel {
-                            Button { job.cancel() } label: { Image(systemName: "xmark.circle") }.accessibilityLabel("Cancel").buttonStyle(.borderless).help("Cancel")
+                            Button { job.cancel() } label: { Image(systemName: "xmark.circle") }
+                                .accessibilityLabel("Cancel").buttonStyle(.borderless).help("Cancel")
                         } else if let url = job.destination {
-                            Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }.accessibilityLabel("Show in Finder")
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
+                                .accessibilityLabel("Show in Finder")
                                 .buttonStyle(.borderless).help("Show in Finder")
                         }
                     }

@@ -156,7 +156,8 @@ public struct MediaConverter: Sendable {
                         try await ffmpeg.mp4(fromConcatList: listURL, output: output)
                     }
                     return ConversionResult(url: output, format: policy == .gif ? .gif : .mp4, converted: true,
-                                            note: "Converted animation to \(policy.label)" + (written.truncated ? cut : ""), pixelSize: size)
+                                            note: "Converted animation to \(policy.label)" + (written.truncated ? cut : ""),
+                                            pixelSize: size)
                 } catch where policy == .mp4 {
                     throw error
                 } catch {
@@ -244,7 +245,8 @@ public struct MediaConverter: Sendable {
         } catch {
             // A conversion that fails is treated like one that cannot be done, so the next version, or the original
             // codec, is used with a note (D-32), never a failed save.
-            throw ConversionIssue.cannotDecode("The \(codec.uppercased()) video could not be converted to HEVC: \(error.localizedDescription)")
+            throw ConversionIssue.cannotDecode("The \(codec.uppercased()) video could not be converted to HEVC: "
+                + error.localizedDescription)
         }
         return ConversionResult(url: output, format: .mp4, converted: true, note: "Converted \(codec.uppercased()) to HEVC",
                                 pixelSize: size, duration: info.duration)

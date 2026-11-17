@@ -135,7 +135,78 @@ final class LibraryModel: MediaGridOwner {
         }
     }
     var selectedFolder: URL? {
-        didSet { if selectedFolder != oldValue { reload(); watch() } }
+        didSet { if selectedFolder != oldValue { reload(); watch(); findAccount() } }
+    }
+
+    /// The Instagram account whose folder the selected folder is, or is inside (D-78), for the one-click Update (D-80).
+    var account: AccountFolders.Match?
+    @ObservationIgnored private var accountTask: Task<Void, Never>?
+
+    /// Remembered folders are known at once; any other folder is recognised from its metadata files, off the main actor.
+    func findAccount() {
+        accountTask?.cancel()
+        guard let folder = selectedFolder else {
+            account = nil
+            return
+        }
+        if let record = app.accountFolder(containing: folder) {
+            account = AccountFolders.Match(account: record.account, folder: URL(fileURLWithPath: record.path, isDirectory: true))
+            return
+        }
+        account = nil
+        let root = app.root(containing: folder)?.url
+        accountTask = Task { [weak self] in
+            let match = await Task.detached(priority: .utility) { AccountFolders.detect(folder, stopAt: root) }.value
+            guard !Task.isCancelled, let self, self.selectedFolder == folder else { return }
+            self.account = match
+        }
+    }
+
+    /// Whether an update of `folder` is queued or running.
+    func isUpdating(_ folder: URL) -> Bool {
+        app.jobs.jobs.contains { $0.state.isActive && $0.destination?.standardizedFileURL == folder.standardizedFileURL }
+    }
+
+    /// Update an account folder, or find what it is missing (D-79, D-80).
+    func update(_ match: AccountFolders.Match, findMissing: Bool = false) {
+        Task { [weak self] in
+            await self?.app.engines.startUpdate(account: match.account, folder: match.folder, findMissing: findMissing,
+                                                window: self?.window)
+        }
+    }
+
+    /// Update every remembered account folder inside `folder`, one after another (R-1113).
+    func updateAll(inside folder: URL) {
+        let records = app.accountFolders(inside: folder)
+        Task { [weak self] in
+            for record in records {
+                await self?.app.engines.startUpdate(account: record.account, folder: URL(fileURLWithPath: record.path, isDirectory: true),
+                                                    findMissing: false, window: self?.window)
+            }
+        }
+    }
+
+    /// Context menu items for a folder: Update and Find Missing for an account folder, Update All for a folder of them.
+    func accountMenuItems(for folder: URL) -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        if let match = accountMatch(for: folder) {
+            items.append(ActionMenuItem("Update @\(match.account)") { [weak self] in self?.update(match) })
+            items.append(ActionMenuItem("Find Missing from @\(match.account)") { [weak self] in self?.update(match, findMissing: true) })
+        }
+        let inside = app.accountFolders(inside: folder).count
+        if inside > 1 {
+            items.append(ActionMenuItem("Update All Accounts (\(inside))") { [weak self] in self?.updateAll(inside: folder) })
+        }
+        return items
+    }
+
+    /// The account of `folder` when MediaPull knows it without reading the folder: remembered, or the selected folder's.
+    func accountMatch(for folder: URL) -> AccountFolders.Match? {
+        if let record = app.accountFolder(containing: folder) {
+            return AccountFolders.Match(account: record.account, folder: URL(fileURLWithPath: record.path, isDirectory: true))
+        }
+        guard let account, folder.standardizedFileURL == selectedFolder?.standardizedFileURL else { return nil }
+        return account
     }
 
     /// A save folder outside the library, shown under the library folders until replaced or removed (D-70).
@@ -525,7 +596,8 @@ final class LibraryModel: MediaGridOwner {
                     defer { try? FileManager.default.removeItem(at: work) }
                     let result = try await converter.convert(url, policy: policy, layout: .archive, workDirectory: work)
                     let stem = url.deletingPathExtension().lastPathComponent
-                    let output = Self.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: result.format.fileExtension)))
+                    let name = FileNaming.fileName(stem: stem, ext: result.format.fileExtension)
+                    let output = Self.uniqueURL(folder.appendingPathComponent(name))
                     let converted = result.converted, convertedURL = result.url
                     try await Self.offMain {
                         if converted {
@@ -639,7 +711,9 @@ final class LibraryModel: MediaGridOwner {
 
     /// The selected files and folders.
     var selectedURLs: [URL] {
-        selection.sorted().compactMap { id in fileURL(id) ?? (listFolders.isFolder(id) ? URL(fileURLWithPath: id, isDirectory: true) : nil) }
+        selection.sorted().compactMap { id in
+            fileURL(id) ?? (listFolders.isFolder(id) ? URL(fileURLWithPath: id, isDirectory: true) : nil)
+        }
     }
 
     /// A media file's address from its id, also for a file the pane has not listed yet (a column view click in another
@@ -773,6 +847,11 @@ final class LibraryModel: MediaGridOwner {
             menu.addItem(ActionMenuItem("Open") { [weak self] in self?.selectedFolder = folder })
         }
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(folders) })
+        if folders.count == 1, let folder = folders.first {
+            let items = accountMenuItems(for: folder)
+            if !items.isEmpty { menu.addItem(.separator()) }
+            items.forEach(menu.addItem)
+        }
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Move to Trash") { [weak self] in self?.trash(folders) })
         return menu

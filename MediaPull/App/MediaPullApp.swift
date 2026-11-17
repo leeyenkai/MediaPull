@@ -35,6 +35,23 @@ struct MediaPullApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { false }
 
+    func applicationDidFinishLaunching(_: Notification) {
+        NSApp.servicesProvider = self
+    }
+
+    /// Services > Download with MediaPull (R-1111c): the selected link or text fills in the Downloads pane; nothing starts
+    /// until the person clicks Download (D-82).
+    @objc func downloadWithMediaPull(_ pasteboard: NSPasteboard, userData _: String?,
+                                     error _: AutoreleasingUnsafeMutablePointer<NSString?>)
+    {
+        let link = (pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL])?.first?.absoluteString
+        guard let text = (link ?? pasteboard.string(forType: .string))?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty, text.count < 4096
+        else { return }
+        NSApp.activate()
+        AppModel.shared.frontWindow?.showDownloads(text)
+    }
+
     func applicationWillTerminate(_: Notification) {
         AppModel.shared.browsing.flush()
     }

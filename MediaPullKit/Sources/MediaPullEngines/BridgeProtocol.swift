@@ -199,8 +199,10 @@ public enum BridgeEvent: Sendable {
                     guard let id = entry["id"]?.string else { continue }
                     formats.append(VideoFormatInfo(
                         id: id, ext: entry["ext"]?.string ?? "", height: entry["height"]?.int, width: entry["width"]?.int,
-                        fps: SafeNumber.finite(entry["fps"]?.double, in: 0 ... 1000), vcodec: entry["vcodec"]?.string ?? "none", acodec: entry["acodec"]?.string ?? "none",
-                        abr: SafeNumber.finite(entry["abr"]?.double, in: 0 ... 1e6), tbr: SafeNumber.finite(entry["tbr"]?.double, in: 0 ... 1e6), size: SafeNumber.bytes(entry["size"]?.double),
+                        fps: SafeNumber.finite(entry["fps"]?.double, in: 0 ... 1000),
+                        vcodec: entry["vcodec"]?.string ?? "none", acodec: entry["acodec"]?.string ?? "none",
+                        abr: SafeNumber.finite(entry["abr"]?.double, in: 0 ... 1e6),
+                        tbr: SafeNumber.finite(entry["tbr"]?.double, in: 0 ... 1e6), size: SafeNumber.bytes(entry["size"]?.double),
                         drm: entry["drm"]?.bool ?? false
                     ))
                 }

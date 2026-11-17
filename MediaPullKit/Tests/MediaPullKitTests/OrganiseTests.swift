@@ -276,7 +276,7 @@ final class FolderOperationTests: XCTestCase {
     }
 
     /// SPEC 21: ⇧⌘Z redoes an undone change, and the redone change can be undone again.
-    func testRedoDoesTheChangeAgainAndCanBeUndone() async throws {
+    func testRedoDoesTheChangeAgainAndCanBeUndone() async {
         file("sub/a.jpg", "one", sidecar: true)
         file("b.jpg", "two")
         let before = tree()
@@ -346,7 +346,8 @@ final class FolderOperationTests: XCTestCase {
     func testCaseOnlyFolderDifferenceRenamesTheFolderOnce() async throws {
         let a = file("alice/a.jpg", "a", sidecar: true)
         let b = file("alice/b.jpg", "b")
-        let caseInsensitive = try root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames == false
+        let caseInsensitive = try root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            .volumeSupportsCaseSensitiveNames == false
         try XCTSkipUnless(caseInsensitive, "needs a case-insensitive volume")
         let plan = FolderOperations.sort([a, b], into: root, title: "Sort by Person") { _ in [["Alice"]] }
         XCTAssertEqual(plan.unchanged, 2)

@@ -76,6 +76,13 @@ public enum AddressInput: Equatable, Sendable {
         }
     }
 
+    /// A bare Instagram username typed where only addresses and accounts are expected (the Downloads pane, R-1104); a
+    /// word with a dot is read as a web address instead.
+    public static func bareUsername(_ raw: String) -> String? {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !name.contains(".") && isValidUsername(name) ? name : nil
+    }
+
     static func isValidUsername(_ name: String) -> Bool {
         guard (1 ... 30).contains(name.count) else { return false }
         return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_") }

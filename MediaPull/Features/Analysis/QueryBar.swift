@@ -29,7 +29,8 @@ struct QueryBar: View {
                     .onExitCommand { query.search = "" }
                     .onChange(of: focusToken) { _, _ in searchFocused = true }
                 if !query.search.isEmpty {
-                    Button { query.search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.accessibilityLabel("Clear Search")
+                    Button { query.search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .accessibilityLabel("Clear Search")
                         .buttonStyle(.plain)
                 }
             }
@@ -184,7 +185,6 @@ struct FilterMenu: View {
             }
         }
     }
-
 }
 
 /// Progress of analysis, for the Library and Organise headers.

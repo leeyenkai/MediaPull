@@ -152,7 +152,8 @@ public final class PDFImageExtractor {
                 // The PDF keeps the image's colour profile beside the JPEG data; put it into the file (losslessly) so
                 // wide-colour pictures keep their colours (R-1602).
                 let bytes = Self.iccProfile(dictionary).map { Self.embedICC($0, in: data) } ?? data
-                guard (try? bytes.write(to: file)) != nil else { return nil } // lint:allow silent-write an image that cannot be written is left out of the count shown
+                // lint:allow silent-write an image that cannot be written is left out of the count shown
+                guard (try? bytes.write(to: file)) != nil else { return nil }
                 return PDFExtractedImage(file: file, page: page, index: pageIndex, width: width, height: height, format: .jpeg,
                                          bytes: Int64(bytes.count))
             }

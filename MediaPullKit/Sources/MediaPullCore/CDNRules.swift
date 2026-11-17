@@ -326,7 +326,9 @@ public enum VariantRanker {
         let rule = mine.indices.first { mine[$0] != runnerUp[$0] } ?? 0
         switch rule {
         case 0:
-            if chosen.isDerived, chosen.pixelSize == nil { return "Probably the full-size original (worked out from the address; checked before saving)." }
+            if chosen.isDerived, chosen.pixelSize == nil {
+                return "Probably the full-size original (worked out from the address; checked before saving)."
+            }
             if chosen.origin == .link, chosen.pixelSize == nil { return "The full-size file the page links to." }
             return "The most pixels."
         case 1: return "The highest-density version among those of the same size."
