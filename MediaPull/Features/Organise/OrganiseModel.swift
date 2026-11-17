@@ -505,7 +505,6 @@ final class OrganiseModel {
     func execute(_ plan: OrganisePlan, then finished: (@MainActor () -> Void)? = nil) {
         pending = nil
         message = nil
-        let journal = app.journal
         let app = app
         let job = Job(kind: .organise, title: plan.title)
         job.total = plan.moves.count + plan.itemsToTrash.count + plan.foldersToCreate.count + plan.foldersToTrash.count
@@ -513,15 +512,13 @@ final class OrganiseModel {
         if job.total > 20 { app.jobs.add(job) }
         working = plan.title
         job.task = Task { [weak self] in
-            let entry = await journal.run(plan) { done, total in
+            // The files move whether or not the window is still open: the records follow them and the job ends.
+            let entry = await app.applyChange(plan) { done, total in
                 Task { @MainActor in
                     job.fraction = Double(done) / Double(max(total, 1))
                     job.summaryOverride = "\(done) of \(total) steps"
                 }
             }
-            // The files have moved whether or not the window is still open: the records follow them and the job ends.
-            await app.analysis.noteMoves(entry.moves)
-            await app.store?.moveArchivePaths(entry.moves)
             job.summaryOverride = "\(entry.fileCount) file\(entry.fileCount == 1 ? "" : "s")"
                 + (entry.failures.isEmpty ? "" : ", \(entry.failures.count) problems")
             job.failures = entry.failures.map { (id: $0, message: $0) }
@@ -558,26 +555,15 @@ final class OrganiseModel {
         history = await app.journal.entries()
     }
 
+    /// The History's Undo, and the toolbar's: through the window, so ⇧⌘Z can redo it.
     func undo(_ entry: JournalEntry) {
-        working = "Undoing \(entry.title)"
-        Task {
-            // ⌘Z and the toolbar's Undo can both reach an entry: the second one says so instead of "0 items put back".
-            if await app.journal.entry(entry.id)?.undone ?? true {
-                message = "“\(entry.title)” was already undone."
-                working = nil
-                await refreshHistory()
-                return
-            }
-            let report = await app.journal.undo(entry.id)
-            await app.analysis.noteMoves(report.moves)
-            await app.store?.moveArchivePaths(report.moves)
-            message = report.skipped.isEmpty
-                ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
-                : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; ")
-            await refreshHistory()
-            working = nil
-            refreshAfterChange()
-        }
+        window?.undoChange(entry)
+    }
+
+    /// Any window changed files: the History and both panes show the result.
+    func fileChanged() {
+        Task { await refreshHistory() }
+        refreshAfterChange()
     }
 
     /// The toolbar's Undo: this window's last change, as ⌘Z, else the newest change not undone yet.

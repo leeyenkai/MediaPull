@@ -176,10 +176,14 @@ public enum FileNaming {
         // Invisible characters that only get in the way: zero-width space and the byte-order mark.
         result = result.replacingOccurrences(of: "\u{200B}", with: "").replacingOccurrences(of: "\u{FEFF}", with: "")
         result = String(result.unicodeScalars.map { bannedInNames.contains($0) ? "_" : Character($0) })
-        result = result.trimmingCharacters(in: .whitespaces)
-        while result.hasPrefix(".") { result.removeFirst() }
-        while result.utf8.count > maxBytes { result.removeLast() }
-        result = result.trimmingCharacters(in: .whitespaces)
+        // Spaces and leading dots are removed until neither is left at the ends (". .x" must not become a hidden ".x").
+        var previous: String
+        repeat {
+            previous = result
+            result = result.trimmingCharacters(in: .whitespaces)
+            while result.hasPrefix(".") { result.removeFirst() }
+            while result.utf8.count > maxBytes { result.removeLast() }
+        } while result != previous
         return result.isEmpty ? "untitled" : result
     }
 

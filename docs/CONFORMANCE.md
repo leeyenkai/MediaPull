@@ -128,13 +128,13 @@ change as the code.
 | R-1501 | built | `Sidecar.sidecarURL` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Sidecar named after the full file name |
 | R-1502 | built | `SaveLayout.allows`, `SavePipeline.finalize` | `testSVGIsSkippedInArchiveButKeptInPlain`, `--selftest-video-download` | Archive formats only; chosen WebM or M4A kept without metadata (D-56, D-13) |
 | R-1503 | partial | `ArchivePlanner.fileName` | `testArchiveNamesNeverMatchForbiddenPattern` | Names start with the timestamp, but an audio-only MP4 is saved as a video in Archive folders |
-| R-1504 | partial | `FileNaming.isForbiddenArchiveName`, `NameTemplate.archiveProblems`, `ArchivePlanner.fileName` | `testArchiveNamesNeverMatchForbiddenPattern` | Pattern check runs before sanitising, so a cleaned name can still match |
+| R-1504 | built | `ArchivePlanner.fileName`, `FileNaming.isForbiddenArchiveName` | `testArchiveNamesNeverMatchForbiddenPattern`, `testCleanedNamesAreCheckedAndNeverHidden` | Checked on the cleaned name since 1.8 |
 | R-1505 | built | `FileNaming.safeTopFolder`, `ArchivePlanner.folder` | `testReservedFoldersAndLengths`, `testReservedNamesGetAnUnderscore` | Reserved first-level names get a leading underscore |
 | R-1506 | partial | `AppModel.locationWarning`, `LibraryPane` | none | iCloud and network warning shown under the folder; no test |
 | R-1507 | built | `Sidecar`, `ArchivePlanner.sidecar` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites`, `testInstagramSidecarMatchesContract` | Closed struct; no location, engagement or identity keys (D-12) |
 | R-1508 | partial | `DateFormats.utc`, `DateFormats.sidecarString` | `testDatesIgnoreUserCalendar` | Formatter fixed, but the test never switches to a non-Gregorian calendar or 12-hour locale |
 | R-1509 | built | `ArchivePlanner.sidecar` | `testNumAndCountComeTogether` | Web sidecars carry no num or count (D-10) |
-| R-1510 | partial | `FileNaming.sanitize`, `FileNaming.fileName` | `testNamesKeepJoinersButNotControls`, `testReservedFoldersAndLengths` | Joiners kept (D-74); archive name checks run before sanitising, so cleaned names are not rechecked |
+| R-1510 | built | `FileNaming.sanitize` | `testCleanedNamesAreCheckedAndNeverHidden`, `testReservedFoldersAndLengths` | Joiners kept (D-74); trimming repeats until stable so no hidden names (1.8) |
 | R-1601 | partial | `ImageConversion.stillTarget`, `ImageConversion.analyze`, `MediaConverter.convertImage` | `testPNGStaysUntouchedAndHEICBecomesJPEG`, `testAnimatedPNGAndWebPWithAlpha` | WebP lossless re-sniff past a large profile chunk is a no-op |
 | R-1602 | partial | `ImageConversion.convertStill` | `testPDFProfileIsAddedWithoutReencoding` | Properties carried by ImageIO; the Display P3 test covers PDF extraction, not conversion |
 | R-1603 | partial | `MediaConverter.convertAnimated`, `FFmpeg.gif`, `ImageConversion.frames` | none | GIF loop count forced to infinite and AVIF frame delays ignored; no test |
@@ -145,7 +145,7 @@ change as the code.
 | R-1608 | partial | `FFmpeg.remuxToMP4`, `VideoStreamInfo.audioNeedsConversion` | none | Opus and Vorbis to AAC 256 kbit/s with aac_at, MOV kept; no test |
 | R-1701 | built | `LibraryPane`, `LibraryModel` | `--selftest-views`, `--selftest-url` | Folder tree over contents, sidecars hidden with a badge, columns replace both (D-76) |
 | R-1702 | partial | `LibraryModel.promptForRoot`, `LibraryRootInfo`, `AppModel.addRoot` | none | Roots not followed when moved and no root rename UI; no test |
-| R-1703 | partial | `LibraryModel.newFolder`, `LibraryModel.commitRename`, `LibraryModel.trash`, `MediaFiles.move` | `testMetadataFilesTravelWithTheirMedia` | Sidecars follow renames, moves and Trash in code; no test of Library rename or trash |
+| R-1703 | built | `LibraryModel.commitRename`, `LibraryModel.trash`, `LibraryModel.perform`, `OperationJournal.run` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testRedoDoesTheChangeAgainAndCanBeUndone` | Library rename, move and Trash go through the journal with sidecars and are undoable (1.8) |
 | R-1704 | partial | `FolderWatcher`, `AnalysisService.updateWatch` | none | Recursive FSEvents per root, but roots excluded from analysis are not watched; no test |
 | R-1707 | partial | `QueryBar`, `LibraryModel` | none | Command-F toggles Extracted filters and does not focus Library search |
 | R-1708 | partial | `PaneViewMode`, `WindowModel.setViewMode`, `MediaOutlineView`, `MediaColumns` | `--selftest-views`, `testAllowedViewsPerPane` | List and Column views have stale-row and selection bugs |
@@ -199,9 +199,9 @@ change as the code.
 | R-3801 | built | `WindowSection`, `OrganiseModel.open` | `--selftest-analyse` | Collect and Organise tabs, Cmd-Ctrl-1 and 2, Open Folder, drops, panes stay mounted |
 | R-3802 | built | `OrganiseModel`, `OrganisePane` | `--selftest-analyse`, `--selftest-views`, `testOrganiseArrangementsHoldOnlyOrganisePanes` | Source, Organise, Target panes; in place, copy or move to an opt-in target (D-68, D-76) |
 | R-3803 | partial | `FolderOperations`, `SortRules` | `testFlattenNumbersCollisionsAndKeepsDatePrefix`, `testMergeCombinesSameNamedFolders` | No Move To... folder chooser: moves only by drag or to the chosen target |
-| R-3804 | partial | `FolderOperations.rename`, `FolderNames.safe`, `AppModel.noteMoved` | `testReservedNamesGetAnUnderscore`, `testCaseOnlyRenameKeepsTheName` | A case-only folder rename renames every file inside it |
+| R-3804 | built | `FolderOperations.sort`, `FolderOperations.samePlace`, `OperationJournal.run` | `testCaseOnlyFolderDifferenceRenamesTheFolderOnce`, `testFlattenNumbersCollisionsAndKeepsDatePrefix` | Case-only folder differences rename the folder once (1.8) |
 | R-3805 | built | `OrganiseModel.autoSort`, `OrganisePlan` | `--selftest-analyse` | Sorts only what the Source shows; no matches means no plan and a message (1.8) |
-| R-3806 | partial | `OperationJournal`, `WindowModel.registerUndo` | `testUndoOfACopyKeepsCopiesEditedSince`, `testUndoLeavesChangedFilesInPlace` | Copies edited since are kept (1.8); shared undo manager and missing Redo still open |
+| R-3806 | built | `OperationJournal.undo`, `OperationJournal.redo`, `WindowModel.registerUndo`, `AppModel.applyChange` | `testRedoDoesTheChangeAgainAndCanBeUndone`, `testUndoOfACopyKeepsCopiesEditedSince`, `testUndoLeavesChangedFilesInPlace` | Every Library and Organise change undoable with ⌘Z and redoable with Shift-⌘Z (1.8) |
 | R-3807 | partial | `OrganiseModel.execute`, `OperationJournal` | `--selftest-analyse` | no test: Cancel of an Organise job and undoing a cancelled operation are not exercised |
 | R-3901 | partial | `FaceOptIn`, `FaceSettings`, `AnalysisService.deleteAllFaceData`, `AnalysisService.removeVectorFiles` | `--selftest-analyse`, `testFaceVectorsStayExcludedFromBackups` | Every face vector file removed (1.8); still no off switch apart from deleting all face data |
 | R-3902 | built | `FaceDetector`, `FaceEncoder`, `FaceRules.minimumPixels` | `--selftest-analyse` | SCRFD with five landmarks, Vision fallback, 32 px floor, mirrored-crop fusion |

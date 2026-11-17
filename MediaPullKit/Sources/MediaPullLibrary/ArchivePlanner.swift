@@ -163,7 +163,10 @@ public enum ArchivePlanner {
             }
         }
         if layout == .archive {
-            if stem.range(of: #"^\d{4}-\d{2}-\d{2}_"#, options: .regularExpression) == nil || FileNaming.isForbiddenArchiveName(stem) {
+            // Checked on the name as it will be written: cleaning (":" to "_", zero-width spaces removed) can turn an
+            // allowed name into the forbidden pattern (R-1504, R-1510).
+            let written = FileNaming.sanitize(stem, maxBytes: 255)
+            if written.range(of: #"^\d{4}-\d{2}-\d{2}_"#, options: .regularExpression) == nil || FileNaming.isForbiddenArchiveName(written) {
                 stem = NameTemplate("{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{hash8}").render(context) + "_" + stem
             }
         }

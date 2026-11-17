@@ -32,6 +32,8 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var failures: [String]
     public var undone: Bool
     public var finished: Bool
+    /// The steps the last undo put back, in their original order, so Redo can do them again (nil before 1.8).
+    public var undoneSteps: [JournalStep]?
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
@@ -287,7 +289,9 @@ public actor OperationJournal {
 
     /// Whether two paths name the same file, as a case-only rename's old and new names do on most Mac volumes.
     static func sameFile(_ a: String, _ b: String) -> Bool {
-        guard a.lowercased() == b.lowercased() else { return false }
+        guard a.precomposedStringWithCanonicalMapping.lowercased() == b.precomposedStringWithCanonicalMapping.lowercased() else {
+            return false
+        }
         let key: Set<URLResourceKey> = [.fileResourceIdentifierKey]
         guard let first = try? URL(fileURLWithPath: a).resourceValues(forKeys: key).fileResourceIdentifier,
               let second = try? URL(fileURLWithPath: b).resourceValues(forKeys: key).fileResourceIdentifier else { return false }
@@ -305,6 +309,7 @@ public actor OperationJournal {
         ) }
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         var left: [[JournalStep]] = []
+        var undoneUnits: [[JournalStep]] = []
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
         for unit in Self.units(entry.steps).reversed() {
             guard undo(unit[0], report: &report) else {
@@ -314,13 +319,77 @@ public actor OperationJournal {
             for step in unit.dropFirst() {
                 undo(step, report: &report)
             }
+            undoneUnits.append(unit)
         }
+        entry.undoneSteps = undoneUnits.reversed().flatMap { $0 }
         // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
         // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
         entry.steps = left.reversed().flatMap { $0 }
         entry.undone = left.isEmpty
         save(entry)
         return report
+    }
+
+    /// Redo: does again what the last undo of `id` put back, recording the new steps so it can be undone once more. Items
+    /// that changed or are in the way since are left and reported.
+    public func redo(_ id: UUID) -> UndoReport {
+        var report = UndoReport(restored: 0, skipped: [], moves: [])
+        guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
+        for unit in Self.units(steps) {
+            guard redo(unit[0], entry: &entry, report: &report) else { continue }
+            for step in unit.dropFirst() {
+                redo(step, entry: &entry, report: &report)
+            }
+        }
+        entry.undone = false
+        entry.undoneSteps = nil
+        save(entry)
+        return report
+    }
+
+    @discardableResult
+    func redo(_ step: JournalStep, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
+        do {
+            switch step {
+            case let .makeFolder(path):
+                if !fm.fileExists(atPath: path) {
+                    try fm.createDirectory(at: URL(fileURLWithPath: path), withIntermediateDirectories: true)
+                    entry.steps.append(.makeFolder(path))
+                }
+                return true
+            case let .move(from, to, _, _):
+                guard fm.fileExists(atPath: from) else {
+                    report.skipped.append("\(URL(fileURLWithPath: from).lastPathComponent) is no longer at \(from)")
+                    return false
+                }
+                guard !fm.fileExists(atPath: to) || Self.sameFile(from, to) else {
+                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): another file now has that name")
+                    return false
+                }
+                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), entry: &entry)
+                try moveItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
+                if !to.hasSuffix(".json") { report.restored += 1 }
+                report.moves.append((from, to))
+                return true
+            case let .clone(from, to, _):
+                guard fm.fileExists(atPath: from), !fm.fileExists(atPath: to) else {
+                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) could not be copied again")
+                    return false
+                }
+                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), entry: &entry)
+                try cloneItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
+                if !to.hasSuffix(".json") { report.restored += 1 }
+                return true
+            case let .trash(original, _):
+                guard fm.fileExists(atPath: original) else { return true }
+                try trashItem(URL(fileURLWithPath: original), entry: &entry)
+                if !original.hasSuffix(".json") { report.restored += 1 }
+                return true
+            }
+        } catch {
+            report.skipped.append(error.localizedDescription)
+            return false
+        }
     }
 
     /// Whether a step that could not be undone might be later: its file's folder is not there at all.

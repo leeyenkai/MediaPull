@@ -64,6 +64,25 @@ final class NamingTests: XCTestCase {
         XCTAssertTrue(NameTemplate.archiveEngine.archiveProblems().isEmpty)
     }
 
+    /// 1.8 audit: names are checked as they will be written, after cleaning (R-1504, R-1510).
+    func testCleanedNamesAreCheckedAndNeverHidden() {
+        XCTAssertEqual(FileNaming.sanitize(". .x"), "x")
+        XCTAssertEqual(FileNaming.sanitize(" . . "), "untitled")
+        let url = URL(string: "https://example.com/a.jpg")!
+        let variant = MediaVariant(id: url.absoluteString, url: url, format: .jpeg, origin: .img)
+        let item = MediaItem(id: "a", kind: .image, variants: [variant], source: .web(WebContext(pageURL: URL(string: "https://example.com/")!)),
+                             discoveryIndex: 0, group: "g", groupTitle: "t")
+        let info = FinalFileInfo(format: .jpeg, sha256: "abcdef0123456789", pixelSize: nil, duration: nil, sourceURL: url, lastModified: nil,
+                                 originalName: "a", note: nil)
+        for override in ["2023-01-06_18-42-10:UTC", "2023-01-06_18-42-10\u{200B}_UTC", ". .2023-01-06_18-42-10_UTC"] {
+            let name = ArchivePlanner.fileName(for: item, info: info, layout: .archive, settings: SaveSettings(), index: 1,
+                                               saveDate: Date(timeIntervalSince1970: 1_700_000_000), override: override)
+            XCTAssertFalse(FileNaming.isForbiddenArchiveName(name), name)
+            XCTAssertFalse(name.hasPrefix("."), name)
+            XCTAssertNotNil(name.range(of: #"^\d{4}-\d{2}-\d{2}_"#, options: .regularExpression), name)
+        }
+    }
+
     func testReservedFoldersAndLengths() {
         XCTAssertEqual(FileNaming.safeTopFolder("media"), "_media")
         XCTAssertEqual(FileNaming.safeTopFolder("Your_Instagram_Activity"), "_Your_Instagram_Activity")

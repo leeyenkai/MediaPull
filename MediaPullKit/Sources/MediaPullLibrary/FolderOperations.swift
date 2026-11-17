@@ -150,6 +150,17 @@ public enum FolderOperations {
 
     // MARK: Collisions
 
+    /// Whether two folder paths name the same folder: equal, or (on a case-insensitive volume) differing only in letter
+    /// case or Unicode form, which the volume treats as one name.
+    public static func samePlace(_ a: URL, _ b: URL) -> Bool {
+        let x = a.standardizedFileURL.path, y = b.standardizedFileURL.path
+        if x == y { return true }
+        guard x.precomposedStringWithCanonicalMapping.lowercased() == y.precomposedStringWithCanonicalMapping.lowercased() else {
+            return false
+        }
+        return OperationJournal.sameFile(x, y)
+    }
+
     /// Picks a free name in `folder`, numbering `name 2.jpg`, `name 3.jpg` so an Archive date prefix stays first.
     public static func freeDestination(for name: String, in folder: URL, taken: inout Set<String>) -> (url: URL, renamed: Bool) {
         let ns = name as NSString
@@ -314,6 +325,7 @@ public enum FolderOperations {
         var plan = OrganisePlan(title: title, root: root)
         var taken = Set<String>()
         var created = Set<String>()
+        var respelled = Set<String>()
         for file in files {
             var targets = assign(file)
             if targets.isEmpty {
@@ -326,7 +338,15 @@ public enum FolderOperations {
             var first = true
             for components in targets {
                 let folder = components.map(FolderNames.safe).reduce(root) { $0.appendingPathComponent($1, isDirectory: true) }
-                if folder.standardizedFileURL == file.deletingLastPathComponent().standardizedFileURL {
+                let parent = file.deletingLastPathComponent()
+                if samePlace(folder, parent) {
+                    // Already there; on a case-insensitive volume the folder may only be spelled differently ("alice" for
+                    // a person now named "Alice"): the folder is renamed once, and its files stay put.
+                    if folder.standardizedFileURL.path != parent.standardizedFileURL.path,
+                       respelled.insert(parent.standardizedFileURL.path).inserted
+                    {
+                        plan.moves.append(PlannedMove(source: parent, destination: folder))
+                    }
                     if first {
                         plan.unchanged += 1
                     }

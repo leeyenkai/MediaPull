@@ -33,6 +33,10 @@ final class AppModel {
     var ruleList: UploadRules?
     /// The rules finished compiling (or failed to); tabs wait for this before loading their first page.
     var ruleListSettled = false
+    /// Bumped after every journaled file change, undo and redo, in any window (History lists and panes refresh).
+    var fileChangeRevision = 0 {
+        didSet { libraryRevision += 1 }
+    }
     /// The walkthrough (SPEC 7.2): on first run with the setup steps, or the tour alone from Settings or Help.
     var walkthrough: WalkthroughMode?
     let browsing = BrowsingStore(persistent: !SelfTestRunner.isActive)

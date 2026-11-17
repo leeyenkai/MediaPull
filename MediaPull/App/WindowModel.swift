@@ -1111,16 +1111,6 @@ enum WindowSection: String, CaseIterable {
     var label: String { self == .collect ? "Collect" : "Organise" }
 }
 
-extension WindowModel {
-    /// ⌘Z undoes an Organise operation, a whole automatic sort as one step (R-3806).
-    func registerUndo(_ entry: JournalEntry) {
-        guard let manager = hostWindow?.undoManager else { return }
-        manager.registerUndo(withTarget: self) { window in
-            MainActor.assumeIsolated { window.organise.undo(entry) }
-        }
-        manager.setActionName(entry.title)
-    }
-}
 
 /// Extracted Media as a list (R-1709): one row per item, sorted by the pane's own sort.
 extension WindowModel: MediaListOwner {

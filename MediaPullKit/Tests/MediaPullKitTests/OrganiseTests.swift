@@ -275,6 +275,30 @@ final class FolderOperationTests: XCTestCase {
         XCTAssertEqual(tree().filter { $0.hasPrefix("in/") }, ["in/a.jpg", "in/a.jpg.json", "in/b.jpg", "in/folder/c.jpg"])
     }
 
+    /// SPEC 21: ⇧⌘Z redoes an undone change, and the redone change can be undone again.
+    func testRedoDoesTheChangeAgainAndCanBeUndone() async throws {
+        file("sub/a.jpg", "one", sidecar: true)
+        file("b.jpg", "two")
+        let before = tree()
+        let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+        let entry = await journal.run(FolderOperations.flatten(root))
+        let after = tree()
+        XCTAssertNotEqual(after, before)
+        _ = await journal.undo(entry.id)
+        XCTAssertEqual(tree(), before)
+        let redone = await journal.redo(entry.id)
+        XCTAssertTrue(redone.skipped.isEmpty, "\(redone.skipped)")
+        XCTAssertEqual(tree(), after)
+        _ = await journal.undo(entry.id)
+        XCTAssertEqual(tree(), before)
+        let trash = await journal.run(FolderOperations.trash([root.appendingPathComponent("b.jpg")]))
+        _ = await journal.undo(trash.id)
+        _ = await journal.redo(trash.id)
+        XCTAssertFalse(tree().contains("b.jpg"), "redo of a trash moves it to the Trash again")
+        _ = await journal.undo(trash.id)
+        XCTAssertTrue(tree().contains("b.jpg"))
+    }
+
     func testJournalsWithoutCopyStampsStillDecode() throws {
         let old = #"[{"clone":{"from":"/a.jpg","to":"/b.jpg"}}]"#
         let steps = try JSONDecoder().decode([JournalStep].self, from: Data(old.utf8))
@@ -316,6 +340,25 @@ final class FolderOperationTests: XCTestCase {
         XCTAssertTrue(FolderOperations.move([folder], to: inside).moves.isEmpty)
         XCTAssertTrue(FolderOperations.merge(folder, into: inside).moves.isEmpty)
         XCTAssertEqual(FolderOperations.copy([folder], to: root.appendingPathComponent("A copy")).moves.count, 1)
+    }
+
+    /// 1.8 audit: sorting again after a person's name changed only in case renames the folder, never every file in it.
+    func testCaseOnlyFolderDifferenceRenamesTheFolderOnce() async throws {
+        let a = file("alice/a.jpg", "a", sidecar: true)
+        let b = file("alice/b.jpg", "b")
+        let caseInsensitive = try root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames == false
+        try XCTSkipUnless(caseInsensitive, "needs a case-insensitive volume")
+        let plan = FolderOperations.sort([a, b], into: root, title: "Sort by Person") { _ in [["Alice"]] }
+        XCTAssertEqual(plan.unchanged, 2)
+        XCTAssertEqual(plan.moves.count, 1, "one folder rename, no file moves")
+        XCTAssertEqual(plan.renamed, 0)
+        let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
+        let entry = await journal.run(plan)
+        XCTAssertTrue(entry.failures.isEmpty, "\(entry.failures)")
+        XCTAssertEqual(tree(), ["Alice/a.jpg", "Alice/a.jpg.json", "Alice/b.jpg"])
+        let again = FolderOperations.sort(tree().filter { !$0.hasSuffix(".json") }.map { root.appendingPathComponent($0) },
+                                          into: root, title: "Sort by Person") { _ in [["Alice"]] }
+        XCTAssertTrue(again.moves.isEmpty)
     }
 
     func testSortClonesGroupPhotosAndUsesUnsorted() async {

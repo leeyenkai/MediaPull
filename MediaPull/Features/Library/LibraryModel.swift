@@ -396,36 +396,39 @@ final class LibraryModel: MediaGridOwner {
 
     func commitRename(_ url: URL, to text: String) {
         renaming = nil
-        let name = FileNaming.sanitize(text.trimmingCharacters(in: .whitespacesAndNewlines), maxBytes: 240)
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != url.lastPathComponent else { return }
-        let destination = url.deletingLastPathComponent().appendingPathComponent(name)
-        do {
-            try MediaFiles.move(url, to: destination)
-            app.noteMoved([(from: url.path, to: destination.path)])
-            selectedFolder = selectedFolder.map { Self.moved($0, from: url, to: destination) }
-            otherFolder = otherFolder.map { Self.moved($0, from: url, to: destination) }
-            treeRevision += 1
-            reload()
-        } catch {
-            message = error.localizedDescription
+        let plan = FolderOperations.rename(url, to: name)
+        guard let destination = plan.moves.first?.destination else { return }
+        perform(plan) { [weak self] entry in
+            guard let self, entry.failures.isEmpty else { return }
+            self.selectedFolder = self.selectedFolder.map { Self.moved($0, from: url, to: destination) }
+            self.otherFolder = self.otherFolder.map { Self.moved($0, from: url, to: destination) }
         }
     }
 
-    /// Moves files (with their sidecars) or folders to the Trash. Nothing is ever deleted outright.
+    /// Moves files (with their sidecars) or folders to the Trash, as one change ⌘Z puts back. Nothing is deleted outright.
     func trash(_ urls: [URL]) {
-        for url in urls {
-            do {
-                try MediaFiles.trash(url)
-            } catch {
-                message = "\(url.lastPathComponent) could not be moved to the Trash: \(error.localizedDescription)"
-                continue
-            }
-            // The save folder or one of its parents went to the Trash: save into the folder above instead.
-            if let folder = selectedFolder, Self.isInside(folder, url) { selectedFolder = url.deletingLastPathComponent() }
-            if let other = otherFolder, Self.isInside(other, url) { otherFolder = nil }
+        guard !urls.isEmpty else { return }
+        // The save folder or one of its parents goes to the Trash: save into the folder above instead.
+        if let folder = selectedFolder, let gone = urls.first(where: { Self.isInside(folder, $0) }) {
+            selectedFolder = gone.deletingLastPathComponent()
         }
-        treeRevision += 1
-        reload()
+        if let other = otherFolder, urls.contains(where: { Self.isInside(other, $0) }) { otherFolder = nil }
+        perform(FolderOperations.trash(urls))
+    }
+
+    /// Runs a file change through the journal (undoable with ⌘Z, R-3806) and shows its problems, if any.
+    func perform(_ plan: OrganisePlan, then finished: ((JournalEntry) -> Void)? = nil) {
+        guard !plan.isEmpty else { return }
+        Task {
+            let entry = await app.applyChange(plan)
+            message = entry.failures.isEmpty ? nil : entry.failures.prefix(3).joined(separator: "\n")
+            window?.registerUndo(entry)
+            finished?(entry)
+            treeRevision += 1
+            reload()
+        }
     }
 
     static func isInside(_ folder: URL, _ parent: URL) -> Bool {
@@ -449,44 +452,34 @@ final class LibraryModel: MediaGridOwner {
         let converter = MediaConverter(ffmpeg: app.ffmpeg, svgRasterizer: SVGRasterizer.rasterize)
         let policy = app.preferences.conversion
         let urls = Sidecar.withoutCompanions(urls)
+            .filter { $0.deletingLastPathComponent().standardizedFileURL != folder.standardizedFileURL }
+        // Files that an Archive folder needs in a normal format are converted on the way in (a new file, like a save);
+        // everything else is moved or copied as one journaled change that ⌘Z takes back (R-3806).
+        let converts = move ? [] : urls.filter { url in
+            guard target.layout == .archive, let format = MediaFormat.fromExtension(url.pathExtension) else { return false }
+            return !format.isNormal
+        }
+        let rest = urls.filter { !converts.contains($0) }
+        if !rest.isEmpty {
+            perform(move ? FolderOperations.move(rest, to: folder) : FolderOperations.copy(rest, to: folder))
+        }
+        guard !converts.isEmpty else { return }
         Task {
             var problems: [String] = []
-            var moved: [(from: String, to: String)] = []
-            defer { app.noteMoved(moved) }
-            for url in urls {
-                if url.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL { continue }
-                var isDirectory: ObjCBool = false
-                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-                let destination = Self.uniqueURL(folder.appendingPathComponent(url.lastPathComponent))
-                let isFolder = isDirectory.boolValue
+            for url in converts {
                 do {
-                    // Copies of large videos take a while, so file operations run off the main actor.
-                    if isFolder, !move {
-                        try await Self.offMain { try FileManager.default.copyItem(at: url, to: destination) }
-                        continue
-                    }
-                    if move {
-                        try await Self.offMain { try MediaFiles.move(url, to: destination) }
-                        moved.append((from: url.path, to: destination.path))
-                        continue
-                    }
-                    let format = MediaFormat.fromExtension(url.pathExtension)
-                    if target.layout == .archive, let format, !format.isNormal {
-                        let work = SavePipeline.defaultWorkDirectory.appendingPathComponent("import-\(UUID().uuidString)")
-                        defer { try? FileManager.default.removeItem(at: work) }
-                        let result = try await converter.convert(url, policy: policy, layout: .archive, workDirectory: work)
-                        let output = Self.uniqueURL(folder.appendingPathComponent(
-                            FileNaming.fileName(stem: url.deletingPathExtension().lastPathComponent, ext: result.format.fileExtension)))
-                        let converted = result.converted, convertedURL = result.url
-                        try await Self.offMain {
-                            if converted {
-                                try FileManager.default.moveItem(at: convertedURL, to: output)
-                            } else {
-                                try FileManager.default.copyItem(at: url, to: output)
-                            }
+                    let work = SavePipeline.defaultWorkDirectory.appendingPathComponent("import-\(UUID().uuidString)")
+                    defer { try? FileManager.default.removeItem(at: work) }
+                    let result = try await converter.convert(url, policy: policy, layout: .archive, workDirectory: work)
+                    let stem = url.deletingPathExtension().lastPathComponent
+                    let output = Self.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: result.format.fileExtension)))
+                    let converted = result.converted, convertedURL = result.url
+                    try await Self.offMain {
+                        if converted {
+                            try FileManager.default.moveItem(at: convertedURL, to: output) // lint:allow main-io inside offMain
+                        } else {
+                            try FileManager.default.copyItem(at: url, to: output) // lint:allow main-io inside offMain
                         }
-                    } else {
-                        try await Self.offMain { try MediaFiles.copy(url, to: destination) }
                     }
                 } catch {
                     problems.append("\(url.lastPathComponent): \(error.localizedDescription)")
