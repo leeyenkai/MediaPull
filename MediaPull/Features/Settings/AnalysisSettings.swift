@@ -56,7 +56,7 @@ struct AnalysisSettings: View {
                     HStack {
                         Text(subject)
                         Spacer()
-                        Button { preferences.customSubjects.removeAll { $0 == subject } } label: { Image(systemName: "minus.circle") }
+                        Button { preferences.customSubjects.removeAll { $0 == subject } } label: { Image(systemName: "minus.circle") }.accessibilityLabel("Remove Subject")
                             .buttonStyle(.borderless)
                     }
                 }

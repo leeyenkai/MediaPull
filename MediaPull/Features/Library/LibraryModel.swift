@@ -234,15 +234,12 @@ final class LibraryModel: MediaGridOwner {
         let entries = entries, query = query
         filterTask = Task { [weak self] in
             guard let self else { return }
-            var context = LibraryQuery.Context(similarityFloor: AnalysisService.meaningFloor)
             if !query.search.trimmingCharacters(in: .whitespaces).isEmpty {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
-                context.similarity = await self.app.analysis.meaningScores(query.search, entries: entries)
-                context.similarityFloor = AnalysisService.floor(for: context.similarity)
             }
-            if query.sort == .similar || query.filter.similarOnly { context.similarGroups = await self.app.analysis.similarGroups(entries) }
-            if !query.filter.people.isEmpty { context.people = await self.app.analysis.peopleByPath(entries) }
+            let context = await self.app.analysis.queryContext(for: query, entries: entries)
+            guard !Task.isCancelled else { return }
             let result = await Task.detached(priority: .userInitiated) { query.apply(entries, context: context) }.value
             guard !Task.isCancelled else { return }
             self.built = result
@@ -632,7 +629,21 @@ final class LibraryModel: MediaGridOwner {
 
     func gridSelectionChanged(_ ids: Set<String>) {
         selection = ids
-        if ids.count == 1, let id = ids.first, let file = file(id) { window?.showInPreview(.file(file.url)) }
+        if ids.count == 1, let id = ids.first, let url = fileURL(id) { window?.showInPreview(.file(url)) }
+    }
+
+    /// The selected files and folders.
+    var selectedURLs: [URL] {
+        selection.sorted().compactMap { id in fileURL(id) ?? (listFolders.isFolder(id) ? URL(fileURLWithPath: id, isDirectory: true) : nil) }
+    }
+
+    /// A media file's address from its id, also for a file the pane has not listed yet (a column view click in another
+    /// folder arrives before that folder's listing).
+    private func fileURL(_ id: String) -> URL? {
+        if let file = file(id) { return file.url }
+        guard id.hasPrefix("/"), !listFolders.isFolder(id), MediaFormat.fromExtension(URL(fileURLWithPath: id).pathExtension) != nil
+        else { return nil }
+        return URL(fileURLWithPath: id)
     }
 
     /// A folder (a row of the list or column view) opens in the pane, as in the Finder.
@@ -641,18 +652,18 @@ final class LibraryModel: MediaGridOwner {
             selectedFolder = URL(fileURLWithPath: id, isDirectory: true)
             return
         }
-        guard let file = file(id) else { return }
-        NSWorkspace.shared.open(file.url)
+        guard let url = fileURL(id) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func gridQuickLook() {
-        QuickLook.shared.show(selection.sorted().compactMap { file($0)?.url })
+        QuickLook.shared.show(selection.sorted().compactMap { fileURL($0) })
     }
 
     /// Return renames and ⌘⌫ moves to the Trash, in the grid as in the folder tree (R-1707). The editor holds the name.
     func gridReturn(_ id: String) {
-        guard let file = file(id) else { return gridActivate(id) }
-        window?.openEditor(EditorRequest(subject: .file(file.url)))
+        guard let url = fileURL(id) else { return gridActivate(id) }
+        window?.openEditor(EditorRequest(subject: .file(url)))
     }
 
     func gridDelete(_ ids: Set<String>) {
@@ -793,6 +804,8 @@ extension LibraryModel: MediaListOwner {
     }
 
     func listIsFolder(_ id: String) -> Bool { listFolders.isFolder(id) }
+
+    var listGeneration: Int { listFolders.generation }
 
     func listChildren(_ folderID: String) -> [String]? {
         listFolders.onLoaded = { [weak self] id in self?.onListChildrenLoaded?(id) }

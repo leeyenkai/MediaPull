@@ -91,18 +91,18 @@ struct JobRow: View {
     private var actions: some View {
         HStack(spacing: 6) {
             if let url = job.destination, job.saved + job.duplicates > 0 {
-                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
+                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }.accessibilityLabel("Show in Finder")
                     .help("Show in Finder")
             }
             if case .blocked = job.state, let resume = job.resume {
                 Button("Resume") { resume() }
             }
             if let toggle = job.pauseToggle, job.state.isActive || job.state == .paused {
-                Button { toggle() } label: { Image(systemName: job.state == .paused ? "play.circle" : "pause.circle") }
+                Button { toggle() } label: { Image(systemName: job.state == .paused ? "play.circle" : "pause.circle") }.accessibilityLabel(job.state == .paused ? "Resume" : "Pause")
                     .help(job.state == .paused ? "Resume" : "Pause")
             }
             if job.state.canCancel {
-                Button { job.cancel() } label: { Image(systemName: "xmark.circle") }
+                Button { job.cancel() } label: { Image(systemName: "xmark.circle") }.accessibilityLabel("Cancel Job")
                     .help("Cancel")
             } else if job.failed > 0, let retry = job.retry {
                 Button("Retry Failed") { retry() }

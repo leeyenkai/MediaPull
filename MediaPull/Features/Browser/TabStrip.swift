@@ -1,3 +1,4 @@
+import AppKit
 import MediaPullCore
 import SwiftUI
 
@@ -23,7 +24,12 @@ struct TabStrip: View {
                         .frame(height: proxy.size.height)
                     }
                     .onChange(of: model.selectedTabID) { _, id in
-                        withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id) }
+                        // Reduce Motion (R-2401): the strip jumps instead of sliding.
+                        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                            reader.scrollTo(id)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id) }
+                        }
                     }
                 }
             }
@@ -91,6 +97,8 @@ struct TabChip: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { model.selectTab(tab.id) }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { model.selectTab(tab.id) }
         .onHover { hovering = $0 }
         .help(tab.url?.absoluteString ?? "New Tab")
         .contextMenu {

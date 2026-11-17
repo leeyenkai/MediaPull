@@ -76,7 +76,8 @@ struct OrganiseFolderPane: View {
                         .padding(.horizontal, 12)
                         .padding(.top, 6)
                         if !columns {
-                            QueryBar(query: $pane.query, includeSubfolders: $pane.includeSubfolders, entries: pane.entries)
+                            QueryBar(query: $pane.query, includeSubfolders: $pane.includeSubfolders, entries: pane.entries,
+                                     focusToken: model.searchFocusTokens[pane.paneID] ?? 0)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                         }
@@ -301,7 +302,7 @@ struct OrganiseWorkPane: View {
                 HStack(alignment: .top, spacing: 8) {
                     Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
-                    Button { organise.message = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                    Button { organise.message = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss Message").buttonStyle(.borderless)
                 }
                 .padding(12)
             }

@@ -104,7 +104,7 @@ struct ExtractedHeader: View {
     }
 
     private var rescanButton: some View {
-        Button { model.browser.rescan() } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+        Button { model.browser.rescan() } label: { Image(systemName: "arrow.triangle.2.circlepath") }.accessibilityLabel("Look for Media Again")
             .buttonStyle(.borderless)
             .help("Look for media on the page again")
     }
@@ -121,14 +121,14 @@ struct ExtractedHeader: View {
     }
 
     private var pdfMenu: some View {
-        Menu { pdfCommands } label: { Image(systemName: "doc.richtext") }
+        Menu { pdfCommands } label: { Image(systemName: "doc.richtext") }.accessibilityLabel("Images in PDFs")
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Extract the images inside a PDF. You can also drop PDF files here.")
     }
 
     private var clearButton: some View {
-        Button { model.clear() } label: { Image(systemName: "trash") }
+        Button { model.clear() } label: { Image(systemName: "trash") }.accessibilityLabel("Clear Extracted Media")
             .buttonStyle(.borderless)
             .help("Clear extracted media (⌘K)")
             .disabled(model.items.isEmpty)

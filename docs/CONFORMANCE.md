@@ -71,23 +71,23 @@ change as the code.
 | R-911 | amended | `MediaProber.probe` | `testMalformedMP4BoxesDoNotCrash` | D-77: the tail read is the last 1 MB |
 | R-912 | built | `MediaProber`, `WindowModel.ensureProbed`, `WindowModel.gridAppeared` | `--selftest-url` | Visible, selected or filter-needed items only; 6 at once; cached per session |
 | R-913 | built | `CDNRules`, `WindowModel.ensureProbed` | `testNYTimesRendition`, `testTwitterWordPressAndSigned`, `testSmallerGuessedOriginalIsRejected` | Derived originals unverified until checked; signed URLs untouched |
-| R-914 | partial | `VariantRanker.best`, `VariantRow` | `testSrcsetCandidatesMergeAndRank`, `testEqualValuesKeepDiscoveryOrder` | Ranking as written; Preview marks the chosen variant but never says why |
+| R-914 | built | `VariantRanker.best`, `VariantRanker.reason` | `testReasons` | The Preview says why a version was chosen (1.8) |
 | R-915 | built | `URLNormalizer.referer`, `RequestContext`, `SavePipeline` | `--selftest-url` | Pane User-Agent, image Accept header, strict-origin-when-cross-origin Referer |
 | R-916 | built | `URLNormalizer.mayCarryCookies`, `PublicSuffix` | `testCookiesNeedTheFrameToo`, `testRegistrableDomain` | Cookies only when the media is same-site with the page and the reporting frame (1.8) |
 | R-917 | built | `MediaProber.bestHLSResolution`, `BridgeEngineFetcher`, `stream_options` | `test_stream_options_map_extras` | Stream items sized from the manifest; saved by yt-dlp with Referer and first-party cookies |
 | R-918 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `VideoFormatInfo.drm` | `--selftest-url` | D-77: Protected from EME use in the page or DRM reported by yt-dlp |
 | R-919 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `BrowserController.readBlob` | `--selftest-url` | D-77: blob videos listed as unavailable with a pointer to Save Video |
-| R-1001 | partial | `MediaGrid`, `WindowModel.gridInfo` | `--selftest-url` | Virtualized grid with type, format, size, bytes, duration and state badges; no insecure badge |
+| R-1001 | person | `MediaGridView`, `WindowModel.gridInfo` | `--selftest-url` | Insecure (http) badge added in 1.8; badges need a person to look at |
 | R-1001a | partial | `ZoomSlider`, `WindowModel.gridMagnify`, `WindowModel.zoomRange`, `AppCommands` | `--selftest-zoom` | Audit: shortcuts unverified; Opt-Cmd-plus bound to plus only and disabled outside Icons view |
 | R-1002 | amended | `ThumbnailLoader` | `--selftest-url` | D-77: decoded at most 768 px on the longer side |
 | R-1003 | partial | `MediaCollectionView`, `GridKeyRouter`, `WindowModel.selectAll`, `WindowModel.deselectAll` | none | Audit: Select All Media is Opt-Cmd-A, not Cmd-A; other selection keys need a person |
-| R-1004 | partial | `WindowModel.gridMenu` | none | No Copy Image or Copy Original URL items |
+| R-1004 | person | `WindowModel.gridMenu` | `--selftest-url` | Copy Image and Copy Original URL added (1.8); menus need a person |
 | R-1005 | amended | `ExtractedPane` | `--selftest-browser` | D-77: header buttons named as in the Downloads pane |
 | R-1006 | amended | `FilterBar`, `MediaFilter` | `testFilterHidesTinyAndMatchesSize` | D-77: the filter bar offers the listed subset; the slider covers resolution presets |
 | R-1006a | built | `QuickFilterBar`, `MediaFilter` | `testResolutionSliderUsesLongestSide`, `testLengthFilterKinds` | Type chips, longest-side slider with the listed stops, shown of found count |
 | R-1007 | built | `SortOrder`, `MediaFilter.sorted` | `testEqualValuesKeepDiscoveryOrder` | All seven sort orders |
 | R-1008 | partial | `MediaFilter`, `WindowModel.refilter` | none | Audit gap: filter state not persisted per window, no named presets, no 5,000-item timing test |
-| R-1009 | partial | `PreviewPane`, `ItemMediaPreview`, `ItemDetails`, `FileDetails` | `--selftest-edit` | Preview, variants, source, name and actions present; the reason for the chosen variant is missing |
+| R-1009 | built | `PreviewPane`, `ItemDetails`, `VariantRanker.reason` | `testReasons`, `--selftest-url` | The reason for the chosen variant is shown (1.8) |
 | R-1009a | built | `WindowModel.showInPreview`, `WindowModel.openEditor`, `EditorModel` | `--selftest-edit` | Editor opens in the Preview pane; unsaved edits keep it from being replaced |
 | R-1010 | person | `QuickLook`, `WindowModel.quickLook`, `WindowModel.previewFile` | none | Downloads through the gate to the cache, then previews the local file |
 | R-1101 | person | `InstagramForm`, `EngineService.refreshSignIn` | `--selftest-pullsheet` | Sign-in state and Sign In shown in the Downloads pane; a signed-in pull needs a person (D-53) |
@@ -147,12 +147,12 @@ change as the code.
 | R-1702 | person | `AppModel.followRootLocations`, `AppModel.renameRoot`, `AppModel.locateRoot`, `LibraryRootInfo.resolvedURL` | `--selftest-analyse` | Roots follow Finder moves, show Not Found with Locate, and rename in the list (1.8); needs a person to move a folder |
 | R-1703 | built | `LibraryModel.commitRename`, `LibraryModel.trash`, `LibraryModel.perform`, `OperationJournal.run` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testRedoDoesTheChangeAgainAndCanBeUndone` | Library rename, move and Trash go through the journal with sidecars and are undoable (1.8) |
 | R-1704 | partial | `FolderWatcher`, `AnalysisService.updateWatch` | none | Recursive FSEvents per root, but roots excluded from analysis are not watched; no test |
-| R-1707 | partial | `QueryBar`, `LibraryModel` | none | Command-F toggles Extracted filters and does not focus Library search |
-| R-1708 | partial | `PaneViewMode`, `WindowModel.setViewMode`, `MediaOutlineView`, `MediaColumns` | `--selftest-views`, `testAllowedViewsPerPane` | List and Column views have stale-row and selection bugs |
-| R-1709 | partial | `MediaOutlineView`, `LibraryModel.listSortChanged` | `--selftest-views`, `testHeaderClicks`, `testColumnsMapToSortsBothWays` | List view rows go stale and selection is lost after changes |
-| R-1710 | partial | `MediaColumns` | `--selftest-views` | Column view has stale-row and selection bugs |
-| R-1711 | partial | `WindowModel.cellSize`, `PaneViewMode` | `--selftest-views` | Size keys follow only the Extracted pane's view; List and Column bugs as in R-1708 |
-| R-1705 | partial | `LibraryModel.gridQuickLook`, `LibraryModel.reveal`, `QuickLook` | none | Command-R goes to the browser reload, not Reveal in Finder; Quick Look needs a person |
+| R-1707 | person | `WindowModel.find`, `QueryBar` | `--selftest-views` | Command-F focuses the search field of the pane being worked in (1.8) |
+| R-1708 | person | `ViewModePicker`, `MediaList`, `MediaColumns` | `--selftest-views` | Stale rows and lost selection fixed in 1.8; drag, Quick Look and keys need a person |
+| R-1709 | built | `MediaList`, `FolderChildren` | `--selftest-views` | Opened folders are rebuilt when the pane reloads and keep the pane filters (1.8) |
+| R-1710 | built | `MediaColumns`, `LibraryModel.columnFolderChanged` | `--selftest-views` | Open columns refresh in place keeping the selection; clicks in other columns show the file (1.8) |
+| R-1711 | person | `WindowModel.viewModeTarget`, `MediaGridView` | `--selftest-views` | Thumbnail size keys work in Icon view only, as specified; needs a person |
+| R-1705 | person | `WindowModel.revealOrReload`, `QuickLook` | `--selftest-views` | Command-R reveals in Library and Organise panes, reloads in the browser (1.8); Quick Look needs a person |
 | R-1706 | built | `WindowModel.saveFolder` | `--selftest-analyse`, `--selftest-views` | The Library pane's folder is Collect's save folder (D-70) |
 | R-1801 | person | `LibraryModel.handleDrop`, `LibraryModel.importFiles`, `MediaPull/Platform/DragSupport.swift` | none | Drag and drop needs a person |
 | R-1802 | person | `ItemDragPayload`, `MediaPull/Platform/DragSupport.swift` | none | Large drags and file promises need a person to check |
@@ -162,8 +162,8 @@ change as the code.
 | R-1904 | partial | `EngineService.startPull`, `AppStore.updateAccount` | none | Cursor kept, but no Resume Pull offer at launch |
 | R-1905 | partial | `JobCenter.finish`, `JobCenter.post`, `EngineService.handleCheckpoint` | none | Finish notice after 1 minute; blocked notice ignores the setting; no test |
 | R-2010 | built | `AppTheme`, `AppTheme.currentAccent` | `--selftest-theme`, `--selftest-idle` | Nine static themes; accent, chips, grid selection and title wash |
-| R-2401 | partial | `TopBarButton`, `GridKeyRouter` | | Many icon-only buttons have no accessibility label; Reduce Motion not honoured (tab strip, walkthrough animate) |
-| R-2402 | partial | `MediaPull/App/MediaPullApp.swift` | | English only, but there is no String Catalog: user-facing strings are inline literals |
+| R-2401 | person | `ReadOnlyWebView`, `ThemeSwatch`, `PeopleView`, `TabStrip` | `scripts/lint_invariants.py` | Icon-only buttons labelled (lint enforced), tap controls are buttons to VoiceOver, Reduce Motion honoured (1.8); VoiceOver pass needs a person |
+| R-2402 | person | `MediaPull/Resources/Localizable.xcstrings` | `scripts/check.sh` | String Catalog added (1.8); Xcode fills it from the code when the project is opened |
 | R-3101 | built | `WindowModel.extractPDF`, `WindowModel.extractAllDocuments`, `WindowModel.gridAcceptDrop` | `--selftest-pdf-links` | Pane PDFs, linked PDFs (gate, Referer, non-PDF rejected), Open PDF and drops on the grid |
 | R-3102 | built | `PDFImageExtractor.extract` | `testEmbeddedImagesComeOutAtOriginalSize` | Inherited resources, nested forms, one copy per object, 24 px floor, masks skipped, locked PDFs reported |
 | R-3103 | built | `ArchivePlanner.sidecar`, `ArchivePlanner.folder` | `--selftest-pdf-links` | PDF folder for local files, subcategory pdf, page_url never a local path |
@@ -190,9 +190,9 @@ change as the code.
 | R-3605 | built | `OfflineGeocoder` | `testGeocoderFindsTheNearestPlaceWithinFiftyKilometres` | Bundled GeoNames index, nearest place within 50 km |
 | R-3606 | built | `ColourName.dominant` | `testDominantColour` | Saturation-weighted 8x8 grid, fixed palette of twelve names |
 | R-3607 | partial | `AnalysisService.deleteAllAnalysis`, `AnalysisService.removeVectorFiles`, `AnalysisSettings` | `testVectorStoreRemovesRowsAndKeepsTheRest` | Vector files now removed by name (1.8); the button is labelled Analyse Again, not Rebuild |
-| R-3701 | partial | `QueryBar`, `LibraryModel` | | Cmd-F never focuses the Library search field; sort and filters are kept app-wide, not per window |
+| R-3701 | amended | `QueryBar`, `WindowModel.find`, `Preferences.libraryQuery` | `--selftest-analyse` | D-77: sort and filters kept between launches for the Library as a whole; Command-F focuses the search (1.8) |
 | R-3702 | built | `LibrarySort`, `MediaDates.effective`, `LibraryQuery.events` | `testDateFallsBackFromCaptureToMetadataToFile`, `testEventsSplitAtTheGap`, `testSortsBySizeAndSource` | All sorts, both directions, events at the gap |
-| R-3703 | partial | `LibraryFilter`, `LibraryQuery.matches`, `FolderChildren` | `testFiltersCombine` | People filter keeps unknown ids; List folders ignore People and Similar; no format or aspect filter in the menu |
+| R-3703 | built | `FilterMenu`, `LibraryQuery.apply`, `AnalysisService.queryContext`, `AnalysisService.forgetUnknownPeople` | `testFiltersCombine`, `--selftest-analyse` | Format filter added; unknown people dropped from filters; opened list folders use the same context (1.8) |
 | R-3704 | built | `LibraryQuery.apply`, `MediaListing.load`, `AnalysisService.meaningScores` | `testSearchMatchesTextTagsAndSimilarity`, `--selftest-analyse` | Only media files count toward the 50,000 listing limit, which the header and Organise now state (1.8) |
 | R-3705 | built | `SimilarSets`, `LibraryFilter.similarOnly` | `testCloseVectorsFormSets`, `--selftest-analyse` | Filter and Group Similar sort; not marked in the grid |
 | R-3706 | built | `SubjectClassifier`, `OrganiseModel.autoSort` | `--selftest-analyse` | Fixed list plus added words, threshold, Unsorted; Library menu opens Organise generally |

@@ -64,3 +64,16 @@ struct WebViewHost: NSViewRepresentable {
         ])
     }
 }
+
+extension ReadOnlyWebView {
+    /// Whether keyboard input is going to a web page (the responder is a web view or inside one).
+    @MainActor
+    static func isTyping(in window: NSWindow?) -> Bool {
+        var view = window?.firstResponder as? NSView
+        while let current = view {
+            if current is ReadOnlyWebView { return true }
+            view = current.superview
+        }
+        return false
+    }
+}

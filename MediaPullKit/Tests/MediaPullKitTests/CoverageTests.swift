@@ -226,3 +226,21 @@ final class FilterSortTests: XCTestCase {
         XCTAssertEqual(filter.sorted(items).map(\.id), ["c", "a", "b"])
     }
 }
+
+/// R-914, R-1009: the Preview says why a version was chosen.
+final class VariantReasonTests: XCTestCase {
+    private func variant(_ id: String, _ width: Int?, _ format: MediaFormat, origin: VariantOrigin = .srcset) -> MediaVariant {
+        var variant = MediaVariant(id: id, url: URL(string: "https://example.com/\(id)")!, format: format, origin: origin)
+        if let width { variant.pixelSize = PixelSize(width: width, height: width) }
+        return variant
+    }
+
+    func testReasons() {
+        XCTAssertEqual(VariantRanker.reason([variant("a", 800, .jpeg)]), "The only version that can be saved.")
+        XCTAssertEqual(VariantRanker.reason([variant("a", 800, .jpeg), variant("b", 1600, .jpeg)]), "The most pixels.")
+        XCTAssertEqual(VariantRanker.reason([variant("a", 800, .webp), variant("b", 800, .jpeg)]),
+                       "Already in a normal format at the same size, so nothing is converted.")
+        XCTAssertTrue(VariantRanker.reason([variant("a", 800, .jpeg), variant("b", nil, .jpeg, origin: .cdnRewrite)])?
+            .hasPrefix("Probably the full-size original") ?? false)
+    }
+}

@@ -185,6 +185,8 @@ struct BookmarksList: View {
         .contentShape(Rectangle())
         .onTapGesture { if renaming != bookmark.id { open(bookmark.url, in: model) } }
         .help(bookmark.url.absoluteString)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { open(bookmark.url, in: model) }
         .contextMenu {
             Button("Open in New Tab") { open(bookmark.url, in: model, newTab: true) }
             Button("Rename…") {
@@ -263,6 +265,8 @@ struct HistoryList: View {
         .contentShape(Rectangle())
         .onTapGesture { open(entry.url, in: model) }
         .help(entry.url.absoluteString)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { open(entry.url, in: model) }
         .contextMenu {
             Button("Open in New Tab") { open(entry.url, in: model, newTab: true) }
             Button("Bookmark") { store.addBookmark(title: entry.title, url: entry.url) }

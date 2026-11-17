@@ -11,8 +11,9 @@ final class FolderChildren {
     private var children: [String: [String]] = [:]
     private var nested: [String: MediaEntry] = [:]
     private var loading: Set<String> = []
-    /// Bumped by `reset` and `forgetContents`, so a read that finishes afterwards is dropped.
-    private var generation = 0
+    /// Bumped by `reset` and `forgetContents`, so a read that finishes afterwards is dropped, and the list view knows
+    /// the rows it holds for opened folders are out of date.
+    private(set) var generation = 0
     var onLoaded: ((String) -> Void)?
 
     /// A new folder in the pane: its subfolders, and nothing opened yet.
@@ -46,10 +47,11 @@ final class FolderChildren {
         // Search by meaning needs scores for every file; a list being searched is flat (R-1709), so opened folders only
         // sort and filter.
         let plain = { var plain = query; plain.search = ""; return plain }()
-        let context = LibraryQuery.Context(similarityFloor: AnalysisService.meaningFloor)
         Task { [weak self] in
             let listing = await MediaListing.load(URL(fileURLWithPath: id, isDirectory: true), recursive: false)
             let attached = await AppModel.shared.analysis.attach(listing.entries)
+            // The same context as the pane's own files, so the People and Similar filters apply inside opened folders too.
+            let context = await AppModel.shared.analysis.queryContext(for: plain, entries: attached)
             let sections = await Task.detached(priority: .userInitiated) {
                 plain.apply(attached, context: context)
             }.value

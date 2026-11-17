@@ -76,6 +76,9 @@ struct MediaList: NSViewRepresentable {
         /// Rows by id, for selecting and refreshing without walking the tree.
         private var index: [String: Node] = [:]
         private var lastRevision = -1
+        private var shownGeneration = -1
+        /// Folders that were open before the rows were rebuilt; each opens again once its contents are read.
+        private var pendingExpand: Set<String> = []
         private var applyingSelection = false
         private var applyingSort = false
         private var columnsBuilt = false
@@ -85,10 +88,14 @@ struct MediaList: NSViewRepresentable {
         func update(sections: [GridSection], topFolders: [String], selection: Set<String>, revision: Int) {
             guard let outline, let owner else { return }
             if !columnsBuilt { buildColumns(owner.listColumns) }
-            if sections != shownSections || topFolders != shownFolders {
+            // New rows, or the opened folders' contents were dropped (a reload after files changed): rebuild, so no row
+            // keeps an id the pane no longer knows.
+            if sections != shownSections || topFolders != shownFolders || owner.listGeneration != shownGeneration {
                 shownSections = sections
                 shownFolders = topFolders
+                shownGeneration = owner.listGeneration
                 let expanded = expandedIDs()
+                pendingExpand = expanded
                 index = [:]
                 if sections.count > 1 {
                     roots = sections.map { section in
@@ -174,6 +181,10 @@ struct MediaList: NSViewRepresentable {
             guard let outline, let node = index[id], case .folder = node.kind else { return }
             node.children = nil
             outline.reloadItem(node, reloadChildren: true)
+            if pendingExpand.remove(id) != nil { outline.expandItem(node) }
+            for child in children(of: node) where pendingExpand.contains(child.id) {
+                outline.expandItem(child)
+            }
         }
 
         private func expandedIDs() -> Set<String> {
@@ -242,6 +253,8 @@ struct MediaList: NSViewRepresentable {
             }
             guard let identifier = tableColumn?.identifier, let column = ListColumn(rawValue: identifier.rawValue) else { return nil }
             if column == .name {
+                // A row on screen is measured like a grid cell (sizes and unverified originals, R-912).
+                if node.kind == .file { owner.gridAppeared(node.id) }
                 let cell = ListNameCell.make(in: outlineView)
                 cell.show(id: node.id, name: owner.listText(node.id, .name), isFolder: node.kind == .folder, owner: owner)
                 return cell
@@ -400,8 +413,10 @@ final class ListNameCell: NSTableCellView {
 
     func show(id: String, name: String, isFolder: Bool, owner: any MediaGridOwner) {
         textField?.stringValue = name
-        guard id != shownID else { return }
-        shownID = id
+        // Keyed with the file's stamp (size and date), as the grid does, so a picture edited in place is drawn again.
+        let key = "\(id)#\(owner.gridInfo(id)?.stamp ?? "")"
+        guard key != shownID else { return }
+        shownID = key
         loadTask?.cancel()
         if isFolder {
             imageView?.image = NSWorkspace.shared.icon(for: .folder)

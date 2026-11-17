@@ -117,13 +117,60 @@ struct MediaColumns: NSViewRepresentable {
                 shownFolder = nil
                 browser.loadColumnZero()
             } else if revision != lastRevision {
-                // Files changed on disk: read the open columns again, then reopen the pane's folder.
+                // Files changed on disk: read the open columns again in place, keeping what is selected (a pull saving
+                // into the shown folder must not close the preview or move the selection to the folder).
                 lastRevision = revision
-                forget(root)
-                shownFolder = nil
-                browser.loadColumnZero()
+                refreshOpenColumns()
             }
             if folder?.standardizedFileURL.path != shownFolder { reveal(folder) }
+        }
+
+        private func refreshOpenColumns() {
+            guard let browser else { return }
+            let selected = Set(selectedNodes().map(\.path))
+            let open = (0 ... max(browser.lastColumn, 0)).compactMap { browser.parentForItems(inColumn: $0) as? Node }
+            revealTask?.cancel()
+            revealTask = Task { [weak self] in
+                guard let self else { return }
+                for node in open {
+                    await reread(node)
+                    guard !Task.isCancelled else { return }
+                }
+                guard let browser = self.browser else { return }
+                // The path of open folders, as row indexes, then the selected rows of the deepest column.
+                var chain: [Int] = []
+                for (level, node) in open.enumerated().dropLast() {
+                    guard let next = open[safe: level + 1], let index = node.children?.firstIndex(where: { $0 === next }) else { break }
+                    chain.append(index)
+                }
+                var paths: [IndexPath] = []
+                if let last = open.last, chain.count == open.count - 1 {
+                    for (index, child) in (last.children ?? []).enumerated() where selected.contains(child.path) {
+                        paths.append(IndexPath(indexes: chain + [index]))
+                    }
+                }
+                self.revealing = true
+                for column in 0 ... max(browser.lastColumn, 0) {
+                    browser.reloadColumn(column)
+                }
+                if paths.isEmpty {
+                    browser.selectionIndexPath = chain.isEmpty ? nil : IndexPath(indexes: chain)
+                } else {
+                    browser.selectionIndexPaths = paths
+                }
+                self.revealing = false
+            }
+        }
+
+        /// Reads a folder again, keeping the nodes of items still there (and the folders opened below them).
+        private func reread(_ node: Node) async {
+            let previous = Dictionary((node.children ?? []).map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            let keep = node.children
+            node.children = nil
+            node.loading = false
+            await load(node)
+            guard let fresh = node.children else { node.children = keep; return }
+            node.children = fresh.map { previous[$0.path] ?? $0 }
         }
 
         private func forget(_ node: Node) {
@@ -459,7 +506,15 @@ struct MediaColumnPreview: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .task(id: id) { await load() }
+        // Keyed with the file's stamp too, so a picture edited in place (same path) is shown again.
+        .task(id: "\(id ?? "")#\(id.flatMap { owner?.gridInfo($0)?.stamp } ?? Self.stamp(id))") { await load() }
+    }
+
+    /// Size and modification date of a file the pane has not listed (cheap: one stat).
+    private static func stamp(_ id: String?) -> String {
+        guard let id, let values = try? URL(fileURLWithPath: id).resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        else { return "" }
+        return "\(values.fileSize ?? 0)-\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
     }
 
     private func load() async {
@@ -493,4 +548,8 @@ struct MediaColumnPreview: View {
         facts = rows
         image = await owner?.gridThumbnail(id, maxPixel: 512)
     }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

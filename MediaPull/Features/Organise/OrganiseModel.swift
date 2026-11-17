@@ -219,15 +219,12 @@ final class OrganisePane: MediaGridOwner {
         filtering = true
         filterTask = Task { [weak self] in
             guard let self else { return }
-            var context = LibraryQuery.Context(similarityFloor: AnalysisService.meaningFloor)
             if !query.search.trimmingCharacters(in: .whitespaces).isEmpty {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
-                context.similarity = await self.app.analysis.meaningScores(query.search, entries: entries)
-                context.similarityFloor = AnalysisService.floor(for: context.similarity)
             }
-            if query.sort == .similar || query.filter.similarOnly { context.similarGroups = await self.app.analysis.similarGroups(entries) }
-            if !query.filter.people.isEmpty { context.people = await self.app.analysis.peopleByPath(entries) }
+            let context = await self.app.analysis.queryContext(for: query, entries: entries)
+            guard !Task.isCancelled else { return }
             let built = await Task.detached(priority: .userInitiated) { query.apply(entries, context: context) }.value
             guard !Task.isCancelled else { return }
             self.sections = built
@@ -279,7 +276,11 @@ final class OrganisePane: MediaGridOwner {
         NSWorkspace.shared.open(URL(fileURLWithPath: id))
     }
 
-    func gridQuickLook() { QuickLook.shared.show(selection.sorted().compactMap { entry($0)?.url }) }
+    func gridQuickLook() {
+        QuickLook.shared.show(selection.sorted().compactMap { id in
+            entry(id)?.url ?? (listFolders.isFolder(id) || !id.hasPrefix("/") ? nil : URL(fileURLWithPath: id))
+        })
+    }
 
     func gridDelete(_ ids: Set<String>) {
         let chosen = urls(ids)
@@ -360,6 +361,8 @@ extension OrganisePane: MediaListOwner {
     }
 
     func listIsFolder(_ id: String) -> Bool { listFolders.isFolder(id) }
+
+    var listGeneration: Int { listFolders.generation }
 
     func listChildren(_ folderID: String) -> [String]? {
         listFolders.onLoaded = { [weak self] id in self?.onListChildrenLoaded?(id) }

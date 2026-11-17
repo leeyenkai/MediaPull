@@ -620,6 +620,11 @@ final class WindowModel: Identifiable, MediaGridOwner {
             info.stateSymbol = "lock.fill"
             info.stateColor = .secondaryLabelColor
             info.dimmed = true
+        } else if item.best?.url.scheme == "http" {
+            // R-1001: fetched over plain http (D-21), shown until a save state takes the corner.
+            info.stateSymbol = "lock.open.fill"
+            info.stateColor = .systemYellow
+            info.secondary = [info.secondary, "insecure (http)"].filter { !$0.isEmpty }.joined(separator: " · ")
         }
         switch states[id] {
         case .queued: info.stateSymbol = "clock.fill"; info.stateColor = .secondaryLabelColor
@@ -704,6 +709,50 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     /// The pane last clicked or focused, so ⌘1 to ⌘3 change the pane the person is working in.
     var focusedPane: PaneID?
+    /// Bumped for a pane when ⌘F should focus its search field.
+    var searchFocusTokens: [PaneID: Int] = [:]
+
+    /// The Library or Organise pane the keyboard is working in, or nil when it is the page or the Extracted pane: the
+    /// pane last clicked, unless the web page has the keyboard now. In Organise, its Source by default.
+    var keyboardFolderPane: PaneID? {
+        if section == .organise {
+            if let focusedPane, [.organiseSource, .organiseTarget].contains(focusedPane), isShowing(focusedPane) { return focusedPane }
+            return .organiseSource
+        }
+        guard !ReadOnlyWebView.isTyping(in: hostWindow), focusedPane == .library, isShowing(.library) else { return nil }
+        return .library
+    }
+
+    /// ⌘F (SPEC 21): the search field of the Library or Organise pane being worked in, else the Extracted filter bar.
+    func find() {
+        if let pane = keyboardFolderPane {
+            setShowing(pane, true)
+            searchFocusTokens[pane, default: 0] += 1
+        } else {
+            showFilters.toggle()
+        }
+    }
+
+    /// ⌘R (SPEC 21): reveal the selection in the Finder in a Library or Organise pane, reload the page elsewhere.
+    func revealOrReload() {
+        switch keyboardFolderPane {
+        case .library:
+            let urls = library.selectedURLs
+            NSWorkspace.shared.activateFileViewerSelecting(urls.isEmpty ? [library.selectedFolder].compactMap(\.self) : urls)
+        case .organiseSource, .organiseTarget:
+            let pane = keyboardFolderPane == .organiseSource ? organise.source : organise.target
+            let urls = pane.selectedURLs
+            NSWorkspace.shared.activateFileViewerSelecting(urls.isEmpty ? [pane.folder].compactMap(\.self) : urls)
+        default:
+            browser.reloadOrStop()
+        }
+    }
+
+    /// ⌘. (SPEC 21): stop loading the page, or stop scrolling to its end.
+    func stop() {
+        if autoScrolling { toggleAutoScroll() }
+        if browser.isLoading { browser.reloadOrStop() }
+    }
 
     /// The pane the View menu's view commands act on: the focused one when it is on screen in this section, else the
     /// main pane of the section.
@@ -1035,7 +1084,22 @@ final class WindowModel: Identifiable, MediaGridOwner {
         if let item = chosen.first, chosen.count == 1 {
             if let url = item.best?.url, url.scheme == "https" || url.scheme == "http" {
                 menu.addItem(ActionMenuItem("Copy URL") { Format.copy(url.absoluteString) })
+                // The larger original a CDN rule found (Appendix D), when it differs from the address above.
+                if let original = item.variants.first(where: \.isDerived)?.url, original != url {
+                    menu.addItem(ActionMenuItem("Copy Original URL") { Format.copy(original.absoluteString) })
+                }
                 menu.addItem(ActionMenuItem("Open Media in Browser") { [weak self] in self?.browser.load(url) })
+            }
+            if item.kind == .image || item.kind == .animatedImage {
+                // The picture itself (downloaded through the gate first), for pasting into other apps.
+                menu.addItem(ActionMenuItem("Copy Image") { [weak self] in
+                    Task {
+                        guard let self, let file = await self.previewFile(for: item),
+                              let image = NSImage(contentsOf: file) else { return }
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.writeObjects([image])
+                    }
+                })
             }
             if let page = item.source.pageURL {
                 menu.addItem(ActionMenuItem("Open Source Page") { [weak self] in self?.browser.load(page) })

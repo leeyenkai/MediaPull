@@ -114,10 +114,10 @@ struct BrowserBar: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Button { model.browser.goBack() } label: { Image(systemName: "chevron.backward").frame(width: 24, height: 24) }
+            Button { model.browser.goBack() } label: { Image(systemName: "chevron.backward").frame(width: 24, height: 24) }.accessibilityLabel("Back")
                 .disabled(!model.browser.canGoBack)
                 .help("Back (⌘[)")
-            Button { model.browser.goForward() } label: { Image(systemName: "chevron.forward").frame(width: 24, height: 24) }
+            Button { model.browser.goForward() } label: { Image(systemName: "chevron.forward").frame(width: 24, height: 24) }.accessibilityLabel("Forward")
                 .disabled(!model.browser.canGoForward)
                 .help("Forward (⌘])")
             Button { model.browser.reloadOrStop() } label: {
@@ -129,10 +129,10 @@ struct BrowserBar: View {
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 4)
             if VideoPage.isLikely(model.browser.url) {
-                Button { model.showDownloads(video: true) } label: { Image(systemName: "film.stack").frame(width: 24, height: 24) }
+                Button { model.showDownloads(video: true) } label: { Image(systemName: "film.stack").frame(width: 24, height: 24) }.accessibilityLabel("Save Video")
                     .help("Save the video on this page, choosing its format and resolution")
             }
-            Button { model.showBrowsingPanel.toggle() } label: { Image(systemName: "bookmark").frame(width: 24, height: 24) }
+            Button { model.showBrowsingPanel.toggle() } label: { Image(systemName: "bookmark").frame(width: 24, height: 24) }.accessibilityLabel("Bookmarks and History")
                 .help("Bookmarks and History (⌥⌘B, ⌘Y)")
                 .popover(isPresented: $model.showBrowsingPanel, arrowEdge: .bottom) {
                     BrowsingPanel(model: model)

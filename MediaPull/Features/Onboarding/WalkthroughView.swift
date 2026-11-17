@@ -1,3 +1,4 @@
+import AppKit
 import MediaPullCore
 import SwiftUI
 
@@ -228,7 +229,11 @@ struct WalkthroughView: View {
     }
 
     private func go(to target: Int) {
-        withAnimation(.easeInOut(duration: 0.22)) { step = min(max(target, 0), steps.count - 1) }
+        let next = min(max(target, 0), steps.count - 1)
+        // Reduce Motion (R-2401): pages change without the transition.
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { step = next } else {
+            withAnimation(.easeInOut(duration: 0.22)) { step = next }
+        }
     }
 
     private func close() {

@@ -313,6 +313,29 @@ public enum VariantRanker {
         }?.id
     }
 
+    /// Why `best` won, in plain words, for the Preview pane (R-914, R-1009): the first rule that told it apart from the
+    /// next best version.
+    public static func reason(_ variants: [MediaVariant]) -> String? {
+        let usable = variants.filter { !$0.hasFailed && $0.origin != .engineThumbnail }
+        guard let bestID = best(variants), let chosen = usable.first(where: { $0.id == bestID }) else { return nil }
+        let others = usable.filter { $0.id != bestID }
+        guard !others.isEmpty else { return "The only version that can be saved." }
+        let knownPixels = usable.compactMap { effectivePixels($0) }.max() ?? 0
+        let mine = score(chosen, knownPixels: knownPixels)
+        let runnerUp = others.map { score($0, knownPixels: knownPixels) }.max { $0.lexicographicallyPrecedes($1) } ?? mine
+        let rule = mine.indices.first { mine[$0] != runnerUp[$0] } ?? 0
+        switch rule {
+        case 0:
+            if chosen.isDerived, chosen.pixelSize == nil { return "Probably the full-size original (worked out from the address; checked before saving)." }
+            if chosen.origin == .link, chosen.pixelSize == nil { return "The full-size file the page links to." }
+            return "The most pixels."
+        case 1: return "The highest-density version among those of the same size."
+        case 2: return "Already in a normal format at the same size, so nothing is converted."
+        case 3: return "Lossless at the same size."
+        default: return "The largest file at the same size."
+        }
+    }
+
     static func effectivePixels(_ variant: MediaVariant) -> Int? {
         if let size = variant.pixelSize { return size.pixels }
         if let width = variant.declaredWidth {

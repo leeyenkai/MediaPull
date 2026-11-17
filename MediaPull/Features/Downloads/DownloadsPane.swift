@@ -134,7 +134,7 @@ struct DownloadsPane: View {
                 Text("Downloads").font(.headline)
                 Spacer()
                 PaneMenu(pane: .downloads, window: model)
-                Button { model.setShowing(.downloads, false) } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }
+                Button { model.setShowing(.downloads, false) } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }.accessibilityLabel("Close Downloads")
                     .buttonStyle(.borderless)
                     .help("Close Downloads (⌥⌘4)")
             }
@@ -450,9 +450,9 @@ struct ActiveDownloads: View {
                             }
                         }
                         if job.state.canCancel {
-                            Button { job.cancel() } label: { Image(systemName: "xmark.circle") }.buttonStyle(.borderless).help("Cancel")
+                            Button { job.cancel() } label: { Image(systemName: "xmark.circle") }.accessibilityLabel("Cancel").buttonStyle(.borderless).help("Cancel")
                         } else if let url = job.destination {
-                            Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
+                            Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }.accessibilityLabel("Show in Finder")
                                 .buttonStyle(.borderless).help("Show in Finder")
                         }
                     }

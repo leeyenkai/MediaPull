@@ -30,6 +30,9 @@ struct ItemDetails: View {
                     ForEach(item.variants.filter { $0.origin != .engineThumbnail }, id: \.id) { variant in
                         VariantRow(variant: variant, chosen: variant.id == item.bestID)
                     }
+                    if let reason = VariantRanker.reason(item.variants) {
+                        Text("Chosen: \(reason)").font(.caption).foregroundStyle(.secondary)
+                    }
                     if item.variants.contains(where: { $0.isDerived && $0.check == .unverified }) {
                         Button("Check Original Sizes") { model.ensureProbed(item) }
                             .controlSize(.small)

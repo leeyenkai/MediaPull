@@ -33,6 +33,9 @@ struct AppearanceSettings: View {
                     ForEach(AppTheme.allCases) { theme in
                         ThemeSwatch(theme: theme, selected: preferences.theme == theme)
                             .onTapGesture { preferences.theme = theme }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(preferences.theme == theme ? [.isButton, .isSelected] : .isButton)
+                            .accessibilityAction { preferences.theme = theme }
                     }
                 }
                 .padding(.vertical, 4)

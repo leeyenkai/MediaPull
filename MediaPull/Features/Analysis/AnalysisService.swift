@@ -518,7 +518,21 @@ final class AnalysisService {
         guard let store else { return }
         people = await store.people()
         peopleRevision += 1
+        forgetUnknownPeople()
         await refreshSuggestions()
+    }
+
+    /// People merged, regrouped or deleted no longer exist: filters naming them would show nothing and could not be
+    /// unticked, so they are dropped from every pane's query (R-3703).
+    func forgetUnknownPeople() {
+        let known = preferences.facesEnabled ? Set(people.map(\.id)) : []
+        for window in app.windows {
+            for query in [\WindowModel.library.query, \WindowModel.organise.source.query, \WindowModel.organise.target.query]
+                where !window[keyPath: query].filter.people.isSubset(of: known)
+            {
+                window[keyPath: query].filter.people.formIntersection(known)
+            }
+        }
     }
 
     /// Folder-name suggestions for unnamed people (R-3905).
@@ -662,6 +676,7 @@ final class AnalysisService {
         people = []
         suggestions = [:]
         peopleRevision += 1
+        forgetUnknownPeople()
     }
 
     /// Delete All Analysis Data: everything in the Analysis folder.
@@ -678,6 +693,7 @@ final class AnalysisService {
         analysedCount = 0
         revision += 1
         peopleRevision += 1
+        forgetUnknownPeople()
     }
 
     /// Analyse Again: every file is analysed again from scratch. People, names and corrections are kept (faces found
@@ -696,6 +712,20 @@ final class AnalysisService {
     func vectorFileNames(prefix: String) -> [String] {
         // lint:allow main-io self-test check of a small folder
         ((try? FileManager.default.contentsOfDirectory(atPath: vectorFolder.path)) ?? []).filter { $0.hasPrefix(prefix) }
+    }
+
+    /// What a query needs besides the files themselves: similarity to the search, visually similar sets and the people in
+    /// each file. One place for the Library, Organise and folders opened in a list, so every view filters alike. The
+    /// search is debounced by the caller; nil when the work was cancelled.
+    func queryContext(for query: LibraryQuery, entries: [MediaEntry]) async -> LibraryQuery.Context {
+        var context = LibraryQuery.Context(similarityFloor: Self.meaningFloor)
+        if !query.search.trimmingCharacters(in: .whitespaces).isEmpty {
+            context.similarity = await meaningScores(query.search, entries: entries)
+            context.similarityFloor = Self.floor(for: context.similarity)
+        }
+        if query.sort == .similar || query.filter.similarOnly { context.similarGroups = await similarGroups(entries) }
+        if !query.filter.people.isEmpty { context.people = await peopleByPath(entries) }
+        return context
     }
 
     /// A path outside the scanned folders is gone only when its disk is mounted and the file is missing.

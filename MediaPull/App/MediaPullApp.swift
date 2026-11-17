@@ -217,7 +217,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut("-", modifiers: [.command, .option])
                 .disabled(!extractedIcons)
             Divider()
-            Button("Filters") { window?.showFilters.toggle() }
+            Button("Find") { window?.find() }
                 .keyboardShortcut("f")
             Button("Clear Extracted Media") { window?.clear() }
                 .keyboardShortcut("k")
@@ -230,9 +230,11 @@ struct AppCommands: Commands {
             Button("Forward") { window?.browser.goForward() }
                 .keyboardShortcut("]")
                 .disabled(!browsing)
-            Button("Reload Page") { window?.browser.reloadOrStop() }
+            Button(window?.keyboardFolderPane != nil ? "Show in Finder" : "Reload Page") { window?.revealOrReload() }
                 .keyboardShortcut("r")
-                .disabled(!browsing)
+            Button("Stop") { window?.stop() }
+                .keyboardShortcut(".")
+                .disabled(!browsing || window?.section == .organise)
             Button("Open Address") {
                 window?.setShowing(.source, true)
                 window?.focusAddressToken += 1

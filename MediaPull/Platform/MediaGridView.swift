@@ -84,12 +84,16 @@ protocol MediaListOwner: MediaGridOwner {
     func listChildren(_ folderID: String) -> [String]?
     /// Called when children asked for with `listChildren` have been read, so the view can show them.
     var onListChildrenLoaded: ((String) -> Void)? { get set }
+    /// Changes whenever the contents of opened folders were dropped (a reload, a new sort or filter): the view then
+    /// rebuilds its rows and reads the opened folders again.
+    var listGeneration: Int { get }
 }
 
 extension MediaListOwner {
     var listTopFolders: [String] { [] }
     func listIsFolder(_: String) -> Bool { false }
     func listChildren(_: String) -> [String]? { [] }
+    var listGeneration: Int { 0 }
     func listCanSort(_: ListColumn) -> Bool { true }
 }
 

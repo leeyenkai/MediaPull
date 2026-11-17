@@ -16,6 +16,10 @@ struct PeopleView: View {
         .shared
     }
 
+    private func toggleFace(_ key: String) {
+        if chosenFaces.contains(key) { chosenFaces.remove(key) } else { chosenFaces.insert(key) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -114,14 +118,12 @@ struct PeopleView: View {
                                     chosenFaces.contains(face.key) ? Color.accentColor : .clear,
                                     lineWidth: 3
                                 ))
-                                .onTapGesture {
-                                    if chosenFaces.contains(face.key) {
-                                        chosenFaces.remove(face.key)
-                                    } else {
-                                        chosenFaces.insert(face.key)
-                                    }
-                                }
+                                .onTapGesture { toggleFace(face.key) }
                                 .help(face.path)
+                                .accessibilityElement()
+                                .accessibilityLabel("Photo \(URL(fileURLWithPath: face.path).lastPathComponent)")
+                                .accessibilityAddTraits(chosenFaces.contains(face.key) ? [.isButton, .isSelected] : .isButton)
+                                .accessibilityAction { toggleFace(face.key) }
                         }
                     }
                 }
@@ -162,7 +164,7 @@ struct PersonRow: View {
             .clipShape(Circle())
             VStack(alignment: .leading, spacing: 1) {
                 Text(person.displayName).lineLimit(1)
-                Text("\(person.faceCount) photos").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text("\(person.faceCount) photo\(person.faceCount == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             if let suggestion {

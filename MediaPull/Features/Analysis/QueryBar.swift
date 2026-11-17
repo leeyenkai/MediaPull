@@ -8,6 +8,8 @@ struct QueryBar: View {
     @Binding var includeSubfolders: Bool
     /// The files being shown, for the values the filters offer (tags, places, sources, cameras).
     var entries: [MediaEntry]
+    /// ⌘F focuses this field when its pane is the one being worked in (SPEC 21); the token changes on each ⌘F.
+    var focusToken: Int = 0
     @FocusState private var searchFocused: Bool
     private var app: AppModel {
         .shared
@@ -22,8 +24,9 @@ struct QueryBar: View {
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
                     .onExitCommand { query.search = "" }
+                    .onChange(of: focusToken) { _, _ in searchFocused = true }
                 if !query.search.isEmpty {
-                    Button { query.search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    Button { query.search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.accessibilityLabel("Clear Search")
                         .buttonStyle(.plain)
                 }
             }
@@ -86,6 +89,10 @@ struct FilterMenu: View {
             Menu("Kind") {
                 ForEach([MediaKind.image, .animatedImage, .video], id: \.self) { kind in toggle(kind.label, $query.filter.kinds, kind) }
             }
+            Menu("Format") {
+                // The formats in this folder, most common first (R-3703).
+                ForEach(formatCounts, id: \.0) { format, count in toggle("\(format.label) (\(count))", $query.filter.formats, format) }
+            }
             Menu("Orientation") {
                 ForEach(Orientation.allCases, id: \.self) { o in toggle(o.label, $query.filter.orientations, o) }
             }
@@ -147,6 +154,11 @@ struct FilterMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Filter by kind, size, faces, colour, content, place and more")
+    }
+
+    private var formatCounts: [(MediaFormat, Int)] {
+        Dictionary(grouping: entries.compactMap(\.format), by: { $0 }).map { ($0.key, $0.value.count) }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.label < $1.0.label }
     }
 
     private func toggle<T: Hashable>(_ label: String, _ set: Binding<Set<T>>, _ value: T) -> some View {
