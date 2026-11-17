@@ -19,8 +19,12 @@ public struct CookieRecord: Codable, Hashable, Sendable {
     public var isSecure: Bool
     public var isHTTPOnly: Bool
     public var expires: Date?
+    /// "lax" or "strict"; nil when the cookie set none. Kept so a value written back keeps its protection.
+    public var sameSite: String?
 
-    public init(name: String, value: String, domain: String, path: String, isSecure: Bool, isHTTPOnly: Bool, expires: Date?) {
+    public init(name: String, value: String, domain: String, path: String, isSecure: Bool, isHTTPOnly: Bool, expires: Date?,
+                sameSite: String? = nil)
+    {
         self.name = name
         self.value = value
         self.domain = domain
@@ -28,12 +32,13 @@ public struct CookieRecord: Codable, Hashable, Sendable {
         self.isSecure = isSecure
         self.isHTTPOnly = isHTTPOnly
         self.expires = expires
+        self.sameSite = sameSite
     }
 
     public init(_ cookie: HTTPCookie) {
         self.init(
             name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path, isSecure: cookie.isSecure,
-            isHTTPOnly: cookie.isHTTPOnly, expires: cookie.expiresDate
+            isHTTPOnly: cookie.isHTTPOnly, expires: cookie.expiresDate, sameSite: cookie.sameSitePolicy?.rawValue
         )
     }
 
@@ -44,6 +49,7 @@ public struct CookieRecord: Codable, Hashable, Sendable {
         if isSecure { properties[.secure] = "TRUE" }
         if let expires { properties[.expires] = expires }
         if isHTTPOnly { properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+        if let sameSite { properties[.sameSitePolicy] = sameSite }
         return HTTPCookie(properties: properties)
     }
 
@@ -182,8 +188,9 @@ public enum RequestPolicy {
     }
 }
 
-/// What may follow a redirect (SPEC R-501). The cookie header was chosen for the first host, so it goes no further than
-/// that exact host, and a hop from https to http is refused while cookies are attached.
+/// What may follow a redirect (SPEC R-501). The cookie header was chosen for the first origin, so it goes no further than
+/// that exact scheme, host and port, and a hop from https to http is refused while cookies are attached. The Referer is
+/// worked out again for every hop, as a browser does, so a full page address never reaches another site or plain http.
 public enum RedirectPolicy {
     public static func nextHeaders(_ headers: [String: String], method: String, from: URL, to: URL) -> Result<[String: String], GateError> {
         let hasCookie = headers.keys.contains { $0.lowercased() == "cookie" }
@@ -191,8 +198,14 @@ public enum RedirectPolicy {
             return .failure(.denied("A redirect to an insecure address would have exposed cookies."))
         }
         var next = headers
-        if hasCookie, from.host?.lowercased() != to.host?.lowercased() {
+        let sameOrigin = from.scheme?.lowercased() == to.scheme?.lowercased() && from.host?.lowercased() == to.host?.lowercased()
+            && from.port == to.port
+        if hasCookie, !sameOrigin {
             next = next.filter { $0.key.lowercased() != "cookie" }
+        }
+        if let key = next.keys.first(where: { $0.lowercased() == "referer" }) {
+            let referer = next.removeValue(forKey: key).flatMap(URL.init(string:))
+            if let value = URLNormalizer.referer(for: to, from: referer) { next[key] = value }
         }
         switch RequestPolicy.evaluate(method: method, url: to, headers: next, hasBody: false) {
         case let .denied(reason): return .failure(.denied(reason))
@@ -223,6 +236,8 @@ public enum GateError: LocalizedError, Sendable, Equatable {
     case http(Int)
     case notHTTP
     case cancelled
+    case tooLarge(Int64)
+    case truncated(received: Int64, expected: Int64)
 
     public var errorDescription: String? {
         switch self {
@@ -230,6 +245,10 @@ public enum GateError: LocalizedError, Sendable, Equatable {
         case let .http(status): Self.message(for: status)
         case .notHTTP: "The server did not answer with HTTP."
         case .cancelled: "Cancelled."
+        case let .tooLarge(limit): "The file is larger than MediaPull reads for this (\(ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)))."
+        case let .truncated(received, expected):
+            "The download was cut short (\(ByteCountFormatter.string(fromByteCount: received, countStyle: .file)) of "
+                + "\(ByteCountFormatter.string(fromByteCount: expected, countStyle: .file)))."
         }
     }
 
@@ -275,12 +294,33 @@ public actor NetworkGate {
             config.timeoutIntervalForRequest = 30
             config.timeoutIntervalForResource = 3600
             config.waitsForConnectivity = false
-            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("MediaPull/URLCache", isDirectory: true)
-            config.urlCache = URLCache(memoryCapacity: 32 << 20, diskCapacity: 256 << 20, directory: caches)
+            // In memory only: responses fetched with the browser's cookies (signed-in or private media) must never be
+            // left on disk after the person clears website data.
+            config.urlCache = URLCache(memoryCapacity: 32 << 20, diskCapacity: 0, directory: nil)
             return config
         }()
         session = URLSession(configuration: config)
+        if configuration == nil {
+            // Versions before 1.8 kept a disk cache here.
+            Task.detached(priority: .utility) {
+                if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+                    try? FileManager.default.removeItem(at: caches.appendingPathComponent("MediaPull/URLCache", isDirectory: true))
+                }
+            }
+        }
+    }
+
+    /// Clear All Website Data clears what the gate remembers too.
+    public func clearCache() {
+        session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
+    /// The most `data()` reads for each purpose; larger answers are refused rather than held in memory.
+    public static func dataLimit(for purpose: RequestPurpose) -> Int64 {
+        switch purpose {
+        case .thumbnail: 32 << 20
+        default: 64 << 20
+        }
     }
 
     public func entries() -> [EgressEntry] { log }
@@ -320,18 +360,37 @@ public actor NetworkGate {
         }
     }
 
-    /// The whole body of a small response.
+    /// The whole body of a small response, at most `dataLimit(for:)` bytes.
     public func data(_ request: GatedRequest) async throws -> (Data, HTTPURLResponse) {
         let urlRequest = try prepare(request)
-        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose))
-        let host = request.url.host ?? ""
-        await limiter.acquire(host)
-        defer { Task { await limiter.release(host) } }
+        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose), limiter: limiter)
+        await limiter.acquire(hops.currentHost)
+        defer { Task { await hops.endTransfer() } }
+        let limit = Self.dataLimit(for: request.purpose)
         do {
-            let (data, response) = try await session.data(for: urlRequest, delegate: hops)
+            let (bytes, response) = try await session.bytes(for: urlRequest, delegate: hops)
             guard let http = response as? HTTPURLResponse else { throw GateError.notHTTP }
+            if hops.refusal != nil {
+                bytes.task.cancel()
+                finish(hops.currentID, status: http.statusCode, bytes: nil)
+                try hops.checkRefusal()
+            }
+            if http.expectedContentLength > limit {
+                bytes.task.cancel()
+                finish(hops.currentID, status: http.statusCode, bytes: nil)
+                throw GateError.tooLarge(limit)
+            }
+            var data = Data()
+            if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > limit {
+                    bytes.task.cancel()
+                    finish(hops.currentID, status: http.statusCode, bytes: Int64(data.count))
+                    throw GateError.tooLarge(limit)
+                }
+            }
             finish(hops.currentID, status: http.statusCode, bytes: Int64(data.count))
-            try hops.checkRefusal()
             return (data, http)
         } catch let error as GateError {
             // An HTTP status, or the redirect that was refused, is already in the request log.
@@ -348,10 +407,9 @@ public actor NetworkGate {
         var request = request
         if request.method == .get, request.range == nil { request.range = "bytes=0-\(maxBytes - 1)" }
         let urlRequest = try prepare(request)
-        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose))
-        let host = request.url.host ?? ""
-        await limiter.acquire(host)
-        defer { Task { await limiter.release(host) } }
+        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose), limiter: limiter)
+        await limiter.acquire(hops.currentHost)
+        defer { Task { await hops.endTransfer() } }
         do {
             let (bytes, response) = try await session.bytes(for: urlRequest, delegate: hops)
             guard let http = response as? HTTPURLResponse else { throw GateError.notHTTP }
@@ -388,10 +446,10 @@ public actor NetworkGate {
         progress: @escaping @Sendable (Int64, Int64?) -> Void = { _, _ in }
     ) async throws -> HTTPURLResponse {
         let urlRequest = try prepare(request)
-        let delegate = DownloadProgressDelegate(request: urlRequest, id: record(request), log: logHop(request.purpose), progress: progress)
-        let host = request.url.host ?? ""
-        await limiter.acquire(host)
-        defer { Task { await limiter.release(host) } }
+        let delegate = DownloadProgressDelegate(request: urlRequest, id: record(request), log: logHop(request.purpose),
+                                                limiter: limiter, progress: progress)
+        await limiter.acquire(delegate.currentHost)
+        defer { Task { await delegate.endTransfer() } }
         do {
             let (location, response) = try await session.download(for: urlRequest, delegate: delegate)
             guard let http = response as? HTTPURLResponse else { throw GateError.notHTTP }
@@ -402,10 +460,20 @@ public actor NetworkGate {
                 throw GateError.http(http.statusCode)
             }
             let manager = FileManager.default
-            try? manager.removeItem(at: destination)
+            let size = (try? manager.attributesOfItem(atPath: location.path)[.size] as? NSNumber)?.int64Value
+            // R-1401 step 3: a body shorter than the server announced is a cut-short download, never a file to keep. With a
+            // content encoding the announced length is of the encoded body, so it cannot be compared.
+            let encoded = http.value(forHTTPHeaderField: "Content-Encoding").map { !$0.isEmpty && $0.lowercased() != "identity" } ?? false
+            if !encoded, request.range == nil, http.statusCode == 200, http.expectedContentLength > 0, let size,
+               size != http.expectedContentLength
+            {
+                try? manager.removeItem(at: location) // lint:allow silent-write a temporary file
+                finish(delegate.currentID, status: http.statusCode, bytes: size)
+                throw GateError.truncated(received: size, expected: http.expectedContentLength)
+            }
+            try? manager.removeItem(at: destination) // lint:allow silent-write the destination may not exist yet
             try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try manager.moveItem(at: location, to: destination)
-            let size = (try? manager.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
             finish(delegate.currentID, status: http.statusCode, bytes: size)
             return http
         } catch let error as GateError {
@@ -440,14 +508,33 @@ class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var state: State
     private let log: Log
+    private let limiter: HostLimiter?
+    /// The host whose request slot this transfer holds ("" while it waits for the next hop's slot).
+    private var host: String
+    private var ended = false
 
-    init(request: URLRequest, id: Int, log: @escaping Log) {
+    init(request: URLRequest, id: Int, log: @escaping Log, limiter: HostLimiter? = nil) {
         state = State(id: id, request: request, headers: request.allHTTPHeaderFields ?? [:])
         self.log = log
+        self.limiter = limiter
+        host = request.url?.host ?? ""
     }
 
     /// The request log entry of the hop the answer came from.
     var currentID: Int { lock.withLock { state.id } }
+    /// The host whose request slot this transfer holds; it follows redirects, so per-host limits hold for every hop.
+    var currentHost: String { lock.withLock { host } }
+
+    /// Called once the transfer is over: gives back the slot it holds. A slot still being waited for at that moment is
+    /// given back as soon as it arrives.
+    func endTransfer() async {
+        let held: String? = lock.withLock {
+            ended = true
+            defer { host = "" }
+            return host.isEmpty ? nil : host
+        }
+        if let held, let limiter { await limiter.release(held) }
+    }
     var refusal: GateError? { lock.withLock { state.refusal } }
 
     func checkRefusal() throws {
@@ -468,6 +555,20 @@ class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             let status = response.statusCode
             Task {
                 let id = await log(current.id, status, url, next.httpMethod ?? "GET")
+                let nextHost = url.host ?? ""
+                if let limiter, nextHost != currentHost {
+                    // The finished hop's slot is given back before waiting for the next host's, so two transfers can
+                    // never wait on each other.
+                    let previous: String = lock.withLock { defer { host = "" }; return host }
+                    if !previous.isEmpty { await limiter.release(previous) }
+                    await limiter.acquire(nextHost)
+                    let keep = lock.withLock { () -> Bool in
+                        if ended { return false }
+                        host = nextHost
+                        return true
+                    }
+                    if !keep { await limiter.release(nextHost) }
+                }
                 lock.withLock { state = State(id: id, request: next, headers: headers) }
                 completionHandler(next)
             }
@@ -479,9 +580,11 @@ final class DownloadProgressDelegate: RedirectGuard, URLSessionDownloadDelegate,
     let progress: @Sendable (Int64, Int64?) -> Void
     private var last = Date.distantPast
 
-    init(request: URLRequest, id: Int, log: @escaping Log, progress: @escaping @Sendable (Int64, Int64?) -> Void) {
+    init(request: URLRequest, id: Int, log: @escaping Log, limiter: HostLimiter? = nil,
+         progress: @escaping @Sendable (Int64, Int64?) -> Void)
+    {
         self.progress = progress
-        super.init(request: request, id: id, log: log)
+        super.init(request: request, id: id, log: log, limiter: limiter)
     }
 
     func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}

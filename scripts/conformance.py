@@ -31,7 +31,7 @@ def read(path):
 
 
 def spec_requirements():
-    return sorted(set(re.findall(r"\*\*(R-\d+[a-z]?)\*\*", read("docs/SPEC.md"))), key=sort_key)
+    return sorted(set(re.findall(r"\*\*(R-\d+[a-z]?)(?:\*\*| [^*]*\*\*)", read("docs/SPEC.md"))), key=sort_key)
 
 
 def sort_key(rid):

@@ -433,6 +433,7 @@ struct AdvancedSettings: View {
                 Button("Clear All Website Data") {
                     Task {
                         await CookieBridge.clearWebsiteData(matching: nil)
+                        await app.gate.clearCache()
                         await app.engines.refreshSignIn()
                     }
                 }

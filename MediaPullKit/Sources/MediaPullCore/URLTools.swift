@@ -70,6 +70,13 @@ public enum URLNormalizer {
         return PublicSuffix.shared.registrableDomain(a) == PublicSuffix.shared.registrableDomain(b)
     }
 
+    /// Whether the browser's cookies may go with a request for `url` (R-916): it must be same-site with the page and with
+    /// the frame that reported it, as SameSite cookies are in a browser, so a cross-site frame on a page cannot make
+    /// MediaPull send that page's cookies to an address of its choosing.
+    public static func mayCarryCookies(_ url: URL, page: URL?, frame: URL?) -> Bool {
+        isSameSite(page, url) && (frame.map { isSameSite($0, url) } ?? true)
+    }
+
     /// The Referer the browser would send under strict-origin-when-cross-origin.
     public static func referer(for target: URL, from page: URL?) -> String? {
         guard let page, page.scheme == "http" || page.scheme == "https" else { return nil }

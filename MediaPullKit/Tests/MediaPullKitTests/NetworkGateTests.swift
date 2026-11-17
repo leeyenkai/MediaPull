@@ -1,4 +1,5 @@
 import Foundation
+@testable import MediaPullCore
 @testable import MediaPullNet
 import XCTest
 
@@ -33,19 +34,46 @@ final class NetworkGateTests: XCTestCase {
         XCTAssertEqual(jar.header(for: URL(string: "https://www.example.com/a.jpg")!), "id=1; site=2")
     }
 
-    func testRedirectsKeepCookiesOnlyOnTheSameHost() throws {
-        let headers = ["Cookie": "id=1", "Referer": "https://www.example.com/page", "Accept": "*/*"]
+    /// Cookies stay with the exact origin; the Referer is worked out again for each hop (1.8 audit).
+    func testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer() throws {
+        let headers = ["Cookie": "id=1", "Referer": "https://www.example.com/private/album?token=abc", "Accept": "*/*"]
         let from = URL(string: "https://www.example.com/a.jpg")!
-        let rows: [(to: String, keepsCookie: Bool)] = [
-            ("https://www.example.com/b.jpg", true),
-            ("https://cdn.example.com/b.jpg", false),
-            ("https://collector.example.net/b.jpg", false),
+        let rows: [(to: String, keepsCookie: Bool, referer: String?)] = [
+            ("https://www.example.com/b.jpg", true, "https://www.example.com/private/album?token=abc"),
+            ("https://www.example.com:8443/b.jpg", false, "https://www.example.com/"),
+            ("https://cdn.example.com/b.jpg", false, "https://www.example.com/"),
+            ("https://collector.example.net/b.jpg", false, "https://www.example.com/"),
         ]
         for row in rows {
             let next = try RedirectPolicy.nextHeaders(headers, method: "GET", from: from, to: URL(string: row.to)!).get()
             XCTAssertEqual(next["Cookie"] != nil, row.keepsCookie, row.to)
-            XCTAssertEqual(next["Referer"], headers["Referer"])
+            XCTAssertEqual(next["Referer"], row.referer, row.to)
         }
+        // Without cookies a hop to plain http is allowed, but carries no Referer at all.
+        let plain = try RedirectPolicy.nextHeaders(["Referer": headers["Referer"]!], method: "GET", from: from,
+                                                   to: URL(string: "http://cdn.other.net/1.jpg")!).get()
+        XCTAssertNil(plain["Referer"])
+    }
+
+    func testSameSiteSurvivesTheRoundTrip() throws {
+        let original = try XCTUnwrap(HTTPCookie(properties: [
+            .name: "sessionid", .value: "a", .domain: ".instagram.com", .path: "/", .secure: "TRUE", .sameSitePolicy: "lax",
+        ]))
+        var record = CookieRecord(original)
+        XCTAssertEqual(record.sameSite, "lax")
+        record.value = "b"
+        let written = try XCTUnwrap(record.httpCookie)
+        XCTAssertEqual(written.sameSitePolicy, .sameSiteLax)
+        XCTAssertEqual(written.value, "b")
+    }
+
+    func testCookiesNeedTheFrameToo() {
+        let page = URL(string: "https://example.com/feed")!
+        let media = URL(string: "https://example.com/account/x.jpg")!
+        XCTAssertTrue(URLNormalizer.mayCarryCookies(media, page: page, frame: nil))
+        XCTAssertTrue(URLNormalizer.mayCarryCookies(media, page: page, frame: URL(string: "https://img.example.com/frame")!))
+        XCTAssertFalse(URLNormalizer.mayCarryCookies(media, page: page, frame: URL(string: "https://ads.example.net/frame")!))
+        XCTAssertFalse(URLNormalizer.mayCarryCookies(URL(string: "https://other.net/a.jpg")!, page: page, frame: nil))
     }
 
     func testRedirectsAreCheckedAgainstThePolicy() {
@@ -155,5 +183,52 @@ final class NetworkGateRedirectTests: XCTestCase {
         XCTAssertEqual(seen.map { $0.url?.host }, ["a.test"])
         let entries = await gate.entries()
         XCTAssertEqual(entries.map(\.status), [302])
+    }
+}
+
+/// Answers that announce more than they send, or more than the gate reads (1.8 audit: R-1401 step 3, bounded memory).
+final class SizedProtocol: URLProtocol, @unchecked Sendable {
+    override static func canInit(with _: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let host = request.url?.host ?? ""
+        let announced = host == "big.test" ? "99999999999" : "100"
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Length": announced])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(repeating: 1, count: 10))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+final class NetworkGateLimitTests: XCTestCase {
+    private func gate() -> NetworkGate {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SizedProtocol.self]
+        return NetworkGate(configuration: config)
+    }
+
+    func testACutShortDownloadIsNotKept() async throws {
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("short-\(UUID().uuidString).jpg")
+        do {
+            _ = try await gate().download(.get(URL(string: "https://short.test/a.jpg")!, purpose: .save), to: destination)
+            XCTFail("a truncated body was accepted")
+        } catch let GateError.truncated(received, expected) {
+            XCTAssertEqual(received, 10)
+            XCTAssertEqual(expected, 100)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testAnOversizedAnswerIsRefusedBeforeReading() async {
+        do {
+            _ = try await gate().data(.get(URL(string: "https://big.test/a.jpg")!, purpose: .thumbnail))
+            XCTFail("an oversized answer was read")
+        } catch {
+            guard case .tooLarge = error as? GateError else { return XCTFail("\(error)") }
+        }
     }
 }

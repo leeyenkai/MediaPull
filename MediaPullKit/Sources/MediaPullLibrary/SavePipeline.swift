@@ -305,7 +305,7 @@ public final class SavePipeline: Sendable {
         switch item.source {
         case let .web(web):
             headers.referer = URLNormalizer.referer(for: variant.url, from: web.frameURL ?? web.pageURL)
-            if URLNormalizer.isSameSite(web.pageURL, variant.url) {
+            if URLNormalizer.mayCarryCookies(variant.url, page: web.pageURL, frame: web.frameURL) {
                 headers.cookieHeader = context.cookies.header(for: variant.url)
             }
         case let .engine(engine):

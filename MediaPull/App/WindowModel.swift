@@ -423,7 +423,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         )
         if let web = item.source.web {
             context.referer = URLNormalizer.referer(for: url, from: web.frameURL ?? web.pageURL)
-            if URLNormalizer.isSameSite(web.pageURL, url) { context.cookieHeader = cookieJar.header(for: url) }
+            if URLNormalizer.mayCarryCookies(url, page: web.pageURL, frame: web.frameURL) { context.cookieHeader = cookieJar.header(for: url) }
         } else if let engine = item.source.engine {
             if let agent = engine.headers.first(where: { $0.key.lowercased() == "user-agent" })?.value { context.userAgent = agent }
             if !engine.isInstagram, let source = engine.sourceURL { context.referer = URLNormalizer.referer(for: url, from: source) }

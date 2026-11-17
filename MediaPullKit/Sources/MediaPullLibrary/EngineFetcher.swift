@@ -87,7 +87,7 @@ public struct BridgeEngineFetcher: EngineFetching {
             request.url = url.absoluteString
             request.referer = URLNormalizer.referer(for: url, from: context.frameURL ?? context.pageURL)
             request.userAgent = userAgent
-            if URLNormalizer.isSameSite(context.pageURL, url) {
+            if URLNormalizer.mayCarryCookies(url, page: context.pageURL, frame: context.frameURL) {
                 let domain = PublicSuffix.shared.registrableDomain(url.host ?? "")
                 try CookieFile.write(await cookies(domain), to: cookieFile)
                 request.cookies = cookieFile.path
