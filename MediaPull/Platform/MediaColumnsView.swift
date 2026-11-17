@@ -43,9 +43,10 @@ struct MediaColumns: NSViewRepresentable {
         browser.isTitled = false
         browser.allowsMultipleSelection = true
         browser.allowsEmptySelection = true
-        browser.columnResizingType = .userColumnResizing
-        browser.minColumnWidth = 150
-        browser.setDefaultColumnWidth(210)
+        // Columns share the pane's width, so a narrow pane shows whole columns instead of scrolling one half out of view.
+        browser.columnResizingType = .autoColumnResizing
+        browser.minColumnWidth = 160
+        browser.maxVisibleColumns = 3
         browser.rowHeight = 22
         browser.autohidesScroller = true
         browser.target = coordinator
@@ -457,7 +458,7 @@ struct MediaColumnPreview: View {
             Spacer(minLength: 0)
         }
         .padding(14)
-        .frame(minWidth: 200, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task(id: id) { await load() }
     }
 

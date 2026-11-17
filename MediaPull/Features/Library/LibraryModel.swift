@@ -570,7 +570,11 @@ final class LibraryModel: MediaGridOwner {
     }
 
     func gridThumbnail(_ id: String, maxPixel: Int) async -> CGImage? {
-        guard let file = file(id) else { return nil }
+        // The column view shows files before the pane has read their folder; ids are paths, so those load directly.
+        guard let file = file(id) else {
+            if listFolders.isFolder(id) { return nil }
+            return await app.thumbnails.localThumbnail(for: URL(fileURLWithPath: id), maxPixel: maxPixel)?.image
+        }
         let measured = entryIndex[id].map { entries[$0] }?.facts?.pixelWidth != nil
         if details[id] == nil, !measured, file.format?.kind == .image || file.format?.kind == .animatedImage {
             let url = file.url

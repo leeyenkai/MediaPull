@@ -209,7 +209,9 @@ final class SelfTestRunner {
         try? await Task.sleep(for: .seconds(1))
         note("save finished: \(job?.summary ?? "no job") – \(job?.state.label ?? "")")
         model.library.selectedFolder = library.appendingPathComponent(FileNaming.safeTopFolder(url.host ?? "web"))
-        try? await Task.sleep(for: .seconds(2))
+        // The listing waits for analysis of the files just saved; the screenshot shows the folder once it is read.
+        await waitUntil(timeout: 240) { !self.model.library.files.isEmpty }
+        try? await Task.sleep(for: .seconds(10))
         snapshot(to: out.appendingPathComponent("window-saved.png"))
 
         if CommandLine.arguments.contains("--selftest-edit") { await exerciseEditor(library: library, out: out) }
