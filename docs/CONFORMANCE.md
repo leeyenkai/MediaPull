@@ -90,6 +90,7 @@ change as the code.
 | R-1009 | built | `PreviewPane`, `ItemDetails`, `VariantRanker.reason` | `testReasons`, `--selftest-url` | The reason for the chosen variant is shown (1.8) |
 | R-1009a | built | `WindowModel.showInPreview`, `WindowModel.openEditor`, `EditorModel` | `--selftest-edit` | Editor opens in the Preview pane; unsaved edits keep it from being replaced |
 | R-1010 | person | `QuickLook`, `WindowModel.quickLook`, `WindowModel.previewFile` | none | Downloads through the gate to the cache, then previews the local file |
+| R-1011 | built | `WindowModel.markItemsInLibrary`, `AppModel.libraryKey`, `AppStore.archivedPaths` | `testArchivedPathsAreLookedUpInBatchesAndIgnoreMissingFiles` | D-84 |
 | R-1101 | person | `InstagramForm`, `EngineService.refreshSignIn` | `--selftest-pullsheet` | Sign-in state and Sign In shown in the Downloads pane; a signed-in pull needs a person (D-53) |
 | R-1102 | person | `EngineService.describe`, `Engines/bridge/mediapull_bridge.py` | none | Private account error mapped to a fatal private event; only a signed-in pull can show it |
 | R-1103 | amended | `EngineCookies`, `CookieFile.write`, `BridgeEngineFetcher.fetch` | `testCookieFileRoundTrip`, `test_browser_user_agent_goes_with_cookies` | D-24: engines keep their own User-Agent for Instagram; cookies exported, written back and deleted |

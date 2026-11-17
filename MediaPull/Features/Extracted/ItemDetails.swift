@@ -122,10 +122,16 @@ struct StateLine: View {
             case let .saving(fraction):
                 ProgressView(value: fraction ?? 0).frame(width: 80)
                 Text("Saving")
-            case let .saved(url), let .duplicate(url):
+            case let .saved(url):
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Button(url.lastPathComponent) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                     .buttonStyle(.link)
+            case let .duplicate(url):
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("In your library:")
+                Button(url.lastPathComponent) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                    .buttonStyle(.link)
+                    .help("Show it in the Finder")
             case let .skipped(reason):
                 Image(systemName: "minus.circle")
                 Text(reason)

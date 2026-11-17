@@ -343,8 +343,31 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     // MARK: Snapshots and filtering
 
+    /// Items already looked up in the library, so each is looked up once (R-1015).
+    @ObservationIgnored private var libraryChecked: Set<String> = []
+
+    /// Marks items that were saved before (by this or an earlier session) as saved, with the file they were saved as.
+    private func markItemsInLibrary(_ items: [MediaItem]) {
+        let fresh = items.filter { states[$0.id] == nil && !libraryChecked.contains($0.id) }
+        guard !fresh.isEmpty, let store = app.store else { return }
+        libraryChecked.formUnion(fresh.map(\.id))
+        Task { [weak self] in
+            let keys = await Task.detached(priority: .utility) {
+                Dictionary(fresh.map { (AppModel.libraryKey(for: $0), $0.id) }, uniquingKeysWith: { a, _ in a })
+            }.value
+            let found = await store.archivedPaths(for: Array(keys.keys))
+            guard let self, !found.isEmpty else { return }
+            for (key, path) in found {
+                if let id = keys[key], self.states[id] == nil { self.states[id] = .duplicate(URL(fileURLWithPath: path)) }
+            }
+            self.gridRevision += 1
+            if !self.filter.states.isEmpty { self.refilter() }
+        }
+    }
+
     private func apply(_ snapshot: IngestSnapshot) {
         items = snapshot.items
+        markItemsInLibrary(snapshot.items)
         if documents != snapshot.documents { documents = snapshot.documents }
         itemsByID = Dictionary(snapshot.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         refilter()
@@ -411,6 +434,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         // The PDFs' images go with the list, so opening a PDF again extracts it again.
         extractedDocuments.removeAll()
         states.removeAll()
+        libraryChecked.removeAll()
         selection.removeAll()
         probing.removeAll()
     }

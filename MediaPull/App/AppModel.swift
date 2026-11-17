@@ -406,6 +406,12 @@ final class AppModel {
         }
     }
 
+    /// The key an item is remembered under once saved: the engine's own key, or a hash of a web item's id (its address).
+    nonisolated static func libraryKey(for item: MediaItem) -> String {
+        if let engine = item.source.engine { return engine.key }
+        return "web:" + FileHasher.sha256(of: Data(item.id.utf8))
+    }
+
     func refreshAccountFolders() async {
         accountFolderList = await accountFolders.all()
     }
@@ -479,9 +485,14 @@ final class AppModel {
             }
             // Items a cancelled job never reached are no longer waiting.
             window?.clearQueued(items.map(\.id).filter { outcomes[$0] == nil })
+            // Every saved item is remembered, so the next time it is extracted it shows as already in the library (R-1015).
+            let keys = await Task.detached {
+                Dictionary(items.map { ($0.id, Self.libraryKey(for: $0)) }, uniquingKeysWith: { a, _ in a })
+            }.value
             for item in items {
-                guard let outcome = outcomes[item.id], let url = outcome.url, let engine = item.source.engine else { continue }
-                await store?.recordArchive(key: engine.key, account: engine.username ?? engine.category, path: url.path, sha256: "")
+                guard let outcome = outcomes[item.id], let url = outcome.url, let key = keys[item.id] else { continue }
+                let account = item.source.engine.map { $0.username ?? $0.category } ?? (item.source.pageURL?.host ?? "web")
+                await store?.recordArchive(key: key, account: account, path: url.path, sha256: "")
             }
             self.libraryRevision += 1
             let failedCount = outcomes.values.filter { if case .failed = $0 { return true } else { return false } }.count

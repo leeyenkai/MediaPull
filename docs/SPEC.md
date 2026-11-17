@@ -580,6 +580,8 @@ For a library file it shows the image, animated GIF or video player, format, dim
 
 **R-1010** Quick Look (Space) downloads the best variant to the cache through the gate and previews the local file.
 
+**R-1011** Items already in the library (D-84): every save remembers the item under its engine key, or a hash of a web item's address, with the file it became. As items are extracted they are looked up in one batch off the main thread; those whose file still exists show the saved badge and, in the details, "In your library:" with the file name, which shows it in the Finder. The State filter's Not Saved hides them. Nothing is downloaded to check.
+
 ---
 
 ## 11. Instagram
@@ -1230,6 +1232,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-81 | Instagram metadata files gain `media_id`, the id of the one file (a string, like `post_id`), so files can be matched exactly even after they are renamed. Informational, like `extractor`; older files without it are matched by name or by `post_id` and `num` | Exact matching for renamed files |
 | D-82 | MediaPull offers a Services menu entry and accepts dropped links, both of which only fill in the Downloads pane. There is no URL scheme or other way for another app to start a download | Requested: send a link from another app without copying and pasting; nothing outside MediaPull may start network work on its own |
 | D-83 | Two explicit tidying actions, both through the operation journal so ⌘Z undoes them: Trash Extra Copies (one file of each duplicate group stays) and Check Folder (reports; trashes orphaned metadata files only when asked). Nothing is still ever removed automatically (D-50 holds) | Requested features that keep the library tidy without new panes or settings |
+| D-84 | Web saves are remembered like engine saves, under `web:` and the SHA-256 of the item's address, in the same table (Application Support), so items already saved are marked when they are extracted again. A record whose file is gone is ignored | Requested: see at a glance what is already in the library, without a new control |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 

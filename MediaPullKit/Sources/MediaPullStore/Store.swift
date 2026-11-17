@@ -364,10 +364,17 @@ public actor AppStore {
         return model.path
     }
 
+    /// The saved file of each key that has one still on disk, looked up in one query per thousand keys.
     public func archivedPaths(for keys: [String]) -> [String: String] {
         var result: [String: String] = [:]
-        for key in keys {
-            if let path = isArchived(key) { result[key] = path }
+        var start = 0
+        while start < keys.count {
+            let chunk = Array(keys[start ..< min(start + 1000, keys.count)])
+            start += 1000
+            let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { chunk.contains($0.key) })
+            for model in (try? modelContext.fetch(descriptor)) ?? [] where FileManager.default.fileExists(atPath: model.path) {
+                result[model.key] = model.path
+            }
         }
         return result
     }

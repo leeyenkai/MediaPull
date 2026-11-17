@@ -2,6 +2,7 @@ import Foundation
 @testable import MediaPullCore
 @testable import MediaPullLibrary
 import MediaPullNet
+@testable import MediaPullStore
 import XCTest
 
 /// Update an account folder (D-78 to D-81): what a folder already holds, and where an update writes.
@@ -174,6 +175,20 @@ final class AccountFolderTests: XCTestCase {
             XCTAssertEqual(estimate.requests, requests, "\(posts) posts")
             XCTAssertEqual(estimate.seconds, seconds, accuracy: 0.001)
         }
+    }
+
+    /// R-1011: saved items are found again in one lookup, and a record whose file is gone does not count.
+    func testArchivedPathsAreLookedUpInBatchesAndIgnoreMissingFiles() async throws {
+        let store = try AppStore.make(inMemory: true)
+        let kept = file("saved/a.jpg")
+        for index in 0 ..< 1500 {
+            await store.recordArchive(key: "web:\(index)", account: "example.com", path: kept.path, sha256: "")
+        }
+        await store.recordArchive(key: "web:gone", account: "example.com", path: root.appendingPathComponent("gone.jpg").path, sha256: "")
+        let found = await store.archivedPaths(for: (0 ..< 1500).map { "web:\($0)" } + ["web:gone", "web:never"])
+        XCTAssertEqual(found.count, 1500)
+        XCTAssertNil(found["web:gone"])
+        XCTAssertNil(found["web:never"])
     }
 
     func testStoreRemembersKeysAndCursorPerFolder() async {
