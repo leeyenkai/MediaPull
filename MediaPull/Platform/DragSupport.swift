@@ -2,6 +2,9 @@ import AppKit
 import UniformTypeIdentifiers
 
 nonisolated enum DragTypes {
+    /// True while a drag that started in one of MediaPull's own grids or lists is under way: a drop moves its files, while
+    /// files dragged in from the Finder are copied (R-1801).
+    @MainActor static var fromMediaPull = false
     static let itemsIdentifier = "com.yenkai.mediapull.items"
     static let items = NSPasteboard.PasteboardType(itemsIdentifier)
     static let itemsUTType = UTType(exportedAs: itemsIdentifier)

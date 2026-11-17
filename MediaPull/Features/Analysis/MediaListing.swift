@@ -45,7 +45,10 @@ nonisolated enum MediaListing {
                 urls.append(url)
             }
         } else {
-            urls = top
+            // The same cap for one folder as for a folder and its subfolders: media files count, others do not.
+            let media = top.filter { $0.pathExtension.lowercased() != "json" && MediaFormat.fromExtension($0.pathExtension) != nil }
+            if media.count > limit { return (entries(Array(media.prefix(limit))), folders, subfolders, true) }
+            urls = media
         }
         return (entries(urls), folders, subfolders, false)
     }

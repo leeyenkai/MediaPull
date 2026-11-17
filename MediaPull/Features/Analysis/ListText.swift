@@ -72,10 +72,9 @@ final class FolderSizes {
             let folder = URL(fileURLWithPath: path, isDirectory: true)
             let stats = await Task.detached(priority: .utility) { FolderStats.measure(folder) }.value
             queued.remove(path)
-            if started == revision {
-                known[path] = stats
-                measured(path)
-            }
+            // A measurement made before files changed is dropped; the row is drawn again either way, so it asks again.
+            if started == revision { known[path] = stats }
+            measured(path)
             running = false
             next()
         }

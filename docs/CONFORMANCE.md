@@ -114,7 +114,7 @@ change as the code.
 | R-1111d | built | `AddressInput.several`, `DownloadsModel.runAll`, `DownloadList` | `testClassification`, `--selftest-downloads-list` | Classification checked end to end by the self-test; Download All of real addresses needs a person |
 | R-1201 | built | `WindowModel.siteExtractorCategory`, `EngineService.siteInfo`, `op_supports` | `--selftest-site`, `testFinalEventsAreNeverLost` | Debounced 1.5 s supports check, cached per URL, Instagram excluded |
 | R-1202 | built | `EngineService.startSiteScan`, `EngineCookies` | `--selftest-site` | Scan with the site's own cookies; the button now reads Get Original Files |
-| R-1203 | built | `site_request_interval`, `configure_gallery_dl` | `test_a_sites_own_request_interval_is_never_undercut` | Never faster than a site's own interval (1.8) |
+| R-1203 | built | `site_request_intervals`, `configure_gallery_dl` | `test_a_sites_own_request_interval_is_never_undercut` | Never faster than a site's own interval (1.8) |
 | R-1204 | amended | `ArchivePlanner.sidecar` | `--selftest-site` | D-28: uploader recorded as author, username only for user pages, files under the site folder |
 | R-1301 | built | `BridgeClient.run`, `EnginePaths.pythonPaths`, `configure_paths` | `testFinalEventsAreNeverLost`, `testSelfTestPassesAndGuardBlocksWrites` | Isolated interpreter, clean environment, staging working folder, request on standard input |
 | R-1302 | built | `BridgeClient.run`, `BridgeEvent.decode`, `Emitter` | `testFinalEventsAreNeverLost`, `test_events_are_valid_json_even_with_nan_or_huge_numbers` | JSON Lines events; standard error logged privately |

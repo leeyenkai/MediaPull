@@ -72,7 +72,11 @@ struct QueryBar: View {
             Divider()
             Toggle("Ascending", isOn: $query.ascending)
             if query.sort == .events {
-                Picker("Event Gap", selection: Binding(get: { query.eventGap / 3600 }, set: { query.eventGap = $0 * 3600 })) {
+                // The same event gap as Settings and Sort by Event.
+                Picker("Event Gap", selection: Binding(get: { AppModel.shared.preferences.eventGapHours }, set: {
+                    AppModel.shared.preferences.eventGapHours = $0
+                    query.eventGap = $0 * 3600
+                })) {
                     ForEach([1.0, 2, 3, 6, 12, 24], id: \.self) { Text("\(Int($0)) hour\($0 == 1 ? "" : "s")").tag($0) }
                 }
             }

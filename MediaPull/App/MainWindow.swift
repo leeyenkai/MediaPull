@@ -74,7 +74,15 @@ struct MainWindow: View {
         .navigationTitle(windowName)
         .toolbar { toolbar }
         .focusedSceneValue(\.windowModel, model)
-        .task { SelfTestRunner.startIfRequested(model) }
+        .task {
+            // Lets an address sent from another app open a window when none is open (R-1111c).
+            app.openMainWindow = { [openWindow] in openWindow(id: "main") }
+            if let address = app.pendingDownloadAddress {
+                app.pendingDownloadAddress = nil
+                model.showDownloads(address)
+            }
+            SelfTestRunner.startIfRequested(model)
+        }
         .sheet(item: Binding(
             get: { app.walkthroughWindow === model ? app.walkthrough : nil },
             set: { app.walkthrough = $0 }

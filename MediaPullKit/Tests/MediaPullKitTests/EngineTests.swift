@@ -391,6 +391,23 @@ final class InstagramContentTests: XCTestCase {
         var tray = EngineContext(key: "k", category: "instagram", subcategory: "stories-tray")
         tray.username = "x"
         XCTAssertEqual(tray.instagramSection, "stories")
+
+        // As the bridge reports them (audit round 1, A1): a child extractor's "stories", marked as from the tray.
+        let reported = EngineContext.from(meta: ["category": .string("instagram"), "username": .string("bob"),
+                                                 "collection": .string("stories-tray")],
+                                          key: "ig:5", subcategory: "stories", sourceURL: nil)
+        XCTAssertEqual(reported.subcategory, "stories-tray")
+        let saved = EngineContext.from(meta: ["category": .string("instagram"), "username": .string("carol"),
+                                              "collection": .string("saved")],
+                                       key: "ig:6", subcategory: "posts", sourceURL: nil)
+        XCTAssertEqual(saved.subcategory, "saved")
+        let url = URL(string: "https://cdn.example.com/a.jpg")!
+        let variant = MediaVariant(id: url.absoluteString, url: url, format: .jpeg, origin: .img)
+        let item = MediaItem(id: "ig:5", kind: .image, variants: [variant],
+                             source: .engine(reported), discoveryIndex: 0, group: "g", groupTitle: "t")
+        let info = FinalFileInfo(format: .jpeg, sha256: "ab", pixelSize: nil, duration: nil, sourceURL: url, lastModified: nil,
+                                 originalName: nil, note: nil)
+        XCTAssertEqual(ArchivePlanner.sidecar(for: item, info: info, target: account, settings: SaveSettings()).username, "bob")
     }
 }
 

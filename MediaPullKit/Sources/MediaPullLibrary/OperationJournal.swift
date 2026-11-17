@@ -294,9 +294,15 @@ public actor OperationJournal {
         var trashed: NSURL?
         try fm.trashItem(at: item, resultingItemURL: &trashed)
         entry.steps.append(.trash(original: item.path, trashed: (trashed as URL?)?.path ?? ""))
-        // Where an item went in the Trash cannot be found again, so it is saved straight away.
-        save(entry)
+        // Where an item went in the Trash cannot be found again, so it is saved soon: at once for the first 200 steps, then
+        // at most five times a second (rewriting a long entry after every item would write gigabytes for a large Trash).
+        if entry.steps.count < 200 || Date().timeIntervalSince(lastTrashSave) >= 0.2 {
+            save(entry)
+            lastTrashSave = Date()
+        }
     }
+
+    private var lastTrashSave = Date.distantPast
 
     /// Whether two paths name the same file, as a case-only rename's old and new names do on most Mac volumes.
     static func sameFile(_ a: String, _ b: String) -> Bool {

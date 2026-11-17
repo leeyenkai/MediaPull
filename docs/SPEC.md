@@ -385,8 +385,8 @@ Everything MediaPull keeps, what creates it, and what removes it. A row without 
 | Archive entries (SwiftData: key, path) | Every save and pull (engine keys, `web:` keys, D-84) | Moves and renames inside MediaPull follow them | Pruned at launch, off the main thread, when the file is gone and its volume is mounted |
 | Account folder records (`AccountFolders/`, D-79) | A pull or update into an account folder | Every pull into it; Finder moves through its bookmark | Pruned at load when the folder is gone and its bookmark no longer resolves |
 | Operation journal (`Organise/`) | Every file change (R-3806) | Undo, Redo | Entries older than "Keep undo history for" (Settings) |
-| Analysis store, image and face vectors (`Analysis/`) | Analysis of files under library roots and Organise folders | Changed files are analysed again; moves follow | Files gone or outside every scanned root are forgotten; Delete All Analysis Data; Delete All Face Data (faces only) |
-| Duplicate and fingerprint caches | Duplicate detection, saves | Changed files are read again | Entries for files that no longer exist are dropped on every save of the cache |
+| Analysis store, image and face vectors (`Analysis/`) | Analysis of files under library roots and Organise folders | Changed files are analysed again; moves follow | Files gone are forgotten, and files outside the library and recent Organise folders; vectors of a replaced model at load; Delete All Analysis Data and Delete All Face Data, set-aside database copies included |
+| Duplicate and fingerprint caches | Duplicate detection, saves | Changed files are read again | Duplicate cache: entries for missing files dropped on every save. Fingerprint index: dropped when it passes 50,000 entries |
 | Browsing history and bookmarks | Visiting pages, Add Bookmark | | Clear History; deleting a bookmark |
 | Website data (cookies, storage) | Pages in the browser | | Clear All Website Data |
 | Engine updates (`Engines/`) | Install Update (R-1305) | | Use Previous Version, Reset to Built-in |
@@ -669,7 +669,7 @@ Media is sorted into a folder per type by default (D-54); Settings > Instagram >
 - Images and progressive videos are downloaded by the Swift download queue straight from the URLs in the scan (Instagram CDN URLs need no cookies). If a URL's signature has expired, the item is re-resolved first.
 - Videos whose best version is a DASH stream are fetched by the bridge (`fetch` operation), which downloads and merges them.
 
-Which `fetch` method the bridge uses (reusing the engine's downloaders on scanned items, or re-resolving each post by its URL) is decided by the M0 spike and recorded in `docs/spikes/M0.md`.
+Which `fetch` method the bridge uses (reusing the engine's downloaders on scanned items, or re-resolving each post by its URL) was decided by the M0 spike: each post is re-resolved by its URL. *(Amended by D-86: the spike's notes were not kept; the decisions they held are recorded in this specification and in Appendix E.)*
 
 **R-1108 Single post or Reel.** "Save This Post" runs a pull limited to that post (all carousel items) into `<root>/<owner username>/`.
 
@@ -677,7 +677,7 @@ Which `fetch` method the bridge uses (reusing the engine's downloaders on scanne
 
 **R-1109 Images.** The largest candidate Instagram provides (by width × height) is used, and its URL is never edited (CDN URLs are signed). `original_width` and `original_height` are recorded in the sidecar when present. The UI says, where relevant, that Instagram's largest version is usually 1080 or 1440 px wide and is not the original upload.
 
-**R-1110 Videos.** The engine compares the progressive versions with the DASH manifest and takes the highest resolution, applying the video codec policy (section 16.3):
+**R-1110 Videos.** *(Amended by D-86: the engine takes the highest of the progressive versions Instagram lists; the DASH manifest is not compared, since merging it has not been checked against a signed-in account. To be revisited with a recorded test.)* The engine compares the progressive versions with the DASH manifest and takes the highest resolution, applying the video codec policy (section 16.3):
 
 - Best H.264 or HEVC stream plus the best AAC audio, merged with `ffmpeg -c copy` into MP4, without re-encoding.
 - If a strictly higher resolution exists only as VP9 or AV1, by default it is re-encoded to HEVC MP4 with the hardware encoder at high quality (D-05). Other policies are available in Settings.
@@ -748,7 +748,7 @@ Below the options it lists the downloads in progress and just finished. Download
 
 **R-1111c** Other apps (D-82): **Download with MediaPull** in the Services menu, for selected text or a link in any app, brings MediaPull forward with the address in the front window's Downloads pane. A link dropped on the Downloads pane does the same. Nothing starts until the person clicks Download.
 
-**R-1111d** Several addresses at once: two to 200 addresses, @accounts or #hashtags typed or pasted into the Downloads field, separated by spaces or new lines, become a list. Each line says what it is (Instagram, a gallery on a named site, a video, or "Not recognised: skipped"), worked out locally. **Download All (N)** runs them one after another into the save folder, each with the options last chosen for its kind (the account's remembered choices, the site's parts and switches with only new items, the best MP4 video), waiting for each to finish; Instagram keeps its pace and one-at-a-time rule (R-1113). **Stop After This One** lets the current download finish and starts no more.
+**R-1111d** Several addresses at once: two to 200 addresses, @accounts or #hashtags typed or pasted into the Downloads field, separated by spaces or new lines, become a list when most of them are addresses (a bare name needs its @ here). Each line says what it is (Instagram, a gallery on a named site, a video, or "Not recognised: skipped"), worked out locally. **Download All (N)** runs them one after another into the save folder, each with the options last chosen for its kind (the account's remembered choices, the site's parts and switches with only new items, the best MP4 video), waiting for each to finish; Instagram keeps its pace and one-at-a-time rule (R-1113). **Stop After This One** lets the current download finish and starts no more.
 
 ## 12. Site extractor scans
 
@@ -905,7 +905,8 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 |---|---|
 | Archive, Instagram post, Reel, story, highlight item | `{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{shortcode or media_id}_{num:02}.{ext}` |
 | Archive, Instagram profile picture | `{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_avatar.{ext}` (time of the pull) |
-| Archive, web page or site extractor | `{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{index:04}_{orig_name}.{ext}` (date of the post if known, else the time the save started) |
+| Archive, web page | `{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{index:04}_{orig_name}.{ext}` (date of the post if known, else the time the save started) |
+| Archive, site extractor *(D-86)* | `{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{orig_name}.{ext}`, with `_{num:02}` for the files of a post of several: names that stay the same on every download, unlike the order of discovery |
 | Plain | `{orig_name}.{ext}` |
 
 **R-1510** Names are NFC-normalized; `/`, `:`, control codes and text-direction overrides are replaced, zero-width spaces are removed, and joiners (U+200C, U+200D) are kept (D-74); names never start with a dot; the full name plus `.json` fits in 255 bytes (the name is shortened before the extension if needed).
@@ -951,7 +952,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | Highest compatible, never re-encode | Take the best H.264 or HEVC version untouched, even if a higher resolution existed in VP9 or AV1. The sidecar records `higher_res_available`. |
 | Keep original codec | Highest resolution with no re-encode; VP9 or AV1 in MP4. May not play in QuickTime or Photos. |
 
-**R-1608** Audio that is not AAC (Opus, Vorbis) is converted to AAC at 256 kbit/s with the system AAC encoder when the output is MP4. MOV and M4V inputs are kept as they are (M4V renamed `.mp4`). WebM inputs are converted to MP4 following the codec policy.
+**R-1608** *(Amended by D-86: AAC, MP3, ALAC, AC-3 and E-AC-3 are kept as they are, since QuickTime plays them in MP4 and converting would lose quality; other sound is converted.)* Audio that is not AAC (Opus, Vorbis) is converted to AAC at 256 kbit/s with the system AAC encoder when the output is MP4. MOV and M4V inputs are kept as they are (M4V renamed `.mp4`). WebM inputs are converted to MP4 following the codec policy.
 
 ---
 
@@ -977,7 +978,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1712** Account folders (D-78 to D-80): when the selected folder holds an Instagram account (or is inside its folder), the Library's title row shows **Update @name** and the subtitle adds "@name updated <when>" or "@name: an earlier update stopped part way". The folder's context menu (tree, List and Column views) has **Update @name** and **Find Missing from @name**, and a folder containing two or more remembered account folders has **Update All Accounts (N)**. Updates run as ordinary Instagram jobs in Activity, one at a time (R-1113). The button is disabled while that folder's update is queued or running.
 
-**R-1713** Check Folder (folder context menu in every view, D-83): reads every file in the folder and its subfolders once, off the main thread, and reports under the folder's title how many files it checked and what no longer matches what was saved: files whose checksum differs from the one in their metadata file (edited since, or damaged), media files without a metadata file (Archive folders only), metadata files whose media file is gone, and files kept only in iCloud. It changes nothing by itself; **Trash Orphaned Metadata** moves the metadata files without media to the Trash as one undoable operation, and **Show in Finder** selects the files it found. The `Account details` folder is not checked.
+**R-1713** Check Folder (folder context menu in every view, D-83): reads every file in the folder and its subfolders once, off the main thread, and reports under the folder's title how many files it checked and what no longer matches what was saved: files whose checksum differs from the one in their metadata file (edited since, or damaged), media files without a metadata file (Archive folders only), metadata files whose media file is gone, and files kept only in iCloud (which are never read, so checking downloads nothing). Files saved without metadata on purpose (a video's thumbnail, formats that never get one) are not listed. It changes nothing by itself; **Trash Orphaned Metadata** moves the metadata files without media to the Trash as one undoable operation, and **Show in Finder** selects the files it found. The `Account details` folder is not checked.
 
 **R-1714** Folder sizes: in List view, a folder row's Kind says how many media files it holds (with its subfolders, metadata files not counted) and its Size column their total. Folders are measured in the background, one at a time, the first time their row is shown, and again after MediaPull changes files; until then the row shows "Folder" and "--". The folder tree is unchanged.
 
@@ -1259,6 +1260,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-83 | Two explicit tidying actions, both through the operation journal so ⌘Z undoes them: Trash Extra Copies (one file of each duplicate group stays) and Check Folder (reports; trashes orphaned metadata files only when asked). Nothing is still ever removed automatically (D-50 holds) | Requested features that keep the library tidy without new panes or settings |
 | D-84 | Web saves are remembered like engine saves, under `web:` and the SHA-256 of the item's address, in the same table (Application Support), so items already saved are marked when they are extracted again. A record whose file is gone is ignored | Requested: see at a glance what is already in the library, without a new control |
 | D-85 | Finder tags are shown and filtered by, never written: writing them would change files outside the operation journal, so it could not be undone like every other change MediaPull makes (R-3806) | The person's existing way of marking files becomes useful in MediaPull without a second tagging system |
+| D-86 | Decisions from the first 1.8 audit where the built behaviour is kept and the spec follows it: Instagram videos are the highest progressive version (R-1110); site-extractor names use the original name and file number, not discovery order (15.4); MP3, ALAC, AC-3 and E-AC-3 stay in MP4 (R-1608); a file converted while copied into an Archive folder is a new file, like a save, and ⌘Z does not remove it (SPEC 21); in a list of several addresses a bare name does not count, and a name with a dot needs its @ (R-1104, R-1111d); a renamed file saved before 1.8 is matched by post and number, which a carousel that lost an item can renumber (D-79); re-fetching an expired site-scan item reads its address again (R-1201) | Each was found by the audit; the alternatives cost more than they give for this tool, or need a signed-in test first |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1346,7 +1348,7 @@ Riskiest work first. Each milestone ends with a check that can be demonstrated.
 
 **R-3304** Checksums and fingerprints are cached in `~/Library/Application Support/MediaPull/duplicates.json` by path, size and modification date, so only new or changed files are read again; the folder is re-checked whenever its contents change. Hashing runs off the main actor, four files at a time. Nothing is deleted or moved automatically.
 
-**R-3305** **Trash Extra Copies…** in the duplicates bar (shown only when the folder has duplicates, D-83) keeps one file of each group that has a file in the folder: the one with the most pixels, then one with a metadata file, then the oldest, then the shortest path. A confirmation says how many files go, how much space that frees and how many groups only look alike; the files then go to the Trash as one operation, with their metadata files, and Undo puts them all back.
+**R-3305** **Trash Extra Copies…** in the duplicates bar (shown only when the folder has duplicates, D-83) keeps one file of each group that has a file in the folder and moves only the other copies in this folder to the Trash *(audit round 1: copies in other folders, such as another account's, are never touched from here)*: the one kept is the one with the most pixels, then one with a metadata file, then the oldest, then the shortest path. A confirmation says how many files go, how much space that frees and how many groups only look alike; the files then go to the Trash as one operation, with their metadata files, and Undo puts them all back.
 
 ## 34. Video frames and trimming
 
@@ -1408,7 +1410,7 @@ and a resolution from the heights that format actually offers for this video (wi
 
 **R-3701** *(Amended by D-77: sort and filter choices are kept between launches for the Library as a whole, not per window.)* The Library pane's header has a Sort menu, a Filter popover, "Include Subfolders" and a search field (⌘F when the Library has focus). Sort and filter choices are kept per window between launches.
 
-**R-3702** Sorts, each ascending or descending: Date (the EXIF capture date, then the metadata file's date, then the file's creation date), Name, File Size, Pixel Size, Video Length, Source (account or site, then post, from metadata files), Camera, and Events (grid sections that start wherever the gap between neighbouring dates is longer than the event gap, 3 hours by default).
+**R-3702** Sorts, each ascending or descending: Date (the EXIF capture date, then the metadata file's date, then the file's creation date), Name, File Size, Pixel Size, Video Length, Source (account or site, then post, from metadata files), Camera, and Events (grid sections that start wherever the gap between neighbouring dates is longer than the event gap, 3 hours by default; one value for the Sort menu, Settings and Sort by Event).
 
 **R-3703** Filters combine with AND, and the values chosen within one filter with OR: kind (still, animated, video), format, orientation (landscape, portrait, square), aspect ratio, pixel size, video length, camera, source (account, site), screenshots or photos, duplicates (section 33), visually similar sets (R-3705), dominant colour, place, content tags, faces (with faces, without faces, portraits: one face covering at least a tenth of the picture; group photos: three or more faces) and people (section 39). Filters that need analysis show its progress and include only analysed files.
 
@@ -1660,7 +1662,7 @@ Illustrative. Exact option names are verified against the pinned gallery-dl and 
     "postprocessors": [],
     "instagram": {
       "include": ["posts", "reels", "avatar"],
-      "videos": "merged",
+      "videos": true,
       "previews": false
     }
   },

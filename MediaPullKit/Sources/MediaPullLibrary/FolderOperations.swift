@@ -317,28 +317,56 @@ public enum FolderOperations {
 
     /// Several files renamed by one pattern (R-3808): `{name}` is the old name without its extension, `{n}` the file's
     /// place in `files` (padded to the same width), `{date}` its modification date. Extensions are kept, names are made
-    /// safe, and a name already taken gets a number. Metadata files follow their media when the plan runs.
+    /// safe, and a name taken by a file outside the rename gets a number. A name another file of the rename gives up is
+    /// free: when files swap names they go through temporary names, in one operation. Metadata files follow their media.
     public static func batchRename(_ files: [URL], pattern: String) -> OrganisePlan {
         var plan = OrganisePlan(title: "Rename \(files.count) Files",
                                 root: files.first?.deletingLastPathComponent() ?? URL(fileURLWithPath: "/"))
-        var taken = Set<String>()
+        let fm = FileManager.default
+        let vacated = Set(files.map { $0.standardizedFileURL.path.lowercased() })
+        var chosen = Set<String>()
+        func free(_ url: URL) -> Bool {
+            let key = url.standardizedFileURL.path.lowercased()
+            guard !chosen.contains(key) else { return false }
+            if vacated.contains(key) { return true }
+            return !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
+        }
+        var renames: [(source: URL, destination: URL)] = []
         for (index, file) in files.enumerated() {
             let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            let stem = batchName(pattern, stem: file.deletingPathExtension().lastPathComponent, index: index, count: files.count,
-                                 date: date)
-            var name = FileNaming.sanitize(stem, maxBytes: 230)
-            guard !name.isEmpty else { continue }
-            if !file.pathExtension.isEmpty { name += "." + file.pathExtension }
-            guard name != file.lastPathComponent else {
+            let stem = FileNaming.sanitize(batchName(pattern, stem: file.deletingPathExtension().lastPathComponent, index: index,
+                                                     count: files.count, date: date), maxBytes: 230)
+            guard !stem.isEmpty else { continue }
+            let ext = file.pathExtension.isEmpty ? "" : "." + file.pathExtension
+            let folder = file.deletingLastPathComponent()
+            var destination = folder.appendingPathComponent(stem + ext)
+            var counter = 2
+            while !free(destination), destination.standardizedFileURL.path.lowercased() != file.standardizedFileURL.path.lowercased() {
+                destination = folder.appendingPathComponent("\(stem) \(counter)\(ext)")
+                counter += 1
+            }
+            chosen.insert(destination.standardizedFileURL.path.lowercased())
+            if destination.lastPathComponent == file.lastPathComponent {
                 plan.unchanged += 1
                 continue
             }
-            let folder = file.deletingLastPathComponent()
-            let direct = folder.appendingPathComponent(name)
-            let destination = OperationJournal.sameFile(file.path, direct.path) ? direct
-                : freeDestination(for: name, in: folder, taken: &taken).url
-            plan.moves.append(PlannedMove(source: file, destination: destination))
+            renames.append((file, destination))
             plan.renamed += 1
+        }
+        // A destination another file still holds when it is reached needs two steps: everything to a temporary name first.
+        let sources = Set(renames.map { $0.source.standardizedFileURL.path.lowercased() })
+        let swaps = renames.contains { sources.contains($0.destination.standardizedFileURL.path.lowercased()) }
+        if swaps {
+            let stamp = UUID().uuidString.prefix(8)
+            let temporary = renames.enumerated().map { index, rename in
+                rename.source.deletingLastPathComponent()
+                    .appendingPathComponent(".mediapull-rename-\(stamp)-\(index)" + (rename.source.pathExtension.isEmpty ? "" : "." +
+                        rename.source.pathExtension))
+            }
+            plan.moves = zip(renames, temporary).map { PlannedMove(source: $0.source, destination: $1) }
+                + zip(renames, temporary).map { PlannedMove(source: $1, destination: $0.destination) }
+        } else {
+            plan.moves = renames.map { PlannedMove(source: $0.source, destination: $0.destination) }
         }
         return plan
     }

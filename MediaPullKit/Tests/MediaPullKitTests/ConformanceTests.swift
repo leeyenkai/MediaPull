@@ -6,6 +6,8 @@ import ImageIO
 @testable import MediaPullEngines
 @testable import MediaPullLibrary
 @testable import MediaPullMedia
+@testable import MediaPullNet
+import os
 import XCTest
 
 /// Requirements found without a test in the 1.8 conformance pass (docs/CONFORMANCE.md).
@@ -160,5 +162,48 @@ final class ConformanceTests: XCTestCase {
         _ = await journal.undo(entry.id)
         let back = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("in").path).count
         XCTAssertEqual(back, 300, "undo puts back what the cancelled run moved")
+    }
+
+    /// R-1113, R-1114 (audit round 1, A2): a save that re-fetches an Instagram item waits for Instagram's turn and asks
+    /// nothing while a checkpoint holds it.
+    func testInstagramRefetchesRespectTheGate() async throws {
+        let folder = try folder()
+        let paths = EnginePaths(python: URL(fileURLWithPath: "/usr/bin/false"), bridgeDirectory: folder, baselineSitePackages: folder,
+                                helpers: folder, support: folder)
+        let asked = OSAllocatedUnfairLock(initialState: 0)
+        let fetcher = BridgeEngineFetcher(client: BridgeClient(paths: paths), video: .highestCompatible, userAgent: nil,
+                                          cookies: { _ in [] }, instagramTurn: { asked.withLock { $0 += 1 }; return nil })
+        var context = EngineContext(key: "ig:1", category: "instagram", subcategory: "posts")
+        context.postURL = URL(string: "https://www.instagram.com/p/abc/")
+        let url = URL(string: "https://cdn.example.com/a.jpg")!
+        let variant = MediaVariant(id: url.absoluteString, url: url, format: .jpeg, origin: .img)
+        let item = MediaItem(id: "ig:1", kind: .image, variants: [variant],
+                             source: .engine(context), discoveryIndex: 0, group: "g", groupTitle: "t")
+        do {
+            _ = try await fetcher.fetch(item, variant: nil, workDirectory: folder) { _ in }
+            XCTFail("a paused Instagram is not asked")
+        } catch let EngineFetchError.checkpoint(kind, _, _) {
+            XCTAssertEqual(kind, "rate_limit")
+        }
+        XCTAssertEqual(asked.withLock { $0 }, 1)
+    }
+
+    /// R-1113 (audit round 1, A8): two downloads at most across all of Instagram's CDN hosts.
+    func testInstagramCDNHostsShareOneLimit() async throws {
+        let limiter = HostLimiter()
+        await limiter.acquire("scontent-a.cdninstagram.com")
+        await limiter.acquire("instagram.fxyz1-1.fna.fbcdn.net")
+        let started = OSAllocatedUnfairLock(initialState: false)
+        let third = Task {
+            await limiter.acquire("scontent-b.cdninstagram.com")
+            started.withLock { $0 = true }
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(started.withLock { $0 }, "a third download on another CDN host waits")
+        await limiter.acquire("example.com") // other hosts are not held up
+        await limiter.release("scontent-a.cdninstagram.com")
+        await third.value
+        XCTAssertTrue(started.withLock { $0 })
+        XCTAssertEqual(HostLimiter.group("a.fbcdn.net"), HostLimiter.group("b.cdninstagram.com"))
     }
 }

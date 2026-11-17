@@ -221,7 +221,10 @@ final class OrganisePane: MediaGridOwner {
 
     func refilter() {
         filterTask?.cancel()
-        let entries = entries, query = query
+        // One event gap everywhere: Settings, the Sort menu and Sort by Event (B9).
+        var adjusted = query
+        adjusted.eventGap = app.preferences.eventGapHours * 3600
+        let entries = entries, query = adjusted
         filtering = true
         filterTask = Task { [weak self] in
             guard let self else { return }
@@ -303,6 +306,11 @@ final class OrganisePane: MediaGridOwner {
 
     func gridWriter(_ id: String) -> NSPasteboardWriting? { URL(fileURLWithPath: id, isDirectory: listFolders.isFolder(id)) as NSURL }
 
+    /// Dragged out, files take their metadata files with them, as in the Library (R-1708).
+    func gridCompanionWriters(_ ids: [String]) -> [NSPasteboardWriting] {
+        ids.compactMap { entry($0) }.filter { $0.source != nil }.map { Sidecar.sidecarURL(for: $0.url) as NSURL }
+    }
+
     var gridAcceptsDrops: Bool { folder != nil }
 
     func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation) -> Bool {
@@ -365,6 +373,8 @@ struct BatchRenameDraft: Equatable {
     var pattern = "{name}"
     /// Archive folders keep MediaPull's names, which their metadata depends on (R-1504).
     var archive: Bool
+    /// Modification dates of the first files, for the preview of {date}.
+    var dates: [URL: Date] = [:]
 }
 
 extension OrganisePane: MediaListOwner {
@@ -412,17 +422,29 @@ final class OrganiseModel {
     var batchRename: BatchRenameDraft?
 
     func startBatchRename(_ files: [URL]) {
-        let archive = files.contains { app.root(containing: $0)?.layout == .archive }
+        // Archive by its library folder, or (outside the library) by holding metadata files (R-3804).
+        let archive = Set(files.map { $0.deletingLastPathComponent() }).contains { layoutFor($0) == .archive }
         batchRename = BatchRenameDraft(files: files, archive: archive)
         tab = .sort
         window?.setShowing(.organiseWork, true)
+        // The preview shows {date} as it will be: the first few files' dates, read off the main actor.
+        let first = Array(files.prefix(4))
+        Task { [weak self] in
+            let dates = await Task.detached(priority: .userInitiated) {
+                Dictionary(first.compactMap { url in
+                    (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate.map { (url, $0) }
+                }, uniquingKeysWith: { a, _ in a })
+            }.value
+            guard let self, self.batchRename?.files == files else { return }
+            self.batchRename?.dates = dates
+        }
     }
 
     /// The first few new names, worked out from the pattern alone (dates are left to the real run).
     func batchPreview(_ draft: BatchRenameDraft) -> [(old: String, new: String)] {
         draft.files.prefix(4).enumerated().map { index, file in
             let stem = FolderOperations.batchName(draft.pattern, stem: file.deletingPathExtension().lastPathComponent, index: index,
-                                                  count: draft.files.count, date: nil)
+                                                  count: draft.files.count, date: draft.dates[file])
             let name = FileNaming.sanitize(stem, maxBytes: 230)
             let ext = file.pathExtension.isEmpty ? "" : "." + file.pathExtension
             return (file.lastPathComponent, name.isEmpty ? "(unchanged)" : name + ext)
@@ -583,8 +605,11 @@ final class OrganiseModel {
     /// Small changes apply at once (and can be undone); sorts, flattening and merging are previewed first, in the Organise pane.
     func run(_ plan: OrganisePlan, preview: Bool = false, note: String? = nil) {
         guard !plan.isEmpty else {
-            message = plan.unsorted > 0 ? "Nothing to change: \(plan.unsorted) file\(plan.unsorted == 1 ? "" : "s") could not be sorted."
+            let nothing = plan.unsorted > 0
+                ? "Nothing to change: \(plan.unsorted) file\(plan.unsorted == 1 ? "" : "s") could not be sorted."
                 : "Nothing to change."
+            // The sort's own explanation (such as turning on recognising people) says why.
+            message = plan.unsorted > 0 && note != nil ? nothing + " " + (note ?? "") : nothing
             return
         }
         if preview {

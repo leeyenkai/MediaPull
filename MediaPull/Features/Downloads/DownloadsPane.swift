@@ -49,6 +49,8 @@ final class DownloadsModel {
     /// Sets the address and works out how to download it: Instagram, a video, or any other site gallery-dl supports.
     /// Several addresses typed or pasted at once become a list (R-1111d).
     func use(_ text: String, fromBrowser: Bool = false) {
+        // While Download All runs, its list stays: nothing typed, sent or dropped replaces it.
+        if batchRunning { return }
         if fromBrowser, !followsBrowser { return }
         if !fromBrowser { followsBrowser = text.isEmpty }
         address = text
@@ -174,6 +176,7 @@ struct DownloadsPane: View {
                           text: Binding(get: { downloads.address }, set: { downloads.use($0) }))
                     .textFieldStyle(.roundedBorder)
                     .focused($focused)
+                    .disabled(downloads.batchRunning)
                 if !downloads.followsBrowser, let url = model.browser.url {
                     Button("This Page") {
                         downloads.followsBrowser = true

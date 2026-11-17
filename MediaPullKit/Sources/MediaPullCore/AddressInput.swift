@@ -11,7 +11,7 @@ public enum AddressInput: Equatable, Sendable {
     case invalid
 
     public static let reservedInstagramPaths: Set<String> = [
-        "accounts", "explore", "direct", "reels", "reel", "p", "tv", "stories", "about", "legal", "developer", "emails",
+        "s", "accounts", "explore", "direct", "reels", "reel", "p", "tv", "stories", "about", "legal", "developer", "emails",
         "challenge", "graphql", "api", "web", "privacy", "terms", "session", "login", "signup", "directory", "nametag",
         "lite", "ar", "static", "oauth", "data", "download", "press", "blog", "help", "fragment", "your_activity", "settings",
     ]
@@ -45,6 +45,9 @@ public enum AddressInput: Equatable, Sendable {
         switch first.lowercased() {
         case "p", "reel", "reels", "tv":
             if parts.count >= 2 { return .instagramPost(shortcode: parts[1], url: clean) }
+        case "s":
+            // A highlight shared from the Instagram app: /s/<encoded highlight id>.
+            if parts.count >= 2 { return .instagramHighlight(id: parts[1], url: clean) }
         case "stories":
             if parts.count >= 3, parts[1] == "highlights" { return .instagramHighlight(id: parts[2], url: clean) }
             if parts.count >= 2 { return .instagramStories(username: parts[1].lowercased(), url: clean) }
@@ -81,12 +84,14 @@ public enum AddressInput: Equatable, Sendable {
     public static func several(in text: String) -> [String]? {
         let parts = text.split(whereSeparator: \.isWhitespace).map(String.init)
         guard parts.count >= 2, parts.count <= 200 else { return nil }
-        let all = parts.allSatisfy { part in
+        let recognised = parts.filter { part in
             if part.hasPrefix("@") || part.hasPrefix("#") { return part.count > 1 }
+            // A bare name counts only on its own: in a list, words would otherwise read as accounts.
             if case .invalid = parse(part) { return false }
             return true
-        }
-        return all ? parts : nil
+        }.count
+        // A list when at least two parts and most of them are addresses; the rest are listed as not recognised (R-1111d).
+        return recognised >= 2 && recognised * 2 > parts.count ? parts : nil
     }
 
     /// A bare Instagram username typed where only addresses and accounts are expected (the Downloads pane, R-1104); a

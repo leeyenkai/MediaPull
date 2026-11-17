@@ -499,4 +499,21 @@ extension FolderOperationTests {
         let back = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix(".") })
         XCTAssertEqual(back, ["beach.jpg", "beach.jpg.json", "hills.png", "clip.mp4"])
     }
+
+    /// Audit round 1 (C20): files that take each other's names swap cleanly, with no " 2" and nothing lost.
+    func testBatchRenameSwapsNamesThroughTemporaryOnes() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("swap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let one = folder.appendingPathComponent("1.jpg"), two = folder.appendingPathComponent("2.jpg")
+        try Data("one".utf8).write(to: one)
+        try Data("two".utf8).write(to: two)
+        let plan = FolderOperations.batchRename([two, one], pattern: "{n}")
+        let journal = OperationJournal(folder: folder.appendingPathComponent(".journal", isDirectory: true))
+        _ = await journal.run(plan)
+        XCTAssertEqual(try String(contentsOf: one, encoding: .utf8), "two")
+        XCTAssertEqual(try String(contentsOf: two, encoding: .utf8), "one")
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix(".") }
+        XCTAssertEqual(Set(names), ["1.jpg", "2.jpg"])
+    }
 }

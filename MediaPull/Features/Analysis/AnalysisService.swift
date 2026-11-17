@@ -107,6 +107,9 @@ final class AnalysisService {
                 let faces = loaded.faceEncoder.map {
                     VectorStore(folder: folder, name: "faces-\($0.spec.id)", dimension: $0.spec.dimension, excludeFromBackup: true)
                 }
+                // Vectors of a model that has been replaced are never read again (lifecycle, SPEC 6.3).
+                let inUse = [loaded.imageText.map { "image-\($0.spec.id)" }, loaded.faceEncoder.map { "faces-\($0.spec.id)" }]
+                Self.removeOtherVectorFiles(in: folder, keeping: inUse.compactMap(\.self), modelsLoaded: loaded.imageText != nil)
                 return (loaded, images, faces)
             }.value
             analyzer = loaded
@@ -186,10 +189,11 @@ final class AnalysisService {
         let folders = scanFolders
         let wantFaces = preferences.facesEnabled && analyzer.faceEncoder != nil
         let images = imageVectors, faces = faceVectors
+        let keep = preferences.recentOrganiseFolders
         scanTask = Task { [weak self] in
             let skip = self?.noPicture ?? []
             let (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
-                                                   noPicture: skip)
+                                                   noPicture: skip, keep: keep)
             await store.forget(paths: gone)
             guard let self else { return }
             if !work.isEmpty {
@@ -262,7 +266,7 @@ final class AnalysisService {
     /// Files that need analysing (new, changed, analysed by an older version, or not yet checked for people), and paths gone from disk.
     @concurrent
     private static func findWork(folders: [URL], store: AnalysisStore, wantFaces: Bool, embeddings: Bool,
-                                 noPicture: Set<String>) async -> ([Work], [String])
+                                 noPicture: Set<String>, keep: [String]) async -> ([Work], [String])
     {
         var files: [Work] = []
         for folder in folders {
@@ -285,8 +289,9 @@ final class AnalysisService {
             }
         }
         // Paths the store knows that are no longer on disk. A folder that cannot be listed (an ejected disk, a folder
-        // privacy settings block) proves nothing, so its paths are kept; paths outside every scanned folder (a closed
-        // Organise folder) are checked one by one, and kept while their disk is not mounted.
+        // privacy settings block) proves nothing, so its paths are kept. Outside every scanned folder, only recent Organise
+        // folders are remembered (to open again quickly): anything else, a folder removed from the library, is forgotten
+        // with its faces (SPEC 6.3, D-61); recent folders' paths are kept while their disk is not mounted.
         let fm = FileManager.default
         let reachable = folders.filter { fm.isReadableFile(atPath: $0.path) }
         let unreachable = folders.filter { !fm.isReadableFile(atPath: $0.path) }
@@ -296,6 +301,7 @@ final class AnalysisService {
             guard !onDisk.contains(path) else { return false }
             if reachable.contains(where: { path.hasPrefix($0.path + "/") }) { return true }
             if unreachable.contains(where: { path.hasPrefix($0.path + "/") }) { return false }
+            guard keep.contains(where: { path.hasPrefix($0 + "/") }) else { return true }
             return Self.isGoneOutsideScan(path)
         }
         return (work, Array(gone))
@@ -772,6 +778,27 @@ final class AnalysisService {
             return fm.fileExists(atPath: "/Volumes/\(parts[1])")
         }
         return true
+    }
+
+    /// Removes vector files of other models than the ones in use. Only when the models loaded: without them, nothing is
+    /// known to be replaced.
+    nonisolated static func removeOtherVectorFiles(in folder: URL, keeping: [String], modelsLoaded: Bool) {
+        guard modelsLoaded else { return }
+        let fm = FileManager.default
+        // lint:allow main-io called only from the detached task that loads the models
+        let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+        let vectorFiles = names.filter {
+            ($0.hasPrefix("image-") || $0.hasPrefix("faces-")) && ($0.hasSuffix(".vec") || $0.hasSuffix(".ids"))
+        }
+        for name in vectorFiles {
+            let base = (name as NSString).deletingPathExtension
+            guard !keeping.contains(base) else { continue }
+            // Face vectors of an earlier model go only when face recognition has a model now; image ones likewise.
+            if base.hasPrefix("faces-"), !keeping.contains(where: { $0.hasPrefix("faces-") }) { continue }
+            if base.hasPrefix("image-"), !keeping.contains(where: { $0.hasPrefix("image-") }) { continue }
+            // lint:allow silent-write a vector file that stays is only taken up again by Delete All
+            try? fm.removeItem(at: folder.appendingPathComponent(name))
+        }
     }
 
     /// Removes `<prefix>*.vec` and `.ids` files, whichever model wrote them.

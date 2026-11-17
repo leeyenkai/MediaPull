@@ -49,7 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               !text.isEmpty, text.count < 4096
         else { return }
         NSApp.activate()
-        AppModel.shared.frontWindow?.showDownloads(text)
+        let app = AppModel.shared
+        if let window = app.frontWindow {
+            window.showDownloads(text)
+        } else {
+            app.pendingDownloadAddress = text
+            app.openMainWindow?()
+        }
     }
 
     func applicationWillTerminate(_: Notification) {
@@ -159,11 +165,9 @@ struct AppCommands: Commands {
                 .disabled(window?.selection.isEmpty ?? true || window?.section != .collect)
             Divider()
             Button("Add Library Folder…") { window?.library.promptForRoot() }
-            Button("New Folder") {
-                if let folder = window?.library.selectedFolder { window?.library.newFolder(in: folder) }
-            }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
-            .disabled(window?.library.selectedFolder == nil)
+            Button("New Folder") { window?.newFolder() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(window?.newFolderParent == nil)
         }
         CommandGroup(after: .pasteboard) {
             Divider()

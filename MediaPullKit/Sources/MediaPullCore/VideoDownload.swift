@@ -129,12 +129,25 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
         Array(Set(videoFormats(in: formats).compactMap(\.height))).sorted(by: >)
     }
 
-    /// The yt-dlp format selector, sort order and merge container for a resolution (nil: the best there is).
-    public func selector(height: Int?) -> (format: String, sort: [String], merge: String?) {
+    /// The yt-dlp format selector, sort order and merge container for a resolution (nil: the best there is). "MP4, best
+    /// quality" follows the video setting (R-1607, D-32): Highest compatible takes the best H.264 or HEVC version; the
+    /// re-encoding policy leaves AV1 out on a Mac that cannot decode it, so another version is chosen.
+    public func selector(height: Int?, policy: VideoCodecPolicy = .highestReencodeIfNeeded, av1Decodable: Bool = true)
+        -> (format: String, sort: [String], merge: String?)
+    {
         let limit = height.map { "[height<=\($0)]" } ?? ""
         switch self {
         case .bestMP4:
-            return ("bv*\(limit)+ba/b\(limit)", ["res", "fps", "vcodec:h265", "acodec:aac"], "mp4")
+            let any = "bv*\(limit)+ba/b\(limit)"
+            let format = switch policy {
+            case .highestCompatible:
+                "bv*[vcodec~='^(avc1|avc3|hvc1|hev1|h264|h265|hevc)']\(limit)+ba/b[vcodec~='^(avc|hvc|hev|h26)']\(limit)/" + any
+            case .highestReencodeIfNeeded where !av1Decodable:
+                "bv*[vcodec!^=av01]\(limit)+ba/b[vcodec!^=av01]\(limit)/" + any
+            case .highestReencodeIfNeeded, .keepOriginal:
+                any
+            }
+            return (format, ["res", "fps", "vcodec:h265", "acodec:aac"], "mp4")
         case .h264MP4:
             return ("bv*[vcodec^=avc1]\(limit)+ba[acodec^=mp4a]/b[vcodec^=avc1]\(limit)", ["res", "fps", "br"], "mp4")
         case .originalMP4:

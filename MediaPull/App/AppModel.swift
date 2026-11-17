@@ -54,6 +54,10 @@ final class AppModel {
     let accountFolders = AccountFolderStore(folder: SelfTestRunner.isActive
         ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-accounts-\(UUID().uuidString)")
         : AccountFolderStore.defaultFolder)
+    /// An address sent from another app while no window was open, for the next window that opens (R-1111c).
+    @ObservationIgnored var pendingDownloadAddress: String?
+    @ObservationIgnored var openMainWindow: (() -> Void)?
+
     /// The remembered account folders, for the Library's Update actions (D-80); refreshed after pulls and moves.
     var accountFolderList: [AccountFolderRecord] = []
     var libraryRevision = 0
@@ -361,7 +365,9 @@ final class AppModel {
                 client: BridgeClient(paths: engineManager.paths), video: preferences.video, userAgent: userAgent,
                 cookies: { domain in await CookieBridge.cookies(registrableDomain: domain) },
                 cookiesUpdated: { updated, original in await CookieBridge.update(updated, existing: original) },
-                onCheckpoint: onCheckpoint
+                onCheckpoint: onCheckpoint,
+                instagramTurn: { [weak self] in await self?.engines.instagramTurn() },
+                pacing: preferences.pacing.delay
             )
         }
         return SavePipeline(gate: gate, converter: MediaConverter(ffmpeg: ffmpeg, svgRasterizer: SVGRasterizer.rasterize), index: index,

@@ -43,7 +43,12 @@ final class WindowModel: Identifiable, MediaGridOwner {
     let organise: OrganiseModel
     /// Which section the window shows: Collect (browser, extracted media, preview, library) or Organise (D-62).
     var section: WindowSection = .collect {
-        didSet { if section == .organise { organise.updateAnalysisFolders() } }
+        didSet {
+            if section == .organise { organise.updateAnalysisFolders() }
+            // The hidden section stays in place (opacity, D-62): nothing in it may keep the keyboard, or Space, Return
+            // and ⌘⌫ would act on a selection the person cannot see, and typing would go to a field they cannot see.
+            if section != oldValue { hostWindow?.makeFirstResponder(nil) }
+        }
     }
     @ObservationIgnored let ingestor = ExtractionIngestor()
     @ObservationIgnored weak var hostWindow: NSWindow?
@@ -785,6 +790,20 @@ final class WindowModel: Identifiable, MediaGridOwner {
         default:
             browser.reloadOrStop()
         }
+    }
+
+    /// ⇧⌘N: a new folder in the folder shown in the section in front (the Organise pane being worked in, else the Library).
+    var newFolderParent: URL? {
+        switch keyboardFolderPane {
+        case .organiseSource: organise.source.folder
+        case .organiseTarget: organise.target.folder
+        default: section == .organise ? nil : library.selectedFolder
+        }
+    }
+
+    func newFolder() {
+        guard let parent = newFolderParent else { return }
+        if section == .organise { organise.newFolder(in: parent) } else { library.newFolder(in: parent) }
     }
 
     /// ⌘. (SPEC 21): stop loading the page, or stop scrolling to its end.

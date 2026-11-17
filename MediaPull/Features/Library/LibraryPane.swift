@@ -243,7 +243,8 @@ struct FolderRow: View {
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         let folder = node.url
-        let move = !NSEvent.modifierFlags.contains(.option)
+        // Files dragged within MediaPull move (⌥ copies); files from the Finder are copied (R-1801).
+        let move = DragTypes.fromMediaPull && !NSEvent.modifierFlags.contains(.option)
         let itemProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(DragTypes.itemsIdentifier) }
         if !itemProviders.isEmpty {
             Task {

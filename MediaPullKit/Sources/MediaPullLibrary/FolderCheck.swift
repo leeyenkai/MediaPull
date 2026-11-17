@@ -28,6 +28,7 @@ public enum FolderCheck {
         var metadata: [URL] = []
         let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], options: [])
         while let url = walker?.nextObject() as? URL {
+            if Task.isCancelled { return report }
             let name = url.lastPathComponent
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                 // Account documents are not media; hidden folders are not the person's.
@@ -53,8 +54,18 @@ public enum FolderCheck {
             let mediaPath = String(sidecar.path.dropLast(".json".count))
             if !mediaPaths.contains(mediaPath), !placeholders.contains(mediaPath) { report.orphanedMetadata.append(sidecar) }
         }
+        // Files saved without metadata on purpose: formats that never get one (D-56), and a video's thumbnail, named after it.
+        let videoStems = Set(media.filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .video }
+            .map { $0.deletingPathExtension().path })
+        func expectsMetadata(_ file: URL) -> Bool {
+            guard let format = MediaFormat.fromExtension(file.pathExtension), SavePipeline.archiveFormats.contains(format) else {
+                return false
+            }
+            return !(format.kind == .image && videoStems.contains(file.deletingPathExtension().path))
+        }
         let total = media.count
         for (done, file) in media.enumerated() {
+            if Task.isCancelled { return report }
             if done % 20 == 0 { progress(done, total) }
             if FileFlags.isDataless(file) {
                 report.notDownloaded.append(file)
@@ -63,7 +74,7 @@ public enum FolderCheck {
             report.checked += 1
             let sidecar = Sidecar.sidecarURL(for: file)
             guard let data = try? Data(contentsOf: sidecar) else {
-                if archive { report.withoutMetadata.append(file) }
+                if archive, expectsMetadata(file) { report.withoutMetadata.append(file) }
                 continue
             }
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -129,14 +140,15 @@ public enum ExtraCopies {
         }
     }
 
-    /// What one press of Trash Extra Copies moves to the Trash, and how much space that frees.
-    public static func plan(_ groups: [[URL]]) -> (trash: [URL], bytes: Int64) {
+    /// What one press of Trash Extra Copies moves to the Trash, and how much space that frees. With `within`, only copies
+    /// that pass it go (the folder shown); the copy kept may be anywhere, so every group keeps one.
+    public static func plan(_ groups: [[URL]], within: (@Sendable (URL) -> Bool)? = nil) -> (trash: [URL], bytes: Int64) {
         var trash: [URL] = []
         var bytes: Int64 = 0
         for members in groups where members.count > 1 {
             let candidates = members.compactMap(candidate)
             guard candidates.count == members.count, let keep = keeper(candidates) else { continue }
-            for other in candidates where other.url != keep.url {
+            for other in candidates where other.url != keep.url && (within?(other.url) ?? true) {
                 trash.append(other.url)
                 bytes += other.bytes
             }

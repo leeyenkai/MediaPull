@@ -32,6 +32,11 @@ public struct BridgeEngineFetcher: EngineFetching {
     /// Cookies the engine refreshed (Instagram rotates its own), with the ones it was given, to go back to the browser
     /// (R-1103).
     public let cookiesUpdated: @Sendable (_ updated: [CookieRecord], _ original: [CookieRecord]) async -> Void
+    /// Waits for Instagram's turn (one Instagram job at a time, R-1113) and returns the call that ends it; nil when
+    /// Instagram is held by a checkpoint or cooldown (R-1114), so nothing is asked of it.
+    public let instagramTurn: @Sendable () async -> (@Sendable () -> Void)?
+    /// The chosen pace between Instagram requests, in seconds.
+    public let pacing: [Double]
 
     public init(
         client: BridgeClient,
@@ -39,8 +44,12 @@ public struct BridgeEngineFetcher: EngineFetching {
         userAgent: String?,
         cookies: @escaping @Sendable (String) async -> [CookieRecord],
         cookiesUpdated: @escaping @Sendable ([CookieRecord], [CookieRecord]) async -> Void = { _, _ in },
-        onCheckpoint: @escaping @Sendable (String, URL?) -> Void = { _, _ in }
+        onCheckpoint: @escaping @Sendable (String, URL?) -> Void = { _, _ in },
+        instagramTurn: @escaping @Sendable () async -> (@Sendable () -> Void)? = { {} },
+        pacing: [Double] = PacingPreset.gentle.delay
     ) {
+        self.instagramTurn = instagramTurn
+        self.pacing = pacing
         self.client = client
         self.video = video
         self.userAgent = userAgent
@@ -80,7 +89,7 @@ public struct BridgeEngineFetcher: EngineFetching {
             try CookieFile.write(originalCookies, to: cookieFile)
             request.cookies = cookieFile.path
             request.userAgent = userAgent
-            request.setPacing([2, 4])
+            request.setPacing(pacing)
         case let .web(context):
             request = BridgeRequest(op: "stream")
             guard let url = variant?.url ?? item.best?.url ?? item.variants.first?.url else { throw EngineFetchError.nothingDownloaded }
@@ -96,6 +105,15 @@ public struct BridgeEngineFetcher: EngineFetching {
         }
         request.staging = staging.path
         request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort)
+        // Instagram is asked one job at a time, and not at all while it holds a checkpoint or cooldown.
+        var endTurn: (@Sendable () -> Void)?
+        if isInstagram {
+            guard let end = await instagramTurn() else {
+                throw EngineFetchError.checkpoint(kind: "rate_limit", url: nil, message: "Instagram is paused")
+            }
+            endTurn = end
+        }
+        defer { endTurn?() }
 
         var file: URL?
         var others: [URL] = []

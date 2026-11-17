@@ -205,9 +205,14 @@ public enum ArchivePlanner {
             let userCentric = ["user", "profile", "account", "artist", "blog", "channel", "creator", "posts", "favorite"]
                 .contains { engine.subcategory.lowercased().contains($0) }
             let site = engine.sourceURL?.host?.lowercased() ?? engine.category
-            let account = target.accountUsername ?? (engine.isInstagram || userCentric ? engine.username : nil) ?? site
+            // Others' stories and saved posts name their own account, never the one the pull started from.
+            let pinned = ["stories-tray", "saved", "collection"].contains(engine.subcategory) ? nil : target.accountUsername
+            let account = pinned ?? (engine.isInstagram || userCentric ? engine.username : nil) ?? site
             let subcategory = engine.isInstagram ? engine.instagramSection : engine.subcategory
-            let postID = engine.postID ?? engine.mediaID ?? ShortHash.of(info.sourceURL?.absoluteString ?? engine.key)
+            // Only a web address is a source; a file an engine downloaded is in a working folder on this Mac, whose path
+            // must never be written down (it names the person's home folder) and changes every run.
+            let webSource = info.sourceURL.flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
+            let postID = engine.postID ?? engine.mediaID ?? ShortHash.of(webSource?.absoluteString ?? engine.key)
             var sidecar = Sidecar(category: engine.category, subcategory: subcategory, username: account, postID: postID)
             sidecar.author = engine.fullName ?? (engine.username != account ? engine.username : nil)
             sidecar.postShortcode = engine.postShortcode
@@ -217,7 +222,7 @@ public enum ArchivePlanner {
             sidecar.date = engine.date
             sidecar.description = engine.description ?? engine.title
             sidecar.postURL = engine.postURL?.absoluteString
-            sidecar.sourceURL = engine.isInstagram ? nil : info.sourceURL?.absoluteString
+            sidecar.sourceURL = engine.isInstagram ? nil : webSource?.absoluteString
             sidecar.width = info.pixelSize?.width
             sidecar.height = info.pixelSize?.height
             sidecar.originalWidth = engine.originalWidth

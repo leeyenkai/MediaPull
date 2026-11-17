@@ -8,6 +8,7 @@ import MediaPullMedia
 import MediaPullNet
 import MediaPullStore
 import Observation
+import os
 
 /// What the Pull sheet is set up with.
 /// A job's private copy of the browser's cookies for one site, written 0600 in a 0700 folder for the engine. When the job
@@ -341,6 +342,27 @@ final class EngineService {
             }
         }
         return job
+    }
+
+    /// A turn with Instagram for a request outside a pull (a save re-fetching an expired link): it waits behind running
+    /// pulls and is refused while Instagram holds a checkpoint or cooldown (R-1113, R-1114). The returned call ends it.
+    func instagramTurn() async -> (@Sendable () -> Void)? {
+        guard canRunInstagram else { return nil }
+        let holder = Job(kind: .pull, title: "Refreshing an Instagram link")
+        let end: (@Sendable () -> Void)? = await withCheckedContinuation { started in
+            enqueueInstagram(job: holder) {
+                await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+                    let once = OneShot(finished)
+                    started.resume(returning: { once.fire() })
+                }
+            }
+        }
+        // The gate may have closed while it waited.
+        guard canRunInstagram else {
+            end?()
+            return nil
+        }
+        return end
     }
 
     /// One Instagram job at a time, across all windows (SPEC R-1113).
@@ -847,7 +869,7 @@ final class EngineService {
         request.staging = staging.path
         request.userAgent = app.userAgent
         request.key = "video:\(info.extractor)"
-        let selector = format.selector(height: height)
+        let selector = format.selector(height: height, policy: app.preferences.video, av1Decodable: FFmpeg.canDecodeAV1)
         request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort, merge: selector.merge)
         request.extras = extras
         // Members-only and age-checked videos use the browser's sign-in for that site.
@@ -974,8 +996,8 @@ final class EngineService {
             "\(stem.lastPathComponent).\(ext)"
         }
         let destination = video.deletingLastPathComponent().appendingPathComponent(name)
-        // A WebP thumbnail is saved as JPEG, in keeping with the normal formats (R-1502).
-        if kind == "thumbnail", !["jpg", "jpeg", "png"].contains(ext),
+        // Thumbnails are saved as JPEG (R-3505), whatever the site served: WebP, PNG and the rest.
+        if kind == "thumbnail", !["jpg", "jpeg"].contains(ext),
            await Self.convertToJPEG(path, output: LibraryModel.uniqueURL(destination.deletingPathExtension().appendingPathExtension("jpg")))
         {
             return nil
@@ -988,11 +1010,10 @@ final class EngineService {
         }
     }
 
-    /// Decoding and encoding stay off the main actor.
+    /// Decoding and encoding stay off the main actor. Always JPEG, so the file is what its name says.
     @concurrent
     private nonisolated static func convertToJPEG(_ path: URL, output: URL) async -> Bool {
-        guard let analysis = ImageConversion.analyze(path) else { return false }
-        return (try? ImageConversion.convertStill(path, to: ImageConversion.stillTarget(for: analysis), output: output)) != nil
+        (try? ImageConversion.convertStill(path, to: .jpeg, output: output)) != nil
     }
 
     // MARK: Site extractor
@@ -1265,5 +1286,21 @@ final class EngineService {
             _ = window
         }
         return job
+    }
+}
+
+/// Resumes a continuation once, however many times it is fired.
+nonisolated final class OneShot: Sendable {
+    private let state: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        state = OSAllocatedUnfairLock(initialState: continuation)
+    }
+
+    func fire() {
+        state.withLock { continuation in
+            continuation?.resume()
+            continuation = nil
+        }
     }
 }

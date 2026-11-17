@@ -621,12 +621,19 @@ public actor HostLimiter {
 
     public init() {}
 
+    /// Instagram's many CDN hosts count as one: at most 2 downloads across all of them (R-1113).
+    static let instagramCDN = "instagram-cdn"
+
+    static func group(_ host: String) -> String {
+        host.hasSuffix("cdninstagram.com") || host.hasSuffix("fbcdn.net") ? instagramCDN : host
+    }
+
     private func limit(for host: String) -> Int {
-        if host.hasSuffix("cdninstagram.com") || host.hasSuffix("fbcdn.net") { return 2 }
-        return perHost
+        host == Self.instagramCDN ? 2 : perHost
     }
 
     public func acquire(_ host: String) async {
+        let host = Self.group(host)
         if active[host, default: 0] < limit(for: host), total < maximum {
             active[host, default: 0] += 1
             total += 1
@@ -638,6 +645,7 @@ public actor HostLimiter {
     }
 
     public func release(_ host: String) {
+        let host = Self.group(host)
         active[host, default: 1] -= 1
         total -= 1
         // Wake the next waiter for this host, or any host with spare capacity.

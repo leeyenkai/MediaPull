@@ -86,7 +86,7 @@ def _json_default(value):
 
 EMITTER = None
 STATE = {"checkpoint": None, "errors": [], "private": False, "not_found": False, "outdated": False,
-         "violations": 0, "cursors": {}, "instagram": False}
+         "violations": 0, "cursors": {}, "instagram": False, "collection": None}
 # Helper processes the engines start (ffmpeg), so a cancelled job stops them too.
 CHILDREN = weakref.WeakSet()
 
@@ -285,19 +285,22 @@ def harden_gallery_dl_paths():
     gdl_path.PathFormat.build_directory = build_directory
 
 
-def site_request_interval(url):
-    """(category, min, max) seconds gallery-dl's extractor for `url` waits between requests by default, or None."""
+def site_request_intervals():
+    """{category: (min, max)}: every extractor's own default interval between requests (the slowest per category)."""
     try:
         from gallery_dl import extractor as gdl_extractor
 
-        found = gdl_extractor.find(url)
+        classes = list(gdl_extractor._list_classes())
     except Exception:
-        return None
-    if not found:
-        return None
-    interval = getattr(found, "request_interval", 0) or 0
-    low, high = (interval, interval) if isinstance(interval, (int, float)) else (interval[0], interval[-1])
-    return (found.category, float(low), float(high)) if high else None
+        return {}
+    intervals = {}
+    for cls in classes:
+        interval = getattr(cls, "request_interval", 0) or 0
+        low, high = (interval, interval) if isinstance(interval, (int, float)) else (interval[0], interval[-1])
+        if high:
+            old = intervals.get(cls.category, (0.0, 0.0))
+            intervals[cls.category] = (max(old[0], float(low)), max(old[1], float(high)))
+    return intervals
 
 
 def configure_gallery_dl(request, staging):
@@ -338,13 +341,12 @@ def configure_gallery_dl(request, staging):
         },
     }
     # R-1203: never faster than a site's own interval between requests. A global sleep-request replaces gallery-dl's
-    # per-site default, so the slower of the two is set for the site.
-    for url in urls:
-        own = site_request_interval(url)
-        if own:
-            category = own[0]
-            merged = [max(delay[0], own[1]), max(delay[-1], own[2])]
-            extractor.setdefault(category, {})["sleep-request"] = merged
+    # per-site default, so the slower of the two is set for every site, including ones whose extractors another site's
+    # page hands work to (a Reddit post linking an Imgur album).
+    for category, own in site_request_intervals().items():
+        section = extractor.setdefault(category, {})
+        if "sleep-request" not in section:
+            section["sleep-request"] = [max(delay[0], own[0]), max(delay[-1], own[1])]
     site = request.get("category")
     if site and site != "instagram":
         # Per-site choices from the Downloads pane (SPEC R-1111b): which parts of a profile, and the
@@ -526,8 +528,20 @@ META_KEYS = ("category", "subcategory", "username", "fullname", "post_shortcode"
              "type", "id", "author", "user", "owner_id")
 
 
+def collection_of(url):
+    """`stories-tray` for the stories of accounts the person follows, `saved` for saved posts and collections."""
+    path = (url or "").split("instagram.com", 1)[-1] if "instagram.com" in (url or "") else ""
+    if path.startswith("/stories/me"):
+        return "stories-tray"
+    if "/saved/" in path or path.endswith("/saved"):
+        return "saved"
+    return None
+
+
 def item_meta(url, kwdict):
     meta = {}
+    if STATE.get("collection") and kwdict.get("category") == "instagram":
+        meta["collection"] = STATE["collection"]
     for key in META_KEYS:
         if key not in kwdict:
             continue
@@ -934,6 +948,9 @@ def run_gallery_job(request, kind):
     status = 0
     for url in urls:
         cls = ScanJob if kind == "scan" else PullJob
+        # gallery-dl runs the stories tray and saved posts as child extractors of other kinds, so their files cannot tell
+        # where they came from: the address they were listed under is passed on with each one.
+        STATE["collection"] = collection_of(url)
         try:
             status |= cls(url).run()
         except Exception as exc:

@@ -398,6 +398,11 @@ public extension EngineContext {
     {
         let category = meta["category"]?.string ?? "site"
         var context = EngineContext(key: key, category: category, subcategory: subcategory ?? meta["subcategory"]?.string ?? "")
+        // Others' stories and saved posts reach an account pull as ordinary stories and posts; the bridge says which list
+        // they came from, so they are filed under their own accounts (D-53).
+        if let collection = meta["collection"]?.string, ["stories-tray", "saved"].contains(collection) {
+            context.subcategory = collection
+        }
         context.username = meta["username"]?.string ?? meta["user_name"]?.string ?? meta["author"]?.string
         context.fullName = meta["fullname"]?.string
         context.shortcode = meta["shortcode"]?.string

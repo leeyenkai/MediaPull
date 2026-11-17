@@ -272,6 +272,11 @@ def test_a_sites_own_request_interval_is_never_undercut():
         bridge.configure_gallery_dl({"url": "https://www.reddit.com/user/someone", "pacing": {"request_delay": [0.1, 0.2]}}, staging)
         interval = config.get(("extractor", "reddit"), "sleep-request")
         assert interval and interval[0] >= 0.6, interval
+        # A site only reached through another site's page keeps its own pace too (audit round 1, A12).
+        others = [category for category, own in bridge.site_request_intervals().items() if category != "reddit"]
+        assert others
+        queued = config.get(("extractor", others[0]), "sleep-request")
+        assert queued and queued[-1] >= bridge.site_request_intervals()[others[0]][1], queued
     config.clear()
 
 def test_instagram_is_gentle_by_default_and_never_retried():
@@ -294,9 +299,23 @@ def test_posts_are_known_by_post_and_number_but_stories_only_by_media_id():
     other = {"category": "instagram", "subcategory": "posts", "post_id": "3001", "num": 3, "media_id": "78"}
     assert tracker.observe(other, bridge.item_key(other, "u")) is False
 
+
+def test_files_from_the_stories_tray_and_saved_posts_say_so():
+    """Audit round 1 (A1): gallery-dl lists others' stories and saved posts through child extractors."""
+    bridge.STATE["collection"] = bridge.collection_of("https://www.instagram.com/stories/me/")
+    meta = bridge.item_meta("x", {"category": "instagram", "subcategory": "stories", "username": "bob"})
+    assert meta["collection"] == "stories-tray"
+    bridge.STATE["collection"] = bridge.collection_of("https://www.instagram.com/alice/saved/")
+    assert bridge.item_meta("x", {"category": "instagram", "subcategory": "posts"})["collection"] == "saved"
+    bridge.STATE["collection"] = bridge.collection_of("https://www.instagram.com/alice/")
+    assert "collection" not in bridge.item_meta("x", {"category": "instagram", "subcategory": "posts"})
+    bridge.STATE["collection"] = None
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
         test()
         print("ok  ", test.__name__)
     print(f"{len(tests)} tests, 0 failures")
+

@@ -241,6 +241,11 @@ final class AddressTests: XCTestCase {
         XCTAssertNil(AddressInput.several(in: "https://example.com/one"), "one address is not a list")
         XCTAssertNil(AddressInput.several(in: "red cats"), "words are not addresses")
         XCTAssertNil(AddressInput.several(in: "https://example.com/a and more"))
+        XCTAssertEqual(AddressInput.several(in: "@nasa\nhttps://example.com/g\noops!")?.count, 3,
+                       "one unrecognised line is listed as skipped, not a reason to read it all as one address")
+        if case .instagramHighlight = AddressInput.parse("https://www.instagram.com/s/aGlnaGxpZ2h0OjE3?story_media_id=1") {} else {
+            XCTFail("a shared highlight link is a highlight, not the account \"s\"")
+        }
         let story = URL(string: "https://www.instagram.com/stories/nasa/3512345678901234567/")!
         XCTAssertEqual(AddressInput.parse(story.absoluteString).instagramUsername, "nasa")
         if case let .instagramStories(_, url) = AddressInput.parse(story.absoluteString) {
@@ -435,6 +440,12 @@ final class VideoDownloadTests: XCTestCase {
         XCTAssertEqual(VideoDownloadFormat.h264MP4.selector(height: 720).format,
                        "bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=720]")
         XCTAssertEqual(VideoDownloadFormat.bestMP4.selector(height: nil).format, "bv*+ba/b")
+        // Audit round 1 (A6): the video setting decides, with the resolution limit on every alternative.
+        let compatible = VideoDownloadFormat.bestMP4.selector(height: 1080, policy: .highestCompatible).format
+        XCTAssertTrue(compatible.hasPrefix("bv*[vcodec~='^(avc1|avc3|hvc1|hev1|h264|h265|hevc)'][height<=1080]+ba"))
+        XCTAssertFalse(compatible.contains("bv*+ba"), "never an unlimited fallback")
+        XCTAssertTrue(VideoDownloadFormat.bestMP4.selector(height: nil, policy: .highestReencodeIfNeeded, av1Decodable: false).format
+            .hasPrefix("bv*[vcodec!^=av01]+ba"))
         XCTAssertEqual(VideoDownloadFormat.webm.selector(height: 1080).merge, "webm")
         XCTAssertNil(VideoDownloadFormat.audioM4A.selector(height: nil).merge)
         XCTAssertEqual(VideoDownloadFormat.h264MP4.estimatedBytes(in: formats, height: 1080), 260_000_000)

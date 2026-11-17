@@ -26,7 +26,7 @@ public enum AccountFolders {
     public static func detect(_ folder: URL, stopAt root: URL?) -> Match? {
         var current = folder.standardizedFileURL
         let top = root?.standardizedFileURL.path
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
         var account: String?
         var found: Match?
         var levels = 0

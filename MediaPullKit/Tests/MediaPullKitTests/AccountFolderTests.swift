@@ -127,6 +127,23 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(report.notDownloaded.map(\.lastPathComponent), ["e.jpg"])
         XCTAssertFalse(report.changed.contains(kept))
         XCTAssertTrue(FolderCheck.run(folder, archive: false).withoutMetadata.isEmpty, "Plain folders have no metadata files")
+        // Saved without metadata on purpose (audit round 1, C23): a video's thumbnail and an audio file.
+        file("check/clip.mp4", account: "alice")
+        file("check/clip.jpg")
+        file("check/song.m4a")
+        XCTAssertEqual(FolderCheck.run(folder, archive: true).withoutMetadata.map(\.lastPathComponent), ["c.jpg"])
+    }
+
+    /// Audit round 1 (C24): only copies in the folder shown go; each group keeps one file wherever it is.
+    func testExtraCopiesOnlyLeaveTheFolderShown() throws {
+        let here = file("here/a.jpg"), there = file("there/a.jpg"), second = file("here/b.jpg")
+        try Data(count: 10).write(to: here)
+        try Data(count: 10).write(to: there)
+        try Data(count: 10).write(to: second)
+        let inHere: @Sendable (URL) -> Bool = { $0.deletingLastPathComponent().lastPathComponent == "here" }
+        let plan = ExtraCopies.plan([[here, there, second]], within: inHere)
+        XCTAssertFalse(plan.trash.contains(there), "a copy outside the folder is never trashed")
+        XCTAssertTrue((1 ... 2).contains(plan.trash.count), "the copies here go, except one when it is the one kept")
     }
 
     func testFolderStatsCountMediaInSubfoldersOnly() throws {
@@ -258,6 +275,22 @@ final class AccountFolderTests: XCTestCase {
         let left = await reloaded.all()
         XCTAssertTrue(left.isEmpty)
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: records.path).isEmpty, "the record file is removed")
+    }
+
+    /// Audit round 1 (A3): a gallery file's metadata never records the working folder it was downloaded to.
+    func testEngineSidecarsNeverRecordALocalPath() {
+        var context = EngineContext(key: "deviantart:42", category: "deviantart", subcategory: "gallery")
+        context.username = "artist"
+        let staged = URL(fileURLWithPath: "/Users/someone/Library/Application Support/MediaPull/Staging/x/a.jpg")
+        let variant = MediaVariant(id: staged.absoluteString, url: staged, format: .jpeg, origin: .img)
+        let item = MediaItem(id: "k", kind: .image, variants: [variant],
+                             source: .engine(context), discoveryIndex: 0, group: "g", groupTitle: "t")
+        let info = FinalFileInfo(format: .jpeg, sha256: "ab", pixelSize: nil, duration: nil, sourceURL: staged, lastModified: nil,
+                                 originalName: nil, note: nil)
+        let target = SaveTarget(folder: root, layout: .archive, autoSubfolders: true)
+        let first = ArchivePlanner.sidecar(for: item, info: info, target: target, settings: SaveSettings())
+        XCTAssertNil(first.sourceURL)
+        XCTAssertEqual(first.postID, ShortHash.of("deviantart:42"), "the same item keeps the same id on every run")
     }
 
     func testStoreRemembersKeysAndCursorPerFolder() async {

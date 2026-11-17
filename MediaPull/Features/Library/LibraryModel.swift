@@ -31,6 +31,11 @@ final class FolderTreeCache {
         return found
     }
 
+    /// Whether a change at `path` (a folder FSEvents names) can change what the tree shows.
+    func shows(_ path: String) -> Bool {
+        subfolders[path] != nil || subfolders[(path as NSString).deletingLastPathComponent] != nil
+    }
+
     /// Reads every folder the tree has shown again, off the main actor.
     func refresh() async {
         let keys = Array(subfolders.keys)
@@ -114,12 +119,16 @@ final class LibraryModel: MediaGridOwner {
         AppModel.shared.analysis.onFolderChange[listenerID] = nil
         // A closed window's work stops with it; the watcher's cancel handler closes its file descriptor.
         watcher?.cancel()
-        for task in [changeTask, filterTask, reloadTask, duplicateTask, treeRefresh] {
+        for task in [changeTask, filterTask, reloadTask, duplicateTask, treeRefresh, checkTask] {
             task?.cancel()
         }
     }
 
+    /// Folders changed anywhere in the library (FSEvents through analysis): the tree follows Finder changes in any folder
+    /// it shows (R-1704), and the listing follows its subfolders when they are included.
     private func foldersChanged(_ paths: [String]) {
+        let paths = paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        if paths.contains(where: treeCache.shows) { invalidateTree() }
         guard includeSubfolders, let folder = selectedFolder?.standardizedFileURL.path else { return }
         if paths.contains(where: { $0.hasPrefix(folder + "/") }) { scheduleChangeReload() }
     }
@@ -149,18 +158,23 @@ final class LibraryModel: MediaGridOwner {
     var checking = false
 
     /// Check Folder: reads every file once and reports what no longer matches what was saved; changes nothing (R-1713).
+    /// A second Check Folder, or closing the window, stops the one running.
     func checkFolder(_ folder: URL) {
         selectedFolder = folder
         check = nil
         checking = true
         let archive = app.root(containing: folder)?.layout == .archive
-        Task { [weak self] in
-            let report = await Task.detached(priority: .userInitiated) { FolderCheck.run(folder, archive: archive) }.value
-            guard let self else { return }
+        checkTask?.cancel()
+        let work = Task.detached(priority: .userInitiated) { FolderCheck.run(folder, archive: archive) }
+        checkTask = Task { [weak self] in
+            let report = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            guard !Task.isCancelled, let self else { return }
             self.checking = false
             if self.selectedFolder == folder { self.check = report }
         }
     }
+
+    @ObservationIgnored private var checkTask: Task<Void, Never>?
 
     /// Trash Extra Copies (R-3305): one file of each duplicate group here stays, the others go to the Trash as one
     /// operation, after a confirmation; ⌘Z puts them all back.
@@ -172,10 +186,13 @@ final class LibraryModel: MediaGridOwner {
         let members = groups.map(\.members)
         let alike = groups.filter { !$0.identical }.count
         Task { [weak self] in
-            let plan = await Task.detached(priority: .userInitiated) { ExtraCopies.plan(members) }.value
+            // Only copies in this folder go; copies elsewhere (another account's folder) are never touched from here.
+            let plan = await Task.detached(priority: .userInitiated) {
+                ExtraCopies.plan(members) { here.contains($0.standardizedFileURL.path) }
+            }.value
             guard let self, !plan.trash.isEmpty else { return }
             let alert = NSAlert()
-            alert.messageText = "Move \(plan.trash.count) extra cop\(plan.trash.count == 1 ? "y" : "ies") to the Trash?"
+            alert.messageText = "Move \(plan.trash.count) extra cop\(plan.trash.count == 1 ? "y" : "ies") in this folder to the Trash?"
             alert.informativeText = "One file of each of the \(groups.count) groups stays: the largest picture, then one with a "
                 + "metadata file, then the oldest. This frees \(Format.bytes(plan.bytes))."
                 + (alike > 0 ? " \(alike) of the groups only look alike, so their files are not identical." : "")
@@ -214,7 +231,8 @@ final class LibraryModel: MediaGridOwner {
 
     /// Whether an update of `folder` is queued or running.
     func isUpdating(_ folder: URL) -> Bool {
-        app.jobs.jobs.contains { $0.state.isActive && $0.destination?.standardizedFileURL == folder.standardizedFileURL }
+        // Paused or held by a checkpoint counts too: Resume carries it on.
+        app.jobs.jobs.contains { $0.state.canCancel && $0.destination?.standardizedFileURL == folder.standardizedFileURL }
     }
 
     /// Update an account folder, or find what it is missing (D-79, D-80).
@@ -300,7 +318,10 @@ final class LibraryModel: MediaGridOwner {
     var query: LibraryQuery = AppModel.shared.preferences.libraryQuery {
         didSet {
             guard query != oldValue else { return }
-            app.preferences.libraryQuery = query
+            // The sort and filters are kept between launches; the search text is not (D-77).
+            var kept = query
+            kept.search = ""
+            if app.preferences.libraryQuery != kept { app.preferences.libraryQuery = kept }
             listFolders.forgetContents()
             refilter()
         }
@@ -357,7 +378,10 @@ final class LibraryModel: MediaGridOwner {
     /// Recomputes what is shown from the files, the sort, the filters and the search (off the main actor).
     func refilter() {
         filterTask?.cancel()
-        let entries = entries, query = query
+        // One event gap everywhere: Settings, the Sort menu and Sort by Event (B9).
+        var adjusted = query
+        adjusted.eventGap = app.preferences.eventGapHours * 3600
+        let entries = entries, query = adjusted
         filterTask = Task { [weak self] in
             guard let self else { return }
             if !query.search.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -577,6 +601,12 @@ final class LibraryModel: MediaGridOwner {
     /// Moves files (with their sidecars) or folders to the Trash, as one change ⌘Z puts back. Nothing is deleted outright.
     func trash(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
+        // A library folder itself is removed from the library, never moved to the Trash from here (any view).
+        let roots = Set(app.roots.map { $0.url.standardizedFileURL.path })
+        if urls.contains(where: { roots.contains($0.standardizedFileURL.path) }) {
+            message = "A library folder is not moved to the Trash here. Use Remove from Library in its menu."
+            return
+        }
         // The save folder or one of its parents goes to the Trash: save into the folder above instead.
         if let folder = selectedFolder, let gone = urls.first(where: { Self.isInside(folder, $0) }) {
             selectedFolder = gone.deletingLastPathComponent()
@@ -586,15 +616,23 @@ final class LibraryModel: MediaGridOwner {
     }
 
     /// Runs a file change through the journal (undoable with ⌘Z, R-3806) and shows its problems, if any.
+    /// It runs as a job, so Quit waits for it to stop between files (R-3807); copies and long changes show in Activity.
     func perform(_ plan: OrganisePlan, then finished: ((JournalEntry) -> Void)? = nil) {
         guard !plan.isEmpty else { return }
-        Task {
+        let app = app
+        let job = Job(kind: .organise, title: plan.title)
+        job.state = .running
+        if plan.cloneCount > 0 || plan.moves.count + plan.itemsToTrash.count > 20 { app.jobs.add(job) }
+        job.task = Task { [weak self] in
             let entry = await app.applyChange(plan)
-            message = entry.failures.isEmpty ? nil : entry.failures.prefix(3).joined(separator: "\n")
-            window?.registerUndo(entry)
+            app.jobs.finish(job, entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be changed"))
+                : .cancelled)
+            guard let self else { return }
+            self.message = entry.failures.isEmpty ? nil : entry.failures.prefix(3).joined(separator: "\n")
+            self.window?.registerUndo(entry)
             finished?(entry)
-            invalidateTree()
-            reload()
+            self.invalidateTree()
+            self.reload()
         }
     }
 
