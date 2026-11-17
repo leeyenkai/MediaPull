@@ -52,7 +52,20 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var visible: [MediaItem] = []
     var sections: [GridSection] = []
     var filter = MediaFilter() {
-        didSet { if filter != oldValue { refilter() } }
+        didSet {
+            guard filter != oldValue else { return }
+            refilter()
+            rememberFilter()
+        }
+    }
+
+    /// New windows start with the filters last used; the search text and This Page belong to the page in front (R-1008).
+    private func rememberFilter() {
+        guard !SelfTestRunner.isActive else { return }
+        var kept = filter
+        kept.text = ""
+        kept.currentPageOnly = false
+        if AppModel.shared.preferences.extractedFilter != kept { AppModel.shared.preferences.extractedFilter = kept }
     }
 
     var selection: Set<String> = []
@@ -137,6 +150,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         selectedTabID = first.id
         library.window = self
         organise.window = self
+        if !SelfTestRunner.isActive { filter = AppModel.shared.preferences.extractedFilter }
         wire(first)
         let stream = ingestor.snapshots
         listenTask = Task { [weak self] in
@@ -353,8 +367,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
             default: .notSaved
             }
         }
-        let matched = items.filter { filter.matches($0, context: context) }
-        visible = filter.sorted(matched)
+        visible = filter.apply(items, context: context)
         if filter.sort == .discovery || filter.sort == .date {
             var order: [String] = []
             var groups: [String: (title: String, ids: [String])] = [:]

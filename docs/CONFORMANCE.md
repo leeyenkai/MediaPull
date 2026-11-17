@@ -86,7 +86,7 @@ change as the code.
 | R-1006 | amended | `FilterBar`, `MediaFilter` | `testFilterHidesTinyAndMatchesSize` | D-77: the filter bar offers the listed subset; the slider covers resolution presets |
 | R-1006a | built | `QuickFilterBar`, `MediaFilter` | `testResolutionSliderUsesLongestSide`, `testLengthFilterKinds` | Type chips, longest-side slider with the listed stops, shown of found count |
 | R-1007 | built | `SortOrder`, `MediaFilter.sorted` | `testEqualValuesKeepDiscoveryOrder` | All seven sort orders |
-| R-1008 | partial | `MediaFilter`, `WindowModel.refilter` | none | Audit gap: filter state not persisted per window, no named presets, no 5,000-item timing test |
+| R-1008 | built | `MediaFilter.apply`, `WindowModel.rememberFilter`, `Preferences.filterPresets`, `FilterBar` | `testFilteringFiveThousandItemsIsWithinBudget` | 5,000 items in 5.1 ms optimised (budget 10 ms; the byte count and sort keys were the cost, fixed in 1.8); new windows start with the last filters; presets saved and deleted in the filter row |
 | R-1009 | built | `PreviewPane`, `ItemDetails`, `VariantRanker.reason` | `testReasons`, `--selftest-url` | The reason for the chosen variant is shown (1.8) |
 | R-1009a | built | `WindowModel.showInPreview`, `WindowModel.openEditor`, `EditorModel` | `--selftest-edit` | Editor opens in the Preview pane; unsaved edits keep it from being replaced |
 | R-1010 | person | `QuickLook`, `WindowModel.quickLook`, `WindowModel.previewFile` | none | Downloads through the gate to the cache, then previews the local file |

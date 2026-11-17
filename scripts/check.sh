@@ -31,6 +31,15 @@ missing() {
   fi
 }
 
+echo "== iCloud copies (the project lives in an iCloud-synced folder)"
+# iCloud makes "Name 2.swift" when two versions meet; a copy compiles as a duplicate and must never be committed.
+copies=$(find . -path ./.git -prune -o -path ./.build -prune -o -name '* [0-9]' -print -o -name '* [0-9].*' -print)
+if [ -n "$copies" ]; then
+  echo "error: iCloud copies found; compare each with its original and remove it:"
+  echo "$copies"
+  exit 1
+fi
+
 echo "== Module boundaries and read-only lint"
 check_only_in() {
   local pattern="$1" allowed="$2" label="$3"

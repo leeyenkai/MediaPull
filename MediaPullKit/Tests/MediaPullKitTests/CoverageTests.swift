@@ -205,6 +205,45 @@ final class FilterSortTests: XCTestCase {
                          group: "g", groupTitle: "t")
     }
 
+    /// R-1008: filtering and sorting 5,000 items stays within the budget (scripts/perf-budgets.json, 10 ms). Debug test
+    /// builds are unoptimised, so they get five times as long; the figure is printed either way.
+    func testFilteringFiveThousandItemsIsWithinBudget() throws {
+        let items = (0 ..< 5000).map { item("i\($0)", kind: $0 % 7 == 0 ? .video : .image, index: $0, pixels: 50 + $0 % 3000,
+                                            duration: $0 % 7 == 0 ? Double($0 % 120) : nil) }
+        var filter = MediaFilter()
+        filter.minLongSide = 640
+        filter.kinds = [.image, .animatedImage]
+        filter.text = "example"
+        filter.sort = .resolution
+        let context = FilterContext(currentPage: page) { _ in .notSaved }
+        var best = Double.infinity
+        var shown = 0
+        for _ in 0 ..< 5 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let matched = filter.apply(items, context: context)
+            best = min(best, Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            shown = matched.count
+        }
+        let budget = try XCTUnwrap(Self.budget("refilter5000ItemsMs"))
+        #if DEBUG
+        let allowed = budget * 5
+        #else
+        let allowed = budget
+        #endif
+        print("refilter 5,000 items: \(String(format: "%.2f", best)) ms, \(shown) shown (budget \(budget) ms)")
+        XCTAssertGreaterThan(shown, 0)
+        XCTAssertLessThan(best, allowed)
+    }
+
+    static func budget(_ key: String) -> Double? {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0 ..< 4 {
+            url.deleteLastPathComponent()
+        }
+        let file = url.appendingPathComponent("scripts/perf-budgets.json")
+        return (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?[key] as? Double
+    }
+
     func testLengthFilterKinds() {
         var filter = MediaFilter()
         filter.hideTiny = false

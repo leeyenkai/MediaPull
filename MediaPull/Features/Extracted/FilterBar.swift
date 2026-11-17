@@ -4,6 +4,9 @@ import SwiftUI
 /// The filter bar (SPEC R-1006).
 struct FilterBar: View {
     @Bindable var model: WindowModel
+    /// The name being typed for a new preset; nil when not saving one.
+    @State private var presetName: String?
+    @Bindable private var preferences = AppModel.shared.preferences
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -98,12 +101,58 @@ struct FilterBar: View {
                     .disabled(model.filter == MediaFilter())
             }
             .toggleStyle(.checkbox)
+            presets
         }
         .controlSize(.small)
         .font(.callout)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.quaternary.opacity(0.25))
+    }
+
+    /// Named presets (R-1008): choose one, save the current filters under a name typed in place, or delete one.
+    private var presets: some View {
+        HStack(spacing: 8) {
+            if let name = presetName {
+                TextField("Preset name", text: Binding(get: { name }, set: { presetName = $0 }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 180)
+                    .onSubmit(savePreset)
+                Button("Save", action: savePreset)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Cancel") { presetName = nil }
+            } else {
+                Menu("Presets") {
+                    ForEach(preferences.filterPresets) { preset in
+                        Button(preset.name) { model.filter = preset.filter }
+                    }
+                    if !preferences.filterPresets.isEmpty {
+                        Divider()
+                        Menu("Delete") {
+                            ForEach(preferences.filterPresets) { preset in
+                                Button(preset.name) { preferences.filterPresets.removeAll { $0.name == preset.name } }
+                            }
+                        }
+                    }
+                }
+                .fixedSize()
+                Button("Save as Preset…") { presetName = "" }
+            }
+            Spacer()
+        }
+    }
+
+    private func savePreset() {
+        guard let raw = presetName else { return }
+        let name = raw.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        var kept = model.filter
+        kept.text = ""
+        // A preset with the same name is replaced; the list stays in name order.
+        preferences.filterPresets.removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        preferences.filterPresets.append(FilterPreset(name: name, filter: kept))
+        preferences.filterPresets.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        presetName = nil
     }
 
     private var formatTitle: String {

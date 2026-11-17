@@ -154,15 +154,39 @@ public extension MediaFilter {
         return groups
     }
 
+    /// What every item is compared with, worked out once per pass rather than once per item.
+    struct Prepared {
+        var needle: String
+        var include: [String]
+        var exclude: [String]
+
+        init(_ filter: MediaFilter) {
+            needle = filter.text.trimmingCharacters(in: .whitespaces).lowercased()
+            include = MediaFilter.tokens(filter.includeDomains)
+            exclude = MediaFilter.tokens(filter.excludeDomains)
+        }
+    }
+
+    /// The items that pass, in the chosen order (R-1008: 5,000 items within the section 22 budget).
+    func apply(_ items: [MediaItem], context: FilterContext) -> [MediaItem] {
+        let prepared = Prepared(self)
+        return sorted(items.filter { matches($0, context: context, prepared: prepared) })
+    }
+
     func matches(_ item: MediaItem, context: FilterContext) -> Bool {
+        matches(item, context: context, prepared: Prepared(self))
+    }
+
+    func matches(_ item: MediaItem, context: FilterContext, prepared: Prepared) -> Bool {
         let size = item.displaySize
-        let bytes = item.displayBytes
         let format = item.displayFormat
+        // The byte count can mean ranking every variant, so it is only worked out when a filter needs it.
+        let needsBytes = minBytes != nil || maxBytes != nil || (hideIcons && format == .svg)
+        let bytes = needsBytes ? item.displayBytes : nil
 
         if hideIcons, item.flags.contains(.icon) { return false }
-        if hideUnavailable, !item.variants.isEmpty,
-           item.variants.filter({ $0.origin != .engineThumbnail }).allSatisfy(\.hasFailed)
-        {
+        // Unavailable: every variant other than an engine's thumbnail has failed.
+        if hideUnavailable, !item.variants.isEmpty, !item.variants.contains(where: { $0.origin != .engineThumbnail && !$0.hasFailed }) {
             return false
         }
         if hideIcons, let size, size.width <= 32, size.height <= 32 { return false }
@@ -219,14 +243,10 @@ public extension MediaFilter {
         }
         if !sources.isEmpty, Self.sourceGroup(of: item).isDisjoint(with: sources) { return false }
 
-        let host = item.host
-        if !includeDomains.isEmpty {
-            let tokens = Self.tokens(includeDomains)
-            if !tokens.contains(where: { host.contains($0) }) { return false }
-        }
-        if !excludeDomains.isEmpty {
-            let tokens = Self.tokens(excludeDomains)
-            if tokens.contains(where: { host.contains($0) }) { return false }
+        if !prepared.include.isEmpty || !prepared.exclude.isEmpty {
+            let host = item.host
+            if !prepared.include.isEmpty, !prepared.include.contains(where: { host.contains($0) }) { return false }
+            if prepared.exclude.contains(where: { host.contains($0) }) { return false }
         }
         if sameSiteOnly, let page = item.source.pageURL, let url = item.best?.url {
             if !URLNormalizer.isSameSite(page, url) { return false }
@@ -240,13 +260,12 @@ public extension MediaFilter {
         if currentPageOnly, let current = context.currentPage {
             guard let page = item.source.web?.pageURL, Self.samePage(page, current) else { return false }
         }
-        if !text.isEmpty {
-            let needle = text.lowercased()
-            var haystack = [item.best?.url.absoluteString ?? "", item.alt ?? "", item.groupTitle]
-            if let engine = item.source.engine {
-                haystack += [engine.description ?? "", engine.title ?? "", engine.username ?? ""]
-            }
-            if !haystack.contains(where: { $0.lowercased().contains(needle) }) { return false }
+        if !prepared.needle.isEmpty {
+            func has(_ text: String?) -> Bool { text.map { !$0.isEmpty && $0.lowercased().contains(prepared.needle) } ?? false }
+            let engine = item.source.engine
+            guard has(item.best?.url.absoluteString) || has(item.alt) || has(item.groupTitle) || has(engine?.description)
+                || has(engine?.title) || has(engine?.username)
+            else { return false }
         }
         return true
     }
@@ -266,15 +285,17 @@ public extension MediaFilter {
     /// Items in the chosen order; `ascending` false puts the largest, longest or newest first.
     func sorted(_ items: [MediaItem]) -> [MediaItem] {
         // Items with the same value keep the order they were found in, whichever way the list is sorted.
+        // Each item's key is worked out once, and positions are sorted rather than whole items.
         func by(_ key: (MediaItem) -> some Comparable) -> [MediaItem] {
-            items.sorted { a, b in
-                let first = key(a), second = key(b)
-                if first != second { return ascending ? first < second : first > second }
-                return a.discoveryIndex < b.discoveryIndex
+            let keys = items.map(key)
+            let order = items.indices.sorted { a, b in
+                if keys[a] != keys[b] { return ascending ? keys[a] < keys[b] : keys[a] > keys[b] }
+                return items[a].discoveryIndex < items[b].discoveryIndex
             }
+            return order.map { items[$0] }
         }
         return switch sort {
-        case .discovery: items.sorted { ascending ? $0.discoveryIndex < $1.discoveryIndex : $0.discoveryIndex > $1.discoveryIndex }
+        case .discovery: by(\.discoveryIndex)
         case .resolution: by { $0.displaySize?.pixels ?? -1 }
         case .fileSize: by { $0.displayBytes ?? -1 }
         case .duration: by { $0.duration ?? -1 }

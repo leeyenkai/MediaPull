@@ -121,5 +121,5 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 
 ## Environment notes
 
-- This folder lives under an iCloud-synced Desktop. Watch for iCloud duplicate files named like `File 2.swift` and never commit them; a pre-commit check for them should be added in M1.
+- This folder lives under an iCloud-synced Desktop. iCloud can leave duplicate files named like `File 2.swift`; `scripts/check.sh` fails on them. Compare each with its original (and git) before removing it, and never commit one.
 - The default library root for testing is `~/Pictures/MediaPull`, which is outside iCloud.
