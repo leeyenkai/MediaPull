@@ -77,7 +77,7 @@ change as the code.
 | R-917 | built | `MediaProber.bestHLSResolution`, `BridgeEngineFetcher`, `stream_options` | `test_stream_options_map_extras` | Stream items sized from the manifest; saved by yt-dlp with Referer and first-party cookies |
 | R-918 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `VideoFormatInfo.drm` | `--selftest-url` | D-77: Protected from EME use in the page or DRM reported by yt-dlp |
 | R-919 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `BrowserController.readBlob` | `--selftest-url` | D-77: blob videos listed as unavailable with a pointer to Save Video |
-| R-1001 | person | `MediaGridView`, `WindowModel.gridInfo` | `--selftest-url` | Insecure (http) badge added in 1.8; badges need a person to look at |
+| R-1001 | person | `MediaGrid`, `WindowModel.gridInfo` | `--selftest-url` | Insecure (http) badge added in 1.8; badges need a person to look at |
 | R-1001a | partial | `ZoomSlider`, `WindowModel.gridMagnify`, `WindowModel.zoomRange`, `AppCommands` | `--selftest-zoom` | Audit: shortcuts unverified; Opt-Cmd-plus bound to plus only and disabled outside Icons view |
 | R-1002 | amended | `ThumbnailLoader` | `--selftest-url` | D-77: decoded at most 768 px on the longer side |
 | R-1003 | partial | `MediaCollectionView`, `GridKeyRouter`, `WindowModel.selectAll`, `WindowModel.deselectAll` | none | Audit: Select All Media is Opt-Cmd-A, not Cmd-A; other selection keys need a person |
@@ -151,7 +151,7 @@ change as the code.
 | R-1708 | person | `ViewModePicker`, `MediaList`, `MediaColumns` | `--selftest-views` | Stale rows and lost selection fixed in 1.8; drag, Quick Look and keys need a person |
 | R-1709 | built | `MediaList`, `FolderChildren` | `--selftest-views` | Opened folders are rebuilt when the pane reloads and keep the pane filters (1.8) |
 | R-1710 | built | `MediaColumns`, `LibraryModel.columnFolderChanged` | `--selftest-views` | Open columns refresh in place keeping the selection; clicks in other columns show the file (1.8) |
-| R-1711 | person | `WindowModel.viewModeTarget`, `MediaGridView` | `--selftest-views` | Thumbnail size keys work in Icon view only, as specified; needs a person |
+| R-1711 | person | `WindowModel.viewModeTarget`, `MediaGrid` | `--selftest-views` | Thumbnail size keys work in Icon view only, as specified; needs a person |
 | R-1705 | person | `WindowModel.revealOrReload`, `QuickLook` | `--selftest-views` | Command-R reveals in Library and Organise panes, reloads in the browser (1.8); Quick Look needs a person |
 | R-1706 | built | `WindowModel.saveFolder` | `--selftest-analyse`, `--selftest-views` | The Library pane's folder is Collect's save folder (D-70) |
 | R-1801 | person | `LibraryModel.handleDrop`, `LibraryModel.importFiles`, `MediaPull/Platform/DragSupport.swift` | none | Drag and drop needs a person |
