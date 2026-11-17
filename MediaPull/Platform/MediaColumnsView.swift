@@ -398,7 +398,9 @@ struct MediaColumns: NSViewRepresentable {
             let writers = nodes.compactMap { owner.gridWriter($0.path) } + owner.gridCompanionWriters(files)
             guard !writers.isEmpty else { return false }
             pasteboard.clearContents()
-            return pasteboard.writeObjects(writers)
+            let written = pasteboard.writeObjects(writers)
+            DragTypes.markInternalDrag(pasteboard)
+            return written
         }
 
         /// The folder a drop lands in: a folder row it is on, otherwise the folder the column shows.

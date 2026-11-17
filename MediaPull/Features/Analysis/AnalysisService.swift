@@ -127,9 +127,11 @@ final class AnalysisService {
     /// change in the Finder (R-1704); only `scanFolders` are analysed.
     func updateWatch() {
         let roots = app.roots.filter { !app.missingRoots.contains($0.id) }.map(\.url)
-        let extras = extraFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        // Watched only, not analysed: a window's save folder outside the library, so its tree follows the Finder too.
+        let others = app.windows.compactMap(\.library.otherFolder)
+        let extras = (extraFolders.map { URL(fileURLWithPath: $0, isDirectory: true) } + others)
             .filter { folder in !roots.contains { folder.path.hasPrefix($0.path + "/") || folder.path == $0.path } }
-        watcher.watch((roots + extras).map(\.path))
+        watcher.watch(Array(Set((roots + extras).map(\.path))))
     }
 
     /// Library roots (minus those excluded in Settings) and folders open in Organise.
@@ -189,7 +191,9 @@ final class AnalysisService {
         let folders = scanFolders
         let wantFaces = preferences.facesEnabled && analyzer.faceEncoder != nil
         let images = imageVectors, faces = faceVectors
-        let keep = preferences.recentOrganiseFolders
+        // Every library folder is remembered, including one whose disk is not connected and one left out of analysis in
+        // Settings; so are recent Organise folders. Only folders removed from the library are forgotten (audit 2, B2-M1).
+        let keep = preferences.recentOrganiseFolders + app.roots.map(\.path)
         scanTask = Task { [weak self] in
             let skip = self?.noPicture ?? []
             let (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
@@ -279,7 +283,8 @@ final class AnalysisService {
         let paths = files.map(\.url.path)
         let states = await store.states(for: paths)
         var work: [Work] = []
-        for file in files {
+        // A file kept only in iCloud is on the list (so it is not taken for deleted) but not read: reading downloads it.
+        for file in files where !FileFlags.isDataless(file.url) {
             guard let state = states[file.url.path], state.size == file.size, abs(state.modified.timeIntervalSince(file.modified)) < 1,
                   state.version == AnalysisRecord.currentVersion else { work.append(file); continue }
             if (wantFaces && state.peopleChecked == false && state.hasFaces == true) ||

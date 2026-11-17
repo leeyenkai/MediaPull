@@ -119,6 +119,17 @@ final class BrowsingStore {
         history.clear(since: since)
         if !loaded { clearsBeforeLoad.append(since) }
         scheduleSave()
+        // All history includes copies set aside after a failure to read it (audit 2, B2-m5).
+        if range == .all, let folder {
+            Task.detached(priority: .utility) {
+                // lint:allow main-io inside a detached task
+                let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+                for name in names where name.hasPrefix("history.damaged-") {
+                    // lint:allow silent-write a copy that cannot be removed now is removed by the next Clear History
+                    try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+                }
+            }
+        }
     }
 
     // MARK: Saving

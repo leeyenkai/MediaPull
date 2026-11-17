@@ -303,13 +303,7 @@ struct MediaGrid: NSViewRepresentable {
             let extras = owner?.gridCompanionWriters(indexPaths.compactMap { id(at: $0) }) ?? []
             // writeObjects adds items after the ones already on the drag pasteboard.
             if !extras.isEmpty { session.draggingPasteboard.writeObjects(extras) }
-            DragTypes.fromMediaPull = true
-        }
-
-        func collectionView(_: NSCollectionView, draggingSession _: NSDraggingSession, endedAt _: NSPoint,
-                            dragOperation _: NSDragOperation)
-        {
-            DragTypes.fromMediaPull = false
+            DragTypes.markInternalDrag(session.draggingPasteboard)
         }
 
         func collectionView(

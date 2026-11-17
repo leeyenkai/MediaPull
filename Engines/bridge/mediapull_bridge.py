@@ -530,10 +530,15 @@ META_KEYS = ("category", "subcategory", "username", "fullname", "post_shortcode"
 
 def collection_of(url):
     """`stories-tray` for the stories of accounts the person follows, `saved` for saved posts and collections."""
-    path = (url or "").split("instagram.com", 1)[-1] if "instagram.com" in (url or "") else ""
-    if path.startswith("/stories/me"):
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url or "")
+    if not (parts.hostname or "").endswith("instagram.com"):
+        return None
+    segments = [segment for segment in parts.path.split("/") if segment]
+    if segments[:2] == ["stories", "me"]:
         return "stories-tray"
-    if "/saved/" in path or path.endswith("/saved"):
+    if len(segments) >= 2 and segments[1] == "saved":
         return "saved"
     return None
 

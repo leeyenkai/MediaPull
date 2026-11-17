@@ -90,6 +90,9 @@ final class Job: Identifiable {
     var retry: (() -> Void)?
     /// Where an Instagram listing had got to in this job, so Resume continues this job's own pass (R-1112).
     var lastCursor: String?
+    /// How the job's first run treated the folder's stored place, kept for Resume: whether this job's own place replaces
+    /// it, and the place stored before the job began (audit 2, A2-M1).
+    var pullPlan: (keepsCursor: Bool, priorCursor: String?)?
     var resume: (() -> Void)?
 
     init(kind: JobKind, title: String) {

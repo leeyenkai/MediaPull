@@ -121,11 +121,19 @@ final class Preferences {
         recentOrganiseFolders = d.array(forKey: "recentOrganiseFolders") as? [String] ?? []
         galleryChoices = d.dictionary(forKey: "galleryChoices") as? [String: [String]] ?? [:]
         gallerySwitches = d.dictionary(forKey: "gallerySwitches") as? [String: [String: Bool]] ?? [:]
-        libraryQuery = d.data(forKey: "libraryQuery").flatMap { try? JSONDecoder().decode(LibraryQuery.self, from: $0) } ?? LibraryQuery()
+        // Settings written by an earlier version keep what they hold when a field was added since.
+        libraryQuery = d.data(forKey: "libraryQuery").map { LenientJSON.decode(LibraryQuery.self, from: $0, over: LibraryQuery()) }
+            ?? LibraryQuery()
         libraryIncludeSubfolders = d.bool(forKey: "libraryIncludeSubfolders")
-        extractedFilter = d.data(forKey: "extractedFilter").flatMap { try? JSONDecoder().decode(MediaFilter.self, from: $0) }
+        extractedFilter = d.data(forKey: "extractedFilter").map { LenientJSON.decode(MediaFilter.self, from: $0, over: MediaFilter()) }
             ?? MediaFilter()
-        filterPresets = d.data(forKey: "filterPresets").flatMap { try? JSONDecoder().decode([FilterPreset].self, from: $0) } ?? []
+        filterPresets = d.data(forKey: "filterPresets").flatMap { data in
+            (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]])?.compactMap { preset -> FilterPreset? in
+                guard let name = preset["name"] as? String, let filter = preset["filter"],
+                      let filterData = try? JSONSerialization.data(withJSONObject: filter) else { return nil }
+                return FilterPreset(name: name, filter: LenientJSON.decode(MediaFilter.self, from: filterData, over: MediaFilter()))
+            }
+        } ?? []
         paneViewModes = d.data(forKey: "paneViewModes").flatMap { try? JSONDecoder().decode(PaneViewModes.self, from: $0) }
             ?? PaneViewModes()
         theme = AppTheme(rawValue: d.string(forKey: "theme") ?? "") ?? .system

@@ -126,9 +126,8 @@ struct InstagramForm: View {
             guard let existing = target.existing else {
                 return "Saves into a new folder “\(name)” in “\(target.parent.lastPathComponent)”."
             }
-            let files = AccountFolders.index(existing).files
-            return "Adds only what “\(existing.lastPathComponent)” doesn't have yet "
-                + "(\(files.formatted()) file\(files == 1 ? "" : "s") there)."
+            // Named only: reading every file just to count them would repeat what the pull itself does (audit 2, C2-m11).
+            return "Adds only what “\(existing.lastPathComponent)” doesn't have yet."
         }.value
         guard !Task.isCancelled else { return }
         placeNote = note

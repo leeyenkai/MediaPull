@@ -22,13 +22,31 @@ struct LibraryFile: Identifiable, Hashable {
 /// the disk while files are being saved (a folder of an account can hold tens of thousands of files).
 final class FolderTreeCache {
     private var subfolders: [String: [URL]] = [:]
+    private var reading: Set<String> = []
+    private var announced = false
+    /// Called once folders read in the background have arrived, so the tree is drawn again with them.
+    var onLoaded: (() -> Void)?
 
+    /// A folder's subfolders, or none yet: a folder not read before is read off the main actor (a folder of an account
+    /// can hold tens of thousands of files) and shown when it arrives.
     func children(of url: URL) -> [URL] {
         let key = url.standardizedFileURL.path
         if let known = subfolders[key] { return known }
-        let found = Self.list(url)
-        subfolders[key] = found
-        return found
+        if reading.insert(key).inserted {
+            Task { [weak self] in
+                let found = await Task.detached(priority: .userInitiated) { Self.list(url) }.value
+                guard let self else { return }
+                self.subfolders[key] = found
+                self.reading.remove(key)
+                // Many folders arriving together redraw the tree once.
+                guard !self.announced else { return }
+                self.announced = true
+                await Task.yield()
+                self.announced = false
+                self.onLoaded?()
+            }
+        }
+        return []
     }
 
     /// Whether a change at `path` (a folder FSEvents names) can change what the tree shows.
@@ -47,7 +65,7 @@ final class FolderTreeCache {
 
     nonisolated static func list(_ url: URL) -> [URL] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
-        // lint:allow main-io one folder, the first time it is opened; refreshes run off the main actor
+        // lint:allow main-io called only from detached tasks
         let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys,
                                                                     options: [.skipsHiddenFiles])) ?? []
         return entries.filter {
@@ -110,6 +128,7 @@ final class LibraryModel: MediaGridOwner {
     @ObservationIgnored private var changeTask: Task<Void, Never>?
 
     init() {
+        treeCache.onLoaded = { [weak self] in self?.treeRevision += 1 }
         // The folder's own watch sees only its direct contents; analysis watches the library recursively (FSEvents),
         // which covers subfolders when they are included (R-1704).
         AppModel.shared.analysis.onFolderChange[listenerID] = { [weak self] paths in self?.foldersChanged(paths) }
@@ -181,15 +200,20 @@ final class LibraryModel: MediaGridOwner {
     func trashExtraCopies() {
         guard let report = duplicates else { return }
         let here = Set(files.map(\.url.standardizedFileURL.path))
-        let groups = report.groups.filter { $0.members.contains { here.contains($0.standardizedFileURL.path) } }
-        guard !groups.isEmpty else { return }
+        // Copies of each other within the folder shown: one of them stays here, and copies in other folders (another
+        // account's folder, a collab post saved twice) are never touched from here (audit 2, C2-M6).
+        let groups = report.groups.compactMap { group -> (members: [URL], identical: Bool)? in
+            let inHere = group.members.filter { here.contains($0.standardizedFileURL.path) }
+            return inHere.count > 1 ? (inHere, group.identical) : nil
+        }
+        guard !groups.isEmpty else {
+            message = "No file here has a copy in this same folder."
+            return
+        }
         let members = groups.map(\.members)
         let alike = groups.filter { !$0.identical }.count
         Task { [weak self] in
-            // Only copies in this folder go; copies elsewhere (another account's folder) are never touched from here.
-            let plan = await Task.detached(priority: .userInitiated) {
-                ExtraCopies.plan(members) { here.contains($0.standardizedFileURL.path) }
-            }.value
+            let plan = await Task.detached(priority: .userInitiated) { ExtraCopies.plan(members) }.value
             guard let self, !plan.trash.isEmpty else { return }
             let alert = NSAlert()
             alert.messageText = "Move \(plan.trash.count) extra cop\(plan.trash.count == 1 ? "y" : "ies") in this folder to the Trash?"
@@ -278,7 +302,9 @@ final class LibraryModel: MediaGridOwner {
     }
 
     /// A save folder outside the library, shown under the library folders until replaced or removed (D-70).
-    var otherFolder: URL?
+    var otherFolder: URL? {
+        didSet { if otherFolder != oldValue { app.analysis.updateWatch() } }
+    }
 
     /// Whether the folder is inside a library folder or the other folder.
     func shows(_ folder: URL) -> Bool {

@@ -1,4 +1,5 @@
 import Foundation
+import MediaPullCore
 import MediaPullNet
 
 /// Finds files with identical content in a folder. Only files of the same byte size are ever
@@ -54,7 +55,8 @@ public actor FingerprintIndex {
                 if entry.sha256 == sha256 { return url }
                 continue
             }
-            guard let hash = try? FileHasher.sha256(of: url) else { continue }
+            // A file kept only in iCloud would be downloaded by reading it.
+            guard !FileFlags.isDataless(url), let hash = try? FileHasher.sha256(of: url) else { continue }
             entries[url.path] = Entry(size: size, modified: modified, sha256: hash)
             dirty = true
             if hash == sha256 { scheduleSave(); return url }

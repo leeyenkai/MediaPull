@@ -113,11 +113,22 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
     /// Formats whose file is kept exactly as downloaded; best quality follows the conversion settings.
     public var keepsDownloadedFile: Bool { self != .bestMP4 }
 
-    /// Video formats this choice can use.
-    public func videoFormats(in formats: [VideoFormatInfo]) -> [VideoFormatInfo] {
+    /// Video formats this choice can use. "MP4, best quality" follows the video setting as its selector does (A2-m5):
+    /// Highest compatible uses H.264 and HEVC when there are any; AV1 is left out on a Mac that cannot decode it.
+    public func videoFormats(in formats: [VideoFormatInfo], policy: VideoCodecPolicy = .highestReencodeIfNeeded,
+                             av1Decodable: Bool = true) -> [VideoFormatInfo]
+    {
         let video = formats.filter { $0.hasVideo && !$0.drm && $0.height != nil }
         switch self {
-        case .bestMP4, .originalMP4: return video
+        case .bestMP4:
+            let compatible = video.filter { ["h264", "hevc"].contains($0.codecFamily) }
+            let decodable = video.filter { $0.codecFamily != "av1" }
+            switch policy {
+            case .highestCompatible: return compatible.isEmpty ? video : compatible
+            case .highestReencodeIfNeeded where !av1Decodable: return decodable.isEmpty ? video : decodable
+            default: return video
+            }
+        case .originalMP4: return video
         case .h264MP4: return video.filter { $0.codecFamily == "h264" }
         case .webm: return video.filter { $0.ext == "webm" }
         case .audioM4A: return []
@@ -125,8 +136,10 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
     }
 
     /// Resolutions (heights) offered for this choice, highest first.
-    public func heights(in formats: [VideoFormatInfo]) -> [Int] {
-        Array(Set(videoFormats(in: formats).compactMap(\.height))).sorted(by: >)
+    public func heights(in formats: [VideoFormatInfo], policy: VideoCodecPolicy = .highestReencodeIfNeeded,
+                        av1Decodable: Bool = true) -> [Int]
+    {
+        Array(Set(videoFormats(in: formats, policy: policy, av1Decodable: av1Decodable).compactMap(\.height))).sorted(by: >)
     }
 
     /// The yt-dlp format selector, sort order and merge container for a resolution (nil: the best there is). "MP4, best
@@ -169,8 +182,11 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
     }
 
     /// The video format yt-dlp would pick for a resolution: the tallest at or under it, then the highest frame rate and bitrate.
-    public func chosenVideo(in formats: [VideoFormatInfo], height: Int?) -> VideoFormatInfo? {
-        videoFormats(in: formats).filter { height == nil || ($0.height ?? 0) <= height! }.max { a, b in
+    public func chosenVideo(in formats: [VideoFormatInfo], height: Int?, policy: VideoCodecPolicy = .highestReencodeIfNeeded,
+                            av1Decodable: Bool = true) -> VideoFormatInfo?
+    {
+        videoFormats(in: formats, policy: policy, av1Decodable: av1Decodable)
+            .filter { height == nil || ($0.height ?? 0) <= height! }.max { a, b in
             (a.height ?? 0, a.fps ?? 0, a.tbr ?? 0) < (b.height ?? 0, b.fps ?? 0, b.tbr ?? 0)
         }
     }
@@ -191,8 +207,12 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
     }
 
     /// Whether best quality will have to convert the video, which takes a while.
-    public func needsConversion(in formats: [VideoFormatInfo], height: Int?) -> Bool {
-        guard self == .bestMP4, let video = chosenVideo(in: formats, height: height) else { return false }
+    public func needsConversion(in formats: [VideoFormatInfo], height: Int?, policy: VideoCodecPolicy = .highestReencodeIfNeeded,
+                                av1Decodable: Bool = true) -> Bool
+    {
+        // Keep original and Highest compatible never convert.
+        guard self == .bestMP4, policy == .highestReencodeIfNeeded,
+              let video = chosenVideo(in: formats, height: height, policy: policy, av1Decodable: av1Decodable) else { return false }
         return !["h264", "hevc"].contains(video.codecFamily)
     }
 }

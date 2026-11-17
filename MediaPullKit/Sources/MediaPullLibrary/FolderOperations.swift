@@ -323,8 +323,18 @@ public enum FolderOperations {
         var plan = OrganisePlan(title: "Rename \(files.count) Files",
                                 root: files.first?.deletingLastPathComponent() ?? URL(fileURLWithPath: "/"))
         let fm = FileManager.default
-        let vacated = Set(files.map { $0.standardizedFileURL.path.lowercased() })
-        var chosen = Set<String>()
+        // The names each file asks for first; a file whose name stays as it is keeps it, so that name is not free.
+        let wanted: [(file: URL, stem: String)] = files.enumerated().map { index, file in
+            let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            return (file, FileNaming.sanitize(batchName(pattern, stem: file.deletingPathExtension().lastPathComponent, index: index,
+                                                        count: files.count, date: date), maxBytes: 230))
+        }
+        let keeping = Set(wanted.filter { item in
+            item.stem.isEmpty || item.stem + (item.file.pathExtension.isEmpty ? "" : "." + item.file.pathExtension)
+                == item.file.lastPathComponent
+        }.map { $0.file.standardizedFileURL.path.lowercased() })
+        let vacated = Set(files.map { $0.standardizedFileURL.path.lowercased() }).subtracting(keeping)
+        var chosen = keeping
         func free(_ url: URL) -> Bool {
             let key = url.standardizedFileURL.path.lowercased()
             guard !chosen.contains(key) else { return false }
@@ -332,10 +342,7 @@ public enum FolderOperations {
             return !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
         }
         var renames: [(source: URL, destination: URL)] = []
-        for (index, file) in files.enumerated() {
-            let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            let stem = FileNaming.sanitize(batchName(pattern, stem: file.deletingPathExtension().lastPathComponent, index: index,
-                                                     count: files.count, date: date), maxBytes: 230)
+        for (file, stem) in wanted {
             guard !stem.isEmpty else { continue }
             let ext = file.pathExtension.isEmpty ? "" : "." + file.pathExtension
             let folder = file.deletingLastPathComponent()

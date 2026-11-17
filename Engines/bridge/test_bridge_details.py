@@ -309,6 +309,9 @@ def test_files_from_the_stories_tray_and_saved_posts_say_so():
     assert bridge.item_meta("x", {"category": "instagram", "subcategory": "posts"})["collection"] == "saved"
     bridge.STATE["collection"] = bridge.collection_of("https://www.instagram.com/alice/")
     assert "collection" not in bridge.item_meta("x", {"category": "instagram", "subcategory": "posts"})
+    # Whole path segments only (audit 2, A2-m2): @meg's story is not the tray, a query is not a path.
+    assert bridge.collection_of("https://www.instagram.com/stories/meg/3512/") is None
+    assert bridge.collection_of("https://www.instagram.com/p/ABC/?x=/saved/") is None
     bridge.STATE["collection"] = None
 
 

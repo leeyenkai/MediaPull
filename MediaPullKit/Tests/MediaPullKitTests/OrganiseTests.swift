@@ -516,4 +516,17 @@ extension FolderOperationTests {
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix(".") }
         XCTAssertEqual(Set(names), ["1.jpg", "2.jpg"])
     }
+
+    /// Audit round 2 (B2-M7): a name a file of the rename keeps is taken; the other file gets a number.
+    func testBatchRenameNeverTakesANameAFileKeeps() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("keep-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let other = folder.appendingPathComponent("x.jpg"), photo = folder.appendingPathComponent("photo.jpg")
+        try Data("x".utf8).write(to: other)
+        try Data("p".utf8).write(to: photo)
+        let plan = FolderOperations.batchRename([other, photo], pattern: "photo")
+        XCTAssertEqual(plan.moves.map(\.destination.lastPathComponent), ["photo 2.jpg"])
+        XCTAssertEqual(plan.unchanged, 1)
+    }
 }

@@ -2,9 +2,17 @@ import AppKit
 import UniformTypeIdentifiers
 
 nonisolated enum DragTypes {
-    /// True while a drag that started in one of MediaPull's own grids or lists is under way: a drop moves its files, while
-    /// files dragged in from the Finder are copied (R-1801).
-    @MainActor static var fromMediaPull = false
+    /// The drag pasteboard's change count when MediaPull's own grid, list or columns last started a drag: a drop with the
+    /// same count is that drag, whose files move; files dragged in from the Finder are copied (R-1801).
+    @MainActor private static var internalDragCount: Int?
+
+    @MainActor static func markInternalDrag(_ pasteboard: NSPasteboard = NSPasteboard(name: .drag)) {
+        internalDragCount = pasteboard.changeCount
+    }
+
+    @MainActor static var fromMediaPull: Bool {
+        internalDragCount == NSPasteboard(name: .drag).changeCount
+    }
     static let itemsIdentifier = "com.yenkai.mediapull.items"
     static let items = NSPasteboard.PasteboardType(itemsIdentifier)
     static let itemsUTType = UTType(exportedAs: itemsIdentifier)

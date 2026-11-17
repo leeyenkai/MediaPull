@@ -331,7 +331,10 @@ final class EngineService {
             await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
         }
         // A one-click update uses the remembered choices without changing them (D-80).
-        if !scanOnly, draft.hashtag == nil, !draft.username.isEmpty, draft.accountFolder == nil {
+        // A story link or a single post chose its content from the address: that is not the account's choice either.
+        if !scanOnly, draft.hashtag == nil, !draft.username.isEmpty, draft.accountFolder == nil, !draft.contentFromAddress,
+           draft.postURL == nil
+        {
             Task {
                 await app.store?.updateAccount(draft.username, options: PullOptions(
                     content: draft.content,
@@ -494,16 +497,22 @@ final class EngineService {
             let earlyStop = draft.incremental && !draft.findMissing && !continuing && !(resuming && place == nil)
             request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
         }
-        let storedCursor = place?.record?.cursor ?? (place == nil ? stored?.resumeCursor : nil)
+        let storedNow = place?.record?.cursor ?? (place == nil ? stored?.resumeCursor : nil)
         if draft.postURL == nil, !scanOnly {
             if resuming, let own = job.lastCursor {
                 request.cursor = own
             } else if continuing || (resuming && place == nil) {
-                request.cursor = storedCursor
+                request.cursor = storedNow
             }
         }
-        // Find Missing walks everything from the top, so its place replaces an older one (an interruption continues it).
-        let keepsCursor = continuing || storedCursor == nil || draft.findMissing
+        // Whether this job's own place replaces the stored one: a continuation, a first pull, Find Missing and a full walk
+        // all go from the top or from that place, so theirs does. A top pass of an update leaves the older place for the
+        // continuation after it. Decided once per job, so Resume keeps the same rule (audit 2, A2-M1).
+        let plan = job.pullPlan
+            ?? (keepsCursor: continuing || storedNow == nil || draft.findMissing || !draft.incremental, priorCursor: storedNow)
+        job.pullPlan = plan
+        let storedCursor = plan.priorCursor
+        let keepsCursor = plan.keepsCursor
 
         // The folder decides the layout, not the draft (D-70).
         var target: SaveTarget? = root.map { root in
@@ -531,8 +540,18 @@ final class EngineService {
             place?.record = record
             return record
         }
-        func remember(_ key: String) async {
+        // Single posts, Reels, stories and highlights go into their account's folder (D-78): found once per account, and
+        // remembered in that folder's record like a pull's (D-79).
+        var postPlaces: [String: AccountPlace] = [:]
+        func rememberPost(_ key: String, account user: String) async {
+            guard let folder = postPlaces[user]?.folder, FileManager.default.fileExists(atPath: folder.path) else { return }
+            let record = await app.accountFolders.record(account: user, folder: folder)
+            await app.accountFolders.addKeys([key], to: record.id)
+        }
+        func remember(_ key: String, subcategory: String) async {
             savedKeys.insert(key)
+            // Others' stories and saved posts belong to other folders, not to this account's record.
+            guard !["stories-tray", "saved", "collection"].contains(subcategory) else { return }
             unrecordedKeys.insert(key)
             guard unrecordedKeys.count >= 20, let record = await folderRecord() else { return }
             await app.accountFolders.addKeys(unrecordedKeys, to: record.id)
@@ -569,15 +588,22 @@ final class EngineService {
                     }
                     if let saved = savedFromStaging[file.path.path], !FileManager.default.fileExists(atPath: file.path.path) {
                         job.duplicates += 1
-                        await remember(file.key)
+                        await remember(file.key, subcategory: file.subcategory ?? "")
                         window?.markSaved(file.key, url: saved)
                         continue
                     }
                     index += 1
                     let context = EngineContext.from(meta: file.meta, key: file.key, subcategory: file.subcategory, sourceURL: sourceURL)
                     // A single post or Reel goes into its account's folder when the save folder has (or is) one (D-78).
-                    if draft.postURL != nil, target.accountFolder == nil, let root, let user = context.username?.lowercased() {
-                        let found = await resolvePlace(account: user, draft: draft, root: root)
+                    // So do others' stories from the tray, each into its owner's folder when there is one (A2-m3).
+                    if draft.postURL != nil || context.subcategory == "stories-tray", let root, let user = context.username?.lowercased() {
+                        let found: AccountPlace
+                        if let known = postPlaces[user] {
+                            found = known
+                        } else {
+                            found = await resolvePlace(account: user, draft: draft, root: root)
+                            postPlaces[user] = found
+                        }
                         target.accountUsername = user
                         target.accountFolder = found.folder
                         target.typeSubfolders = found.sortsByType
@@ -602,14 +628,20 @@ final class EngineService {
                     case let .saved(url):
                         job.saved += 1
                         savedFromStaging[file.path.path] = url
-                        await remember(file.key)
+                        await remember(file.key, subcategory: context.subcategory)
+                        if draft.postURL != nil || context.subcategory == "stories-tray", let user = context.username?.lowercased() {
+                            await rememberPost(file.key, account: user)
+                        }
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
                         if let date = context.date, newest.map({ date > $0 }) ?? true { newest = date }
                     case let .duplicate(url):
                         job.duplicates += 1
                         savedFromStaging[file.path.path] = url
-                        await remember(file.key)
+                        await remember(file.key, subcategory: context.subcategory)
+                        if draft.postURL != nil || context.subcategory == "stories-tray", let user = context.username?.lowercased() {
+                            await rememberPost(file.key, account: user)
+                        }
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
                     case let .skipped(reason):
@@ -646,7 +678,7 @@ final class EngineService {
                     job.lastCursor = value
                     guard keepsCursor else { break }
                     if let record = await folderRecord() {
-                        await app.accountFolders.update(record.id, cursor: .some(value))
+                        await app.accountFolders.update(record.id, cursor: .some(value), findMissing: draft.findMissing)
                     } else {
                         await app.store?.updateAccount(account, resumeCursor: .some(value))
                     }
@@ -679,10 +711,11 @@ final class EngineService {
         if let record = await folderRecord() {
             await app.accountFolders.addKeys(unrecordedKeys, to: record.id)
             if finishedCleanly, keepsCursor {
-                await app.accountFolders.update(record.id, cursor: .some(nil))
+                await app.accountFolders.update(record.id, cursor: .some(nil), findMissing: false)
             }
-            // Only a pull that reached the end counts as an update; any other leaves the date of the last one.
-            let complete = finishedCleanly && fatal == nil && !blocked && job.state != .cancelled
+            // Only a pull of the account's posts that reached the end counts as an update; any other leaves the date of the
+            // last one (a stories link does not make the folder up to date).
+            let complete = finishedCleanly && fatal == nil && !blocked && job.state != .cancelled && draft.content.contains(.posts)
             await app.accountFolders.update(record.id, lastUpdate: complete ? Date() : nil, lastResult: job.summary)
             await app.refreshAccountFolders()
         }
@@ -721,7 +754,9 @@ final class EngineService {
         // An earlier update of this folder stopped part way: new posts are in now, so the rest continues from where it
         // stopped (R-1904), as its own job.
         // The stored place is in the posts listing, so only posts continue. Find Missing already walked everything.
-        if finishedCleanly, !continuing, !draft.findMissing, storedCursor != nil, draft.content.contains(.posts), let place {
+        if finishedCleanly, !continuing, !draft.findMissing, draft.incremental, storedCursor != nil, draft.content.contains(.posts),
+           let place
+        {
             var next = draft
             next.accountFolder = place.folder
             next.continueFromCursor = true
@@ -749,8 +784,14 @@ final class EngineService {
             let resolved = chosen.map { (existing: Optional($0), parent: $0.deletingLastPathComponent()) }
                 ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: libraryRoot)
             guard let existing = resolved.existing else {
-                return (resolved.parent.appendingPathComponent(FileNaming.safeTopFolder(name), isDirectory: true),
-                        AccountFolders.Index(), nil, false)
+                // A new folder never goes into one of that name that already holds something else (another account's).
+                var folder = resolved.parent.appendingPathComponent(FileNaming.safeTopFolder(name), isDirectory: true)
+                var number = 2
+                while FileManager.default.fileExists(atPath: folder.path) {
+                    folder = resolved.parent.appendingPathComponent("\(FileNaming.safeTopFolder(name)) \(number)", isDirectory: true)
+                    number += 1
+                }
+                return (folder, AccountFolders.Index(), nil, false)
             }
             return (existing, AccountFolders.index(existing), AccountFolders.sortsByType(existing), true)
         }.value
@@ -762,6 +803,14 @@ final class EngineService {
     /// walks every post and adds what the folder lacks instead of stopping at what is already there.
     @discardableResult
     func startUpdate(account: String, folder: URL, findMissing: Bool, window: WindowModel?) async -> Job? {
+        // The folder may have been renamed or moved in the Finder since the list was made: found again, never recreated.
+        guard let folder = await app.accountFolders.currentFolder(for: folder) else {
+            let job = Job(kind: .pull, title: "Updating @\(account)")
+            app.jobs.add(job)
+            app.jobs.finish(job, .failed("The folder of @\(account) is no longer there. It may have been moved to the Trash."))
+            await app.refreshAccountFolders()
+            return job
+        }
         var draft = self.draft(username: account)
         await applyStoredOptions(to: &draft)
         // One click takes the account's media only: never its details, follower lists or the person's own saved posts.
@@ -799,6 +848,11 @@ final class EngineService {
     /// Lists the formats of the video on a page, without downloading it.
     func videoInfo(for url: URL) async -> Result<VideoInfo, VideoLookupError> {
         guard let bridge else { return .failure(VideoLookupError(message: "The download engine is not available.")) }
+        // Instagram is only asked through its own options, one job at a time and never past a checkpoint (R-1113, R-1114).
+        if url.host?.lowercased().hasSuffix("instagram.com") ?? false {
+            return .failure(VideoLookupError(message: "Instagram videos are downloaded with the Instagram options: enter the post or "
+                    + "Reel address in Downloads."))
+        }
         var request = BridgeRequest(op: "video_info")
         request.url = url.absoluteString
         request.userAgent = app.userAgent
@@ -943,7 +997,9 @@ final class EngineService {
         let uploader = meta["uploader"]?.string ?? info.uploader
         let page = meta["webpage_url"]?.string.flatMap(URL.init(string:)) ?? info.webpageURL
         job.fraction = nil
-        job.currentItem = format.needsConversion(in: info.formats, height: height) ? "Converting \(title) to HEVC" : "Saving \(title)"
+        let converts = format.needsConversion(in: info.formats, height: height, policy: app.preferences.video,
+                                              av1Decodable: FFmpeg.canDecodeAV1)
+        job.currentItem = converts ? "Converting \(title) to HEVC" : "Saving \(title)"
         var context = EngineContext(key: file.key, category: info.extractor.nonEmpty ?? site,
                                     subcategory: format.isAudioOnly ? "audio" : "video")
         context.username = uploader
@@ -996,6 +1052,12 @@ final class EngineService {
             "\(stem.lastPathComponent).\(ext)"
         }
         let destination = video.deletingLastPathComponent().appendingPathComponent(name)
+        // The same video downloaded again already has its side files: they are not added a second time, numbered.
+        let finalName = kind == "thumbnail" ? destination.deletingPathExtension().appendingPathExtension("jpg") : destination
+        if FileManager.default.fileExists(atPath: finalName.path) { // lint:allow main-io one file's existence
+            try? FileManager.default.removeItem(at: path) // lint:allow main-io silent-write a staged copy, cleaned with staging anyway
+            return nil
+        }
         // Thumbnails are saved as JPEG (R-3505), whatever the site served: WebP, PNG and the rest.
         if kind == "thumbnail", !["jpg", "jpeg"].contains(ext),
            await Self.convertToJPEG(path, output: LibraryModel.uniqueURL(destination.deletingPathExtension().appendingPathExtension("jpg")))
@@ -1184,6 +1246,8 @@ final class EngineService {
             var index = 0
             var fatal: String?
             var blocked: String?
+            // A file reported twice (gallery-dl finds it already there) was saved by the first report (A2-m1).
+            var savedFromStaging: [String: URL] = [:]
             do {
                 for try await event in bridge.run(request, workingDirectory: staging) {
                     if Task.isCancelled { break }
@@ -1193,6 +1257,11 @@ final class EngineService {
                     case .item:
                         job.found += 1
                     case let .file(file) where file.isInside(staging):
+                        if let saved = savedFromStaging[file.path.path], !FileManager.default.fileExists(atPath: file.path.path) {
+                            job.duplicates += 1
+                            await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
+                            continue
+                        }
                         index += 1
                         let ext = file.path.pathExtension.lowercased()
                         if MediaFormat.fromExtension(ext) == nil, !Self.videoExtensions.contains(ext) {
@@ -1228,9 +1297,11 @@ final class EngineService {
                         switch outcome {
                         case let .saved(saved):
                             job.saved += 1
+                            savedFromStaging[file.path.path] = saved
                             await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
                         case let .duplicate(saved):
                             job.duplicates += 1
+                            savedFromStaging[file.path.path] = saved
                             await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
                         case let .skipped(reason):
                             job.skipped += 1

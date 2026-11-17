@@ -119,7 +119,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
             downloads.followsBrowser = true
             downloads.use(url.absoluteString, fromBrowser: true)
         }
-        if video, let url = browser.url, address == nil { downloads.target = .video(url) }
+        // Save Video on a page with a video, except on Instagram, whose traffic only goes through the Instagram options (their
+        // pace, queue and checkpoints, R-1113), and never in place of a running Download All list.
+        if video, let url = browser.url, address == nil, !downloads.batchRunning,
+           !(url.host?.lowercased().hasSuffix("instagram.com") ?? false)
+        {
+            downloads.target = .video(url)
+        }
         downloadsFocus += 1
     }
 
@@ -1081,7 +1087,10 @@ final class WindowModel: Identifiable, MediaGridOwner {
         defer { try? FileManager.default.removeItem(at: staging) }
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         let target = SaveTarget(folder: staging, layout: withSidecar ? .archive : .plain, autoSubfolders: false)
-        let pipeline = app.pipeline()
+        // A re-fetch that meets an Instagram check holds Instagram like any other (R-1114).
+        let pipeline = app.pipeline { [weak self] kind, url in
+            Task { @MainActor in self?.app.engines.handleCheckpoint(kind: kind, url: url, message: "") }
+        }
         // Page-made (blob:) media exists only inside the page: read it there, as Save does.
         let context = SaveContext(cookies: await app.cookieJar(), userAgent: app.userAgent, inlineData: await blobData(for: [item]),
                                   nameOverrides: customNames)

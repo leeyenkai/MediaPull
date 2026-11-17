@@ -134,18 +134,6 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(FolderCheck.run(folder, archive: true).withoutMetadata.map(\.lastPathComponent), ["c.jpg"])
     }
 
-    /// Audit round 1 (C24): only copies in the folder shown go; each group keeps one file wherever it is.
-    func testExtraCopiesOnlyLeaveTheFolderShown() throws {
-        let here = file("here/a.jpg"), there = file("there/a.jpg"), second = file("here/b.jpg")
-        try Data(count: 10).write(to: here)
-        try Data(count: 10).write(to: there)
-        try Data(count: 10).write(to: second)
-        let inHere: @Sendable (URL) -> Bool = { $0.deletingLastPathComponent().lastPathComponent == "here" }
-        let plan = ExtraCopies.plan([[here, there, second]], within: inHere)
-        XCTAssertFalse(plan.trash.contains(there), "a copy outside the folder is never trashed")
-        XCTAssertTrue((1 ... 2).contains(plan.trash.count), "the copies here go, except one when it is the one kept")
-    }
-
     func testFolderStatsCountMediaInSubfoldersOnly() throws {
         file("sizes/a.jpg", account: "alice")
         file("sizes/deep/b.mp4")
@@ -185,6 +173,35 @@ final class AccountFolderTests: XCTestCase {
         for (candidates, expected) in rows {
             XCTAssertEqual(ExtraCopies.keeper(candidates)?.url.lastPathComponent, expected)
         }
+    }
+
+    /// Audit round 2 (C2-M1, C2-M2, C2-m1, C2-m6, C2-m7, B2-M3).
+    func testRoundTwoAccountFolderCases() throws {
+        let lib = root.appendingPathComponent("lib")
+        for index in 0 ..< 3 {
+            file("lib/Friends/alice/posts/\(index).jpg", account: "alice")
+            file("lib/Alice old/2024/2024-05/\(index).jpg", account: "dave")
+            file("lib/erin/highlights/Stories/\(index).jpg", account: "erin")
+            file("lib/erin/posts/\(index).jpg", account: "erin")
+        }
+        try FileManager.default.createDirectory(at: lib.appendingPathComponent("Alice old/posts"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: lib.appendingPathComponent("Wallpapers"), withIntermediateDirectories: true)
+        file("lib/Frank/x.jpg")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "alice", saveFolder: lib, root: lib).existing?.lastPathComponent, "alice",
+                       "found inside a folder that holds only that account")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "dave", saveFolder: lib, root: lib).existing?.lastPathComponent, "Alice old",
+                       "an account folder whose files were sorted into dated folders, with its empty posts/")
+        XCTAssertEqual(AccountFolders.detect(lib.appendingPathComponent("erin/highlights/Stories"), stopAt: lib)?.folder.lastPathComponent,
+                       "erin", "a highlight titled like a type folder does not make highlights/ the account folder")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "frank", saveFolder: lib, root: lib).existing?.lastPathComponent, "Frank",
+                       "the folder's real spelling")
+        XCTAssertEqual(AccountFolders.sortsByType(lib.appendingPathComponent("Frank")), false, "a flat Plain folder stays flat")
+        let solo = root.appendingPathComponent("solo")
+        file("solo/posts/1.jpg", account: "gina")
+        file("solo/posts/2.jpg", account: "gina")
+        let hank = AccountFolders.resolveTarget(account: "hank", saveFolder: solo, root: solo)
+        XCTAssertEqual(hank.parent.path, solo.standardizedFileURL.path,
+                       "an account folder that is the library folder takes other accounts inside, never outside the library")
     }
 
     func testIndexReadsNamesAndRenamedFilesAcrossSubfolders() throws {
@@ -291,6 +308,53 @@ final class AccountFolderTests: XCTestCase {
         let first = ArchivePlanner.sidecar(for: item, info: info, target: target, settings: SaveSettings())
         XCTAssertNil(first.sourceURL)
         XCTAssertEqual(first.postID, ShortHash.of("deviantart:42"), "the same item keeps the same id on every run")
+    }
+
+    /// SPEC 6.3 (audit 2, B2-M2): records of files that are gone, and old accounts nothing refers to, are pruned.
+    func testArchiveAndAccountsArePruned() async throws {
+        let store = try AppStore.make(inMemory: true)
+        let kept = file("pruned/a.jpg")
+        await store.recordArchive(key: "ig:1", account: "alice", path: kept.path, sha256: "")
+        await store.recordArchive(key: "ig:2", account: "bob", path: root.appendingPathComponent("gone.jpg").path, sha256: "")
+        await store.updateAccount("bob", lastResult: "x")
+        await store.updateAccount("alice", lastResult: "x")
+        await store.updateAccount("carol", lastResult: "x")
+        await store.prune(keepAccounts: ["carol"], now: Date().addingTimeInterval(400 * 24 * 3600))
+        let found = await store.archivedPaths(for: ["ig:1", "ig:2"])
+        XCTAssertEqual(Array(found.keys), ["ig:1"])
+        let bob = await store.account("bob")
+        let alice = await store.account("alice")
+        let carol = await store.account("carol")
+        XCTAssertNil(bob, "an old account with no saved file left is forgotten")
+        XCTAssertNotNil(alice, "an account with a saved file stays")
+        XCTAssertNotNil(carol, "an account with a remembered folder stays")
+    }
+
+    /// Audit round 2 (B2-M4, C2-m8, C2-M5): a change of letter case keeps the record; a folder in the Trash keeps it; a
+    /// folder moved while running is found again before an update.
+    func testRecordsSurviveCaseChangesTheTrashAndMoves() async throws {
+        let records = root.appendingPathComponent("records")
+        let store = AccountFolderStore(folder: records)
+        let folder = root.appendingPathComponent("alice")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let record = await store.record(account: "alice", folder: folder)
+        await store.addKeys(["ig:1"], to: record.id)
+        let upper = root.appendingPathComponent("Alice")
+        try FileManager.default.moveItem(at: folder, to: root.appendingPathComponent("tmp-move"))
+        try FileManager.default.moveItem(at: root.appendingPathComponent("tmp-move"), to: upper)
+        let again = await store.record(account: "alice", folder: upper)
+        XCTAssertEqual(again.id, record.id)
+        XCTAssertEqual(again.keys, ["ig:1"])
+        let moved = root.appendingPathComponent("Alice 2024")
+        try FileManager.default.moveItem(at: upper, to: moved)
+        let found = await store.currentFolder(for: upper)
+        XCTAssertEqual(found?.lastPathComponent, "Alice 2024", "an update of the old path finds the folder where it is now")
+        let trash = root.appendingPathComponent(".Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: moved, to: trash.appendingPathComponent("Alice 2024"))
+        let reloaded = AccountFolderStore(folder: records)
+        let kept = await reloaded.record(account: "alice", folder: moved)
+        XCTAssertEqual(kept.id, record.id, "a folder in the Trash keeps its record, in case it is put back")
     }
 
     func testStoreRemembersKeysAndCursorPerFolder() async {

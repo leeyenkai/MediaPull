@@ -148,6 +148,7 @@ final class OrganisePane: MediaGridOwner {
     @ObservationIgnored private var filterTask: Task<Void, Never>?
 
     init(role: Role) {
+        defer { treeCache.onLoaded = { [weak self] in self?.treeRevision += 1 } }
         self.role = role
     }
 
@@ -604,6 +605,15 @@ final class OrganiseModel {
 
     /// Small changes apply at once (and can be undone); sorts, flattening and merging are previewed first, in the Organise pane.
     func run(_ plan: OrganisePlan, preview: Bool = false, note: String? = nil) {
+        // A library folder itself is never moved, renamed or trashed from Organise: the Library does that, so its saves,
+        // records and analysis follow (audit 2, B2-M5).
+        let roots = Set(app.roots.map { AccountFolderStore.key($0.path) })
+        if plan.itemsToTrash.contains(where: { roots.contains(AccountFolderStore.key($0.path)) })
+            || plan.moves.contains(where: { roots.contains(AccountFolderStore.key($0.source.path)) })
+        {
+            message = "A library folder is not changed from Organise. Rename or remove it in the Library."
+            return
+        }
         guard !plan.isEmpty else {
             let nothing = plan.unsorted > 0
                 ? "Nothing to change: \(plan.unsorted) file\(plan.unsorted == 1 ? "" : "s") could not be sorted."
@@ -663,7 +673,11 @@ final class OrganiseModel {
         let pane = mode == .inPlace ? source : target
         if !plan.destinations.isEmpty {
             pane.includeSubfolders = true
-            if pane.folder?.standardizedFileURL != plan.root.standardizedFileURL, plan.root.path.hasPrefix(pane.root?.path ?? "\u{0}") {
+            // Inside the pane's tree only: "Trip 2023" is not inside "Trip" (audit 2, B2-m9).
+            if pane.folder?.standardizedFileURL != plan.root.standardizedFileURL,
+               let top = pane.root.map({ $0.standardizedFileURL.path }),
+               plan.root.standardizedFileURL.path == top || plan.root.standardizedFileURL.path.hasPrefix(top + "/")
+            {
                 pane.folder = plan.root
             }
         }

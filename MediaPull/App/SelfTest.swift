@@ -666,17 +666,24 @@ final class SelfTestRunner {
         let numbered = tree.contains { $0.range(of: #" \d+\.[a-z0-9]+$"#, options: .regularExpression) != nil }
         let after = [byName, renamed].map { (try? FileHasher.sha256(of: $0)) ?? "" }
         let story = tree.contains { $0.hasPrefix("stories/") }
+        // The early stop is sent: with a stop after 2 known items, the second Update stops after 2 (audit 2, C2-m9).
+        let savedStop = app.preferences.stopAfterKnown
+        app.preferences.stopAfterKnown = 2
         let second = await run("second Update", findMissing: false)
+        app.preferences.stopAfterKnown = savedStop
+        let stoppedEarly = second?.skipped == 2
         let missing = await run("Find Missing", findMissing: true)
         let code4 = InstagramIDs.shortcode(fromID: ids[4]) ?? "-"
         let restored = fm.enumerator(atPath: folder.path)?.allObjects.contains { ($0 as? String)?.contains(code4) ?? false }
         // An update that stopped part way (R-1904): the next one pulls from the top, then continues from where it stopped.
-        await app.accountFolders.update(record.id, cursor: .some("selftest-cursor"))
+        await app.accountFolders.update(record.id, cursor: .some("after-3"))
         let pulls = { app.jobs.jobs.filter { $0.kind == .pull }.count }
         let jobsBefore = pulls()
         _ = await run("Update after a stop", findMissing: false)
         await waitUntil(timeout: 120) { !app.jobs.jobs.contains { $0.kind == .pull && !$0.state.isFinished } }
-        let continued = pulls() - jobsBefore == 2
+        // The continuation starts at the stored place: only the 2 items after the third are listed.
+        let continuation = app.jobs.jobs.filter { $0.kind == .pull }.last { $0.title.contains("@alice") && $0.skipped == 2 }
+        let continued = pulls() - jobsBefore == 2 && continuation != nil
         let cleared = await app.accountFolders.all().first { $0.id == record.id }?.cursor == nil
         note("update: after a stop, \(pulls() - jobsBefore) jobs ran (top, then the rest); place cleared \(cleared)")
         // A first pull into a new folder that stops part way keeps its place and what it saved (audit round 1, C3).
@@ -701,12 +708,13 @@ final class SelfTestRunner {
         let keptPlace = bobRecord?.cursor == "after-2" && bobRecord?.keys.count == 2
         note("update: a first pull stopped part way kept its place \(bobRecord?.cursor ?? "none") and \(bobRecord?.keys.count ?? 0) items")
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
-            && after == before && second?.saved == 0 && missing?.saved == 1 && restored == true && continued && cleared && keptPlace
+            && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
+            && keptPlace
         note("update: \(passed ? "PASS" : "FAIL") (new items placed \(first?.saved ?? 0) of 2, story in stories/ \(story), "
             + "nested folder \(nested), "
             + "numbered copies \(numbered), existing files unchanged \(after == before), second Update saved \(second?.saved ?? -1), "
             + "Find Missing restored the deleted file \(restored == true), resumed after a stop \(continued && cleared), "
-            + "first pull kept its place \(keptPlace))")
+            + "first pull kept its place \(keptPlace), stopped early \(stoppedEarly))")
         writeLog(to: out)
     }
 
@@ -942,6 +950,12 @@ final class SelfTestRunner {
     /// Icon, list and column views of the Library, Extracted Media and Organise panes (R-1708 to R-1711).
     private func exerciseViews(library: URL, out: URL) async {
         let lib = model.library
+        // The folder tree reads folders off the main actor and shows them once read (audit 2, B2-m6).
+        let libraryNode = { lib.treeNodes().first { $0.url.standardizedFileURL == library.standardizedFileURL } }
+        _ = libraryNode()?.children
+        await waitUntil(timeout: 10) { (libraryNode()?.children?.count ?? 0) > 0 }
+        let shown = libraryNode()?.children?.map(\.name) ?? []
+        note("views: folder tree shows \(shown.joined(separator: ", ")) under the library folder")
         let savedSubfolders = lib.includeSubfolders
         defer { lib.includeSubfolders = savedSubfolders }
         lib.includeSubfolders = false

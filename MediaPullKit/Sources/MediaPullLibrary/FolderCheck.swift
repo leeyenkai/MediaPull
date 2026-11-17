@@ -140,15 +140,15 @@ public enum ExtraCopies {
         }
     }
 
-    /// What one press of Trash Extra Copies moves to the Trash, and how much space that frees. With `within`, only copies
-    /// that pass it go (the folder shown); the copy kept may be anywhere, so every group keeps one.
-    public static func plan(_ groups: [[URL]], within: (@Sendable (URL) -> Bool)? = nil) -> (trash: [URL], bytes: Int64) {
+    /// What one press of Trash Extra Copies moves to the Trash, and how much space that frees. Each group is the copies in
+    /// the folder shown; one of them stays.
+    public static func plan(_ groups: [[URL]]) -> (trash: [URL], bytes: Int64) {
         var trash: [URL] = []
         var bytes: Int64 = 0
         for members in groups where members.count > 1 {
             let candidates = members.compactMap(candidate)
             guard candidates.count == members.count, let keep = keeper(candidates) else { continue }
-            for other in candidates where other.url != keep.url && (within?(other.url) ?? true) {
+            for other in candidates where other.url != keep.url {
                 trash.append(other.url)
                 bytes += other.bytes
             }

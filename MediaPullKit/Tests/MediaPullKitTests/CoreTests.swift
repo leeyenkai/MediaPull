@@ -429,6 +429,17 @@ final class VideoDownloadTests: XCTestCase {
         VideoFormatInfo(id: "drm", ext: "mp4", height: 4320, vcodec: "avc1", acodec: "none", drm: true),
     ]
 
+    /// Audit round 2 (A2-m5): the form offers what the video setting will download, and says when it converts.
+    func testBestMP4FollowsTheVideoSetting() {
+        XCTAssertEqual(VideoDownloadFormat.bestMP4.heights(in: formats, policy: .highestCompatible), [1080, 720])
+        XCTAssertFalse(VideoDownloadFormat.bestMP4.needsConversion(in: formats, height: nil, policy: .highestCompatible))
+        XCTAssertEqual(VideoDownloadFormat.bestMP4.chosenVideo(in: formats, height: nil, policy: .highestReencodeIfNeeded,
+                                                               av1Decodable: false)?.codecFamily, "vp9",
+                       "no AV1 on a Mac that cannot decode it")
+        XCTAssertTrue(VideoDownloadFormat.bestMP4.needsConversion(in: formats, height: nil))
+        XCTAssertFalse(VideoDownloadFormat.bestMP4.needsConversion(in: formats, height: nil, policy: .keepOriginal))
+    }
+
     func testResolutionsPerFormat() {
         XCTAssertEqual(VideoDownloadFormat.bestMP4.heights(in: formats), [2160, 1080, 720])
         XCTAssertEqual(VideoDownloadFormat.h264MP4.heights(in: formats), [1080, 720], "protected formats are never offered")
@@ -480,5 +491,23 @@ final class SidecarDropTests: XCTestCase {
     func testMetadataFilesTravelWithTheirMedia() {
         let urls = ["/a/1.jpg", "/a/1.jpg.json", "/a/2.json", "/a/3.png.json"].map { URL(fileURLWithPath: $0) }
         XCTAssertEqual(Sidecar.withoutCompanions(urls).map(\.lastPathComponent), ["1.jpg", "2.json", "3.png.json"])
+    }
+}
+
+final class SettingsUpgradeTests: XCTestCase {
+    /// Audit round 2 (C2-m3): a setting saved before a field existed keeps what it holds.
+    func testOldSettingsKeepTheirValues() throws {
+        var query = LibraryQuery()
+        query.sort = .fileSize
+        query.filter.formats = [.png]
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(query)) as? [String: Any])
+        var filter = try XCTUnwrap(object["filter"] as? [String: Any])
+        filter["finderTags"] = nil // as 1.7 wrote it
+        object["filter"] = filter
+        let old = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try JSONDecoder().decode(LibraryQuery.self, from: old), "the plain decoder loses it")
+        let read = LenientJSON.decode(LibraryQuery.self, from: old, over: LibraryQuery())
+        XCTAssertEqual(read.sort, .fileSize)
+        XCTAssertEqual(read.filter.formats, [.png])
     }
 }

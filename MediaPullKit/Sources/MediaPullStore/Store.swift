@@ -389,6 +389,35 @@ public actor AppStore {
         try? modelContext.save()
     }
 
+    /// Lifecycle (SPEC 6.3): archive entries whose file is gone (on a mounted disk) and accounts nothing refers to that were
+    /// last pulled over a year ago. `keepAccounts` are accounts with a remembered folder.
+    public func prune(keepAccounts: Set<String>, now: Date = Date()) {
+        let fm = FileManager.default
+        let entries = (try? modelContext.fetch(FetchDescriptor<ArchiveEntryModel>())) ?? []
+        var referenced = Set<String>()
+        for entry in entries {
+            if fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path) {
+                referenced.insert(entry.account)
+            } else {
+                modelContext.delete(entry)
+            }
+        }
+        let yearAgo = now.addingTimeInterval(-365 * 24 * 3600)
+        let accounts = (try? modelContext.fetch(FetchDescriptor<InstagramAccountModel>())) ?? []
+        for account in accounts where account.lastPullAt < yearAgo && !referenced.contains(account.username)
+            && !keepAccounts.contains(account.username)
+        {
+            modelContext.delete(account)
+        }
+        try? modelContext.save()
+    }
+
+    static func volumeMounted(_ path: String) -> Bool {
+        let parts = URL(fileURLWithPath: path).pathComponents
+        guard parts.count > 2, parts[1] == "Volumes" else { return true }
+        return FileManager.default.fileExists(atPath: "/Volumes/" + parts[2])
+    }
+
     public func recordArchive(key: String, account: String, path: String, sha256: String) {
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.key == key })
         if let model = try? modelContext.fetch(descriptor).first {

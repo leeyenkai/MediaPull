@@ -286,6 +286,7 @@ final class EditorModel: UnsavedEditing {
                 if !asCopy {
                     // A new name only: one journaled rename, so ⌘Z takes it back and the metadata file moves with it (R-3806).
                     let plan = FolderOperations.rename(url, to: FileNaming.fileName(stem: cleanName, ext: fileExtension))
+                    guard !plan.isEmpty else { return url }
                     let entry = await AppModel.shared.applyChange(plan)
                     window?.registerUndo(entry)
                     if let failure = entry.failures.first {

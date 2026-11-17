@@ -40,6 +40,8 @@ final class DownloadsModel {
     var batch: [BatchEntry] = []
     var batchRunning = false
     var batchStopping = false
+    /// Said under the list: an address that arrived while Download All ran, or addresses past the 200 listed.
+    var batchNotice: String?
 
     isolated deinit {
         checkTask?.cancel()
@@ -49,8 +51,11 @@ final class DownloadsModel {
     /// Sets the address and works out how to download it: Instagram, a video, or any other site gallery-dl supports.
     /// Several addresses typed or pasted at once become a list (R-1111d).
     func use(_ text: String, fromBrowser: Bool = false) {
-        // While Download All runs, its list stays: nothing typed, sent or dropped replaces it.
-        if batchRunning { return }
+        // While Download All runs, its list stays: nothing typed, sent or dropped replaces it, and the pane says so.
+        if batchRunning {
+            if !fromBrowser { batchNotice = "Download All is running. Add \(text) when it has finished." }
+            return
+        }
         if fromBrowser, !followsBrowser { return }
         if !fromBrowser { followsBrowser = text.isEmpty }
         address = text
@@ -100,6 +105,13 @@ final class DownloadsModel {
         case let .instagramPost(_, url), let .instagramHighlight(_, url):
             return .instagram(app.engines.draft(username: "", postURL: url))
         case let .instagramStories(name, url):
+            // The person's own tray of stories from accounts they follow (signed in), not an account called "me".
+            if name == "me" {
+                var draft = app.engines.draft(username: "")
+                draft.content = [.storiesTray]
+                draft.contentFromAddress = true
+                return .instagram(draft)
+            }
             // A link to one story gets that story; a link to someone's stories gets their stories, not the whole account.
             let parts = url.pathComponents.filter { $0 != "/" }
             if parts.count >= 3, parts[2].allSatisfy(\.isNumber) {

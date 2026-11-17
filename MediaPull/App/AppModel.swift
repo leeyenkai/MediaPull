@@ -120,6 +120,9 @@ final class AppModel {
             jobs.store = store
             await reloadRoots()
             await refreshAccountFolders()
+            // Lifecycle (SPEC 6.3): forget saved-item records whose file is gone, and accounts nothing refers to.
+            let keep = Set(accountFolderList.map(\.account))
+            Task.detached(priority: .background) { await store.prune(keepAccounts: keep) }
             if roots.isEmpty, preferences.onboardingDone, !SelfTestRunner.isActive {
                 await addDefaultRoot()
             }
@@ -133,6 +136,20 @@ final class AppModel {
             await checkForEngineUpdates(automatic: true)
         }
         await engines.refreshSignIn()
+        // The weekly check also happens in an app left open for weeks (R-1306): looked at every few hours.
+        if !SelfTestRunner.isActive {
+            Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(6 * 3600))
+                    guard let self else { return }
+                    if self.preferences.weeklyEngineCheck,
+                       Date().timeIntervalSince(self.preferences.lastEngineCheck ?? .distantPast) > 7 * 86400
+                    {
+                        await self.checkForEngineUpdates(automatic: true)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Windows
@@ -217,7 +234,11 @@ final class AppModel {
         let current = roots
         let resolved = await Task.detached(priority: .userInitiated) {
             current.map { root -> (UUID, URL?, Bool) in
-                guard let (url, stale) = root.resolvedURL(), FileManager.default.fileExists(atPath: url.path) else { return (root.id, nil, false) }
+                // A library folder moved to the Trash is not followed there: saves would land in the Trash. It shows as Not
+                // Found until it is put back or located.
+                guard let (url, stale) = root.resolvedURL(), FileManager.default.fileExists(atPath: url.path),
+                      !url.pathComponents.contains(".Trash")
+                else { return (root.id, nil, false) }
                 return (root.id, url.standardizedFileURL, stale)
             }
         }.value
@@ -234,6 +255,8 @@ final class AppModel {
             roots[index].path = url.path
             roots[index].bookmark = bookmark
             if url.path != old.standardizedFileURL.path {
+                // Left out of analysis stays left out under its new name.
+                if preferences.analysisExcludedRoots.remove(old.path) != nil { preferences.analysisExcludedRoots.insert(url.path) }
                 noteMoved([(from: old.path, to: url.path)])
                 for window in windows { window.library.rootMoved(from: old, to: url) }
                 changed = true
@@ -367,7 +390,8 @@ final class AppModel {
                 cookiesUpdated: { updated, original in await CookieBridge.update(updated, existing: original) },
                 onCheckpoint: onCheckpoint,
                 instagramTurn: { [weak self] in await self?.engines.instagramTurn() },
-                pacing: preferences.pacing.delay
+                pacing: preferences.pacing.delay,
+                siteSettings: { [weak self] category in await self?.siteSettings(for: category) ?? ([:], [:]) }
             )
         }
         return SavePipeline(gate: gate, converter: MediaConverter(ffmpeg: ffmpeg, svgRasterizer: SVGRasterizer.rasterize), index: index,
@@ -418,20 +442,29 @@ final class AppModel {
         return "web:" + FileHasher.sha256(of: Data(item.id.utf8))
     }
 
+    /// A site's saved API key and its remembered switches, as a site download sends them (R-1111b).
+    func siteSettings(for category: String) -> (keys: [String: String], switches: [String: Bool]) {
+        let keys = SiteKeys.forSite(category).map { SiteKeychain.keys(for: category, fields: $0.fields) } ?? [:]
+        return (keys, preferences.gallerySwitches[category] ?? [:])
+    }
+
     func refreshAccountFolders() async {
         accountFolderList = await accountFolders.all()
     }
 
     /// The remembered account folder `folder` is, or is inside.
     func accountFolder(containing folder: URL) -> AccountFolderRecord? {
-        let path = folder.standardizedFileURL.path
-        return accountFolderList.filter { path == $0.path || path.hasPrefix($0.path + "/") }.max { $0.path.count < $1.path.count }
+        let path = AccountFolderStore.key(folder.path)
+        return accountFolderList.filter {
+            let own = AccountFolderStore.key($0.path)
+            return path == own || path.hasPrefix(own + "/")
+        }.max { $0.path.count < $1.path.count }
     }
 
     /// The remembered account folders inside `folder` (not the folder itself).
     func accountFolders(inside folder: URL) -> [AccountFolderRecord] {
-        let path = folder.standardizedFileURL.path
-        return accountFolderList.filter { $0.path.hasPrefix(path + "/") }
+        let path = AccountFolderStore.key(folder.path)
+        return accountFolderList.filter { AccountFolderStore.key($0.path).hasPrefix(path + "/") }
     }
 
     /// Starts a save job for items from a window (SPEC section 14).
@@ -465,7 +498,34 @@ final class AppModel {
             let inline = await window?.blobData(for: items) ?? [:]
             let context = SaveContext(cookies: await self.cookieJar(), userAgent: self.userAgent, inlineData: inline,
                                       nameOverrides: window?.customNames ?? [:])
-            let outcomes = await pipeline.save(items, target: target, settings: settings, context: context,
+            // Instagram items go into their account's folder when the save folder is, holds or is inside one (D-78), as a
+            // pull would place them, and are remembered there (D-79).
+            let rootURL = self.root(containing: folder)?.url
+            let instagram = items.filter { $0.source.engine?.isInstagram == true && $0.source.engine?.username != nil }
+            let byAccount = Dictionary(grouping: instagram,
+                                       by: { $0.source.engine?.username?.lowercased() ?? "" })
+            var batches: [(items: [MediaItem], target: SaveTarget, folder: URL?, account: String?)] = []
+            var placed = Set<String>()
+            for (account, group) in byAccount {
+                let found = await Task.detached(priority: .userInitiated) { () -> (URL, Bool?)? in
+                    guard let existing = AccountFolders.resolveTarget(account: account, saveFolder: folder, root: rootURL).existing
+                    else { return nil }
+                    return (existing, AccountFolders.sortsByType(existing))
+                }.value
+                guard let (existing, byType) = found else { continue }
+                var accountTarget = target
+                accountTarget.folder = existing.deletingLastPathComponent()
+                accountTarget.autoSubfolders = true
+                accountTarget.accountUsername = account
+                accountTarget.accountFolder = existing
+                accountTarget.typeSubfolders = byType
+                batches.append((group, accountTarget, existing, account))
+                placed.formUnion(group.map(\.id))
+            }
+            batches.append((items.filter { !placed.contains($0.id) }, target, nil, nil))
+            var outcomes: [String: SaveOutcome] = [:]
+            for batch in batches where !batch.items.isEmpty {
+                let done = await pipeline.save(batch.items, target: batch.target, settings: settings, context: context,
                                                concurrency: self.preferences.saveConcurrency) { event in
                 Task { @MainActor in
                     window?.apply(event)
@@ -486,6 +546,15 @@ final class AppModel {
                         if let note, job.notes.count < 50 { job.notes.append(note) }
                     case .progress:
                         break
+                    }
+                }
+                }
+                outcomes.merge(done) { first, _ in first }
+                if let accountFolder = batch.folder, let account = batch.account {
+                    let keys = Set(batch.items.filter { done[$0.id]?.url != nil }.compactMap { $0.source.engine?.key })
+                    if !keys.isEmpty {
+                        let record = await self.accountFolders.record(account: account, folder: accountFolder)
+                        await self.accountFolders.addKeys(keys, to: record.id)
                     }
                 }
             }

@@ -21,6 +21,17 @@ struct VideoForm: View {
     @State private var speed = 0
     @State private var showMore = false
     private var app: AppModel { .shared }
+    private var codecPolicy: VideoCodecPolicy { app.preferences.video }
+    private var canDecodeAV1: Bool { FFmpeg.canDecodeAV1 }
+
+    /// The resolutions and the video a choice takes under the video setting, as the download will (A2-m5).
+    private func heights(_ format: VideoDownloadFormat, _ info: VideoInfo) -> [Int] {
+        format.heights(in: info.formats, policy: codecPolicy, av1Decodable: canDecodeAV1)
+    }
+
+    private func chosen(_ format: VideoDownloadFormat, _ info: VideoInfo) -> VideoFormatInfo? {
+        format.chosenVideo(in: info.formats, height: height, policy: codecPolicy, av1Decodable: canDecodeAV1)
+    }
 
     enum SubtitleChoice: String, CaseIterable {
         case none, original, automatic
@@ -41,14 +52,14 @@ struct VideoForm: View {
                 Picker("Format", selection: $format) {
                     ForEach(VideoDownloadFormat.allCases, id: \.self) { choice in
                         Text(choice.label).tag(choice)
-                            .disabled(!choice.isAudioOnly && choice.heights(in: info.formats).isEmpty)
+                            .disabled(!choice.isAudioOnly && heights(choice, info).isEmpty)
                     }
                 }
                 .help(format.detail)
                 if !format.isAudioOnly {
                     Picker("Resolution", selection: $height) {
                         Text(bestLabel(info)).tag(Int?.none)
-                        ForEach(format.heights(in: info.formats), id: \.self) { value in
+                        ForEach(heights(format, info), id: \.self) { value in
                             Text(heightLabel(value, in: info)).tag(Optional(value))
                         }
                     }
@@ -72,7 +83,7 @@ struct VideoForm: View {
             }
         }
         .onChange(of: format) { _, newFormat in
-            if let info, let height, !newFormat.heights(in: info.formats).contains(height) { self.height = nil }
+            if let info, let height, !heights(newFormat, info).contains(height) { self.height = nil }
         }
         .task(id: url) { await lookUp() }
     }
@@ -175,7 +186,7 @@ struct VideoForm: View {
     }
 
     private func bestLabel(_ info: VideoInfo) -> String {
-        guard let top = format.heights(in: info.formats).first else { return "Best available" }
+        guard let top = heights(format, info).first else { return "Best available" }
         return "Best available (\(heightLabel(top, in: info)))"
     }
 
@@ -184,8 +195,8 @@ struct VideoForm: View {
         if !extras.playlist, let bytes = format.estimatedBytes(in: info.formats, height: height, duration: info.duration) {
             parts.append("About \(Format.bytes(bytes)).")
         }
-        if format.needsConversion(in: info.formats, height: height) {
-            let codec = format.chosenVideo(in: info.formats, height: height)?.codecFamily.uppercased() ?? "This"
+        if format.needsConversion(in: info.formats, height: height, policy: codecPolicy, av1Decodable: canDecodeAV1) {
+            let codec = chosen(format, info)?.codecFamily.uppercased() ?? "This"
             parts.append("\(codec) video will be converted to HEVC, which takes a while at high resolutions.")
         }
         if let root {

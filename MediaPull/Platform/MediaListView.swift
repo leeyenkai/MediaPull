@@ -301,11 +301,7 @@ struct MediaList: NSViewRepresentable {
             let ids = items.compactMap { ($0 as? Node).flatMap { $0.isGroup ? nil : $0.id } }
             let extras = owner?.gridCompanionWriters(ids) ?? []
             if !extras.isEmpty { session.draggingPasteboard.writeObjects(extras) }
-            DragTypes.fromMediaPull = true
-        }
-
-        func outlineView(_: NSOutlineView, draggingSession _: NSDraggingSession, endedAt _: NSPoint, operation _: NSDragOperation) {
-            DragTypes.fromMediaPull = false
+            DragTypes.markInternalDrag(session.draggingPasteboard)
         }
 
         func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,

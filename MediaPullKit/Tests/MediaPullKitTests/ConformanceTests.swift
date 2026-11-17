@@ -183,7 +183,7 @@ final class ConformanceTests: XCTestCase {
             _ = try await fetcher.fetch(item, variant: nil, workDirectory: folder) { _ in }
             XCTFail("a paused Instagram is not asked")
         } catch let EngineFetchError.checkpoint(kind, _, _) {
-            XCTAssertEqual(kind, "rate_limit")
+            XCTAssertEqual(kind, "paused")
         }
         XCTAssertEqual(asked.withLock { $0 }, 1)
     }

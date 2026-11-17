@@ -38,7 +38,19 @@ def main():
     counts = {"found": 0, "downloaded": 0, "skipped": 0, "failed": 0}
     # "stop_after": the pull is cut off after that many items, as when MediaPull quits part way.
     stop_after = replay.get("stop_after")
+    # As the real bridge: a cursor "after-N" continues after the Nth item, and stop_after_known ends the listing after that
+    # many known items in a row.
+    start = 0
+    if str(request.get("cursor") or "").startswith("after-"):
+        start = int(str(request["cursor"]).split("-", 1)[1])
+    stop_known = request.get("stop_after_known")
+    known_in_a_row = 0
+    emit("log", level="info", logger="stand-in", message=f"start {start}")
     for number, item in enumerate(replay["items"], 1):
+        if number <= start:
+            continue
+        if stop_known and known_in_a_row >= stop_known:
+            break
         if stop_after is not None and number > stop_after:
             emit("error", code="network", message="Stopped part way.", fatal=True)
             emit("done", status="failed", counts=counts)
@@ -50,8 +62,10 @@ def main():
         counts["found"] += 1
         if keys & known:
             counts["skipped"] += 1
+            known_in_a_row += 1
             emit("skip", key=item["key"], reason="known")
             continue
+        known_in_a_row = 0
         target = os.path.join(request["staging"], os.path.basename(item["source"]))
         shutil.copyfile(item["source"], target)
         counts["downloaded"] += 1

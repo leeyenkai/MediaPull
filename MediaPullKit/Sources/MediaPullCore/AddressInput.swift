@@ -79,11 +79,13 @@ public enum AddressInput: Equatable, Sendable {
         }
     }
 
-    /// Two to 200 addresses separated by spaces or new lines, each a web address, @account or #hashtag (R-1111d); nil for
+    /// Two or more addresses (the pane lists the first 200) separated by spaces or new lines, each a web address,
+    /// @account or #hashtag
+    /// (R-1111d); nil for
     /// anything else, which is read as one address.
     public static func several(in text: String) -> [String]? {
         let parts = text.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard parts.count >= 2, parts.count <= 200 else { return nil }
+        guard parts.count >= 2 else { return nil }
         let recognised = parts.filter { part in
             if part.hasPrefix("@") || part.hasPrefix("#") { return part.count > 1 }
             // A bare name counts only on its own: in a list, words would otherwise read as accounts.

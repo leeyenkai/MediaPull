@@ -14,6 +14,7 @@ public enum EngineFetchError: LocalizedError, Sendable {
             switch kind {
             case "login": "Instagram asked you to sign in again."
             case "rate_limit": "Instagram is limiting requests. Wait a while before trying again."
+            case "paused": "Instagram is paused until its check or wait is over (see Activity), so nothing was asked of it."
             default: "Instagram asked for verification. Open the page in the browser pane to continue."
             }
         case let .failed(message): message
@@ -37,6 +38,8 @@ public struct BridgeEngineFetcher: EngineFetching {
     public let instagramTurn: @Sendable () async -> (@Sendable () -> Void)?
     /// The chosen pace between Instagram requests, in seconds.
     public let pacing: [Double]
+    /// A site's saved API key and switches (R-1111b), so re-fetching an item from a site download asks as that did.
+    public let siteSettings: @Sendable (_ category: String) async -> (keys: [String: String], switches: [String: Bool])
 
     public init(
         client: BridgeClient,
@@ -46,8 +49,10 @@ public struct BridgeEngineFetcher: EngineFetching {
         cookiesUpdated: @escaping @Sendable ([CookieRecord], [CookieRecord]) async -> Void = { _, _ in },
         onCheckpoint: @escaping @Sendable (String, URL?) -> Void = { _, _ in },
         instagramTurn: @escaping @Sendable () async -> (@Sendable () -> Void)? = { {} },
-        pacing: [Double] = PacingPreset.gentle.delay
+        pacing: [Double] = PacingPreset.gentle.delay,
+        siteSettings: @escaping @Sendable (String) async -> (keys: [String: String], switches: [String: Bool]) = { _ in ([:], [:]) }
     ) {
+        self.siteSettings = siteSettings
         self.instagramTurn = instagramTurn
         self.pacing = pacing
         self.client = client
@@ -89,7 +94,16 @@ public struct BridgeEngineFetcher: EngineFetching {
             try CookieFile.write(originalCookies, to: cookieFile)
             request.cookies = cookieFile.path
             request.userAgent = userAgent
-            request.setPacing(pacing)
+            if isInstagram {
+                request.setPacing(pacing)
+            } else {
+                // Another site: its own key and switches, at the pace of a site download (audit 2, A2-m8).
+                request.category = context.category
+                let settings = await siteSettings(context.category)
+                if !settings.keys.isEmpty { request.siteKeys = settings.keys }
+                if !settings.switches.isEmpty { request.siteOptions = settings.switches }
+                request.setPacing([1, 3])
+            }
         case let .web(context):
             request = BridgeRequest(op: "stream")
             guard let url = variant?.url ?? item.best?.url ?? item.variants.first?.url else { throw EngineFetchError.nothingDownloaded }
@@ -109,7 +123,7 @@ public struct BridgeEngineFetcher: EngineFetching {
         var endTurn: (@Sendable () -> Void)?
         if isInstagram {
             guard let end = await instagramTurn() else {
-                throw EngineFetchError.checkpoint(kind: "rate_limit", url: nil, message: "Instagram is paused")
+                throw EngineFetchError.checkpoint(kind: "paused", url: nil, message: "Instagram is paused")
             }
             endTurn = end
         }

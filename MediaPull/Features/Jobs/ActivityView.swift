@@ -26,12 +26,13 @@ struct ActivityView: View {
             // R-1904: an update that stopped part way (quit, crash, cancelled) can be resumed from where it stopped.
             ForEach(stoppedUpdates) { record in
                 Banner(symbol: "arrow.clockwise.circle", tint: .accentColor,
-                       text: "An update of @\(record.account) into “\((record.path as NSString).lastPathComponent)” stopped part way.") {
+                       text: "\(record.cursorFindMissing == true ? "Find Missing" : "An update") of @\(record.account) into "
+                           + "“\((record.path as NSString).lastPathComponent)” stopped part way.") {
                     Button("Resume") {
                         Task {
                             await app.engines.startUpdate(account: record.account,
                                                           folder: URL(fileURLWithPath: record.path, isDirectory: true),
-                                                          findMissing: false, window: app.frontWindow)
+                                                          findMissing: record.cursorFindMissing == true, window: app.frontWindow)
                         }
                     }
                 }

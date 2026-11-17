@@ -49,7 +49,9 @@ extension DownloadsModel {
     }
 
     /// Lists the addresses and works out what each one is, asking the engine only about pages that need it.
-    func useList(_ parts: [String]) {
+    func useList(_ all: [String]) {
+        let parts = Array(all.prefix(200))
+        batchNotice = all.count > 200 ? "Only the first 200 of \(all.count) addresses are listed." : nil
         batch = parts.map { BatchEntry(text: $0) }
         target = .list
         let text = address
@@ -83,14 +85,15 @@ extension DownloadsModel {
         guard !batchRunning, let root = window.saveFolder.map(app.destination(for:)) else { return }
         batchRunning = true
         batchStopping = false
-        Task { [weak self] in
+        // The list belongs to its window: closing the window ends it after the download running now.
+        Task { [weak self, weak window] in
             guard let self else { return }
             defer {
                 self.batchRunning = false
                 self.batchStopping = false
             }
             for index in self.batch.indices {
-                guard !self.batchStopping else { return }
+                guard !self.batchStopping, let window else { return }
                 let entry = self.batch[index]
                 guard entry.canRun, entry.progress == .waiting else {
                     if !entry.canRun { self.batch[index].progress = .skipped }
@@ -175,6 +178,9 @@ struct DownloadList: View {
                 }
             }
             .controlSize(.small)
+            if let notice = downloads.batchNotice {
+                Text(notice).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             SaveFolderRow(model: model)
         }
     }

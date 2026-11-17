@@ -92,7 +92,9 @@ public enum ArchivePlanner {
                 return target.folder.appendingPathComponent(SaveTarget.savedFolder, isDirectory: true)
             }
             // Stories from followed accounts belong to each account, not to the account the pull started from.
-            let pinnedOwner = context.subcategory == "stories-tray" ? nil : target.accountUsername
+            // Unless the pull has already found that account's own folder for it (audit 2, A2-m3).
+            let ownFolder = target.accountUsername != nil && target.accountUsername == context.username?.lowercased()
+            let pinnedOwner = context.subcategory == "stories-tray" && !ownFolder ? nil : target.accountUsername
             let owner = pinnedOwner ?? (context.isInstagram ? context.username : nil)
                 ?? context.sourceURL?.host ?? context.category
             let intoAccountFolder = context.isInstagram && pinnedOwner != nil ? target.accountFolder : nil
@@ -194,7 +196,10 @@ public enum ArchivePlanner {
             sidecar.date = info.lastModified
             sidecar.description = item.alt
             sidecar.pageURL = web.pageURL.isFileURL ? nil : web.pageURL.absoluteString
-            sidecar.sourceURL = info.sourceURL.flatMap { $0.isFileURL ? nil : $0.absoluteString }
+            // A web address only: never a file on this Mac, nor an inline data: image (its whole content as text).
+            sidecar.sourceURL = info.sourceURL.flatMap {
+                ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0.absoluteString : nil
+            }
             sidecar.width = info.pixelSize?.width
             sidecar.height = info.pixelSize?.height
             sidecar.duration = info.duration
@@ -202,7 +207,8 @@ public enum ArchivePlanner {
             sidecar.mediapullVersion = settings.appVersion
             return sidecar
         case let .engine(engine):
-            let userCentric = ["user", "profile", "account", "artist", "blog", "channel", "creator", "posts", "favorite"]
+            // A video's account is its uploader (R-3503), as for the parts of a profile.
+            let userCentric = ["user", "profile", "account", "artist", "blog", "channel", "creator", "posts", "favorite", "video"]
                 .contains { engine.subcategory.lowercased().contains($0) }
             let site = engine.sourceURL?.host?.lowercased() ?? engine.category
             // Others' stories and saved posts name their own account, never the one the pull started from.

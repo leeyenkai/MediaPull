@@ -210,23 +210,24 @@ final class VideoEditorModel: UnsavedEditing {
         }
     }
 
-    /// Renames a library video and its metadata file.
+    /// Renames a library video and its metadata file, as one journaled change ⌘Z takes back (R-3806).
     func rename() {
         guard case let .file(url) = request.subject, hasNameChange else { return }
-        let target = LibraryModel.renameTarget(
-            from: url, to: url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(
-                stem: cleanName,
-                ext: url.pathExtension
-            ))
-        )
-        do {
-            try MediaFiles.move(url, to: target)
-            app.noteMoved([(from: url.path, to: target.path)])
+        let plan = FolderOperations.rename(url, to: FileNaming.fileName(stem: cleanName, ext: url.pathExtension))
+        guard !plan.isEmpty else {
+            window?.editorRequest = nil
+            return
+        }
+        Task {
+            let entry = await app.applyChange(plan)
+            window?.registerUndo(entry)
+            if let failure = entry.failures.first {
+                fail(failure)
+                return
+            }
             finishLibraryChange()
             window?.editorRequest = nil
-            window?.previewSubject = .file(target)
-        } catch {
-            fail(error.localizedDescription)
+            window?.previewSubject = .file(plan.moves.first?.destination ?? url)
         }
     }
 

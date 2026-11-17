@@ -90,7 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             running.forEach { $0.cancel() }
             // An Organise run stops between files and then saves its journal; quit once it has, so every step it took
             // stays undoable (R-3807). A run that does not stop within a few seconds does not hold up quitting.
-            let organising = running.filter { $0.kind == .organise }.compactMap(\.task)
+            // Pulls also get a moment to write what they saved into their folder's record (D-79).
+            let organising = running.filter { [.organise, .pull].contains($0.kind) }.compactMap(\.task)
             guard !organising.isEmpty else { return .terminateNow }
             Task {
                 await withTaskGroup(of: Void.self) { group in
@@ -176,10 +177,13 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("e")
             .disabled(window?.selection.count != 1 || window?.section != .collect)
+            // Collect's commands never act on it while Organise is shown and it cannot be seen.
             Button("Select All Media") { window?.selectAll() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
+                .disabled(window?.section != .collect)
             Button("Deselect All Media") { window?.deselectAll() }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
+                .disabled(window?.section != .collect)
         }
         CommandGroup(after: .sidebar) {
             Button("Collect") { window?.section = .collect }
@@ -242,6 +246,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut("f")
             Button("Clear Extracted Media") { window?.clear() }
                 .keyboardShortcut("k")
+                .disabled(window?.section != .collect)
             Divider()
         }
         CommandMenu("Go") {
@@ -257,13 +262,16 @@ struct AppCommands: Commands {
                 .keyboardShortcut(".")
                 .disabled(!browsing || window?.section == .organise)
             Button("Open Address") {
+                window?.section = .collect
                 window?.setShowing(.source, true)
                 window?.focusAddressToken += 1
             }
                 .keyboardShortcut("l")
             Divider()
             Button("Scroll to End of Page") { window?.toggleAutoScroll() }
+                .disabled(window?.section != .collect)
             Button("Look for Media Again") { window?.browser.rescan() }
+                .disabled(window?.section != .collect)
             Divider()
             Button("Sign In to Instagram") { window?.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!) }
         }
@@ -308,10 +316,16 @@ struct AppCommands: Commands {
             }
         }
         CommandGroup(before: .windowList) {
-            Button("Show Next Tab") { window?.selectAdjacentTab(1) }
+            Button("Show Next Tab") {
+                window?.section = .collect
+                window?.selectAdjacentTab(1)
+            }
                 .keyboardShortcut(.tab, modifiers: [.control])
                 .disabled((window?.tabs.count ?? 0) < 2)
-            Button("Show Previous Tab") { window?.selectAdjacentTab(-1) }
+            Button("Show Previous Tab") {
+                window?.section = .collect
+                window?.selectAdjacentTab(-1)
+            }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
                 .disabled((window?.tabs.count ?? 0) < 2)
             Divider()
