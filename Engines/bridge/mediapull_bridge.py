@@ -285,6 +285,21 @@ def harden_gallery_dl_paths():
     gdl_path.PathFormat.build_directory = build_directory
 
 
+def site_request_interval(url):
+    """(category, min, max) seconds gallery-dl's extractor for `url` waits between requests by default, or None."""
+    try:
+        from gallery_dl import extractor as gdl_extractor
+
+        found = gdl_extractor.find(url)
+    except Exception:
+        return None
+    if not found:
+        return None
+    interval = getattr(found, "request_interval", 0) or 0
+    low, high = (interval, interval) if isinstance(interval, (int, float)) else (interval[0], interval[-1])
+    return (found.category, float(low), float(high)) if high else None
+
+
 def configure_gallery_dl(request, staging):
     STAGING["root"] = staging
     harden_gallery_dl_paths()
@@ -322,6 +337,14 @@ def configure_gallery_dl(request, staging):
             "order-files": "asc",
         },
     }
+    # R-1203: never faster than a site's own interval between requests. A global sleep-request replaces gallery-dl's
+    # per-site default, so the slower of the two is set for the site.
+    for url in urls:
+        own = site_request_interval(url)
+        if own:
+            category = own[0]
+            merged = [max(delay[0], own[1]), max(delay[-1], own[2])]
+            extractor.setdefault(category, {})["sleep-request"] = merged
     site = request.get("category")
     if site and site != "instagram":
         # Per-site choices from the Downloads pane (SPEC R-1111b): which parts of a profile, and the

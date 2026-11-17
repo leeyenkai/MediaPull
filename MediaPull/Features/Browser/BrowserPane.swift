@@ -157,7 +157,10 @@ struct BrowserPane: View {
             TabStrip(model: model)
             if let message = app.engines.gateMessage {
                 Banner(symbol: "exclamationmark.shield.fill", tint: .orange, text: message) {
-                    Button("Resume") { Task { await app.engines.resumeAfterCheckpoint() } }
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Button("Resume") { Task { await app.engines.resumeAfterCheckpoint() } }
+                            .disabled(!app.engines.canResume)
+                    }
                     Button("Cancel Instagram Jobs") {
                         for job in app.jobs.jobs where job.kind == .pull || job.kind == .scan {
                             if !job.state.isFinished { job.cancel() }

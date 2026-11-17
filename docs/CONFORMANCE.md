@@ -12,7 +12,7 @@ change as the code.
 
 | Requirement | Status | Implemented by | Proved by | Note |
 |---|---|---|---|---|
-| R-201 | partial | `WalkthroughView`, `InstagramSettings` | none | First-run note is generic (no Instagram or account-risk wording); no sign-in banner, full note only in Settings |
+| R-201 | person | `InstagramNotice.terms`, `WalkthroughView`, `InstagramForm` | `--selftest-browser` | Instagram terms and account risk on first run and in the sign-in banner (1.8); copy needs a person to read |
 | R-202 | partial | `PacingPreset`, `EngineService.enqueueInstagram`, `EngineService.resumeAfterCheckpoint`, `configure_gallery_dl` | none | Gentle default, one Instagram job at a time and no retries are in code; no test |
 | R-301 | built | `MediaPull.xcodeproj/project.pbxproj`, `MediaPullKit/Package.swift` | `scripts/check.sh` | macOS 26 deployment target, ARCHS arm64; check.sh builds for arm64 |
 | R-302 | built | `MediaPull.xcodeproj/project.pbxproj`, `MediaPullKit/Package.swift` | `scripts/check.sh` | Swift 6, approachable concurrency, MainActor default in the app; @concurrent used in the package |
@@ -20,7 +20,7 @@ change as the code.
 | R-304 | built | `MediaPullKit/Package.swift`, `scripts/fetch-engines.sh`, `scripts/build-ffmpeg.sh` | `scripts/fetch-engines.sh` | No package dependencies; engine wheels and ffmpeg source verified by SHA-256 when fetched |
 | R-305 | amended | `Config/Info.plist`, `scripts/make-dmg.sh` | — | D-77: Apple Development signed for personal use; Developer ID and notarization for a public release only |
 | R-306 | amended | `scripts/make-dmg.sh` | — | D-77: applies to a public release only |
-| R-307 | partial | `scripts/bundle-engines.sh`, `EngineSettings` | none | Licence texts are bundled; no notice of where to obtain source code; no test |
+| R-307 | built | `scripts/bundle-engines.sh`, `EngineSettings` | `scripts/check.sh` | Licences and SOURCES.txt with every bundled version are in the app (1.8) |
 | R-308 | amended | `Config/Info.plist`, `RequestPolicy.evaluate` | `testOnlyReadsAreAllowed` | D-77: arbitrary loads allowed for http media from any host; the gate still allows only GET and HEAD |
 | R-401 | built | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans |
 | R-402 | built | `scripts/lint_invariants.py`, `LibraryModel.offMain`, `MediaListing.load` | `scripts/lint_invariants.py` | The main-io lint fails on file moves, copies, listings and reads in the app target unless justified (1.8) |
@@ -34,8 +34,8 @@ change as the code.
 | R-507 | partial | `scripts/build-ffmpeg.sh` | none | Built with --disable-network and only file and pipe protocols; no test |
 | R-508 | built | `ReadOnlyWebView`, `BrowserController.install`, `WebViewSetup.uploadBlockingRules`, `MediaPullKit/Sources/MediaPullBrowser/Resources/guard.js` | `--selftest-browser` | Rules compile first at launch; pages wait for them; a failure is reported (1.8) |
 | R-509 | partial | `WebViewSetup.uploadBlockingRules` | none | Rules block only upload hosts, not analytics; no test |
-| R-510 | partial | `MediaPullKit/Package.swift`, `MediaPull.xcodeproj/project.pbxproj` | none | No SDKs or update frameworks present; nothing checks for them |
-| R-511 | partial | `MediaPullKit/Sources/MediaPullEngines/BridgeClient.swift` | none | os.Logger app.mediapull used for the engine only; no rolling file in Logs/MediaPull, no Export diagnostics |
+| R-510 | built | `scripts/lint_invariants.py` | `scripts/lint_invariants.py` | Lint: only Apple frameworks and MediaPull modules, no package dependencies (1.8) |
+| R-511 | person | `AppModel.exportDiagnostics`, `AppModel.diagnosticsReport`, `AdvancedSettings` | `--selftest-url` | Logs in the unified log (app.mediapull); Export Diagnostics writes a readable text file (1.8) |
 | R-512 | built | `CookieFile.write`, `CookieFile.cleanUpAll`, `EngineCookies` | `testCookieFileRoundTrip` | 0600 file in a 0700 folder, deleted at job end and cleaned at launch |
 | R-513 | built | `AnalysisService`, `SelfTestRunner.socketCount` | `--selftest-analyse` | Self-test records socket count while analysing |
 | R-601 | built | `OperationJournal`, `AnalysisStore`, `FingerprintIndex` | `--selftest-analyse` | Journals, analysis and fingerprints in Application Support; self-test checks the tree is restored exactly |
@@ -100,25 +100,25 @@ change as the code.
 | R-1106 | person | `EngineService.startPull`, `SavePipeline.saveStaged` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Staged files go through the save pipeline; a signed-in Instagram pull needs a person |
 | R-1107 | person | `EngineService.startPull`, `SavePipeline.acquire`, `BridgeEngineFetcher.fetch` | `--selftest-site` | Scan then save with re-resolve on 403 or 410; Instagram scans need a signed-in person |
 | R-1108 | person | `EngineService.startPull`, `ArchivePlanner.folder` | none | Download This Post pulls one post into the owner's folder; needs a signed-in pull |
-| R-1109 | partial | `ArchivePlanner.sidecar`, `ItemDetails` | none | original_width and height recorded, but the 1080 or 1440 px note is not in the UI; no test |
+| R-1109 | person | `InstagramNotice.quality`, `ArchivePlanner.sidecar` | `testInstagramSidecarMatchesContract` | Size note in the Instagram options (1.8); original sizes recorded in sidecars |
 | R-1110 | person | `MediaConverter.convertVideo`, `PullJob` | `testHEVCTaggedHev1IsRetaggedWithoutReencoding` | Codec policy as R-1607; Instagram videos need a signed-in pull to check |
 | R-1111 | built | `ArchivePlanner.sidecar`, `NameTemplate.archiveEngine` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Carousel items numbered from 1 with num and count in the sidecar |
 | R-1112 | partial | `KnownTracker`, `EngineService.startPull` | none | Cursor saved per page but used only by the in-memory Resume; a new pull after quitting starts over |
 | R-1113 | person | `PacingPreset.delay`, `EngineService.enqueueInstagram`, `HostLimiter` | none | Presets, one Instagram job at a time and 2 CDN downloads; only a signed-in pull shows them |
-| R-1114 | partial | `classify_instagram_error`, `EngineService.handleCheckpoint`, `EngineService.resumeAfterCheckpoint` | `test_checkpoints_belong_to_instagram_only` | Resume after a challenge is not held until a sessionid returns; cooldown steps reset per pull, not per day |
+| R-1114 | person | `EngineService.handleCheckpoint`, `EngineService.canResume`, `EngineService.resumeAfterCheckpoint` | `test_write_operations_are_blocked` | Resume held until a session returns or the cooldown ends; 10, 20, 40 minutes within a day (1.8); needs a real checkpoint |
 | R-1115 | built | `ArchivePlanner.folder`, `NameTemplate.archiveAvatar`, `FingerprintIndex` | `testFoldersForEachKindOfContent`, `testFlatFoldersWhenSortingByTypeIsOff` | Folders by type (D-54), avatar named at pull time and deduplicated, collab owner recorded (D-11) |
 | R-1111a | built | `DownloadsPane`, `DownloadsModel.use`, `WindowModel.showDownloads` | `--selftest-galleries`, `--selftest-video-download`, `--selftest-pullsheet` | Instagram, video and gallery options in one pane, saving into the window's save folder (D-69, D-70) |
 | R-1111b | built | `SiteCatalogue`, `GalleryError`, `SiteKeychain`, `configure_gallery_dl` | `testBundledCatalogueNamesSitesAndSignIn`, `test_site_choices_reach_gallery_dl_and_unknown_switches_do_not`, `--selftest-galleries` | Per-site parts, switches, sign-in, keys and plain errors (D-71) |
 | R-1201 | built | `WindowModel.siteExtractorCategory`, `EngineService.siteInfo`, `op_supports` | `--selftest-site`, `testFinalEventsAreNeverLost` | Debounced 1.5 s supports check, cached per URL, Instagram excluded |
 | R-1202 | built | `EngineService.startSiteScan`, `EngineCookies` | `--selftest-site` | Scan with the site's own cookies; the button now reads Get Original Files |
-| R-1203 | partial | `SavePipeline.request`, `BridgeEngineFetcher.fetch`, `EngineService.startSiteScan` | `--selftest-site` | A fixed 1 to 3 s sleep-request replaces gallery-dl per-site intervals, so pacing can be faster |
+| R-1203 | built | `site_request_interval`, `configure_gallery_dl` | `test_a_sites_own_request_interval_is_never_undercut` | Never faster than a site's own interval (1.8) |
 | R-1204 | amended | `ArchivePlanner.sidecar` | `--selftest-site` | D-28: uploader recorded as author, username only for user pages, files under the site folder |
 | R-1301 | built | `BridgeClient.run`, `EnginePaths.pythonPaths`, `configure_paths` | `testFinalEventsAreNeverLost`, `testSelfTestPassesAndGuardBlocksWrites` | Isolated interpreter, clean environment, staging working folder, request on standard input |
 | R-1302 | built | `BridgeClient.run`, `BridgeEvent.decode`, `Emitter` | `testFinalEventsAreNeverLost`, `test_events_are_valid_json_even_with_nan_or_huge_numbers` | JSON Lines events; standard error logged privately |
 | R-1303 | partial | `BridgeClient.run`, `EngineService.startPull` | `test_signal_path_writes_a_parsable_line_without_the_lock` | Escalation and staging cleanup built; no test of SIGINT, SIGTERM, SIGKILL timing |
 | R-1304 | partial | `EnginePaths.pythonPaths`, `EngineManager.install` | none | Updates go to Application Support and the bundle is untouched; no test |
 | R-1305 | built | `EngineManager.install`, `EnginePaths.pythonPaths` | `testCandidateEnginePathsComeFirstWithoutTouchingActiveFile`, `testVersionComparisonAndDependencies` | The candidate is self-tested from its folder; active.json is written only after it passes (1.8) |
-| R-1306 | partial | `AppModel.checkForEngineUpdates`, `AppModel.installEngineUpdates` | none | Weekly check on and installs wait for jobs, but no badge in Settings or Activity; no test |
+| R-1306 | person | `ActivityView`, `EngineSettings`, `AppModel.checkForEngineUpdates` | `testUpdateCheckReadsPyPI` | Updates announced in Activity and listed in Settings; installing stays a choice (1.8) |
 | R-1307 | partial | `EngineManager.usePreviousVersions`, `EngineManager.resetToBuiltIn` | none | Previous version kept, two per engine, reset built; no test |
 | R-1308 | built | `EngineManager.updatable`, `EngineManager.unmetDependency` | `testVersionComparisonAndDependencies` | Only gallery-dl and yt-dlp update; dependency needs block the update |
 | R-1401 | built | `SavePipeline.saveOne`, `SavePipeline.finalize`, `NetworkGate.download` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites`, `testACutShortDownloadIsNotKept` | Step 3 Content-Length check added in 1.8; identical concurrent saves re-checked after reserving |
@@ -146,7 +146,7 @@ change as the code.
 | R-1701 | built | `LibraryPane`, `LibraryModel` | `--selftest-views`, `--selftest-url` | Folder tree over contents, sidecars hidden with a badge, columns replace both (D-76) |
 | R-1702 | person | `AppModel.followRootLocations`, `AppModel.renameRoot`, `AppModel.locateRoot`, `LibraryRootInfo.resolvedURL` | `--selftest-analyse` | Roots follow Finder moves, show Not Found with Locate, and rename in the list (1.8); needs a person to move a folder |
 | R-1703 | built | `LibraryModel.commitRename`, `LibraryModel.trash`, `LibraryModel.perform`, `OperationJournal.run` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testRedoDoesTheChangeAgainAndCanBeUndone` | Library rename, move and Trash go through the journal with sidecars and are undoable (1.8) |
-| R-1704 | partial | `FolderWatcher`, `AnalysisService.updateWatch` | none | Recursive FSEvents per root, but roots excluded from analysis are not watched; no test |
+| R-1704 | built | `AnalysisService.updateWatch`, `FolderWatcher`, `LibraryModel.invalidateTree` | `--selftest-analyse` | Every library folder is watched, analysed or not (1.8) |
 | R-1707 | person | `WindowModel.find`, `QueryBar` | `--selftest-views` | Command-F focuses the search field of the pane being worked in (1.8) |
 | R-1708 | person | `ViewModePicker`, `MediaList`, `MediaColumns` | `--selftest-views` | Stale rows and lost selection fixed in 1.8; drag, Quick Look and keys need a person |
 | R-1709 | built | `MediaList`, `FolderChildren` | `--selftest-views` | Opened folders are rebuilt when the pane reloads and keep the pane filters (1.8) |
@@ -157,10 +157,10 @@ change as the code.
 | R-1801 | person | `LibraryModel.handleDrop`, `LibraryModel.importFiles`, `MediaPull/Platform/DragSupport.swift` | none | Drag and drop needs a person |
 | R-1802 | person | `ItemDragPayload`, `MediaPull/Platform/DragSupport.swift` | none | Large drags and file promises need a person to check |
 | R-1901 | built | `JobKind` | `--selftest-analyse`, `--selftest-galleries`, `--selftest-video-download` | All eight kinds exist; Convert and Engine Update not run by a self-test |
-| R-1902 | partial | `JobState` | none | All states exist, but waiting shows an end time, not a countdown; no test |
+| R-1902 | person | `JobState`, `ActivityView` | `--selftest-url` | Waiting shows a countdown (1.8); needs a real wait to see |
 | R-1903 | amended | `ActivityView`, `Job` | `--selftest-analyse` | D-77: Pause for Analyse jobs; Cancel and Retry Failed elsewhere; no speed column |
 | R-1904 | partial | `EngineService.startPull`, `AppStore.updateAccount` | none | Cursor kept, but no Resume Pull offer at launch |
-| R-1905 | partial | `JobCenter.finish`, `JobCenter.post`, `EngineService.handleCheckpoint` | none | Finish notice after 1 minute; blocked notice ignores the setting; no test |
+| R-1905 | person | `JobCenter.finish`, `EngineService.handleCheckpoint` | `--selftest-url` | Both notices follow the setting (1.8) |
 | R-2010 | built | `AppTheme`, `AppTheme.currentAccent` | `--selftest-theme`, `--selftest-idle` | Nine static themes; accent, chips, grid selection and title wash |
 | R-2401 | person | `ReadOnlyWebView`, `ThemeSwatch`, `PeopleView`, `TabStrip` | `scripts/lint_invariants.py` | Icon-only buttons labelled (lint enforced), tap controls are buttons to VoiceOver, Reduce Motion honoured (1.8); VoiceOver pass needs a person |
 | R-2402 | person | `MediaPull/Resources/Localizable.xcstrings` | `scripts/check.sh` | String Catalog added (1.8); Xcode fills it from the code when the project is opened |
@@ -198,7 +198,7 @@ change as the code.
 | R-3706 | built | `SubjectClassifier`, `OrganiseModel.autoSort` | `--selftest-analyse` | Fixed list plus added words, threshold, Unsorted; Library menu opens Organise generally |
 | R-3801 | built | `WindowSection`, `OrganiseModel.open` | `--selftest-analyse` | Collect and Organise tabs, Cmd-Ctrl-1 and 2, Open Folder, drops, panes stay mounted |
 | R-3802 | built | `OrganiseModel`, `OrganisePane` | `--selftest-analyse`, `--selftest-views`, `testOrganiseArrangementsHoldOnlyOrganisePanes` | Source, Organise, Target panes; in place, copy or move to an opt-in target (D-68, D-76) |
-| R-3803 | partial | `FolderOperations`, `SortRules` | `testFlattenNumbersCollisionsAndKeepsDatePrefix`, `testMergeCombinesSameNamedFolders` | No Move To... folder chooser: moves only by drag or to the chosen target |
+| R-3803 | person | `FolderOperations`, `OrganisePane.gridMenu` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testMergeCombinesSameNamedFolders` | Move To... added (1.8); the panel needs a person |
 | R-3804 | built | `FolderOperations.sort`, `FolderOperations.samePlace`, `OperationJournal.run` | `testCaseOnlyFolderDifferenceRenamesTheFolderOnce`, `testFlattenNumbersCollisionsAndKeepsDatePrefix` | Case-only folder differences rename the folder once (1.8) |
 | R-3805 | built | `OrganiseModel.autoSort`, `OrganisePlan` | `--selftest-analyse` | Sorts only what the Source shows; no matches means no plan and a message (1.8) |
 | R-3806 | built | `OperationJournal.undo`, `OperationJournal.redo`, `WindowModel.registerUndo`, `AppModel.applyChange` | `testRedoDoesTheChangeAgainAndCanBeUndone`, `testUndoOfACopyKeepsCopiesEditedSince`, `testUndoLeavesChangedFilesInPlace` | Every Library and Organise change undoable with ⌘Z and redoable with Shift-⌘Z (1.8) |

@@ -8,7 +8,10 @@ struct ActivityView: View {
         VStack(spacing: 0) {
             if let message = app.engines.gateMessage {
                 Banner(symbol: "exclamationmark.shield.fill", tint: .orange, text: message) {
-                    Button("Resume") { Task { await app.engines.resumeAfterCheckpoint() } }
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Button("Resume") { Task { await app.engines.resumeAfterCheckpoint() } }
+                            .disabled(!app.engines.canResume)
+                    }
                 }
             }
             // R-1306: updates are only announced; installing stays the person's choice (D-20).

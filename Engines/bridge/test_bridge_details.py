@@ -265,6 +265,15 @@ def test_a_taller_video_in_another_codec_is_noted():
     assert bridge.higher_resolution({"height": 2160, "formats": [{"vcodec": "vp9", "height": 2160}]}) is None
     assert bridge.higher_resolution({"height": None, "formats": []}) is None
 
+def test_a_sites_own_request_interval_is_never_undercut():
+    from gallery_dl import config
+
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"url": "https://www.reddit.com/user/someone", "pacing": {"request_delay": [0.1, 0.2]}}, staging)
+        interval = config.get(("extractor", "reddit"), "sleep-request")
+        assert interval and interval[0] >= 0.6, interval
+    config.clear()
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

@@ -83,7 +83,6 @@ final class EngineService {
     var gate: InstagramGateState = .ready
     var accounts: [String: BridgeAccount] = [:]
     var lookupErrors: [String: String] = [:]
-    @ObservationIgnored private var cooldownLevel = 0
     @ObservationIgnored private var instagramQueue: [(job: Job, run: () async -> Void)] = []
     @ObservationIgnored private var instagramBusy = false
 
@@ -100,9 +99,13 @@ final class EngineService {
 
     func handleCheckpoint(kind: String, url: URL?, message: String) {
         if kind == "rate_limit" || kind == "feedback" {
-            cooldownLevel = min(cooldownLevel + 1, 3)
-            let minutes = [10, 10, 20, 40][cooldownLevel]
-            gate = .cooldown(until: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+            // Cooldowns grow 10, 20, then 40 minutes for repeated limits within a day, across relaunches (R-1114).
+            let now = Date()
+            let recent = (UserDefaults.standard.array(forKey: Self.rateLimitKey) as? [Double] ?? [])
+                .filter { now.timeIntervalSince1970 - $0 < 86400 } + [now.timeIntervalSince1970]
+            UserDefaults.standard.set(recent, forKey: Self.rateLimitKey)
+            let minutes = [10, 20, 40][min(recent.count, 3) - 1]
+            gate = .cooldown(until: now.addingTimeInterval(TimeInterval(minutes * 60)))
         } else {
             gate = .blocked(kind: kind, url: url, message: message)
         }
@@ -128,17 +131,22 @@ final class EngineService {
         }
     }
 
+    static let rateLimitKey = "instagramRateLimits"
+
+    /// Whether Resume may be chosen (R-1114): the cooldown is over, or, after a sign-in or a challenge, the browser holds a
+    /// session again.
+    var canResume: Bool {
+        switch gate {
+        case .ready: true
+        case let .cooldown(until): until <= Date()
+        case .blocked: signedIn
+        }
+    }
+
     /// Only the person resumes after a checkpoint, and only once the condition is cleared (R-1114).
     func resumeAfterCheckpoint() async {
         await refreshSignIn()
-        switch gate {
-        case let .cooldown(until) where until > Date():
-            return
-        case let .blocked(kind, _, _) where kind == "login" && !signedIn:
-            return
-        default:
-            break
-        }
+        guard canResume else { return }
         gate = .ready
         for job in app.jobs.jobs {
             if case .blocked = job.state, let resume = job.resume { resume() }
@@ -566,7 +574,6 @@ final class EngineService {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: job.summary)
             }
         }
-        cooldownLevel = max(0, cooldownLevel - 1)
         app.jobs.finish(job, .completed)
     }
 
