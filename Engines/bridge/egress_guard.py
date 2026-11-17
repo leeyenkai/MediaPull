@@ -215,7 +215,8 @@ def check(method, url, data=None, headers=None, files=None):
     if not names:
         raise PolicyViolation(method, url, "GraphQL request without an operation name")
     for name in names:
-        if "Query" not in name and not name.lower().endswith("query"):
+        # Instagram's query names end in "Query", sometimes with a lower-case suffix ("..Query_connection").
+        if not re.search(r"Query(_[a-z_]+)?$", name):
             raise PolicyViolation(method, url, f"operation {name} is not a query")
         if DENIED_WORDS.search(re.sub("query", "", name, flags=re.IGNORECASE)):
             raise PolicyViolation(method, url, f"operation {name} names a write action")

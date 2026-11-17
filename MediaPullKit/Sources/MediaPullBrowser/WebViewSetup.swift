@@ -82,7 +82,7 @@ public enum WebViewSetup {
     }
 
     /// Blocks well-known upload endpoints in the browser pane (SPEC R-508).
-    public static func uploadBlockingRules() async -> UploadRules? {
+    public static func uploadBlockingRules() async throws -> UploadRules? {
         let rules = """
         [
           {"trigger": {"url-filter": "^https?://rupload\\\\."}, "action": {"type": "block"}},
@@ -93,7 +93,7 @@ public enum WebViewSetup {
           {"trigger": {"url-filter": "^https?://[^/]*\\\\.?upload\\\\.facebook\\\\.com/"}, "action": {"type": "block"}}
         ]
         """
-        let list = try? await WKContentRuleListStore.default()?.compileContentRuleList(
+        let list = try await WKContentRuleListStore.default()?.compileContentRuleList(
             forIdentifier: "MediaPullUploadBlock",
             encodedContentRuleList: rules
         )

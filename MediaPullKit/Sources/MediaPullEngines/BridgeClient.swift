@@ -73,15 +73,13 @@ public struct EnginePaths: Sendable {
         )
     }
 
-    /// Engine folders to put first on the Python path: updated engines, then the built-in ones.
-    public func pythonPaths() -> [String] {
+    /// Engine folders to put first on the Python path: updated engines, then the built-in ones. `active` replaces what
+    /// `active.json` says, so a new engine can be tested before it is made active (R-1305).
+    public func pythonPaths(active override: [String: ActiveEngine]? = nil) -> [String] {
         var paths = [bridgeDirectory.path]
-        if let data = try? Data(contentsOf: activeFile),
-           let active = try? JSONDecoder().decode([String: ActiveEngine].self, from: data)
-        {
-            for (_, engine) in active.sorted(by: { $0.key < $1.key }) where FileManager.default.fileExists(atPath: engine.path) {
-                paths.append(engine.path)
-            }
+        let active = override ?? (try? Data(contentsOf: activeFile)).flatMap { try? JSONDecoder().decode([String: ActiveEngine].self, from: $0) }
+        for (_, engine) in (active ?? [:]).sorted(by: { $0.key < $1.key }) where FileManager.default.fileExists(atPath: engine.path) {
+            paths.append(engine.path)
         }
         paths.append(baselineSitePackages.path)
         return paths
@@ -128,7 +126,8 @@ public final class BridgeClient: Sendable {
 
     public func run(_ request: BridgeRequest, workingDirectory: URL? = nil) -> AsyncThrowingStream<BridgeEvent, Error> {
         var request = request
-        request.paths = paths.pythonPaths()
+        // A request that names its engine folders (an update's self-test) keeps them.
+        if request.paths.isEmpty { request.paths = paths.pythonPaths() }
         let paths = paths
         return AsyncThrowingStream { continuation in
             #if !os(macOS)

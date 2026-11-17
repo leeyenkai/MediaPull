@@ -35,6 +35,8 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     var isShowingPDF = false
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var ruleListInstalled = false
+    /// A page asked for before the upload-blocking rules were ready (R-508): it loads once they are installed.
+    @ObservationIgnored private var pendingLoad: URL?
 
     override init() {
         let configuration = WebViewSetup.configuration(handler: handler, ruleList: nil)
@@ -81,15 +83,27 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         }
     }
 
+    /// Installs the upload-blocking rules, or (nil) records that they could not be made; either way a page that was
+    /// waiting for them loads now.
     func install(ruleList: UploadRules?) {
-        guard let ruleList, !ruleListInstalled else { return }
-        webView.configuration.userContentController.add(ruleList.list)
-        ruleListInstalled = true
+        if let ruleList, !ruleListInstalled {
+            webView.configuration.userContentController.add(ruleList.list)
+            ruleListInstalled = true
+        }
+        if let url = pendingLoad {
+            pendingLoad = nil
+            webView.load(URLRequest(url: url))
+        }
     }
 
     func load(_ url: URL) {
         lastError = nil
         addressText = url.absoluteString
+        // No page loads before the rules are in place (they compile in a moment at launch).
+        guard ruleListInstalled || AppModel.shared.ruleListSettled else {
+            pendingLoad = url
+            return
+        }
         webView.load(URLRequest(url: url))
     }
 

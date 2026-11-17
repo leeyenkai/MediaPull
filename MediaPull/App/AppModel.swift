@@ -31,6 +31,8 @@ final class AppModel {
     var isCheckingEngines = false
     var userAgent: String?
     var ruleList: UploadRules?
+    /// The rules finished compiling (or failed to); tabs wait for this before loading their first page.
+    var ruleListSettled = false
     /// The walkthrough (SPEC 7.2): on first run with the setup steps, or the tour alone from Settings or Help.
     var walkthrough: WalkthroughMode?
     let browsing = BrowsingStore(persistent: !SelfTestRunner.isActive)
@@ -68,17 +70,27 @@ final class AppModel {
     }
 
     private func bootstrap() async {
-        CookieFile.cleanUpAll()
-        try? FileManager.default.removeItem(at: SavePipeline.defaultWorkDirectory)
-        try? FileManager.default.removeItem(at: WindowModel.pdfCache)
-        try? FileManager.default.removeItem(at: WindowModel.editsCache)
-        try? FileManager.default.removeItem(at: WindowModel.previewCache)
-        if let staging = enginePaths?.staging { try? FileManager.default.removeItem(at: staging) }
-        enginePaths?.prepareFolders()
-        ruleList = await WebViewSetup.uploadBlockingRules()
+        // First, before anything else at launch: tabs hold their first page until the rules are in place (R-508).
+        do {
+            ruleList = try await WebViewSetup.uploadBlockingRules()
+        } catch {
+            // The file-input, drop and paste guards still apply; say plainly that this layer is missing.
+            engineMessage = "Upload blocking for web pages could not be turned on: \(error.localizedDescription)"
+        }
+        ruleListSettled = true
         for window in windows {
             for tab in window.tabs { tab.install(ruleList: ruleList) }
         }
+        // Leftovers of the last session: cleared off the main actor, since caches can hold many files.
+        let leftovers = [SavePipeline.defaultWorkDirectory, WindowModel.pdfCache, WindowModel.editsCache, WindowModel.previewCache]
+            + [enginePaths?.staging].compactMap(\.self)
+        await Task.detached(priority: .utility) {
+            CookieFile.cleanUpAll()
+            for folder in leftovers {
+                try? FileManager.default.removeItem(at: folder) // lint:allow silent-write a cache that may not exist
+            }
+        }.value
+        enginePaths?.prepareFolders()
         do {
             let store = try AppStore.make(inMemory: SelfTestRunner.isActive)
             self.store = store

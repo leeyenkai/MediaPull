@@ -42,3 +42,21 @@ final class SafeNumberTests: XCTestCase {
         XCTAssertEqual(VideoDownloadFormat.bestMP4.estimatedBytes(in: [format], height: nil, duration: 1e300), nil)
     }
 }
+
+/// R-1305: an engine update is tested from its own folder before `active.json` names it.
+final class EngineActivationTests: XCTestCase {
+    func testCandidateEnginePathsComeFirstWithoutTouchingActiveFile() throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("engines-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let paths = EnginePaths(python: URL(fileURLWithPath: "/usr/bin/false"), bridgeDirectory: URL(fileURLWithPath: "/bridge"),
+                                baselineSitePackages: URL(fileURLWithPath: "/baseline"), helpers: URL(fileURLWithPath: "/helpers"),
+                                support: support)
+        paths.prepareFolders()
+        let candidate = support.appendingPathComponent("candidate", isDirectory: true)
+        try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
+        let active = ["gallery_dl": ActiveEngine(version: "9.9", path: candidate.path, previousVersion: nil, previousPath: nil)]
+        XCTAssertEqual(paths.pythonPaths(active: active), ["/bridge", candidate.path, "/baseline"])
+        XCTAssertEqual(paths.pythonPaths(), ["/bridge", "/baseline"], "nothing is active until the test passes")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.activeFile.path))
+    }
+}

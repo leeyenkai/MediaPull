@@ -63,9 +63,11 @@ public actor EngineManager {
     }
 
     /// Runs the bridge self-test and returns problems, empty when all is well.
-    public func selfTest() async -> [String] {
+    public func selfTest(active: [String: ActiveEngine]? = nil) async -> [String] {
         do {
-            let events = try await client.collect(BridgeRequest(op: "selftest"))
+            var request = BridgeRequest(op: "selftest")
+            if let active { request.paths = client.paths.pythonPaths(active: active) }
+            let events = try await client.collect(request)
             return events.compactMap { event in
                 if case let .error(_, message, _, true) = event { return message }
                 return nil
@@ -128,14 +130,14 @@ public actor EngineManager {
         let previous = active[key]
         active[key] = ActiveEngine(version: update.available, path: target.path, previousVersion: previous?.version,
                                    previousPath: previous?.path)
-        try writeActive(active)
-        let problems = await selfTest()
+        // R-1305: the new engine is tested where it lies and becomes active only once it passes, so a quit or a crash
+        // during the test, or a job that starts meanwhile, never runs an untested engine.
+        let problems = await selfTest(active: active)
         if !problems.isEmpty {
-            active[key] = previous
-            try writeActive(active)
-            try? FileManager.default.removeItem(at: target)
+            try? FileManager.default.removeItem(at: target) // lint:allow silent-write a failed update's folder
             throw EngineUpdateError.selfTestFailed(problems.joined(separator: "; "))
         }
+        try writeActive(active)
         cleanOldVersions(key: key, keep: [active[key]?.path, active[key]?.previousPath].compactMap(\.self))
     }
 

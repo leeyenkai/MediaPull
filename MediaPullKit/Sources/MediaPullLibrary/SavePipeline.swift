@@ -397,6 +397,12 @@ public final class SavePipeline: Sendable {
             try? await Task.sleep(for: .milliseconds(100))
             if let found = await existingCopy() { return found }
         }
+        // Another save may have placed the same content and given back its reservation between the first check and this
+        // one's reservation: look once more while holding it.
+        if let found = await existingCopy() {
+            await self.index.unreserve(sha256: sha, in: scope)
+            return found
+        }
         let outcome = await placeNew()
         await self.index.unreserve(sha256: sha, in: scope)
         return outcome

@@ -161,6 +161,9 @@ class GuardTests:
             check("POST", ig, data='{"query": "fragment F on U { id } mutation M { like(id: 1) }"}')
         with self.assertRaises(PolicyViolation):
             check("POST", ig, data={"fb_api_req_friendly_name": "PolarisunfollowQuery"})
+        for name in ("FooQueryArchiveAction", "QueryPolarisThing", "PolarisProfilePageContentquery"):
+            with self.assertRaises(PolicyViolation, msg=name):
+                check("POST", ig, data={"fb_api_req_friendly_name": name})
         check("POST", ig, data='{"operationName": "UserMediaQuery", "query": "query UserMediaQuery { a }"}')
 
     def test_post_is_limited_to_instagram_graphql(self):

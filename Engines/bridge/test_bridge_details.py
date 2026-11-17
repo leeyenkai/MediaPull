@@ -79,6 +79,12 @@ def test_stream_options_map_extras():
     assert str(options["daterange"].start) == "2026-01-01"
     single = bridge.stream_options({"video": {}}, "/tmp/staging", None, lambda info: None)
     assert single["noplaylist"] is True and "writesubtitles" not in single
+    assert single["hls_prefer_native"] is True and single["external_downloader"] == {}
+    capture = Capture()
+    bridge.EMITTER = capture
+    assert single["match_filter"]({"id": "x", "is_live": True}) == "Live streams can't be saved."
+    assert single["match_filter"]({"id": "y", "live_status": "was_live"}) is None
+    assert capture.events and capture.events[0][1]["code"] == "live_stream"
 
 
 

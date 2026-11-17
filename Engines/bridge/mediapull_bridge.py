@@ -1047,6 +1047,14 @@ def op_video_info(request):
     finish("completed")
 
 
+def refuse_live_streams(info, incomplete=False):
+    """A live stream never ends and would need ffmpeg's network downloaders: say so plainly instead of failing later."""
+    if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
+        EMITTER.emit("error", code="live_stream", message="Live streams can't be saved.", key=info.get("id"), fatal=False)
+        return "Live streams can't be saved."
+    return None
+
+
 def stream_options(request, staging, logger, progress):
     """yt-dlp options for a download: the chosen format plus the person's extra choices (SPEC R-3505)."""
     import yt_dlp
@@ -1077,6 +1085,10 @@ def stream_options(request, staging, logger, progress):
         "retries": 3,
         "fragment_retries": 5,
         "ignoreerrors": bool(extras.get("playlist")),
+        # The bundled ffmpeg has no network protocols (R-507): yt-dlp's own downloaders fetch every stream.
+        "hls_prefer_native": True,
+        "external_downloader": {},
+        "match_filter": refuse_live_streams,
     }
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
