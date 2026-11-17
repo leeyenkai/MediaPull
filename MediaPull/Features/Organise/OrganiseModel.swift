@@ -110,12 +110,18 @@ final class OrganisePane: MediaGridOwner {
     }
 
     var entries: [MediaEntry] = []
+    /// More media than one listing holds (MediaListing.limit): sorts would leave the rest out, so they are refused.
+    var listingLimited = false
     var shown: [MediaEntry] = []
     var sections: [LibrarySection] = []
     var subfolderCount = 0
     var selection: Set<String> = []
     var revision = 0
     var treeRevision = 0
+    @ObservationIgnored let treeCache = FolderTreeCache()
+    @ObservationIgnored private var treeRefresh: Task<Void, Never>?
+    /// The top of the tree, kept between redraws so the folders it has read are not read again.
+    @ObservationIgnored private var cachedRoot: (key: String, node: FolderNode)?
     var cellSize: CGFloat = 132
     var includeSubfolders = false {
         didSet { if includeSubfolders != oldValue { reload() } }
@@ -145,6 +151,26 @@ final class OrganisePane: MediaGridOwner {
         self.role = role
     }
 
+    func rootNode(_ root: URL) -> FolderNode {
+        let key = "\(treeRevision)|\(root.path)"
+        if let cachedRoot, cachedRoot.key == key { return cachedRoot.node }
+        let node = FolderNode(url: root, isRoot: true, cache: treeCache)
+        cachedRoot = (key, node)
+        return node
+    }
+
+    /// Folders changed on disk: the tree's folders are read again off the main actor, then it redraws.
+    func invalidateTree() {
+        treeRefresh?.cancel()
+        treeRefresh = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, let self else { return }
+            await self.treeCache.refresh()
+            guard !Task.isCancelled else { return }
+            self.treeRevision += 1
+        }
+    }
+
     private var app: AppModel { .shared }
 
     func reload() {
@@ -160,11 +186,12 @@ final class OrganisePane: MediaGridOwner {
         loading = true
         let recursive = includeSubfolders
         loadTask = Task { [weak self] in
-            let (listed, folders, subfolders) = await MediaListing.load(folder, recursive: recursive)
+            let (listed, folders, subfolders, limited) = await MediaListing.load(folder, recursive: recursive)
             guard let self, !Task.isCancelled, self.folder == folder else { return }
             let attached = await self.app.analysis.attach(listed)
             guard !Task.isCancelled, self.folder == folder else { return }
             self.entries = attached
+            self.listingLimited = limited
             self.subfolderCount = folders
             self.listFolders.reset(top: subfolders)
             self.selection = self.selection.intersection(Set(attached.map(\.path)))
@@ -471,14 +498,14 @@ final class OrganiseModel {
             }
             if affected {
                 pane.reload()
-                pane.treeRevision += 1
+                pane.invalidateTree()
             }
         }
     }
 
     func refreshAfterChange() {
         for pane in [source, target] {
-            pane.treeRevision += 1
+            pane.invalidateTree()
             pane.reload()
         }
         app.libraryRevision += 1
@@ -643,6 +670,11 @@ final class OrganiseModel {
                     self.autoSort(kind)
                 }
             }
+            return
+        }
+        if source.listingLimited {
+            message = "This folder holds more than \(MediaListing.limit.formatted()) files, more than one sort can see. "
+                + "Sort its subfolders one at a time."
             return
         }
         // Only what the pane shows: with a search or filters that match nothing, nothing is sorted (never the whole folder).

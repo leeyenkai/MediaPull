@@ -356,6 +356,12 @@ public final class SavePipeline: Sendable {
         }
         guard size > 0 else { return (.failed("The downloaded file was empty."), nil) }
 
+        // Only folders below the chosen save folder are created. A save folder that is gone (renamed or moved in the
+        // Finder, a disk that is not connected) is never made again somewhere the person would not look (R-1702).
+        var isFolder: ObjCBool = false
+        guard manager.fileExists(atPath: target.folder.path, isDirectory: &isFolder), isFolder.boolValue else {
+            return (.failed("The folder “\(target.folder.lastPathComponent)” is missing. Choose it again in the Library."), nil)
+        }
         let folder = ArchivePlanner.folder(for: item, target: target, settings: settings)
         do {
             try manager.createDirectory(at: folder, withIntermediateDirectories: true)

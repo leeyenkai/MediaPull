@@ -144,7 +144,7 @@ change as the code.
 | R-1607 | partial | `MediaConverter.convertVideo`, `FFmpeg.transcodeToHEVC`, `VideoCodecPolicy.selector` | none | hev1 not retagged, Highest compatible re-encodes, higher_res_available never written, AV1 needs hardware |
 | R-1608 | partial | `FFmpeg.remuxToMP4`, `VideoStreamInfo.audioNeedsConversion` | none | Opus and Vorbis to AAC 256 kbit/s with aac_at, MOV kept; no test |
 | R-1701 | built | `LibraryPane`, `LibraryModel` | `--selftest-views`, `--selftest-url` | Folder tree over contents, sidecars hidden with a badge, columns replace both (D-76) |
-| R-1702 | partial | `LibraryModel.promptForRoot`, `LibraryRootInfo`, `AppModel.addRoot` | none | Roots not followed when moved and no root rename UI; no test |
+| R-1702 | person | `AppModel.followRootLocations`, `AppModel.renameRoot`, `AppModel.locateRoot`, `LibraryRootInfo.resolvedURL` | `--selftest-analyse` | Roots follow Finder moves, show Not Found with Locate, and rename in the list (1.8); needs a person to move a folder |
 | R-1703 | built | `LibraryModel.commitRename`, `LibraryModel.trash`, `LibraryModel.perform`, `OperationJournal.run` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testRedoDoesTheChangeAgainAndCanBeUndone` | Library rename, move and Trash go through the journal with sidecars and are undoable (1.8) |
 | R-1704 | partial | `FolderWatcher`, `AnalysisService.updateWatch` | none | Recursive FSEvents per root, but roots excluded from analysis are not watched; no test |
 | R-1707 | partial | `QueryBar`, `LibraryModel` | none | Command-F toggles Extracted filters and does not focus Library search |
@@ -193,7 +193,7 @@ change as the code.
 | R-3701 | partial | `QueryBar`, `LibraryModel` | | Cmd-F never focuses the Library search field; sort and filters are kept app-wide, not per window |
 | R-3702 | built | `LibrarySort`, `MediaDates.effective`, `LibraryQuery.events` | `testDateFallsBackFromCaptureToMetadataToFile`, `testEventsSplitAtTheGap`, `testSortsBySizeAndSource` | All sorts, both directions, events at the gap |
 | R-3703 | partial | `LibraryFilter`, `LibraryQuery.matches`, `FolderChildren` | `testFiltersCombine` | People filter keeps unknown ids; List folders ignore People and Similar; no format or aspect filter in the menu |
-| R-3704 | partial | `LibraryQuery.textScore`, `MediaListing.load` | `testSearchMatchesTextTagsAndSimilarity` | Listing is capped at 50,000 entries without telling the person |
+| R-3704 | built | `LibraryQuery.apply`, `MediaListing.load`, `AnalysisService.meaningScores` | `testSearchMatchesTextTagsAndSimilarity`, `--selftest-analyse` | Only media files count toward the 50,000 listing limit, which the header and Organise now state (1.8) |
 | R-3705 | built | `SimilarSets`, `LibraryFilter.similarOnly` | `testCloseVectorsFormSets`, `--selftest-analyse` | Filter and Group Similar sort; not marked in the grid |
 | R-3706 | built | `SubjectClassifier`, `OrganiseModel.autoSort` | `--selftest-analyse` | Fixed list plus added words, threshold, Unsorted; Library menu opens Organise generally |
 | R-3801 | built | `WindowSection`, `OrganiseModel.open` | `--selftest-analyse` | Collect and Organise tabs, Cmd-Ctrl-1 and 2, Open Folder, drops, panes stay mounted |

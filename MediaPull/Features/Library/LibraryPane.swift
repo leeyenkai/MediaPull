@@ -122,11 +122,19 @@ struct FolderRow: View {
         HStack(spacing: 6) {
             Image(systemName: node.isRoot ? (root?.isDefault == true ? "folder.fill.badge.person.crop" : "folder.fill") : "folder")
                 .foregroundStyle(node.isRoot && root != nil ? Color.accentColor : .secondary)
-            if library.renaming == node.url.path, !node.isRoot {
+            if library.renaming == node.url.path, !node.isRoot || root != nil {
                 TextField("Name", text: $draft)
                     .textFieldStyle(.roundedBorder)
                     .focused($editing)
-                    .onSubmit { library.commitRename(node.url, to: draft) }
+                    .onSubmit {
+                        // A library folder's name in the list is its own (R-1702); the folder on disk keeps its name.
+                        if let root {
+                            library.renaming = nil
+                            Task { await app.renameRoot(root.id, to: draft) }
+                        } else {
+                            library.commitRename(node.url, to: draft)
+                        }
+                    }
                     .onExitCommand { library.renaming = nil }
                     .onAppear {
                         draft = node.name
@@ -143,7 +151,15 @@ struct FolderRow: View {
                     .padding(.horizontal, 5)
                     .background(.quaternary, in: Capsule())
             }
-            if node.isRoot, let root {
+            if node.isRoot, let root, app.missingRoots.contains(root.id) {
+                Spacer(minLength: 4)
+                Text("Not Found")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 5)
+                    .background(.quaternary, in: Capsule())
+                    .help("This folder was deleted, or is on a disk that is not connected. Use Locate… if it was moved.")
+            } else if node.isRoot, let root {
                 Spacer(minLength: 4)
                 Text(root.layout.shortLabel)
                     .font(.caption2)
@@ -172,6 +188,10 @@ struct FolderRow: View {
             }
             if node.isRoot, let root {
                 Divider()
+                Button("Rename in List") { library.rename(node.url) }
+                if app.missingRoots.contains(root.id) {
+                    Button("Locate…") { app.locateRoot(root.id) }
+                }
                 if !root.isDefault {
                     Button("Use as Default Save Location") {
                         Task {
@@ -315,7 +335,11 @@ struct FolderContents: View {
                 contents
             }
         }
-        .onChange(of: app.libraryRevision) { _, _ in library.reload() }
+        .onChange(of: app.libraryRevision) { _, _ in
+            library.reload()
+            // Saves and pulls make folders: the tree reads the folders it shows again, off the main actor.
+            library.invalidateTree()
+        }
         .onChange(of: app.analysis.revision) { _, _ in library.reattach() }
     }
 
@@ -349,6 +373,7 @@ struct FolderContents: View {
         var parts: [String] = []
         let shown = library.shownFiles.count
         parts.append(shown == library.files.count ? "\(shown) file\(shown == 1 ? "" : "s")" : "\(shown) of \(library.files.count) files")
+        if library.listingLimited { parts.append("only the first \(MediaListing.limit.formatted()) are listed") }
         if library.subfolderCount > 0 { parts.append("\(library.subfolderCount) folder\(library.subfolderCount == 1 ? "" : "s")") }
         if let root = library.selectedFolder.flatMap({ app.root(containing: $0) }) { parts.append(root.layout.label) }
         return parts.joined(separator: " · ")

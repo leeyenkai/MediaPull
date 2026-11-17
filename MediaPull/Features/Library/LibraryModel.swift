@@ -17,19 +17,56 @@ struct LibraryFile: Identifiable, Hashable {
     var format: MediaFormat?
 }
 
-/// A folder in the Library tree. Children are read when first asked for.
+/// The subfolders of folders a tree has shown, kept per pane. A folder is read the first time it is opened; after changes
+/// on disk every folder already read is read again off the main actor (`refresh`), so drawing the tree never waits on
+/// the disk while files are being saved (a folder of an account can hold tens of thousands of files).
+final class FolderTreeCache {
+    private var subfolders: [String: [URL]] = [:]
+
+    func children(of url: URL) -> [URL] {
+        let key = url.standardizedFileURL.path
+        if let known = subfolders[key] { return known }
+        let found = Self.list(url)
+        subfolders[key] = found
+        return found
+    }
+
+    /// Reads every folder the tree has shown again, off the main actor.
+    func refresh() async {
+        let keys = Array(subfolders.keys)
+        let fresh = await Task.detached(priority: .userInitiated) {
+            Dictionary(uniqueKeysWithValues: keys.map { ($0, Self.list(URL(fileURLWithPath: $0, isDirectory: true))) })
+        }.value
+        subfolders = fresh
+    }
+
+    nonisolated static func list(_ url: URL) -> [URL] {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
+        // lint:allow main-io one folder, the first time it is opened; refreshes run off the main actor
+        let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys,
+                                                                    options: [.skipsHiddenFiles])) ?? []
+        return entries.filter {
+            let values = try? $0.resourceValues(forKeys: Set(keys))
+            return values?.isDirectory == true && values?.isPackage != true
+        }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+}
+
+/// A folder in a tree; its subfolders come from the pane's `FolderTreeCache`.
 final class FolderNode: Identifiable, Hashable {
     let url: URL
     let name: String
     let isRoot: Bool
     let rootID: UUID?
-    private var cachedChildren: [FolderNode]??
+    private let cache: FolderTreeCache
 
-    init(url: URL, name: String? = nil, isRoot: Bool = false, rootID: UUID? = nil) {
+    init(url: URL, name: String? = nil, isRoot: Bool = false, rootID: UUID? = nil, cache: FolderTreeCache) {
         self.url = url
         self.name = name ?? url.lastPathComponent
         self.isRoot = isRoot
         self.rootID = rootID
+        self.cache = cache
     }
 
     var id: String { url.path }
@@ -38,19 +75,8 @@ final class FolderNode: Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(url) }
 
     var children: [FolderNode]? {
-        if let cachedChildren { return cachedChildren }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
-        let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys,
-                                                                    options: [.skipsHiddenFiles])) ?? []
-        let folders = entries.filter {
-            let values = try? $0.resourceValues(forKeys: Set(keys))
-            return values?.isDirectory == true && values?.isPackage != true
-        }
-        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        .map { FolderNode(url: $0) }
-        let result: [FolderNode]? = folders.isEmpty ? nil : folders
-        cachedChildren = .some(result)
-        return result
+        let folders = cache.children(of: url).map { FolderNode(url: $0, cache: cache) }
+        return folders.isEmpty ? nil : folders
     }
 }
 
@@ -60,16 +86,18 @@ final class LibraryModel: MediaGridOwner {
     @ObservationIgnored weak var window: WindowModel?
     @ObservationIgnored private let listenerID = UUID()
     @ObservationIgnored private var cachedTree: (key: String, nodes: [FolderNode])?
+    @ObservationIgnored let treeCache = FolderTreeCache()
+    @ObservationIgnored private var treeRefresh: Task<Void, Never>?
 
     /// The library folders, then a save folder chosen outside the library (D-70). The nodes, and the subfolders each has
     /// read, are kept until the tree changes, so a redraw does not read every open folder from disk again.
     func treeNodes() -> [FolderNode] {
         let roots = app.roots
-        let key = "\(treeRevision)|\(app.libraryRevision)|\(roots.map { "\($0.id)\($0.name)" })|\(otherFolder?.path ?? "")"
+        let key = "\(treeRevision)|\(roots.map { "\($0.id)\($0.name)\($0.path)" })|\(otherFolder?.path ?? "")"
         if let cachedTree, cachedTree.key == key { return cachedTree.nodes }
-        var nodes = roots.map { FolderNode(url: $0.url, name: $0.name, isRoot: true, rootID: $0.id) }
+        var nodes = roots.map { FolderNode(url: $0.url, name: $0.name, isRoot: true, rootID: $0.id, cache: treeCache) }
         if let other = otherFolder, app.root(containing: other) == nil {
-            nodes.append(FolderNode(url: other, name: other.lastPathComponent, isRoot: true, rootID: nil))
+            nodes.append(FolderNode(url: other, name: other.lastPathComponent, isRoot: true, rootID: nil, cache: treeCache))
         }
         cachedTree = (key, nodes)
         return nodes
@@ -98,7 +126,7 @@ final class LibraryModel: MediaGridOwner {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled, let self else { return }
             self.reload()
-            self.treeRevision += 1
+            self.invalidateTree()
         }
     }
     var selectedFolder: URL? {
@@ -119,6 +147,8 @@ final class LibraryModel: MediaGridOwner {
     var files: [LibraryFile] = [] {
         didSet { fileIndex = Dictionary(files.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first }) }
     }
+    /// The folder holds more media than one listing shows (MediaListing.limit); the header says so.
+    var listingLimited = false
     /// The files with what analysis knows about them, and the sections the sort and filters produce (section 37).
     var entries: [MediaEntry] = [] {
         didSet { entryIndex = Dictionary(entries.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { first, _ in first }) }
@@ -289,7 +319,7 @@ final class LibraryModel: MediaGridOwner {
         }
         let recursive = includeSubfolders
         reloadTask = Task { [weak self] in
-            let (listed, folders, subfolders) = await MediaListing.load(folder, recursive: recursive)
+            let (listed, folders, subfolders, limited) = await MediaListing.load(folder, recursive: recursive)
             guard !Task.isCancelled, let self, self.selectedFolder == folder else { return }
             let attached = await self.app.analysis.attach(listed)
             guard !Task.isCancelled, self.selectedFolder == folder else { return }
@@ -308,6 +338,7 @@ final class LibraryModel: MediaGridOwner {
             }
             self.entries = attached
             self.files = loaded
+            self.listingLimited = limited
             self.listFolders.reset(top: subfolders)
             self.refilter()
             self.subfolderCount = folders
@@ -351,7 +382,7 @@ final class LibraryModel: MediaGridOwner {
     }
 
     func refreshTree() {
-        treeRevision += 1
+        invalidateTree()
         reload()
     }
 
@@ -382,7 +413,7 @@ final class LibraryModel: MediaGridOwner {
         let url = parent.appendingPathComponent(name, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-            treeRevision += 1
+            invalidateTree()
             selectedFolder = url
             renaming = url.path
         } catch {
@@ -407,6 +438,26 @@ final class LibraryModel: MediaGridOwner {
         }
     }
 
+    /// Folders changed on disk: the tree reads the folders it has shown again (off the main actor), then redraws. Bursts
+    /// (a download creating folders) are read once.
+    func invalidateTree() {
+        treeRefresh?.cancel()
+        treeRefresh = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, let self else { return }
+            await self.treeCache.refresh()
+            guard !Task.isCancelled else { return }
+            self.treeRevision += 1
+        }
+    }
+
+    /// A library folder was renamed or moved in the Finder: the selection follows it.
+    func rootMoved(from old: URL, to new: URL) {
+        selectedFolder = selectedFolder.map { Self.moved($0, from: old, to: new) }
+        otherFolder = otherFolder.map { Self.moved($0, from: old, to: new) }
+        invalidateTree()
+    }
+
     /// Moves files (with their sidecars) or folders to the Trash, as one change ⌘Z puts back. Nothing is deleted outright.
     func trash(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
@@ -426,7 +477,7 @@ final class LibraryModel: MediaGridOwner {
             message = entry.failures.isEmpty ? nil : entry.failures.prefix(3).joined(separator: "\n")
             window?.registerUndo(entry)
             finished?(entry)
-            treeRevision += 1
+            invalidateTree()
             reload()
         }
     }
@@ -486,7 +537,7 @@ final class LibraryModel: MediaGridOwner {
                 }
             }
             message = problems.isEmpty ? nil : problems.prefix(3).joined(separator: "\n")
-            treeRevision += 1
+            invalidateTree()
             reload()
         }
     }
@@ -678,7 +729,14 @@ final class LibraryModel: MediaGridOwner {
         let convertible = chosen.filter { !($0.format?.isNormal ?? true) && $0.format?.kind != .audio && $0.format != .svg }
         if !convertible.isEmpty {
             menu.addItem(.separator())
-            menu.addItem(ActionMenuItem("Convert to JPEG or PNG") { [weak self] in
+            // Named by what comes out: videos become MP4, animations GIF, still pictures JPEG or PNG (section 16).
+            let videos = convertible.filter { $0.format?.kind == .video }.count
+            let animated = convertible.filter { entry($0.id)?.facts?.isAnimated == true || $0.format?.kind == .animatedImage }.count
+            let title = videos == convertible.count ? "Convert to MP4"
+                : animated == convertible.count ? "Convert to GIF"
+                : videos + animated == 0 ? "Convert to JPEG or PNG"
+                : "Convert to Normal Formats"
+            menu.addItem(ActionMenuItem(title) { [weak self] in
                 guard let self else { return }
                 self.app.convertFiles(convertible.map(\.url), destination: nil, policy: self.app.preferences.conversion) { _, _ in }
             })

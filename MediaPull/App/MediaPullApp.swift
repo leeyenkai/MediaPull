@@ -39,6 +39,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppModel.shared.browsing.flush()
     }
 
+    /// Library folders renamed or moved in the Finder while MediaPull was in the background are followed (R-1702).
+    func applicationDidBecomeActive(_: Notification) {
+        Task {
+            let app = AppModel.shared
+            if await app.followRootLocations() {
+                app.libraryRevision += 1
+                app.analysis.updateWatch()
+            }
+        }
+    }
+
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         // Analysis picks up where it stopped at the next launch, so only other jobs ask before quitting.
         let running = AppModel.shared.jobs.jobs.filter { $0.state.isActive && $0.kind != .analyse }

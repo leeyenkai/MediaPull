@@ -6,11 +6,14 @@ nonisolated enum MediaListing {
     static let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .creationDateKey,
                                          .isPackageKey]
 
-    /// Media files in `folder` (and below it with `recursive`), the number of subfolders directly inside it, and those
-    /// subfolders by name (packages are files, not folders).
+    /// The most media files a listing holds (the budget in `scripts/perf-budgets.json`); beyond it `limited` is true.
+    static let limit = 50000
+
+    /// Media files in `folder` (and below it with `recursive`), the number of subfolders directly inside it, those
+    /// subfolders by name (packages are files, not folders), and whether the listing stopped at `limit` media files.
     @concurrent
-    static func load(_ folder: URL, recursive: Bool, limit: Int = 50000) async
-        -> (entries: [MediaEntry], folders: Int, subfolders: [URL])
+    static func load(_ folder: URL, recursive: Bool, limit: Int = MediaListing.limit) async
+        -> (entries: [MediaEntry], folders: Int, subfolders: [URL], limited: Bool)
     {
         let fm = FileManager.default
         var urls: [URL] = []
@@ -27,15 +30,26 @@ nonisolated enum MediaListing {
         subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         if recursive {
             let walker = fm.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants])
-            while let url = walker?.nextObject() as? URL, urls.count < limit {
+            // Only media files count toward the limit: metadata files and other files would otherwise halve it.
+            var media = 0
+            while let url = walker?.nextObject() as? URL {
                 if Task.isCancelled {
-                    return ([], folders, subfolders)
+                    return ([], folders, subfolders, false)
                 }
+                let ext = url.pathExtension.lowercased()
+                guard ext != "json", MediaFormat.fromExtension(ext) != nil else { continue }
+                if media == limit { return (entries(urls), folders, subfolders, true) }
+                media += 1
                 urls.append(url)
             }
         } else {
             urls = top
         }
+        return (entries(urls), folders, subfolders, false)
+    }
+
+    private static func entries(_ urls: [URL]) -> [MediaEntry] {
+        let fm = FileManager.default
         var entries: [MediaEntry] = []
         entries.reserveCapacity(urls.count)
         for url in urls {
@@ -47,6 +61,6 @@ nonisolated enum MediaListing {
             entries.append(MediaEntry(url: url, size: Int64(values.fileSize ?? 0), created: values.creationDate,
                                       modified: values.contentModificationDate ?? .distantPast, format: format, source: source))
         }
-        return (entries, folders, subfolders)
+        return entries
     }
 }

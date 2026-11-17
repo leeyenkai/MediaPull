@@ -120,7 +120,10 @@ public struct LibraryRootInfo: Identifiable, Hashable, Sendable {
     /// The folder this root points at, following the bookmark if the folder moved.
     public func resolvedURL() -> (url: URL, stale: Bool)? {
         var stale = false
-        if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) {
+        // Never mounts a network volume or shows a prompt: this runs at launch and whenever the app comes forward.
+        if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], relativeTo: nil,
+                              bookmarkDataIsStale: &stale)
+        {
             return (url, stale)
         }
         if FileManager.default.fileExists(atPath: path) { return (url, false) }

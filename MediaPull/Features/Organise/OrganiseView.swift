@@ -197,7 +197,7 @@ struct OrganiseTree: View {
         // A view body cannot discard with `_ =`; reading the revision rebuilds the tree after changes.
         // swiftlint:disable:next redundant_discardable_let
         let _ = pane.treeRevision
-        let node = FolderNode(url: root, isRoot: true)
+        let node = pane.rootNode(root)
         List(selection: Binding(get: { pane.folder?.path }, set: { path in
             pane.folder = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
         })) {

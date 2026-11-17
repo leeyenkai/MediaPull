@@ -33,6 +33,8 @@ final class AppModel {
     var ruleList: UploadRules?
     /// The rules finished compiling (or failed to); tabs wait for this before loading their first page.
     var ruleListSettled = false
+    /// Library folders whose bookmark finds nothing (deleted, or on a disk that is not connected).
+    var missingRoots: Set<UUID> = []
     /// Bumped after every journaled file change, undo and redo, in any window (History lists and panes refresh).
     var fileChangeRevision = 0 {
         didSet { libraryRevision += 1 }
@@ -157,9 +159,69 @@ final class AppModel {
     func reloadRoots() async {
         guard let store else { return }
         roots = await store.roots()
+        await followRootLocations()
         libraryRevision += 1
         analysis.updateWatch()
         analysis.schedule()
+    }
+
+    /// The name a library folder shows in the list (R-1702); the folder on disk is not renamed.
+    func renameRoot(_ id: UUID, to name: String) async {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        await store?.updateRoot(id, name: clean)
+        await reloadRoots()
+    }
+
+    /// Points a library folder that could not be found at the folder the person chooses.
+    func locateRoot(_ id: UUID) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Use This Folder"
+        guard panel.runModal() == .OK, let url = panel.url?.standardizedFileURL,
+              let old = roots.first(where: { $0.id == id })?.url else { return }
+        Task {
+            let bookmark = (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)) ?? Data()
+            await store?.updateRoot(id, path: url.path, bookmark: bookmark)
+            noteMoved([(from: old.path, to: url.path)])
+            for window in windows { window.library.rootMoved(from: old, to: url) }
+            await reloadRoots()
+        }
+    }
+
+    /// Library folders renamed or moved in the Finder are followed through their bookmarks (R-1702): the stored path,
+    /// the records keyed by path and every window's selection move with them. A folder that cannot be found is listed
+    /// as missing. Runs at launch and whenever MediaPull comes forward.
+    @discardableResult
+    func followRootLocations() async -> Bool {
+        guard let store else { return false }
+        let current = roots
+        let resolved = await Task.detached(priority: .userInitiated) {
+            current.map { root -> (UUID, URL?, Bool) in
+                guard let (url, stale) = root.resolvedURL(), FileManager.default.fileExists(atPath: url.path) else { return (root.id, nil, false) }
+                return (root.id, url.standardizedFileURL, stale)
+            }
+        }.value
+        var changed = false
+        var missing = Set<UUID>()
+        for (id, url, stale) in resolved {
+            guard let index = roots.firstIndex(where: { $0.id == id }) else { continue }
+            guard let url else { missing.insert(id); continue }
+            let old = roots[index].url
+            guard url.path != old.standardizedFileURL.path || stale else { continue }
+            let bookmark = (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)) ?? roots[index].bookmark
+            await store.updateRoot(id, path: url.path, bookmark: bookmark)
+            roots[index].path = url.path
+            roots[index].bookmark = bookmark
+            if url.path != old.standardizedFileURL.path {
+                noteMoved([(from: old.path, to: url.path)])
+                for window in windows { window.library.rootMoved(from: old, to: url) }
+                changed = true
+            }
+        }
+        if missing != missingRoots { missingRoots = missing; changed = true }
+        return changed
     }
 
     func addDefaultRoot() async {
