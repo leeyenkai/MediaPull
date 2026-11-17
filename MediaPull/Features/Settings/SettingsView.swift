@@ -398,7 +398,7 @@ struct EngineSettings: View {
                 }
                 Text("""
                     gallery-dl (GPL-2.0), yt-dlp (Unlicense), Python (PSF), ffmpeg (LGPL-2.1) and their dependencies are included \
-                    unmodified.
+                    unmodified. SOURCES.txt in the licences folder says where to get the source code of each version bundled.
                     """)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -440,9 +440,11 @@ struct AdvancedSettings: View {
                         await app.engines.refreshSignIn()
                     }
                 }
-                Button("Show Logs Folder") {
-                    NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs"))
-                }
+                Button("Export Diagnostics…") { app.exportDiagnostics() }
+                Text("A text file with versions, settings, recent jobs and the network log, to read before sharing. It never "
+                    + "contains cookies, keys, passwords or media.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

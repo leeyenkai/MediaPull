@@ -48,6 +48,25 @@ for dist in "$CACHE"/site-packages/*.dist-info; do
 done
 cp "$CACHE/python/lib/python3.13/LICENSE.txt" "$LICENSES/python-LICENSE.txt" 2>/dev/null || true
 
+# R-307: where the source code of every bundled component can be obtained, with the exact versions bundled.
+"$CACHE/python/bin/python3" -I - "$CACHE/versions.json" "$CACHE/ffmpeg/VERSION" "$LICENSES/SOURCES.txt" <<'PY'
+import json, sys
+versions = json.load(open(sys.argv[1]))
+ffmpeg = open(sys.argv[2]).read().strip() if __import__("os").path.exists(sys.argv[2]) else "not bundled"
+lines = [
+    "MediaPull bundles these components unmodified. Their source code is available at:",
+    "",
+    f"gallery-dl {versions.get('gallery_dl')} (GPL-2.0): https://github.com/mikf/gallery-dl and https://pypi.org/project/gallery-dl/",
+    f"yt-dlp {versions.get('yt_dlp')} (Unlicense): https://github.com/yt-dlp/yt-dlp and https://pypi.org/project/yt-dlp/",
+    f"Python {versions.get('python')} (PSF): https://www.python.org/downloads/source/ (built by python-build-standalone)",
+    f"ffmpeg {ffmpeg} (LGPL-2.1): https://ffmpeg.org/releases/ffmpeg-{ffmpeg}.tar.xz, configured by scripts/build-ffmpeg.sh",
+]
+for name in ("requests", "urllib3", "idna", "charset_normalizer", "certifi"):
+    lines.append(f"{name} {versions.get(name)}: https://pypi.org/project/{name.replace('_', '-')}/{versions.get(name)}/")
+lines += ["", "To ask for a copy of the exact sources used in this build, contact the person who gave you this copy of MediaPull."]
+open(sys.argv[3], "w").write("\n".join(lines) + "\n")
+PY
+
 xattr -cr "$APP" 2>/dev/null || true
 
 # Release builds signed with a real identity re-sign every nested Mach-O with the hardened runtime.

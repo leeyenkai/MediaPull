@@ -11,6 +11,14 @@ struct ActivityView: View {
                     Button("Resume") { Task { await app.engines.resumeAfterCheckpoint() } }
                 }
             }
+            // R-1306: updates are only announced; installing stays the person's choice (D-20).
+            let updates = app.engineUpdates.filter { $0.blockedReason == nil }
+            if !updates.isEmpty {
+                Banner(symbol: "arrow.down.app", tint: .accentColor,
+                       text: "Engine update available: " + updates.map { "\($0.name) \($0.available)" }.joined(separator: ", ")) {
+                    SettingsLink { Text("Show") }
+                }
+            }
             if app.jobs.jobs.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "arrow.down.circle").font(.largeTitle).foregroundStyle(.tertiary)
@@ -64,7 +72,15 @@ struct JobRow: View {
                 }
             }
             HStack(spacing: 6) {
-                Text(job.state.label).foregroundStyle(stateColor)
+                if case let .waiting(until, _) = job.state {
+                    // R-1902: waiting shows a countdown, updated each second.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let left = max(0, Int(until.timeIntervalSince(context.date).rounded(.up)))
+                        Text("\(job.state.label) · \(left / 60):\(String(format: "%02d", left % 60)) left").foregroundStyle(stateColor)
+                    }
+                } else {
+                    Text(job.state.label).foregroundStyle(stateColor)
+                }
                 if !job.summary.isEmpty { Text("·"); Text(job.summary) }
                 if let item = job.currentItem, job.state.isActive { Text("·"); Text(item).lineLimit(1).truncationMode(.middle) }
             }

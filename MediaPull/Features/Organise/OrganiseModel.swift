@@ -336,6 +336,17 @@ final class OrganisePane: MediaGridOwner {
                 owner.run(FolderOperations.move(chosen, to: target))
             })
         }
+        // R-3803: any folder, chosen in a panel, as one change ⌘Z takes back.
+        menu.addItem(ActionMenuItem("Move To…") { [weak self] in
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.prompt = "Move Here"
+            panel.directoryURL = self?.folder
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            owner.run(FolderOperations.move(chosen, to: destination))
+        })
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Move to Trash") { owner.run(FolderOperations.trash(chosen)) })
         return menu

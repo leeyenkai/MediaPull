@@ -120,8 +120,13 @@ final class AnalysisService {
         }
     }
 
+    /// Every library folder is watched, including those left out of analysis, so every pane updates live when files
+    /// change in the Finder (R-1704); only `scanFolders` are analysed.
     func updateWatch() {
-        watcher.watch(scanFolders.map(\.path))
+        let roots = app.roots.filter { !app.missingRoots.contains($0.id) }.map(\.url)
+        let extras = extraFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            .filter { folder in !roots.contains { folder.path.hasPrefix($0.path + "/") || folder.path == $0.path } }
+        watcher.watch((roots + extras).map(\.path))
     }
 
     /// Library roots (minus those excluded in Settings) and folders open in Organise.

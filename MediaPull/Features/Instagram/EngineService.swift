@@ -111,7 +111,10 @@ final class EngineService {
             window.showBrowser = true
             window.browser.load(target)
         }
-        JobCenter.post(title: "Instagram needs your attention", body: gateMessage ?? "Open MediaPull to continue.")
+        // R-1905: the same setting as finished jobs.
+        if app.preferences.notifyWhenDone {
+            JobCenter.post(title: "Instagram needs your attention", body: gateMessage ?? "Open MediaPull to continue.")
+        }
     }
 
     var gateMessage: String? {

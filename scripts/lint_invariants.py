@@ -55,8 +55,31 @@ RULES = [
     },
 ]
 
+# R-510: Apple's frameworks and the project's own modules only (no analytics, crash-reporting or update SDKs). Adding a
+# module here is a decision for the spec (CLAUDE.md: no third-party Swift packages).
+APPLE_AND_OWN = {
+    "AVFoundation", "AVKit", "Accelerate", "AppKit", "CoreGraphics", "CoreML", "CoreServices", "CryptoKit", "Foundation",
+    "IOKit", "ImageIO", "Observation", "PackageDescription", "Quartz", "QuartzCore", "Security", "SwiftData", "SwiftUI",
+    "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "Vision", "WebKit", "XCTest", "os",
+    "MediaPullAnalysis", "MediaPullBrowser", "MediaPullCore", "MediaPullEngines", "MediaPullLibrary", "MediaPullMedia",
+    "MediaPullNet", "MediaPullStore",
+}
+RULES.append({
+    "id": "framework",
+    "why": "only Apple frameworks and MediaPull's own modules may be imported (R-510)",
+    "pattern": re.compile(r"^\s*(?:@testable\s+)?import\s+(?!(?:" + "|".join(sorted(APPLE_AND_OWN)) + r")\b)\w+"),
+    "paths": [APP, KIT, "MediaPullKit/Tests"],
+})
+RULES.append({
+    "id": "framework",
+    "why": "the package has no third-party dependencies (CLAUDE.md, R-510)",
+    "pattern": re.compile(r"\.package\("),
+    "paths": ["MediaPullKit"],
+    "skip_files": [],
+})
+
 ALLOW = re.compile(r"lint:allow\s+((?:[\w-]+\s+)+)\S")
-RULE_IDS = {"shortcut", "main-io", "unsafe-int", "icon-label", "silent-write"}
+RULE_IDS = {"shortcut", "main-io", "unsafe-int", "icon-label", "silent-write", "framework"}
 
 
 def files(paths):

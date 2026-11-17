@@ -107,8 +107,7 @@ struct WalkthroughView: View {
             Spacer(minLength: 0)
             Text("Would you like a one-minute tour? You can skip it and open it later from Settings.")
                 .foregroundStyle(.secondary)
-            Text("Automated collection may breach some sites' terms. You are responsible for respecting the "
-                + "rights of the people whose media you save.")
+            Text(InstagramNotice.terms)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

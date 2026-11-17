@@ -30,7 +30,11 @@ struct InstagramForm: View {
             if !app.engines.signedIn {
                 HStack(spacing: 8) {
                     Image(systemName: "key.fill").foregroundStyle(.orange)
-                    Text("Instagram needs you signed in to list an account's posts.").font(.callout)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Instagram needs you signed in to list an account's posts.").font(.callout)
+                        Text(InstagramNotice.terms).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Spacer(minLength: 4)
                     Button("Sign In") { model.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!) }
                         .controlSize(.small)
@@ -111,6 +115,7 @@ struct InstagramForm: View {
         }
         Toggle("Only new posts since the last pull", isOn: $draft.incremental)
             .disabled(draft.hashtag == nil && draft.username.isEmpty)
+        Text(InstagramNotice.quality).font(.caption).foregroundStyle(.secondary)
     }
 
     private var canStart: Bool {
@@ -210,4 +215,13 @@ struct AccountCard: View {
         if account.isPrivate { parts.append(account.followedByViewer == true ? "private, you follow" : "private") }
         return parts.joined(separator: " · ")
     }
+}
+
+/// Plain words about Instagram that appear where they matter (R-201, R-1109).
+enum InstagramNotice {
+    static let terms = "Automated collection from Instagram may breach Instagram's terms. Any rate limit, check or restriction "
+        + "Instagram applies falls on the signed-in account. You are responsible for respecting the rights of the people whose "
+        + "media you save."
+
+    static let quality = "Instagram's largest version is usually 1080 or 1440 pixels wide; it is not the original upload."
 }

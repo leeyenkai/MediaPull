@@ -22,7 +22,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATUSES = {"built", "person", "amended", "dropped", "partial", "missing"}
 OPEN = {"partial", "missing"}
-SOURCE_DIRS = ["MediaPull", "MediaPullKit/Sources", "MediaPullKit/Tests", "Engines/bridge", "scripts"]
+# Identifiers are looked up in the code and its tests only, so a name mentioned in a script cannot pass for code.
+SOURCE_DIRS = ["MediaPull", "MediaPullKit/Sources", "MediaPullKit/Tests", "Engines/bridge"]
 
 
 def read(path):
