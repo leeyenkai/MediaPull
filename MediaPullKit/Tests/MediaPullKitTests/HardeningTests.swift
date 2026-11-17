@@ -60,3 +60,26 @@ final class EngineActivationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.activeFile.path))
     }
 }
+
+/// B6: the dependency versions update checks compare against are the ones scripts/fetch-engines.sh bundles.
+final class BundledPinTests: XCTestCase {
+    func testBundledDependenciesMatchTheFetchScript() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0 ..< 4 {
+            root.deleteLastPathComponent()
+        }
+        let script = try String(contentsOf: root.appendingPathComponent("scripts/fetch-engines.sh"), encoding: .utf8)
+        var pinned: [String: String] = [:]
+        for line in script.split(separator: "\n") {
+            let parts = line.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"")).split(separator: " ")
+            guard parts.count == 3, parts[2].count == 64, parts[2].allSatisfy(\.isHexDigit) else { continue }
+            pinned[String(parts[0])] = String(parts[1])
+        }
+        XCTAssertFalse(pinned.isEmpty, "no pins found in fetch-engines.sh")
+        for (name, version) in EngineManager.bundledDependencies {
+            XCTAssertEqual(pinned[name], version, "\(name) in EngineManager.bundledDependencies differs from fetch-engines.sh")
+        }
+        let dependencies = Set(pinned.keys).subtracting(["gallery-dl", "yt-dlp"])
+        XCTAssertEqual(dependencies, Set(EngineManager.bundledDependencies.keys))
+    }
+}

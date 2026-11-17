@@ -34,6 +34,10 @@ final class DownloadsModel {
     var include: Set<String> = []
     var switches: [String: Bool] = [:]
     @ObservationIgnored private var checkTask: Task<Void, Never>?
+
+    isolated deinit {
+        checkTask?.cancel()
+    }
     private var app: AppModel { .shared }
 
     /// Sets the address and works out how to download it: Instagram, a video, or any other site gallery-dl supports.

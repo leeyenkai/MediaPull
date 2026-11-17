@@ -238,6 +238,24 @@ public actor AnalysisStore {
         return try? Self.decoder.decode(AnalysisRecord.self, from: file.payload)
     }
 
+    /// Up to `limit` photos of one person: each face's key, a path that holds it and its box. Reads only that person's
+    /// faces and their paths, so the People list does not go through the whole library for each row.
+    public func faceExamples(of person: UUID, limit: Int = .max) -> [(key: String, path: String, box: FaceBox?)] {
+        let wanted: UUID? = person
+        var descriptor = FetchDescriptor<FaceModel>(predicate: #Predicate { $0.personID == wanted }, sortBy: [SortDescriptor(\.key)])
+        if limit < .max { descriptor.fetchLimit = limit * 4 }
+        var out: [(key: String, path: String, box: FaceBox?)] = []
+        for face in (try? modelContext.fetch(descriptor)) ?? [] where out.count < limit {
+            let sha = face.sha256
+            var paths = FetchDescriptor<FilePathModel>(predicate: #Predicate { $0.sha256 == sha }, sortBy: [SortDescriptor(\.path)])
+            paths.fetchLimit = 1
+            guard let path = try? modelContext.fetch(paths).first?.path else { continue }
+            let faceKey = String(face.key.split(separator: "|").last ?? "")
+            out.append((face.key, path, record(sha256: sha)?.faces.first { $0.key == faceKey }))
+        }
+        return out
+    }
+
     /// All paths for each checksum, for search over everything analysed.
     public func allPaths() -> [String: String] {
         Dictionary(((try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? []).map { ($0.path, $0.sha256) },

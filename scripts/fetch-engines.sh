@@ -8,6 +8,10 @@ CACHE="${MEDIAPULL_ENGINE_CACHE:-$HOME/Library/Caches/MediaPullBuild}"
 DL="$CACHE/downloads"
 OUT="$CACHE/engines"
 mkdir -p "$DL/wheels" "$OUT"
+source "$(dirname "$0")/cache-stamp.sh"
+# Until this run finishes, the cache is not a complete set of today's pins.
+cache_unmark engines
+rm -f "$OUT/versions.json"
 
 PY_VERSION="3.13.18"
 PY_BUILD="20261110"
@@ -86,4 +90,5 @@ find "$LIB" "$OUT/site-packages" -name "*.py" -type f -exec sh -c 'test -f "${1}
 find "$LIB" "$OUT/site-packages" -name "__pycache__" -type d -prune -exec rm -rf {} +
 
 du -sh "$OUT/python" "$OUT/site-packages"
+cache_mark engines
 echo "Engines ready in $OUT"

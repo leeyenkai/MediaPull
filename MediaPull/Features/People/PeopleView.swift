@@ -222,9 +222,11 @@ struct FaceOptIn: View {
         .shared
     }
 
+    /// R-3907.
     static let limits =
-        "Faces turned well away from the camera are matched less reliably, children's faces change with age and are confused more "
-        + "often, and very small faces are not used. Corrections you make are kept."
+        "Faces turned well away from the camera (side profiles) are matched much less reliably. Children's faces change with "
+        + "age and are confused more often. Faces narrower than 32 pixels are not used. JPEG compression matters only at very "
+        + "small sizes; blur, poor light and partly covered faces matter more. Corrections you make are kept."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

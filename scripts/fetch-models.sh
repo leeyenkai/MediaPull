@@ -11,6 +11,8 @@ BUNDLE="$MODELS/bundle"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOCK="$HERE/models.lock"
 mkdir -p "$SRC/clip" "$SRC/geonames" "$BUNDLE"
+source "$HERE/cache-stamp.sh"
+cache_unmark models
 
 fetch() { # url, file, sha256 (empty: recorded on first fetch)
   local url="$1" file="$2" sha="$3"
@@ -102,3 +104,4 @@ else
   fi
 fi
 du -sh "$BUNDLE"
+cache_mark models

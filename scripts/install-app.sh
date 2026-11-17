@@ -5,9 +5,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 CACHE="${MEDIAPULL_ENGINE_CACHE:-$HOME/Library/Caches/MediaPullBuild}"
 
-if [[ ! -x "$CACHE/engines/python/bin/python3" ]]; then ./scripts/fetch-engines.sh; fi
-if [[ ! -x "$CACHE/engines/ffmpeg/ffmpeg" ]]; then ./scripts/build-ffmpeg.sh; fi
-if [[ ! -f "$CACHE/models/bundle/manifest.json" ]]; then ./scripts/fetch-models.sh; fi
+source scripts/cache-stamp.sh
+# Any cache that is missing or does not match today's pins is made again; a release never ships a stale one.
+cache_current engines || ./scripts/fetch-engines.sh
+cache_current ffmpeg || ./scripts/build-ffmpeg.sh
+cache_current models || ./scripts/fetch-models.sh
 
 # Start from a fresh bundle: when only engine or bridge files change, Xcode copies them again but does not
 # re-sign, and the signature check below would fail.

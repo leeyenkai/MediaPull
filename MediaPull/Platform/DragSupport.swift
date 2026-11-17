@@ -44,7 +44,8 @@ nonisolated final class ItemPromiseProvider: NSFilePromiseProvider {
 /// Writes promised files when items are dropped on Finder or another app.
 final class PromiseWriter: NSObject, NSFilePromiseProviderDelegate {
     static let shared = PromiseWriter()
-    let queue: OperationQueue = {
+    /// Read from whatever thread AppKit asks on, so it is not tied to the main actor.
+    nonisolated let queue: OperationQueue = {
         let queue = OperationQueue()
         queue.qualityOfService = .userInitiated
         queue.maxConcurrentOperationCount = 4
@@ -56,7 +57,7 @@ final class PromiseWriter: NSObject, NSFilePromiseProviderDelegate {
     }
 
     nonisolated func operationQueue(for _: NSFilePromiseProvider) -> OperationQueue {
-        MainActor.assumeIsolated { queue }
+        queue
     }
 
     nonisolated func filePromiseProvider(_ provider: NSFilePromiseProvider, writePromiseTo url: URL,

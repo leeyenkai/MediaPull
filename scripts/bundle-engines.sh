@@ -10,10 +10,20 @@ HELPERS="$APP/Helpers"
 LICENSES="$APP/Resources/Licenses"
 
 bash "$PROJECT_DIR/scripts/bundle-models.sh"
+source "$PROJECT_DIR/scripts/cache-stamp.sh"
 
 if [[ ! -x "$CACHE/python/bin/python3" ]]; then
   echo "warning: MediaPull engines are missing. Run scripts/fetch-engines.sh and scripts/build-ffmpeg.sh, then build again."
   exit 0
+fi
+# Engines that do not match today's pins (a pin changed, or a fetch stopped part way) are never bundled.
+if ! cache_current engines; then
+  echo "error: the engine cache does not match scripts/fetch-engines.sh. Run scripts/fetch-engines.sh, then build again."
+  exit 1
+fi
+if [[ -x "$CACHE/ffmpeg/ffmpeg" ]] && ! cache_current ffmpeg; then
+  echo "error: ffmpeg does not match scripts/build-ffmpeg.sh. Run scripts/build-ffmpeg.sh, then build again."
+  exit 1
 fi
 
 mkdir -p "$RESOURCES" "$HELPERS" "$LICENSES"

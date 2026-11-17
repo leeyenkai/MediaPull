@@ -151,6 +151,12 @@ final class OrganisePane: MediaGridOwner {
         self.role = role
     }
 
+    isolated deinit {
+        for task in [treeRefresh, loadTask, filterTask] {
+            task?.cancel()
+        }
+    }
+
     func rootNode(_ root: URL) -> FolderNode {
         let key = "\(treeRevision)|\(root.path)"
         if let cachedRoot, cachedRoot.key == key { return cachedRoot.node }
@@ -423,6 +429,7 @@ final class OrganiseModel {
 
     /// A closed window's Organise section stops listening for folder changes.
     isolated deinit {
+        messageTask?.cancel()
         AppModel.shared.analysis.onFolderChange[listenerID] = nil
         // Once this window is gone, its folders stop being watched (after the window's own reference has cleared).
         Task { @MainActor in OrganiseModel.updateAnalysisFolders() }

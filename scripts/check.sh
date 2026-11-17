@@ -1,11 +1,35 @@
 #!/bin/bash
 # Runs every automated check (SPEC section 25): module-boundary lint, Swift unit and engine tests,
 # the bridge's Python tests and an app build. Build products stay outside the iCloud-synced folder.
+#   scripts/check.sh            every check; missing tools or engines fail it
+#   scripts/check.sh --quick    skips what is missing and the two builds, and never reports a full pass
+#   scripts/check.sh --release  also fails while any requirement in docs/CONFORMANCE.md is open
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 CACHE="${MEDIAPULL_ENGINE_CACHE:-$HOME/Library/Caches/MediaPullBuild}"
 FAILED=0
+QUICK=0
+RELEASE=0
+SKIPPED=()
+for arg in "$@"; do
+  case "$arg" in
+    --quick) QUICK=1 ;;
+    --release) RELEASE=1 ;;
+    *) echo "unknown option $arg"; exit 2 ;;
+  esac
+done
+
+# Something needed for a full check is missing: a full run fails, a quick run notes it.
+missing() {
+  if [[ $QUICK -eq 1 ]]; then
+    echo "skipped: $1"
+    SKIPPED+=("$1")
+  else
+    echo "error: $1 (scripts/check.sh --quick runs without it)"
+    FAILED=1
+  fi
+}
 
 echo "== Module boundaries and read-only lint"
 check_only_in() {
@@ -43,21 +67,31 @@ if grep -rniE "local[c]hat" --include=* -r . --exclude-dir=.git --exclude-dir=.b
   FAILED=1
 fi
 
+echo "== Invariants (patterns earlier audits found; scripts/lint_invariants.py)"
+python3 scripts/lint_invariants.py || FAILED=1
+
+echo "== Requirements (docs/CONFORMANCE.md against docs/SPEC.md and the code)"
+if [[ $RELEASE -eq 1 ]]; then python3 scripts/conformance.py --strict || FAILED=1; else python3 scripts/conformance.py | tail -1 || FAILED=1; fi
+
 echo "== Style (swiftlint and swiftformat with the repository's settings)"
 if command -v swiftlint >/dev/null; then
-  style="$(swiftlint lint --quiet 2>/dev/null || true)"
-  if [[ -n "$style" ]]; then
+  # A broken configuration or a crash is a failure too, not an empty report.
+  if ! style="$(swiftlint lint --quiet 2>&1)"; then
+    echo "$style" | head -20
+    echo "error: swiftlint failed or reported problems"
+    FAILED=1
+  elif [[ -n "$style" ]]; then
     echo "$style" | head -20
     echo "error: swiftlint reported $(echo "$style" | wc -l | tr -d ' ') problems"
     FAILED=1
   fi
 else
-  echo "skipped: swiftlint is not installed"
+  missing "swiftlint is not installed"
 fi
 if command -v swiftformat >/dev/null; then
   swiftformat MediaPull MediaPullKit --lint --quiet >/dev/null 2>&1 || { echo "error: swiftformat would change files (run swiftformat MediaPull MediaPullKit)"; FAILED=1; }
 else
-  echo "skipped: swiftformat is not installed"
+  missing "swiftformat is not installed"
 fi
 
 echo "== Swift tests"
@@ -68,19 +102,29 @@ if [[ -x "$CACHE/engines/python/bin/python3" ]]; then
   "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_egress_guard.py "$CACHE/engines/site-packages" 2>&1 | tail -3 || FAILED=1
   "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_bridge_details.py "$CACHE/engines/site-packages" 2>&1 | tail -1 || FAILED=1
 else
-  echo "skipped: engines not installed (scripts/fetch-engines.sh)"
+  missing "engines not installed (scripts/fetch-engines.sh), so the egress guard was not tested"
 fi
 
-echo "== Package build for the iOS Simulator (keeps an iPad port cheap)"
-(cd MediaPullKit && xcodebuild -scheme MediaPullKit -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath "$CACHE/DerivedData-iOS" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u) || FAILED=1
+if [[ $QUICK -eq 1 ]]; then
+  SKIPPED+=("the iOS Simulator package build and the app build")
+else
+  echo "== Package build for the iOS Simulator (keeps an iPad port cheap)"
+  (cd MediaPullKit && xcodebuild -scheme MediaPullKit -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath "$CACHE/DerivedData-iOS" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u) | tee /dev/stderr \
+    | grep -q "BUILD SUCCEEDED" || FAILED=1
 
-echo "== App build"
-xcodebuild -project MediaPull.xcodeproj -scheme MediaPull -configuration Debug -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath "$CACHE/DerivedData" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u || FAILED=1
+  echo "== App build"
+  xcodebuild -project MediaPull.xcodeproj -scheme MediaPull -configuration Debug -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$CACHE/DerivedData" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u | tee /dev/stderr \
+    | grep -q "BUILD SUCCEEDED" || FAILED=1
+fi
 
 if [[ $FAILED -ne 0 ]]; then
   echo "Checks failed."
   exit 1
+fi
+if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+  echo "Partial check: no failures, but skipped: ${SKIPPED[*]}."
+  exit 0
 fi
 echo "All checks passed."

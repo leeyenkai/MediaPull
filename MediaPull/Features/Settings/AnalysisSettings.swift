@@ -13,6 +13,11 @@ struct AnalysisSettings: View {
 
     var body: some View {
         Form {
+            if let problem = app.analysis.storeProblem {
+                Section {
+                    Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+            }
             Section {
                 Toggle("Analyse library media", isOn: Binding(get: { preferences.analysisEnabled }, set: {
                     preferences.analysisEnabled = $0
@@ -124,6 +129,13 @@ struct FaceSettings: View {
                         Text("Stricter (fewer wrong matches)").tag(0.05)
                     }
                     .onChange(of: preferences.faceMatchAdjustment) { _, _ in Task { await app.analysis.regroupFaces(full: true) } }
+                    // Off stops recognising and hides people; names and corrections stay until they are deleted (R-3901).
+                    Toggle("Recognise people", isOn: Binding(get: { preferences.facesEnabled }, set: { on in
+                        if !on {
+                            preferences.facesEnabled = false
+                            app.analysis.forgetUnknownPeople()
+                        }
+                    }))
                     Button("Delete All Face Data…") { confirmDelete = true }
                 } header: { Text("Recognising People") }
                 Section {

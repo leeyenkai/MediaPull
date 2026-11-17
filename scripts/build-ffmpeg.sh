@@ -10,6 +10,8 @@ WORK="$CACHE/ffmpeg-build"
 VERSION="9.0.2"
 SHA="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
 mkdir -p "$DL"
+source "$(dirname "$0")/cache-stamp.sh"
+mkdir -p "$OUT" && cache_unmark ffmpeg
 
 TARBALL="$DL/ffmpeg-$VERSION.tar.xz"
 if [[ ! -f "$TARBALL" || "$(shasum -a 256 "$TARBALL" | awk '{print $1}')" != "$SHA" ]]; then
@@ -49,6 +51,7 @@ strip "$OUT/ffmpeg" "$OUT/ffprobe"
 codesign --force --sign - "$OUT/ffmpeg" "$OUT/ffprobe"
 cp COPYING.LGPLv2.1 "$OUT/LICENSE-ffmpeg.txt"
 echo "$VERSION" > "$OUT/VERSION"
+cache_mark ffmpeg
 cd /
 rm -rf "$WORK"
 ls -la "$OUT"

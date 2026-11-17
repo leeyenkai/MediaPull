@@ -351,6 +351,23 @@ final class AnalysisLifecycleTests: XCTestCase {
         XCTAssertNotNil(keptRecord)
     }
 
+    func testFaceExamplesReadOnlyThatPerson() async throws {
+        let store = try AnalysisStore.make(folder: nil)
+        let box = FaceBox(x: 0.1, y: 0.1, width: 0.2, height: 0.2, quality: 1, pixelSize: 100, yaw: nil)
+        for sha in ["a", "b", "c"] {
+            await store.save(AnalysisRecord(sha256: sha, facts: MediaFacts(), faces: [box]))
+            await store.addFaces([NewFace(key: box.key, vectorRow: 0, quality: 1, pixelSize: 100)], sha256: sha)
+            await store.setPath("/lib/\(sha).jpg", sha256: sha, size: 1, modified: Date())
+        }
+        let alice = UUID(), bob = UUID()
+        await store.applyAssignments(["a|\(box.key)": alice, "b|\(box.key)": alice, "c|\(box.key)": bob])
+        let examples = await store.faceExamples(of: alice)
+        XCTAssertEqual(examples.map(\.path), ["/lib/a.jpg", "/lib/b.jpg"])
+        XCTAssertEqual(examples.first?.box?.key, box.key)
+        let one = await store.faceExamples(of: alice, limit: 1)
+        XCTAssertEqual(one.count, 1)
+    }
+
     func testVectorStoreRemovesRowsAndKeepsTheRest() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("vec-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }

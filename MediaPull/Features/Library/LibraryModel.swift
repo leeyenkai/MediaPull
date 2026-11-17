@@ -112,6 +112,11 @@ final class LibraryModel: MediaGridOwner {
 
     isolated deinit {
         AppModel.shared.analysis.onFolderChange[listenerID] = nil
+        // A closed window's work stops with it; the watcher's cancel handler closes its file descriptor.
+        watcher?.cancel()
+        for task in [changeTask, filterTask, reloadTask, duplicateTask, treeRefresh] {
+            task?.cancel()
+        }
     }
 
     private func foldersChanged(_ paths: [String]) {

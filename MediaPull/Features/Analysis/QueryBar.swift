@@ -11,6 +11,9 @@ struct QueryBar: View {
     /// ⌘F focuses this field when its pane is the one being worked in (SPEC 21); the token changes on each ⌘F.
     var focusToken: Int = 0
     @FocusState private var searchFocused: Bool
+    /// The values the filters offer, worked out off the main actor when the files or their analysis change, not on
+    /// every redraw (typing in the search field redraws the bar).
+    @State private var facets = FilterFacets()
     private var app: AppModel {
         .shared
     }
@@ -37,17 +40,22 @@ struct QueryBar: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
                     sortMenu.labelStyle(.titleAndIcon)
-                    FilterMenu(query: $query, entries: entries).labelStyle(.titleAndIcon)
+                    FilterMenu(query: $query, facets: facets).labelStyle(.titleAndIcon)
                 }
                 HStack(spacing: 4) {
                     sortMenu.labelStyle(.iconOnly)
-                    FilterMenu(query: $query, entries: entries).labelStyle(.iconOnly)
+                    FilterMenu(query: $query, facets: facets).labelStyle(.iconOnly)
                 }
             }
             .layoutPriority(1)
             Toggle(isOn: $includeSubfolders) { Image(systemName: "square.stack.3d.down.right") }
+                .accessibilityLabel("Include Subfolders")
                 .toggleStyle(.button)
                 .help("Include subfolders")
+        }
+        .task(id: FilterFacets.signature(entries, analysisRevision: app.analysis.revision, tagConfidence: query.tagConfidence)) {
+            let entries = entries, confidence = query.tagConfidence
+            facets = await Task.detached(priority: .userInitiated) { FilterFacets(entries, tagConfidence: confidence) }.value
         }
         .controlSize(.small)
     }
@@ -79,7 +87,7 @@ struct QueryBar: View {
 /// The filters (R-3703). Values within a filter combine with OR; different filters with AND.
 struct FilterMenu: View {
     @Binding var query: LibraryQuery
-    var entries: [MediaEntry]
+    var facets: FilterFacets
     private var app: AppModel {
         .shared
     }
@@ -91,7 +99,7 @@ struct FilterMenu: View {
             }
             Menu("Format") {
                 // The formats in this folder, most common first (R-3703).
-                ForEach(formatCounts, id: \.0) { format, count in toggle("\(format.label) (\(count))", $query.filter.formats, format) }
+                ForEach(facets.formats, id: \.0) { format, count in toggle("\(format.label) (\(count))", $query.filter.formats, format) }
             }
             Menu("Orientation") {
                 ForEach(Orientation.allCases, id: \.self) { o in toggle(o.label, $query.filter.orientations, o) }
@@ -139,10 +147,10 @@ struct FilterMenu: View {
             Menu("Dominant Colour") {
                 ForEach(ColourName.allCases, id: \.self) { colour in toggle(colour.label, $query.filter.colours, colour) }
             }
-            valueMenu("Content", values: tags, set: $query.filter.tags) { $0.replacingOccurrences(of: "_", with: " ").capitalized }
-            valueMenu("Place", values: places, set: $query.filter.places) { $0 }
-            valueMenu("Source", values: sources, set: $query.filter.sources) { $0 }
-            valueMenu("Camera", values: cameras, set: $query.filter.cameras) { $0 }
+            valueMenu("Content", values: facets.tags, set: $query.filter.tags) { $0.replacingOccurrences(of: "_", with: " ").capitalized }
+            valueMenu("Place", values: facets.places, set: $query.filter.places) { $0 }
+            valueMenu("Source", values: facets.sources, set: $query.filter.sources) { $0 }
+            valueMenu("Camera", values: facets.cameras, set: $query.filter.cameras) { $0 }
             Toggle("Only Visually Similar Sets", isOn: $query.filter.similarOnly)
             Divider()
             Button("Clear Filters") { query.filter = LibraryFilter() }
@@ -154,11 +162,6 @@ struct FilterMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Filter by kind, size, faces, colour, content, place and more")
-    }
-
-    private var formatCounts: [(MediaFormat, Int)] {
-        Dictionary(grouping: entries.compactMap(\.format), by: { $0 }).map { ($0.key, $0.value.count) }
-            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.label < $1.0.label }
     }
 
     private func toggle<T: Hashable>(_ label: String, _ set: Binding<Set<T>>, _ value: T) -> some View {
@@ -182,29 +185,6 @@ struct FilterMenu: View {
         }
     }
 
-    private func counted(_ values: [String]) -> [(String, Int)] {
-        var counts: [String: Int] = [:]
-        for v in values {
-            counts[v, default: 0] += 1
-        }
-        return counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
-    }
-
-    private var tags: [(String, Int)] {
-        counted(entries.flatMap { ($0.record?.labels ?? []).filter { $0.confidence >= query.tagConfidence }.map(\.identifier) })
-    }
-
-    private var places: [(String, Int)] {
-        counted(entries.compactMap { $0.record?.place?.display })
-    }
-
-    private var sources: [(String, Int)] {
-        counted(entries.compactMap { $0.source?.sourceName })
-    }
-
-    private var cameras: [(String, Int)] {
-        counted(entries.compactMap { $0.facts?.camera })
-    }
 }
 
 /// Progress of analysis, for the Library and Organise headers.
@@ -223,5 +203,38 @@ struct AnalysisStatus: View {
             .foregroundStyle(.secondary)
             .help("Media is analysed on this Mac for search and sorting. Nothing leaves the Mac.")
         }
+    }
+}
+
+/// The values each filter offers, with how many files have them (R-3703).
+struct FilterFacets: Sendable {
+    var formats: [(MediaFormat, Int)] = []
+    var tags: [(String, Int)] = []
+    var places: [(String, Int)] = []
+    var sources: [(String, Int)] = []
+    var cameras: [(String, Int)] = []
+
+    init() {}
+
+    nonisolated init(_ entries: [MediaEntry], tagConfidence: Float) {
+        formats = Dictionary(grouping: entries.compactMap(\.format), by: { $0 }).map { ($0.key, $0.value.count) }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.label < $1.0.label }
+        tags = Self.counted(entries.flatMap { ($0.record?.labels ?? []).filter { $0.confidence >= tagConfidence }.map(\.identifier) })
+        places = Self.counted(entries.compactMap { $0.record?.place?.display })
+        sources = Self.counted(entries.compactMap { $0.source?.sourceName })
+        cameras = Self.counted(entries.compactMap { $0.facts?.camera })
+    }
+
+    nonisolated static func counted(_ values: [String]) -> [(String, Int)] {
+        var counts: [String: Int] = [:]
+        for value in values {
+            counts[value, default: 0] += 1
+        }
+        return counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+    }
+
+    /// Cheap to work out on every redraw: changes when the files, their analysis or the tag threshold change.
+    static func signature(_ entries: [MediaEntry], analysisRevision: Int, tagConfidence: Float) -> String {
+        "\(entries.count)|\(entries.first?.path ?? "")|\(entries.last?.path ?? "")|\(analysisRevision)|\(tagConfidence)"
     }
 }

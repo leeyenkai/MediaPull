@@ -10,6 +10,11 @@ if [[ ! -f "$BUNDLE/manifest.json" ]]; then
   echo "warning: MediaPull analysis models are missing. Run scripts/fetch-models.sh, then build again."
   exit 0
 fi
+source "$PROJECT_DIR/scripts/cache-stamp.sh"
+if ! cache_current models; then
+  echo "error: the staged models do not match scripts/models.lock and the model scripts. Run scripts/fetch-models.sh."
+  exit 1
+fi
 mkdir -p "$APP/Resources/Models" "$APP/Resources/Licenses"
 rsync -a --delete --exclude Licenses "$BUNDLE/" "$APP/Resources/Models/"
 cp "$BUNDLE/Licenses/models.txt" "$APP/Resources/Licenses/analysis-models.txt"

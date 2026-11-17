@@ -23,6 +23,8 @@ final class AnalysisService {
     var suggestions: [UUID: String] = [:]
     private(set) var analysedCount = 0
     private(set) var modelsLoaded = false
+    /// Set when the analysis database could not be opened and was set aside (Settings > Analysis says so).
+    private(set) var storeProblem: String?
 
     @ObservationIgnored private(set) var store: AnalysisStore?
     @ObservationIgnored private var analyzer: Analyzer?
@@ -90,7 +92,7 @@ final class AnalysisService {
 
     func start(inMemory: Bool = false) {
         guard store == nil else { return }
-        store = try? AnalysisStore.make(folder: inMemory ? nil : Self.folder)
+        store = Self.openStore(inMemory: inMemory) { [weak self] problem in self?.storeProblem = problem }
         // Self-tests keep their vectors out of the real Analysis folder.
         let folder = inMemory ? FileManager.default.temporaryDirectory
             .appendingPathComponent("MediaPull-selftest-analysis-\(UUID().uuidString)")
@@ -124,7 +126,10 @@ final class AnalysisService {
 
     /// Library roots (minus those excluded in Settings) and folders open in Organise.
     var scanFolders: [URL] {
-        let roots = app.roots.compactMap { $0.resolvedURL()?.url }.filter { !preferences.analysisExcludedRoots.contains($0.path) }
+        // Root paths are kept current by AppModel.followRootLocations (bookmarks resolved off the main actor); a root that
+        // cannot be found is left out, so its files are not taken for deleted.
+        let roots = app.roots.filter { !app.missingRoots.contains($0.id) }.map(\.url)
+            .filter { !preferences.analysisExcludedRoots.contains($0.path) }
         return roots + extraFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
             .filter { folder in !roots.contains { folder.path.hasPrefix($0.path + "/") || folder.path == $0.path } }
     }
@@ -632,16 +637,8 @@ final class AnalysisService {
     /// `limit`: a person's row needs only one face, so it does not read every record of every face.
     func faces(of person: UUID, limit: Int = .max) async -> [(key: String, path: String, box: FaceBox?)] {
         guard let store else { return [] }
-        let faces = await store.faces().filter { $0.personID == person }
-        let paths = await Dictionary(grouping: store.allPaths(), by: \.value).mapValues { $0.map(\.key).sorted() }
-        var out: [(String, String, FaceBox?)] = []
-        for face in faces where out.count < limit {
-            guard let path = paths[face.sha256]?.first else { continue }
-            let record = await store.record(sha256: face.sha256)
-            let faceKey = String(face.key.split(separator: "|").last ?? "")
-            out.append((face.key, path, record?.faces.first { $0.key == faceKey }))
-        }
-        return out.map { (key: $0.0, path: $0.1, box: $0.2) }
+        // On the store's actor, not the main one: only this person's faces and their paths are read.
+        return await store.faceExamples(of: person, limit: limit)
     }
 
     /// Turns recognising people on, after the opt-in sheet (D-61).
@@ -726,6 +723,34 @@ final class AnalysisService {
         if query.sort == .similar || query.filter.similarOnly { context.similarGroups = await similarGroups(entries) }
         if !query.filter.people.isEmpty { context.people = await peopleByPath(entries) }
         return context
+    }
+
+    /// Opens the analysis database. One that cannot be opened (damaged, or from a newer version) is set aside and a new
+    /// one started, so analysis never stops silently; its results can be made again, while face names and corrections
+    /// stay in the set-aside copy.
+    private static func openStore(inMemory: Bool, report: @escaping (String) -> Void) -> AnalysisStore? {
+        if inMemory { return try? AnalysisStore.make(folder: nil) }
+        do {
+            return try AnalysisStore.make(folder: folder)
+        } catch {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let fm = FileManager.default
+            // lint:allow main-io a few database files, once, at launch after a failure
+            let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+            for name in names where name.hasPrefix("Analysis.store") {
+                // lint:allow silent-write the copy is best effort; opening a fresh database is what matters
+                try? fm.moveItem(at: folder.appendingPathComponent(name), to: folder.appendingPathComponent("\(name).damaged-\(stamp)"))
+            }
+            do {
+                let store = try AnalysisStore.make(folder: folder)
+                report("The analysis database could not be opened (\(error.localizedDescription)). It was set aside and "
+                    + "analysis started again; names given to people are in the set-aside copy.")
+                return store
+            } catch {
+                report("Analysis is off: its database could not be opened (\(error.localizedDescription)).")
+                return nil
+            }
+        }
     }
 
     /// A path outside the scanned folders is gone only when its disk is mounted and the file is missing.
