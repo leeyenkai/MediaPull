@@ -114,6 +114,20 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(stats.bytes, 1002)
     }
 
+    /// R-1715: a file with any of the chosen Finder tags passes; the filter counts once.
+    func testFinderTagFilter() {
+        func entry(_ name: String, _ tags: [String]) -> MediaEntry {
+            var entry = MediaEntry(url: URL(fileURLWithPath: "/x/\(name).jpg"), size: 1, created: nil, modified: Date(), format: .jpeg)
+            entry.finderTags = tags
+            return entry
+        }
+        var query = LibraryQuery()
+        query.filter.finderTags = ["Red", "Work"]
+        let shown = [entry("a", ["Red"]), entry("b", []), entry("c", ["Blue", "Work"])].filter { query.matches($0) }.map(\.name)
+        XCTAssertEqual(shown, ["a.jpg", "c.jpg"])
+        XCTAssertEqual(query.filter.count, 1)
+    }
+
     func testTheCopyKeptHasTheMostPixelsThenMetadataThenAge() {
         let old = Date(timeIntervalSince1970: 0), new = Date()
         func candidate(_ name: String, _ pixels: Int, _ metadata: Bool, _ created: Date) -> ExtraCopies.Candidate {

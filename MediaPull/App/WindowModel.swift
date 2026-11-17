@@ -1231,6 +1231,7 @@ extension WindowModel: MediaListOwner {
         case .source:
             return item.source.engine.map { $0.isInstagram ? $0.instagramSection.capitalized : $0.category } ?? item.host
         case .found: return "\(item.discoveryIndex + 1)"
+        case .tags: return ""
         case .date: return item.source.engine?.date?.formatted(date: .abbreviated, time: .shortened) ?? ""
         }
     }

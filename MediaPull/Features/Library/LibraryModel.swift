@@ -717,6 +717,7 @@ final class LibraryModel: MediaGridOwner {
         detail.append(file.format?.label ?? file.url.pathExtension.uppercased())
         var info = GridCellInfo(title: file.name, detail: detail.joined(separator: " · "), secondary: Format.bytes(file.size))
         info.stamp = "\(file.modified.timeIntervalSinceReferenceDate)-\(file.size)"
+        info.tagColors = GridCellInfo.tagColors(entryIndex[id].map { entries[$0].finderTags } ?? [])
         switch file.format?.kind {
         case .video: info.kindSymbol = "play.fill"; info.placeholderSymbol = "film"
         case .audio: info.kindSymbol = "music.note"; info.placeholderSymbol = "waveform"

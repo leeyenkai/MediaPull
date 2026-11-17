@@ -18,6 +18,15 @@ struct GridCellInfo: Equatable {
     var highlight: NSColor?
     /// Changes when the file behind the cell changes in place, so its thumbnail is drawn again.
     var stamp = ""
+    /// The file's Finder tag colours, drawn as dots in the corner (R-1715).
+    var tagColors: [NSColor] = []
+
+    /// Finder tags as colours: the standard labels by name (in the person's language), any other tag grey; at most three.
+    static func tagColors(_ tags: [String]) -> [NSColor] {
+        guard !tags.isEmpty else { return [] }
+        let labels = Dictionary(zip(NSWorkspace.shared.fileLabels, NSWorkspace.shared.fileLabelColors), uniquingKeysWith: { a, _ in a })
+        return tags.prefix(3).map { labels[$0] ?? .systemGray }
+    }
 }
 
 struct GridSection: Hashable {
@@ -449,6 +458,7 @@ final class MediaCellView: NSView {
     private let kindBadge = NSImageView()
     private let stateBadge = NSImageView()
     private let progressLayer = CAShapeLayer()
+    private var tagLayers: [CALayer] = []
     private let detailLabel = NSTextField(labelWithString: "")
     private let secondaryLabel = NSTextField(labelWithString: "")
 
@@ -530,6 +540,18 @@ final class MediaCellView: NSView {
             progressLayer.isHidden = true
         }
         setAccessibilityLabel([info.title, info.detail, info.secondary].compactMap { $0 }.joined(separator: ", "))
+        while tagLayers.count < info.tagColors.count {
+            let dot = CALayer()
+            dot.cornerRadius = 5
+            dot.borderWidth = 1.5
+            dot.borderColor = NSColor.white.cgColor
+            layer?.addSublayer(dot)
+            tagLayers.append(dot)
+        }
+        for (index, dot) in tagLayers.enumerated() {
+            dot.isHidden = index >= info.tagColors.count
+            if index < info.tagColors.count { dot.backgroundColor = info.tagColors[index].cgColor }
+        }
         needsLayout = true
     }
 
@@ -561,6 +583,9 @@ final class MediaCellView: NSView {
         thumbLayer.frame = frameLayer.bounds.insetBy(dx: 3, dy: 3)
         let ring = CGRect(x: side - 26, y: bounds.height - 26, width: 18, height: 18)
         progressLayer.path = CGPath(ellipseIn: ring, transform: nil)
+        for (index, dot) in tagLayers.enumerated() {
+            dot.frame = CGRect(x: 8 + CGFloat(index) * 7, y: bounds.height - side + 8, width: 10, height: 10)
+        }
         CATransaction.commit()
         placeholder.frame = NSRect(x: 0, y: bounds.height - side, width: side, height: side)
         kindBadge.frame = NSRect(x: 7, y: bounds.height - 25, width: 18, height: 18)

@@ -152,6 +152,7 @@ struct FilterMenu: View {
             valueMenu("Place", values: facets.places, set: $query.filter.places) { $0 }
             valueMenu("Source", values: facets.sources, set: $query.filter.sources) { $0 }
             valueMenu("Camera", values: facets.cameras, set: $query.filter.cameras) { $0 }
+            valueMenu("Finder Tags", values: facets.finderTags, set: $query.filter.finderTags) { $0 }
             Toggle("Only Visually Similar Sets", isOn: $query.filter.similarOnly)
             Divider()
             Button("Clear Filters") { query.filter = LibraryFilter() }
@@ -213,6 +214,7 @@ struct FilterFacets: Sendable {
     var places: [(String, Int)] = []
     var sources: [(String, Int)] = []
     var cameras: [(String, Int)] = []
+    var finderTags: [(String, Int)] = []
 
     init() {}
 
@@ -223,6 +225,7 @@ struct FilterFacets: Sendable {
         places = Self.counted(entries.compactMap { $0.record?.place?.display })
         sources = Self.counted(entries.compactMap { $0.source?.sourceName })
         cameras = Self.counted(entries.compactMap { $0.facts?.camera })
+        finderTags = Self.counted(entries.flatMap(\.finderTags))
     }
 
     nonisolated static func counted(_ values: [String]) -> [(String, Int)] {

@@ -9,6 +9,8 @@ public struct MediaEntry: Sendable, Hashable {
     public var format: MediaFormat?
     public var source: SourceInfo?
     public var record: AnalysisRecord?
+    /// The file's Finder tags (R-1715), read with the listing.
+    public var finderTags: [String] = []
 
     public init(url: URL, size: Int64, created: Date?, modified: Date, format: MediaFormat?, source: SourceInfo? = nil,
                 record: AnalysisRecord? = nil)
@@ -103,6 +105,8 @@ public struct LibraryFilter: Codable, Sendable, Hashable {
     public var faces: FaceFilter?
     public var people: Set<UUID> = []
     public var similarOnly = false
+    /// Finder tags (R-1715): a file with any of them passes.
+    public var finderTags: Set<String> = []
 
     public init() {}
 
@@ -114,7 +118,7 @@ public struct LibraryFilter: Codable, Sendable, Hashable {
     public var count: Int {
         [!kinds.isEmpty, !formats.isEmpty, !orientations.isEmpty, minPixels != nil, minDuration != nil || maxDuration != nil,
          !cameras.isEmpty, !sources.isEmpty, screenshots != nil, !colours.isEmpty, !places.isEmpty, !tags.isEmpty, faces != nil,
-         !people.isEmpty, similarOnly].filter(\.self).count
+         !people.isEmpty, similarOnly, !finderTags.isEmpty].filter(\.self).count
     }
 
     /// Filters that only work once a file has been analysed.
@@ -196,6 +200,9 @@ public struct LibraryQuery: Codable, Sendable, Hashable {
             return false
         }
         if !f.formats.isEmpty, !(item.format.map(f.formats.contains) ?? false) {
+            return false
+        }
+        if !f.finderTags.isEmpty, f.finderTags.isDisjoint(with: item.finderTags) {
             return false
         }
         if !f.orientations.isEmpty, !(facts?.orientation.map(f.orientations.contains) ?? false) {

@@ -62,7 +62,7 @@ public struct PaneViewModes: Codable, Sendable, Equatable {
 
 /// A column of the list view. Clicking its header sorts by the matching Library or Extracted Media sort, when it has one.
 public enum ListColumn: String, Codable, Sendable, CaseIterable, Hashable {
-    case name, date, size, dimensions, kind, duration, source, found
+    case name, date, size, dimensions, kind, duration, source, found, tags
 
     public var title: String {
         switch self {
@@ -74,11 +74,12 @@ public enum ListColumn: String, Codable, Sendable, CaseIterable, Hashable {
         case .duration: "Duration"
         case .source: "Source"
         case .found: "Found"
+        case .tags: "Tags"
         }
     }
 
     /// The Library and Organise columns, and Extracted Media's.
-    public static let fileColumns: [ListColumn] = [.name, .date, .size, .dimensions, .kind, .duration]
+    public static let fileColumns: [ListColumn] = [.name, .date, .size, .dimensions, .kind, .duration, .tags]
     public static let extractedColumns: [ListColumn] = [.name, .dimensions, .size, .kind, .duration, .source, .found]
 
     public var librarySort: LibrarySort? {
@@ -89,7 +90,7 @@ public enum ListColumn: String, Codable, Sendable, CaseIterable, Hashable {
         case .dimensions: .pixelSize
         case .duration: .videoLength
         case .source: .source
-        case .kind, .found: nil
+        case .kind, .found, .tags: nil
         }
     }
 
@@ -102,7 +103,7 @@ public enum ListColumn: String, Codable, Sendable, CaseIterable, Hashable {
         case .source: .domain
         case .found: .discovery
         case .date: .date
-        case .name: nil
+        case .name, .tags: nil
         }
     }
 
@@ -119,7 +120,7 @@ public enum ListColumn: String, Codable, Sendable, CaseIterable, Hashable {
     /// As in the Finder: names A to Z, the newest, largest and longest first.
     public var defaultAscending: Bool {
         switch self {
-        case .name, .kind, .source, .found: true
+        case .name, .kind, .source, .found, .tags: true
         case .date, .size, .dimensions, .duration: false
         }
     }

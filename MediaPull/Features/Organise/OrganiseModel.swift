@@ -264,6 +264,7 @@ final class OrganisePane: MediaGridOwner {
         var info = GridCellInfo(title: entry.name, detail: detail.joined(separator: " · "), secondary: Format.bytes(entry.size))
         if entry.kind == .video { info.kindSymbol = "play.fill"; info.placeholderSymbol = "film" }
         if entry.source != nil { info.stateSymbol = "text.badge.checkmark"; info.stateColor = .secondaryLabelColor }
+        info.tagColors = GridCellInfo.tagColors(entry.finderTags)
         return info
     }
 

@@ -4,7 +4,7 @@ import MediaPullCore
 /// Lists the media files of a folder for the Library and Organise grids, with what their metadata files say.
 nonisolated enum MediaListing {
     static let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .creationDateKey,
-                                         .isPackageKey]
+                                         .tagNamesKey, .isPackageKey]
 
     /// The most media files a listing holds (the budget in `scripts/perf-budgets.json`); beyond it `limited` is true.
     static let limit = 50000
@@ -60,8 +60,10 @@ nonisolated enum MediaListing {
             guard ext != "json", let format = MediaFormat.fromExtension(ext) else { continue }
             let sidecar = Sidecar.sidecarURL(for: url)
             let source = fm.fileExists(atPath: sidecar.path) ? SourceInfo.read(sidecarOf: url) : nil
-            entries.append(MediaEntry(url: url, size: Int64(values.fileSize ?? 0), created: values.creationDate,
-                                      modified: values.contentModificationDate ?? .distantPast, format: format, source: source))
+            var entry = MediaEntry(url: url, size: Int64(values.fileSize ?? 0), created: values.creationDate,
+                                   modified: values.contentModificationDate ?? .distantPast, format: format, source: source)
+            entry.finderTags = values.tagNames ?? []
+            entries.append(entry)
         }
         return entries
     }

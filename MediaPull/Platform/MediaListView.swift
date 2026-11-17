@@ -135,8 +135,8 @@ struct MediaList: NSViewRepresentable {
                 case .date: 150
                 case .size, .duration, .found: 70
                 case .dimensions: 100
-                case .kind: 70
-                case .source: 140
+                case .kind: 110
+                case .source, .tags: 140
                 }
                 if [.size, .dimensions, .duration, .found].contains(column) { table.headerCell.alignment = .right }
                 if owner.listCanSort(column) {

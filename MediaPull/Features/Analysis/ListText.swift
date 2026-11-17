@@ -32,6 +32,7 @@ enum ListText {
         case .duration: entry.facts?.duration.map(Format.duration) ?? ""
         case .source: entry.source?.sourceName ?? ""
         case .found: ""
+        case .tags: entry.finderTags.joined(separator: ", ")
         }
     }
 }

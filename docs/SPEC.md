@@ -962,6 +962,8 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1714** Folder sizes: in List view, a folder row's Kind says how many media files it holds (with its subfolders, metadata files not counted) and its Size column their total. Folders are measured in the background, one at a time, the first time their row is shown, and again after MediaPull changes files; until then the row shows "Folder" and "--". The folder tree is unchanged.
 
+**R-1715** Finder tags (D-85): files in the Library and Organise panes show their Finder tags as up to three coloured dots on the Icon view thumbnail (the standard tag colours; other tags grey) and in a Tags column in List view, and the Filter menu has a Finder Tags section listing the tags in the folder. MediaPull reads tags only; they are set in the Finder. Sidecars are untouched and nothing new is stored.
+
 **R-1705** Quick Look (Space), Reveal in Finder (⌘R), Open With default app, Copy (file URLs).
 
 **R-1706** The selected folder is the save folder of Collect: Save, the Downloads pane and the editors all save there (D-70).
@@ -1237,6 +1239,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-82 | MediaPull offers a Services menu entry and accepts dropped links, both of which only fill in the Downloads pane. There is no URL scheme or other way for another app to start a download | Requested: send a link from another app without copying and pasting; nothing outside MediaPull may start network work on its own |
 | D-83 | Two explicit tidying actions, both through the operation journal so ⌘Z undoes them: Trash Extra Copies (one file of each duplicate group stays) and Check Folder (reports; trashes orphaned metadata files only when asked). Nothing is still ever removed automatically (D-50 holds) | Requested features that keep the library tidy without new panes or settings |
 | D-84 | Web saves are remembered like engine saves, under `web:` and the SHA-256 of the item's address, in the same table (Application Support), so items already saved are marked when they are extracted again. A record whose file is gone is ignored | Requested: see at a glance what is already in the library, without a new control |
+| D-85 | Finder tags are shown and filtered by, never written: writing them would change files outside the operation journal, so it could not be undone like every other change MediaPull makes (R-3806) | The person's existing way of marking files becomes useful in MediaPull without a second tagging system |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
