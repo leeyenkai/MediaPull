@@ -132,12 +132,17 @@ public actor ExtractionIngestor {
     private var documents: [URL] = []
     private var documentSet = Set<String>()
     private var publishScheduled = false
+    /// Bytes of inline (`data:`) images kept this session; beyond `inlineBudget` more are not listed, so a page full of
+    /// large inline images cannot grow the app without bound.
+    private var inlineBytes = 0
+    let inlineBudget: Int
     private let interval: Duration
     private let continuation: AsyncStream<IngestSnapshot>.Continuation
     public nonisolated let snapshots: AsyncStream<IngestSnapshot>
 
-    public init(interval: Duration = .milliseconds(250)) {
+    public init(interval: Duration = .milliseconds(250), inlineBudget: Int = 64 << 20) {
         self.interval = interval
+        self.inlineBudget = inlineBudget
         (snapshots, continuation) = AsyncStream.makeStream(of: IngestSnapshot.self, bufferingPolicy: .bufferingNewest(1))
     }
 
@@ -160,6 +165,7 @@ public actor ExtractionIngestor {
         variantOwner.removeAll()
         groupOwner.removeAll()
         assetOwner.removeAll()
+        inlineBytes = 0
         changed()
     }
 
@@ -175,13 +181,20 @@ public actor ExtractionIngestor {
 
     // MARK: Web candidates
 
+    static func sameOrigin(_ a: URL, _ b: URL) -> Bool {
+        a.scheme?.lowercased() == b.scheme?.lowercased() && a.host?.lowercased() == b.host?.lowercased() && a.port == b.port
+    }
+
     @discardableResult
     public func ingest(json: String, frame: FrameInfo) -> Int {
         guard let data = json.data(using: .utf8), let batch = try? JSONDecoder().decode(RawBatch.self, from: data) else { return 0 }
         // The page the batch says it came from (location.href when it was sent): a late batch from the previous page,
-        // arriving after the tab's address changed, still belongs to that page; pushState addresses are kept too.
+        // arriving after the tab's address changed, still belongs to that page; pushState addresses are kept too. Only an
+        // address of the frame's own origin (from WebKit's frame information, R-905) is believed: pushState cannot leave it.
         var frame = frame
-        if frame.isMainFrame, let page = batch.page.flatMap(URL.init(string:)), page.scheme == "https" || page.scheme == "http" {
+        if frame.isMainFrame, let page = batch.page.flatMap(URL.init(string:)), page.scheme == "https" || page.scheme == "http",
+           Self.sameOrigin(page, frame.frameURL ?? frame.pageURL)
+        {
             frame.pageURL = page
         }
         var count = 0
@@ -239,7 +252,18 @@ public actor ExtractionIngestor {
         if candidate.drm == true { flags.insert(.protected) }
         if origin == .icon || Self.looksLikeIcon(url) || Self.isTracker(url) { flags.insert(.icon) }
 
-        var variant = MediaVariant(id: url.absoluteString, url: url, format: format, origin: origin)
+        // An inline image's address is its whole content (up to 8 MB): it is kept once, in the URL, and identified by a
+        // short hash, so ids, dictionary keys and snapshots do not each carry another copy.
+        var variantID = url.absoluteString
+        if origin == .data {
+            let size = raw.utf8.count
+            variantID = "data:\(ShortHash.of(raw))-\(size)"
+            if variantOwner[variantID] == nil {
+                guard inlineBytes + size <= inlineBudget else { return false }
+                inlineBytes += size
+            }
+        }
+        var variant = MediaVariant(id: variantID, url: url, format: format, origin: origin)
         if let width = candidate.w, let height = candidate.h, width > 0, height > 0 {
             variant.pixelSize = PixelSize(width: width, height: height)
         }

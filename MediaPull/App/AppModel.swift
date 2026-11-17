@@ -351,10 +351,7 @@ final class AppModel {
         job.task = Task { [weak self, weak window] in
             guard let self else { return }
             job.state = .running
-            var inline: [String: Data] = [:]
-            for item in items where item.best?.url.scheme == "blob" {
-                if let window, let data = await window.tab(showing: item.source.pageURL).readBlob(item.best!.url) { inline[item.id] = data }
-            }
+            let inline = await window?.blobData(for: items) ?? [:]
             let context = SaveContext(cookies: await self.cookieJar(), userAgent: self.userAgent, inlineData: inline,
                                       nameOverrides: window?.customNames ?? [:])
             let outcomes = await pipeline.save(items, target: target, settings: settings, context: context,

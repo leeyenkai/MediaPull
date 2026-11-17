@@ -953,6 +953,16 @@ final class WindowModel: Identifiable, MediaGridOwner {
         }
     }
 
+    /// The bytes of items a page made itself (`blob:` addresses), read from the tab that shows their page.
+    func blobData(for items: [MediaItem]) async -> [String: Data] {
+        var inline: [String: Data] = [:]
+        for item in items {
+            guard let url = item.best?.url, url.scheme == "blob" else { continue }
+            if let data = await tab(showing: item.source.pageURL).readBlob(url) { inline[item.id] = data }
+        }
+        return inline
+    }
+
     /// Writes one item where Finder asked, after downloading and converting it (SPEC R-1801).
     /// Saves into a private folder first, then places the file exactly at the URL the receiving
     /// app supplied, in the promised format.
@@ -964,7 +974,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
         try? FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         let target = SaveTarget(folder: staging, layout: withSidecar ? .archive : .plain, autoSubfolders: false)
         let pipeline = app.pipeline()
-        let context = SaveContext(cookies: await app.cookieJar(), userAgent: app.userAgent, nameOverrides: customNames)
+        // Page-made (blob:) media exists only inside the page: read it there, as Save does.
+        let context = SaveContext(cookies: await app.cookieJar(), userAgent: app.userAgent, inlineData: await blobData(for: [item]),
+                                  nameOverrides: customNames)
         // The copy in the staging folder is temporary, so its events do not mark the item as saved.
         let outcomes = await pipeline.save([item], target: target, settings: app.saveSettings, context: context, concurrency: 1) { _ in }
         switch outcomes[itemID] {

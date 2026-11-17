@@ -155,7 +155,9 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
             "return window.__mediapullReadBlob ? await window.__mediapullReadBlob(u) : null", arguments: ["u": url.absoluteString],
             in: nil, contentWorld: WebViewSetup.world
         )
-        return (result as? String).flatMap { Data(base64Encoded: $0) }
+        guard let text = result as? String else { return nil }
+        // Up to about 33 MB of base64: decoded off the main actor.
+        return await Task.detached(priority: .userInitiated) { Data(base64Encoded: text) }.value
     }
 
     // MARK: Navigation

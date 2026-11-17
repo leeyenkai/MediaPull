@@ -67,6 +67,13 @@ final class NetworkGateTests: XCTestCase {
         XCTAssertEqual(written.value, "b")
     }
 
+    func testEngineUpdatesNeedHTTPS() {
+        let plain = GatedRequest.get(URL(string: "http://pypi.org/pypi/gallery-dl/json")!, purpose: .engineUpdate)
+        XCTAssertThrowsError(try RequestPolicy.urlRequest(for: plain).get())
+        let media = GatedRequest.get(URL(string: "http://old.example.com/a.jpg")!, purpose: .save)
+        XCTAssertNoThrow(try RequestPolicy.urlRequest(for: media).get())
+    }
+
     func testCookiesNeedTheFrameToo() {
         let page = URL(string: "https://example.com/feed")!
         let media = URL(string: "https://example.com/account/x.jpg")!

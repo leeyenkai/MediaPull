@@ -173,6 +173,10 @@ public enum RequestPolicy {
         for (name, value) in request.context.extraHeaders where allowedHeaders.contains(name.lowercased()) {
             headers[name] = value
         }
+        // Plain http is for media only (D-21); engine updates come over https alone (R-502).
+        if request.purpose == .engineUpdate, request.url.scheme?.lowercased() != "https" {
+            return .failure(.denied("Engine updates are downloaded over https only."))
+        }
         switch evaluate(method: request.method.rawValue, url: request.url, headers: headers, hasBody: false) {
         case let .denied(reason):
             return .failure(.denied(reason))
@@ -363,7 +367,8 @@ public actor NetworkGate {
     /// The whole body of a small response, at most `dataLimit(for:)` bytes.
     public func data(_ request: GatedRequest) async throws -> (Data, HTTPURLResponse) {
         let urlRequest = try prepare(request)
-        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose), limiter: limiter)
+        let hops = RedirectGuard(request: urlRequest, id: record(request), log: logHop(request.purpose), limiter: limiter,
+                                 httpsOnly: request.purpose == .engineUpdate)
         await limiter.acquire(hops.currentHost)
         defer { Task { await hops.endTransfer() } }
         let limit = Self.dataLimit(for: request.purpose)
@@ -447,7 +452,7 @@ public actor NetworkGate {
     ) async throws -> HTTPURLResponse {
         let urlRequest = try prepare(request)
         let delegate = DownloadProgressDelegate(request: urlRequest, id: record(request), log: logHop(request.purpose),
-                                                limiter: limiter, progress: progress)
+                                                limiter: limiter, httpsOnly: request.purpose == .engineUpdate, progress: progress)
         await limiter.acquire(delegate.currentHost)
         defer { Task { await delegate.endTransfer() } }
         do {
@@ -512,11 +517,13 @@ class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// The host whose request slot this transfer holds ("" while it waits for the next hop's slot).
     private var host: String
     private var ended = false
+    private let httpsOnly: Bool
 
-    init(request: URLRequest, id: Int, log: @escaping Log, limiter: HostLimiter? = nil) {
+    init(request: URLRequest, id: Int, log: @escaping Log, limiter: HostLimiter? = nil, httpsOnly: Bool = false) {
         state = State(id: id, request: request, headers: request.allHTTPHeaderFields ?? [:])
         self.log = log
         self.limiter = limiter
+        self.httpsOnly = httpsOnly
         host = request.url?.host ?? ""
     }
 
@@ -546,6 +553,10 @@ class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
                     newRequest proposed: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void)
     {
         let current = lock.withLock { state }
+        if httpsOnly, proposed.url?.scheme?.lowercased() != "https" {
+            lock.withLock { state.refusal = .denied("Engine updates are downloaded over https only.") }
+            return completionHandler(nil)
+        }
         switch RedirectPolicy.nextRequest(after: current.request, headers: current.headers, proposed: proposed) {
         case let .failure(error):
             lock.withLock { state.refusal = error }
@@ -580,11 +591,11 @@ final class DownloadProgressDelegate: RedirectGuard, URLSessionDownloadDelegate,
     let progress: @Sendable (Int64, Int64?) -> Void
     private var last = Date.distantPast
 
-    init(request: URLRequest, id: Int, log: @escaping Log, limiter: HostLimiter? = nil,
+    init(request: URLRequest, id: Int, log: @escaping Log, limiter: HostLimiter? = nil, httpsOnly: Bool = false,
          progress: @escaping @Sendable (Int64, Int64?) -> Void)
     {
         self.progress = progress
-        super.init(request: request, id: id, log: log, limiter: limiter)
+        super.init(request: request, id: id, log: log, limiter: limiter, httpsOnly: httpsOnly)
     }
 
     func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo _: URL) {}

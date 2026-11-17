@@ -86,6 +86,32 @@ final class IngestorCheckTests: XCTestCase {
         let (_, items) = await ingest(#"{"u":""# + svg + #"","k":"data","w":200,"h":200}"#)
         XCTAssertEqual(items.first?.kind, .vector)
     }
+
+    /// R-905: the page address a batch reports is believed only within the frame's own origin.
+    func testBatchPageMustMatchTheFrameOrigin() async {
+        let ingestor = ExtractionIngestor(interval: .milliseconds(1))
+        let item = #"{"u":"https://cdn.example.com/a.jpg","k":"img","w":400,"h":300}"#
+        let spoofed = #"{"v":1,"page":"https://bank.example.net/","items":["# + item + "]}"
+        await ingestor.ingest(json: spoofed, frame: FrameInfo(frameURL: page, isMainFrame: true, origin: nil, pageURL: page, pageTitle: nil))
+        let items = await ingestor.snapshot().items
+        XCTAssertEqual(items.first?.source.pageURL, page)
+    }
+
+    /// 1.8 audit: an inline image is identified by a short hash, and a page cannot list more than the inline budget.
+    func testInlineImagesUseShortIDsAndABudget() async {
+        let ingestor = ExtractionIngestor(interval: .milliseconds(1), inlineBudget: 64 << 10)
+        let size = 6 << 10
+        var entries: [String] = []
+        for index in 0 ..< 12 {
+            let body = String(repeating: String(UnicodeScalar(UInt8(65 + index))), count: size)
+            entries.append(#"{"u":"data:image/png;base64,"# + body + #"","k":"data","w":2000,"h":2000}"#)
+        }
+        let json = #"{"v":1,"page":"https://example.com/post/","items":["# + entries.joined(separator: ",") + "]}"
+        await ingestor.ingest(json: json, frame: FrameInfo(frameURL: page, isMainFrame: true, origin: nil, pageURL: page, pageTitle: nil))
+        let items = await ingestor.snapshot().items
+        XCTAssertEqual(items.count, (64 << 10) / size, "inline images beyond the budget are not listed")
+        XCTAssertTrue(items.allSatisfy { $0.id.count < 64 && $0.variants.allSatisfy { $0.id.count < 64 } })
+    }
 }
 
 /// File types from their first bytes, including short and unusual files.
