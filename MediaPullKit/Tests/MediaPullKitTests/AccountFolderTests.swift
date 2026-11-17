@@ -104,6 +104,16 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertTrue(FolderCheck.run(folder, archive: false).withoutMetadata.isEmpty, "Plain folders have no metadata files")
     }
 
+    func testFolderStatsCountMediaInSubfoldersOnly() throws {
+        file("sizes/a.jpg", account: "alice")
+        file("sizes/deep/b.mp4")
+        try Data(count: 1000).write(to: root.appendingPathComponent("sizes/deep/c.png"))
+        file("sizes/notes.txt")
+        let stats = FolderStats.measure(root.appendingPathComponent("sizes"))
+        XCTAssertEqual(stats.files, 3, "metadata and other files are not counted")
+        XCTAssertEqual(stats.bytes, 1002)
+    }
+
     func testTheCopyKeptHasTheMostPixelsThenMetadataThenAge() {
         let old = Date(timeIntervalSince1970: 0), new = Date()
         func candidate(_ name: String, _ pixels: Int, _ metadata: Bool, _ created: Date) -> ExtraCopies.Candidate {

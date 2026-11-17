@@ -915,7 +915,9 @@ extension LibraryModel: MediaListOwner {
     var listColumns: [ListColumn] { ListColumn.fileColumns }
 
     func listText(_ id: String, _ column: ListColumn) -> String {
-        if listFolders.isFolder(id) { return ListText.folder(id, column) }
+        if listFolders.isFolder(id) {
+            return ListText.folder(id, column) { [weak self] id in self?.onListChildrenLoaded?(id) }
+        }
         guard let entry = entry(id) else { return "" }
         return ListText.entry(entry, column, measured: details[id]?.0 ?? nil)
     }

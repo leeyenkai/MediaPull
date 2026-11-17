@@ -357,7 +357,9 @@ extension OrganisePane: MediaListOwner {
     var listColumns: [ListColumn] { ListColumn.fileColumns }
 
     func listText(_ id: String, _ column: ListColumn) -> String {
-        if listFolders.isFolder(id) { return ListText.folder(id, column) }
+        if listFolders.isFolder(id) {
+            return ListText.folder(id, column) { [weak self] id in self?.onListChildrenLoaded?(id) }
+        }
         return entry(id).map { ListText.entry($0, column) } ?? ""
     }
 

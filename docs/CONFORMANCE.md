@@ -157,6 +157,7 @@ change as the code.
 | R-1711 | person | `WindowModel.viewModeTarget`, `MediaGrid` | `--selftest-views` | Thumbnail size keys work in Icon view only, as specified; needs a person |
 | R-1712 | built | `LibraryModel.findAccount`, `LibraryModel.accountMenuItems`, `FolderContents`, `AccountFolders.detect` | `--selftest-update`, `testDetectionFindsTheAccountFolderWhateverItsName` | Update, Find Missing and Update All Accounts (D-80) |
 | R-1713 | built | `FolderCheck.run`, `LibraryModel.checkFolder`, `CheckBar` | `testCheckFolderFindsOrphansMissingMetadataAndChangedFiles` | D-83 |
+| R-1714 | built | `FolderStats.measure`, `FolderSizes`, `ListText.folder` | `testFolderStatsCountMediaInSubfoldersOnly`, `--selftest-views` | |
 | R-1705 | person | `WindowModel.revealOrReload`, `QuickLook` | `--selftest-views` | Command-R reveals in Library and Organise panes, reloads in the browser (1.8); Quick Look needs a person |
 | R-1706 | built | `WindowModel.saveFolder` | `--selftest-analyse`, `--selftest-views` | The Library pane's folder is Collect's save folder (D-70) |
 | R-1801 | person | `LibraryModel.handleDrop`, `LibraryModel.importFiles`, `MediaPull/Platform/DragSupport.swift` | none | Drag and drop needs a person |

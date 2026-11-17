@@ -1,14 +1,20 @@
 import Foundation
 import MediaPullCore
+import MediaPullLibrary
 
 /// The text of a list view cell for a folder pane's files and folders (R-1709).
 enum ListText {
-    /// As in the Finder, a folder shows its name and kind; its size and dates are left out ("--").
-    static func folder(_ id: String, _ column: ListColumn) -> String {
+    /// A folder shows its name, how many media files it holds and their total size (R-1714), measured in the background;
+    /// `measured` is called with the folder once its size is known, so its row can be shown again.
+    static func folder(_ id: String, _ column: ListColumn, measured: ((String) -> Void)? = nil) -> String {
         switch column {
-        case .name: URL(fileURLWithPath: id).lastPathComponent
-        case .kind: "Folder"
-        default: "--"
+        case .name: return URL(fileURLWithPath: id).lastPathComponent
+        case .kind:
+            guard let stats = FolderSizes.shared.stats(id, measured: measured) else { return "Folder" }
+            return "Folder, \(stats.files.formatted()) item\(stats.files == 1 ? "" : "s")"
+        case .size:
+            return FolderSizes.shared.stats(id, measured: measured).map { Format.bytes($0.bytes) } ?? "--"
+        default: return "--"
         }
     }
 
@@ -26,6 +32,51 @@ enum ListText {
         case .duration: entry.facts?.duration.map(Format.duration) ?? ""
         case .source: entry.source?.sourceName ?? ""
         case .found: ""
+        }
+    }
+}
+
+/// Folder sizes for List view (R-1714): each folder is measured once, off the main actor and one at a time, and measured
+/// again after any change to files MediaPull knows of.
+@MainActor
+final class FolderSizes {
+    static let shared = FolderSizes()
+    private var known: [String: FolderStats] = [:]
+    private var queue: [(path: String, measured: (String) -> Void)] = []
+    private var queued: Set<String> = []
+    private var running = false
+    private var revision = -1
+
+    func stats(_ path: String, measured: ((String) -> Void)?) -> FolderStats? {
+        let app = AppModel.shared
+        let current = app.libraryRevision &+ app.fileChangeRevision
+        if current != revision {
+            known.removeAll()
+            revision = current
+        }
+        if let stats = known[path] { return stats }
+        if let measured, queued.insert(path).inserted {
+            queue.append((path, measured))
+            next()
+        }
+        return nil
+    }
+
+    private func next() {
+        guard !running, !queue.isEmpty else { return }
+        running = true
+        let (path, measured) = queue.removeFirst()
+        let started = revision
+        Task {
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            let stats = await Task.detached(priority: .utility) { FolderStats.measure(folder) }.value
+            queued.remove(path)
+            if started == revision {
+                known[path] = stats
+                measured(path)
+            }
+            running = false
+            next()
         }
     }
 }

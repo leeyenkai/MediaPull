@@ -960,6 +960,8 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1713** Check Folder (folder context menu in every view, D-83): reads every file in the folder and its subfolders once, off the main thread, and reports under the folder's title how many files it checked and what no longer matches what was saved: files whose checksum differs from the one in their metadata file (edited since, or damaged), media files without a metadata file (Archive folders only), metadata files whose media file is gone, and files kept only in iCloud. It changes nothing by itself; **Trash Orphaned Metadata** moves the metadata files without media to the Trash as one undoable operation, and **Show in Finder** selects the files it found. The `Account details` folder is not checked.
 
+**R-1714** Folder sizes: in List view, a folder row's Kind says how many media files it holds (with its subfolders, metadata files not counted) and its Size column their total. Folders are measured in the background, one at a time, the first time their row is shown, and again after MediaPull changes files; until then the row shows "Folder" and "--". The folder tree is unchanged.
+
 **R-1705** Quick Look (Space), Reveal in Finder (⌘R), Open With default app, Copy (file URLs).
 
 **R-1706** The selected folder is the save folder of Collect: Save, the Downloads pane and the editors all save there (D-70).

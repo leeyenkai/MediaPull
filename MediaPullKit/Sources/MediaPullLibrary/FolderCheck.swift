@@ -75,6 +75,27 @@ public enum FolderCheck {
     }
 }
 
+/// How many media files a folder holds, with its subfolders, and their total size (R-1714).
+public struct FolderStats: Sendable, Equatable {
+    public var files = 0
+    public var bytes: Int64 = 0
+
+    public static func measure(_ folder: URL) -> FolderStats {
+        var stats = FolderStats()
+        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                                                    options: [.skipsHiddenFiles])
+        while let url = walker?.nextObject() as? URL {
+            let ext = url.pathExtension.lowercased()
+            guard ext != "json", MediaFormat.fromExtension(ext) != nil,
+                  let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]), values.isRegularFile == true
+            else { continue }
+            stats.files += 1
+            stats.bytes += Int64(values.fileSize ?? 0)
+        }
+        return stats
+    }
+}
+
 /// Trash Extra Copies (R-3305): which file of each duplicate group stays.
 public enum ExtraCopies {
     public struct Candidate: Sendable, Equatable {
