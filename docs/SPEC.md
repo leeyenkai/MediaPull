@@ -1428,6 +1428,8 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 
 **R-3807** Long operations run as Organise jobs in Activity with progress and Cancel; a cancelled operation can be undone as far as it got.
 
+**R-3808** Rename several files at once: with two or more files selected in an Organise pane, **Rename N Files…** in the context menu shows a pattern field in the Organise pane: `{name}` (the current name), `{n}` (a number in the order shown, padded to the same width) and `{date}` (the day the file was last changed), with the first new names shown as they are typed. Extensions are kept, names are made safe, a name already taken gets a number, metadata files are renamed with their media, and the whole rename is one operation that ⌘Z undoes. Files in Archive folders are not renamed (their names are part of the archive layout, R-1504); the row says so.
+
 ## 39. Faces and people
 
 **R-3901** Faces are always located (boxes only, for the With Faces, Portraits and Group Photos filters); a box says nothing about who someone is. Recognising people is off until the person turns it on in a sheet that explains that face data is biometric, stays on this Mac, is never written into library folders, metadata files or exports, and can be deleted in one step (D-61). Settings > Faces: on or off, Delete All Face Data (faces, people, names, corrections and face vectors, with one confirmation), the match threshold, and where group photos go when sorting by person.

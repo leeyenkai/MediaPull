@@ -348,10 +348,23 @@ final class OrganisePane: MediaGridOwner {
             guard panel.runModal() == .OK, let destination = panel.url else { return }
             owner.run(FolderOperations.move(chosen, to: destination))
         })
+        // Numbered in the order the pane shows them.
+        let files = shown.filter { ids.contains($0.path) }.map(\.url)
+        if files.count > 1 {
+            menu.addItem(ActionMenuItem("Rename \(files.count) Files…") { owner.startBatchRename(files) })
+        }
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Move to Trash") { owner.run(FolderOperations.trash(chosen)) })
         return menu
     }
+}
+
+/// Renaming several files by one pattern, typed in the Organise pane (R-3808).
+struct BatchRenameDraft: Equatable {
+    var files: [URL]
+    var pattern = "{name}"
+    /// Archive folders keep MediaPull's names, which their metadata depends on (R-1504).
+    var archive: Bool
 }
 
 extension OrganisePane: MediaListOwner {
@@ -396,6 +409,36 @@ final class OrganiseModel {
     let source = OrganisePane(role: .source)
     let target = OrganisePane(role: .target)
     var pending: PendingPlan?
+    var batchRename: BatchRenameDraft?
+
+    func startBatchRename(_ files: [URL]) {
+        let archive = files.contains { app.root(containing: $0)?.layout == .archive }
+        batchRename = BatchRenameDraft(files: files, archive: archive)
+        tab = .sort
+        window?.setShowing(.organiseWork, true)
+    }
+
+    /// The first few new names, worked out from the pattern alone (dates are left to the real run).
+    func batchPreview(_ draft: BatchRenameDraft) -> [(old: String, new: String)] {
+        draft.files.prefix(4).enumerated().map { index, file in
+            let stem = FolderOperations.batchName(draft.pattern, stem: file.deletingPathExtension().lastPathComponent, index: index,
+                                                  count: draft.files.count, date: nil)
+            let name = FileNaming.sanitize(stem, maxBytes: 230)
+            let ext = file.pathExtension.isEmpty ? "" : "." + file.pathExtension
+            return (file.lastPathComponent, name.isEmpty ? "(unchanged)" : name + ext)
+        }
+    }
+
+    func applyBatchRename() {
+        guard let draft = batchRename, !draft.archive else { return }
+        batchRename = nil
+        Task { [weak self] in
+            let plan = await Task.detached(priority: .userInitiated) {
+                FolderOperations.batchRename(draft.files, pattern: draft.pattern)
+            }.value
+            self?.run(plan)
+        }
+    }
     var history: [JournalEntry] = []
     var working: String?
     var tab: OrganiseTab = .sort

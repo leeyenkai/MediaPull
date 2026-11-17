@@ -475,4 +475,28 @@ extension FolderOperationTests {
             XCTAssertEqual(SortRules.eventFolders([item], gap: 3600, timeZone: timeZone)[item.path], [["2026", day]], zone)
         }
     }
+
+    /// R-3808: one pattern for several files; extensions kept, metadata files follow, and Undo puts every name back.
+    func testBatchRenameFollowsThePatternAndCanBeUndone() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rename-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var files: [URL] = []
+        for name in ["beach.jpg", "hills.png", "clip.mp4"] {
+            let url = folder.appendingPathComponent(name)
+            try Data(name.utf8).write(to: url)
+            files.append(url)
+        }
+        try Data("{}".utf8).write(to: Sidecar.sidecarURL(for: files[0]))
+        XCTAssertEqual(FolderOperations.batchName("Trip {n} {name}", stem: "beach", index: 8, count: 12, date: nil), "Trip 09 beach")
+        let plan = FolderOperations.batchRename(files, pattern: "Trip {n}")
+        XCTAssertEqual(plan.moves.map(\.destination.lastPathComponent), ["Trip 1.jpg", "Trip 2.png", "Trip 3.mp4"])
+        let journal = OperationJournal(folder: folder.appendingPathComponent(".journal", isDirectory: true))
+        let entry = await journal.run(plan)
+        let names = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix(".") })
+        XCTAssertEqual(names, ["Trip 1.jpg", "Trip 1.jpg.json", "Trip 2.png", "Trip 3.mp4"])
+        _ = await journal.undo(entry.id)
+        let back = Set(try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { !$0.hasPrefix(".") })
+        XCTAssertEqual(back, ["beach.jpg", "beach.jpg.json", "hills.png", "clip.mp4"])
+    }
 }

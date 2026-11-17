@@ -292,6 +292,10 @@ struct OrganiseWorkPane: View {
                     .fixedSize()
             }
             Divider()
+            if organise.batchRename != nil {
+                BatchRenameRow(organise: organise)
+                Divider()
+            }
             switch organise.tab {
             case .sort: sortTab
             case .people: PeopleView(inline: true).padding(12)
@@ -534,5 +538,45 @@ private extension View {
     @ViewBuilder
     func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers, enabled: Bool) -> some View {
         if enabled { keyboardShortcut(key, modifiers: modifiers) } else { self }
+    }
+}
+
+/// The pattern for renaming several files at once, with the first new names as they will be (R-3808).
+struct BatchRenameRow: View {
+    @Bindable var organise: OrganiseModel
+
+    var body: some View {
+        if let draft = organise.batchRename {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Rename \(draft.files.count) Files").font(.headline)
+                if draft.archive {
+                    Text("Files in Archive folders keep the names MediaPull gave them, since their metadata files and later "
+                        + "downloads rely on them. Rename files in Plain folders, or move them to one first.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    TextField("Pattern", text: Binding(get: { draft.pattern }, set: { organise.batchRename?.pattern = $0 }))
+                        .textFieldStyle(.roundedBorder)
+                    Text("{name} is the current name, {n} a number in order, {date} the day the file was last changed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(organise.batchPreview(draft), id: \.old) { row in
+                        Text("\(row.old)  →  \(row.new)").font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { organise.batchRename = nil }
+                    if !draft.archive {
+                        Button("Rename") { organise.applyBatchRename() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(draft.pattern.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                .controlSize(.small)
+            }
+            .padding(12)
+        }
     }
 }

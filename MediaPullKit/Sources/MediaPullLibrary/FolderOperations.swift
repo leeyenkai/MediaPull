@@ -315,6 +315,49 @@ public enum FolderOperations {
         return plan
     }
 
+    /// Several files renamed by one pattern (R-3808): `{name}` is the old name without its extension, `{n}` the file's
+    /// place in `files` (padded to the same width), `{date}` its modification date. Extensions are kept, names are made
+    /// safe, and a name already taken gets a number. Metadata files follow their media when the plan runs.
+    public static func batchRename(_ files: [URL], pattern: String) -> OrganisePlan {
+        var plan = OrganisePlan(title: "Rename \(files.count) Files",
+                                root: files.first?.deletingLastPathComponent() ?? URL(fileURLWithPath: "/"))
+        var taken = Set<String>()
+        for (index, file) in files.enumerated() {
+            let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let stem = batchName(pattern, stem: file.deletingPathExtension().lastPathComponent, index: index, count: files.count,
+                                 date: date)
+            var name = FileNaming.sanitize(stem, maxBytes: 230)
+            guard !name.isEmpty else { continue }
+            if !file.pathExtension.isEmpty { name += "." + file.pathExtension }
+            guard name != file.lastPathComponent else {
+                plan.unchanged += 1
+                continue
+            }
+            let folder = file.deletingLastPathComponent()
+            let direct = folder.appendingPathComponent(name)
+            let destination = OperationJournal.sameFile(file.path, direct.path) ? direct
+                : freeDestination(for: name, in: folder, taken: &taken).url
+            plan.moves.append(PlannedMove(source: file, destination: destination))
+            plan.renamed += 1
+        }
+        return plan
+    }
+
+    public static func batchName(_ pattern: String, stem: String, index: Int, count: Int, date: Date?) -> String {
+        let width = String(max(count, 1)).count
+        let number = String(index + 1)
+        // The day as the person sees it, in their time zone, always written the same way.
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+        let day = date.map(formatter.string(from:)) ?? ""
+        return pattern.replacingOccurrences(of: "{name}", with: stem)
+            .replacingOccurrences(of: "{n}", with: String(repeating: "0", count: max(0, width - number.count)) + number)
+            .replacingOccurrences(of: "{date}", with: day)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
     // MARK: Automatic sorts
 
     /// Files sorted into folders below `root`. `assign` gives each file its destination folders as path components:
