@@ -1,4 +1,5 @@
 import AppKit
+import MediaPullCore
 import QuartzCore
 import SwiftUI
 
@@ -47,6 +48,10 @@ protocol MediaGridOwner: AnyObject {
     func gridDelete(_ ids: Set<String>)
     /// A trackpad pinch over the grid; `amount` is the event's magnification.
     func gridMagnify(_ amount: CGFloat)
+    /// The grid, list or column view became first responder: ⌘1 to ⌘3 now act on this pane (R-1708).
+    func gridFocused()
+    /// Items dropped on a folder row of the list or column view; the grid drops into the pane's folder.
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation, into folder: URL) -> Bool
 }
 
 extension MediaGridOwner {
@@ -55,6 +60,60 @@ extension MediaGridOwner {
     func gridReturn(_ id: String) { gridActivate(id) }
     func gridDelete(_: Set<String>) {}
     func gridMagnify(_: CGFloat) {}
+    func gridFocused() {}
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation, into _: URL) -> Bool {
+        gridAcceptDrop(pasteboard, operation: operation)
+    }
+}
+
+/// What the list and column views need beyond the grid: column text, the sort, and folders that open in place
+/// (R-1709, R-1710). Folder ids are their paths, so the grid callbacks (open, menu, drag, Trash) also take folders.
+@MainActor
+protocol MediaListOwner: MediaGridOwner {
+    var listColumns: [ListColumn] { get }
+    func listText(_ id: String, _ column: ListColumn) -> String
+    /// The value a column sorts by, for showing which header is active; nil when the sort has no column.
+    var listSort: (column: ListColumn, ascending: Bool)? { get }
+    func listSortChanged(_ column: ListColumn, ascending: Bool)
+    /// Whether clicking this column's header sorts (it has a matching sort).
+    func listCanSort(_ column: ListColumn) -> Bool
+    /// Subfolders shown above the files at the top level of the list; empty for a flat list.
+    var listTopFolders: [String] { get }
+    func listIsFolder(_ id: String) -> Bool
+    /// A folder's subfolders and then its files, in the pane's order; nil until they have been read.
+    func listChildren(_ folderID: String) -> [String]?
+    /// Called when children asked for with `listChildren` have been read, so the view can show them.
+    var onListChildrenLoaded: ((String) -> Void)? { get set }
+}
+
+extension MediaListOwner {
+    var listTopFolders: [String] { [] }
+    func listIsFolder(_: String) -> Bool { false }
+    func listChildren(_: String) -> [String]? { [] }
+    func listCanSort(_: ListColumn) -> Bool { true }
+}
+
+/// Space (Quick Look), Return and ⌘⌫ for the grid, list and column views. They only act while that view is first
+/// responder, so they never fire while typing in the web page (CLAUDE.md).
+@MainActor
+enum GridKeyRouter {
+    static func handle(_ event: NSEvent, owner: (any MediaGridOwner)?, first: String?, selected: Set<String>) -> Bool {
+        guard let owner else { return false }
+        let commandOnly = event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command
+        if event.charactersIgnoringModifiers == " ", event.modifierFlags.isDisjoint(with: [.command, .option, .control]) {
+            owner.gridQuickLook()
+            return true
+        }
+        if event.keyCode == 36, event.modifierFlags.isDisjoint(with: [.command, .option, .control]), let first {
+            owner.gridReturn(first)
+            return true
+        }
+        if event.keyCode == 51, commandOnly, !selected.isEmpty {
+            owner.gridDelete(selected)
+            return true
+        }
+        return false
+    }
 }
 
 /// A virtualized thumbnail grid on NSCollectionView (SPEC R-1001 to R-1003).
@@ -273,19 +332,15 @@ final class MediaCollectionView: NSCollectionView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.charactersIgnoringModifiers == " " {
-            coordinator?.owner?.gridQuickLook()
-            return
-        }
-        if event.keyCode == 36, let first = selectionIndexPaths.first, let id = coordinator?.id(at: first) {
-            coordinator?.owner?.gridReturn(id)
-            return
-        }
-        if event.keyCode == 51, event.modifierFlags.contains(.command), let ids = coordinator?.selectedIDs(), !ids.isEmpty {
-            coordinator?.owner?.gridDelete(ids)
-            return
-        }
+        let first = selectionIndexPaths.min().flatMap { coordinator?.id(at: $0) }
+        if GridKeyRouter.handle(event, owner: coordinator?.owner, first: first, selected: coordinator?.selectedIDs() ?? []) { return }
         super.keyDown(with: event)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { coordinator?.owner?.gridFocused() }
+        return became
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {

@@ -93,9 +93,11 @@ final class SelfTestRunner {
         let savedTheme = app.preferences.theme
         let savedArrangement = app.preferences.paneArrangement
         let savedZoom = app.preferences.thumbnailSize
+        let savedViews = app.preferences.paneViewModes
         // NSApp.terminate exits without running defer blocks, so every exit restores these first.
         restorePreferences = { [app] in
             app.preferences.thumbnailSize = savedZoom
+            app.preferences.paneViewModes = savedViews
             app.preferences.theme = savedTheme
             app.preferences.paneArrangement = savedArrangement
         }
@@ -213,6 +215,7 @@ final class SelfTestRunner {
         if CommandLine.arguments.contains("--selftest-edit") { await exerciseEditor(library: library, out: out) }
         if CommandLine.arguments.contains("--selftest-duplicates") { await exerciseDuplicates(library: library, out: out) }
         if CommandLine.arguments.contains("--selftest-video") { await exerciseVideo(library: library, out: out) }
+        if CommandLine.arguments.contains("--selftest-views") { await exerciseViews(library: library, out: out) }
         writeReport(to: out, url: url, initial: initial, afterScroll: afterScroll, job: job, library: library)
         note("report written")
         try? await Task.sleep(for: .milliseconds(500))
@@ -725,6 +728,136 @@ final class SelfTestRunner {
         await app.analysis.deleteAllFaceData(turnOff: false)
         note("face data deleted: \(app.analysis.people.isEmpty)")
         writeLog(to: out)
+    }
+
+    /// The list of a pane, found by its owner.
+    private func outline(of owner: AnyObject) -> MediaOutlineView? {
+        func find(_ view: NSView) -> MediaOutlineView? {
+            if let outline = view as? MediaOutlineView, outline.coordinator?.owner === owner { return outline }
+            for child in view.subviews {
+                if let found = find(child) { return found }
+            }
+            return nil
+        }
+        return model.hostWindow?.contentView.flatMap(find)
+    }
+
+    /// The column browser of a pane, found by its owner.
+    private func browser(of owner: AnyObject) -> NSBrowser? {
+        func find(_ view: NSView) -> NSBrowser? {
+            if let browser = view as? NSBrowser, (browser.delegate as? MediaColumns.Coordinator)?.owner === owner { return browser }
+            for child in view.subviews {
+                if let found = find(child) { return found }
+            }
+            return nil
+        }
+        return model.hostWindow?.contentView.flatMap(find)
+    }
+
+    /// Selects a row of a column as a click would.
+    private func click(_ browser: NSBrowser, row: Int, column: Int) {
+        browser.selectRow(row, inColumn: column)
+        browser.sendAction(browser.action, to: browser.target)
+    }
+
+    /// Icon, list and column views of the Library, Extracted Media and Organise panes (R-1708 to R-1711).
+    private func exerciseViews(library: URL, out: URL) async {
+        let lib = model.library
+        let savedSubfolders = lib.includeSubfolders
+        defer { lib.includeSubfolders = savedSubfolders }
+        lib.includeSubfolders = false
+        lib.selectedFolder = library
+        model.setViewMode(.list, for: .library)
+        await waitUntil(timeout: 60) { !lib.listTopFolders.isEmpty }
+        try? await Task.sleep(for: .seconds(1))
+        let rows = outline(of: lib)?.numberOfRows ?? -1
+        note("views: library list \(rows) rows for \(lib.listTopFolders.count) folders and \(lib.shownFiles.count) files")
+        if let outline = outline(of: lib), outline.numberOfRows > 0, let first = outline.item(atRow: 0) {
+            outline.expandItem(first)
+            // Listings wait for the analysis store, which is busy with the files just saved.
+            await waitUntil(timeout: 120) { outline.numberOfRows > 1 }
+            try? await Task.sleep(for: .seconds(3))
+            note("views: library list after opening the first folder \(outline.numberOfRows) rows")
+        }
+        snapshot(to: out.appendingPathComponent("view-library-list.png"))
+        let savedQuery = lib.query
+        lib.listSortChanged(.size, ascending: false)
+        note("views: Size header sorts by \(lib.query.sort.rawValue), ascending \(lib.query.ascending)")
+        lib.query = savedQuery
+
+        let host = library.appendingPathComponent(FileNaming.safeTopFolder(model.browser.url?.host ?? "web"), isDirectory: true)
+        lib.selectedFolder = host
+        model.setViewMode(.column, for: .library)
+        await waitUntil(timeout: 120) { (self.browser(of: lib)?.lastColumn ?? 0) >= 1 }
+        try? await Task.sleep(for: .seconds(2))
+        if let browser = browser(of: lib) {
+            note("views: library columns open at column \(browser.lastColumn), \(browser.selectionIndexPath?.description ?? "none") "
+                + "for \(lib.selectedFolder?.lastPathComponent ?? "none")")
+            let last = browser.lastColumn
+            click(browser, row: 0, column: last)
+            try? await Task.sleep(for: .seconds(3))
+            note("views: file chosen in columns: folder \(lib.selectedFolder?.lastPathComponent ?? "none"), "
+                + "\(lib.selection.count) selected")
+            snapshot(to: out.appendingPathComponent("view-library-columns.png"))
+            click(browser, row: 0, column: 0)
+            try? await Task.sleep(for: .seconds(1))
+            note("views: library folder chosen in columns: \(lib.selectedFolder?.lastPathComponent ?? "none")")
+        } else {
+            note("views: no column browser in the Library pane")
+        }
+        model.setViewMode(.list, for: .library)
+
+        model.setViewMode(.list, for: .extracted)
+        try? await Task.sleep(for: .seconds(6))
+        note("views: extracted list \(outline(of: model)?.numberOfRows ?? -1) rows for \(model.visible.count) items")
+        if let first = model.visible.first {
+            let started = Date()
+            let image = await model.gridThumbnail(first.id, maxPixel: 64)
+            note("views: extracted thumbnail \(image.map { "\($0.width)×\($0.height)" } ?? "none") in "
+                + String(format: "%.1f s", Date().timeIntervalSince(started)))
+        }
+        if let outline = outline(of: model), outline.numberOfRows > 0, let cell = outline.view(atColumn: 0, row: 0, makeIfNecessary: false)
+            as? ListNameCell
+        {
+            note("views: first extracted row image \(cell.imageView?.image?.size.debugDescription ?? "none")")
+        }
+        snapshot(to: out.appendingPathComponent("view-extracted-list.png"))
+        model.setViewMode(.column, for: .extracted)
+        note("views: extracted asked for columns shows \(model.viewMode(for: .extracted).rawValue)")
+
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        model.organise.open(library)
+        model.setViewMode(.list, for: .organiseSource)
+        let source = model.organise.source
+        await waitUntil(timeout: 30) { !source.loading && self.outline(of: source) != nil }
+        try? await Task.sleep(for: .seconds(2))
+        note("views: section \(model.section), source \(source.root?.lastPathComponent ?? "none"), loading \(source.loading)")
+        note("views: organise list \(outline(of: source)?.numberOfRows ?? -1) rows for \(source.listTopFolders.count) folders "
+            + "and \(source.shown.count) files")
+        if let outline = outline(of: source), outline.numberOfRows > 0, let first = outline.item(atRow: 0) {
+            outline.expandItem(first)
+            await waitUntil(timeout: 120) { outline.numberOfRows > 1 }
+            try? await Task.sleep(for: .seconds(3))
+            note("views: organise list after opening the first folder \(outline.numberOfRows) rows")
+        }
+        snapshot(to: out.appendingPathComponent("view-organise-list.png"))
+        model.setViewMode(.column, for: .organiseSource)
+        await waitUntil(timeout: 60) { (self.browser(of: source)?.numberOfVisibleColumns ?? 0) > 0 }
+        try? await Task.sleep(for: .seconds(2))
+        if let browser = browser(of: source) {
+            click(browser, row: 0, column: 0)
+            try? await Task.sleep(for: .seconds(2))
+            note("views: organise folder chosen in columns: \(source.folder?.lastPathComponent ?? "none")")
+            let last = browser.lastColumn
+            click(browser, row: 0, column: last)
+            try? await Task.sleep(for: .seconds(3))
+            note("views: organise file chosen: folder \(source.folder?.lastPathComponent ?? "none"), \(source.selection.count) selected")
+            snapshot(to: out.appendingPathComponent("view-organise-columns.png"))
+        } else {
+            note("views: no column browser in the Source pane")
+        }
+        model.section = .collect
     }
 
     private func writeLog(to out: URL) {

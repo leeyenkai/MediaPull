@@ -30,6 +30,7 @@ struct LibraryPane: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Add a library folder or create a new folder")
+                ViewModePicker(model: model, pane: .library)
                 PaneMenu(pane: .library, window: model)
             }
             .padding(.horizontal, 12)
@@ -40,10 +41,12 @@ struct LibraryPane: View {
                 NoRootsView(library: library)
             } else {
                 VStack(spacing: 0) {
-                    // A compact tree: the media grid gets the room.
-                    FolderTree(model: model, library: library)
-                        .frame(minHeight: 60, idealHeight: 150, maxHeight: 190)
-                    Divider()
+                    // A compact tree: the media grid gets the room. Column view is its own tree (R-1710).
+                    if model.viewMode(for: .library) != .column {
+                        FolderTree(model: model, library: library)
+                            .frame(minHeight: 60, idealHeight: 150, maxHeight: 190)
+                        Divider()
+                    }
                     FolderContents(model: model, library: library)
                         .frame(minHeight: 160)
                 }
@@ -281,7 +284,7 @@ struct FolderContents: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            if library.selectedFolder != nil {
+            if library.selectedFolder != nil, !columns {
                 QueryBar(query: $library.query, includeSubfolders: $library.includeSubfolders, entries: library.entries)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
@@ -299,36 +302,47 @@ struct FolderContents: View {
                 Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12)
             }
             // Duplicates only take a line when there are some here, or while checking.
-            if app.preferences.highlightDuplicates, library.selectedFolder != nil,
+            if app.preferences.highlightDuplicates, library.selectedFolder != nil, !columns,
                library.duplicateProgress != nil || library.duplicatesHere > 0 || library.showOnlyDuplicates
             {
                 DuplicateBar(library: library)
             }
             Divider()
-            ZStack {
-                MediaGrid(sections: library.sections, selection: library.selection, cellSize: library.cellSize, revision: library.revision,
-                          owner: library)
-                if library.showOnlyDuplicates, library.shownFiles.isEmpty, !library.files.isEmpty {
-                    Text("No duplicates in this folder.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .allowsHitTesting(false)
-                }
-                if library.files.isEmpty {
-                    VStack(spacing: 6) {
-                        Image(systemName: "tray.and.arrow.down").font(.title).foregroundStyle(.tertiary)
-                        Text("Drag media here to save it in this folder.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding()
-                    .allowsHitTesting(false)
-                }
+            if columns {
+                MediaColumns(base: nil, roots: library.columnRoots, folder: library.selectedFolder,
+                             revision: app.libraryRevision &+ library.treeRevision, owner: library)
+            } else {
+                contents
             }
         }
         .onChange(of: app.libraryRevision) { _, _ in library.reload() }
         .onChange(of: app.analysis.revision) { _, _ in library.reattach() }
+    }
+
+    private var columns: Bool { model.viewMode(for: .library) == .column }
+
+    private var contents: some View {
+        ZStack {
+            PaneMediaView(mode: model.viewMode(for: .library), sections: library.sections, selection: library.selection,
+                          cellSize: library.cellSize, revision: library.revision, owner: library)
+            if library.showOnlyDuplicates, library.shownFiles.isEmpty, !library.files.isEmpty {
+                Text("No duplicates in this folder.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .allowsHitTesting(false)
+            }
+            if library.files.isEmpty, model.viewMode(for: .library) == .icon || library.listTopFolders.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "tray.and.arrow.down").font(.title).foregroundStyle(.tertiary)
+                    Text("Drag media here to save it in this folder.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+                .allowsHitTesting(false)
+            }
+        }
     }
 
     private var subtitle: String {

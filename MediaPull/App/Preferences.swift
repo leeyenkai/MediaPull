@@ -62,6 +62,8 @@ final class Preferences {
     var gallerySwitches: [String: [String: Bool]] { didSet { set(gallerySwitches, "gallerySwitches") } }
     var libraryQuery: LibraryQuery { didSet { set(try? JSONEncoder().encode(libraryQuery), "libraryQuery") } }
     var libraryIncludeSubfolders: Bool { didSet { set(libraryIncludeSubfolders, "libraryIncludeSubfolders") } }
+    /// Each pane's view: icons, a list or columns (R-1708).
+    var paneViewModes: PaneViewModes { didSet { set(try? JSONEncoder().encode(paneViewModes), "paneViewModes") } }
     var theme: AppTheme {
         didSet {
             set(theme.rawValue, "theme")
@@ -118,6 +120,8 @@ final class Preferences {
         gallerySwitches = d.dictionary(forKey: "gallerySwitches") as? [String: [String: Bool]] ?? [:]
         libraryQuery = d.data(forKey: "libraryQuery").flatMap { try? JSONDecoder().decode(LibraryQuery.self, from: $0) } ?? LibraryQuery()
         libraryIncludeSubfolders = d.bool(forKey: "libraryIncludeSubfolders")
+        paneViewModes = d.data(forKey: "paneViewModes").flatMap { try? JSONDecoder().decode(PaneViewModes.self, from: $0) }
+            ?? PaneViewModes()
         theme = AppTheme(rawValue: d.string(forKey: "theme") ?? "") ?? .system
         AppTheme.currentAccent = theme.nsAccent
     }

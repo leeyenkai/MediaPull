@@ -46,11 +46,15 @@ struct OrganiseFolderPane: View {
         return true
     }
 
+    private var mode: PaneViewMode { model.viewMode(for: pane.paneID) }
+    private var columns: Bool { mode == .column }
+
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(title: pane.role == .source ? "Source" : "Target", pane: pane.role == .source ? .organiseSource : .organiseTarget,
                        model: model) {
                 FolderMenu(organise: organise, pane: pane)
+                if pane.root != nil { ViewModePicker(model: model, pane: pane.role == .source ? .organiseSource : .organiseTarget) }
             }
             // A folder dropped on the header opens in this pane, whatever it shows now.
             .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: headerTargeted ? 2 : 0).allowsHitTesting(false))
@@ -58,10 +62,12 @@ struct OrganiseFolderPane: View {
             Divider()
             if let root = pane.root {
                 VStack(spacing: 0) {
-                    // A compact tree: the media grid gets the room.
-                    OrganiseTree(organise: organise, pane: pane, root: root)
-                        .frame(minHeight: 60, idealHeight: 150, maxHeight: 190)
-                    Divider()
+                    // A compact tree: the media grid gets the room. Column view is its own tree (R-1710).
+                    if !columns {
+                        OrganiseTree(organise: organise, pane: pane, root: root)
+                            .frame(minHeight: 60, idealHeight: 150, maxHeight: 190)
+                        Divider()
+                    }
                     VStack(spacing: 0) {
                         HStack(spacing: 6) {
                             Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -69,16 +75,22 @@ struct OrganiseFolderPane: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.top, 6)
-                        QueryBar(query: $pane.query, includeSubfolders: $pane.includeSubfolders, entries: pane.entries)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
+                        if !columns {
+                            QueryBar(query: $pane.query, includeSubfolders: $pane.includeSubfolders, entries: pane.entries)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                        }
                         Divider()
-                        ZStack {
-                            MediaGrid(sections: pane.gridSections, selection: pane.selection, cellSize: pane.cellSize,
-                                      revision: pane.revision, owner: pane)
-                            if pane.shown.isEmpty, !pane.loading {
-                                Text(pane.entries.isEmpty ? "No media in this folder." : "Nothing matches the search and filters.")
-                                    .font(.callout).foregroundStyle(.secondary).allowsHitTesting(false)
+                        if columns {
+                            MediaColumns(base: root, roots: [], folder: pane.folder, revision: pane.treeRevision, owner: pane)
+                        } else {
+                            ZStack {
+                                PaneMediaView(mode: mode, sections: pane.gridSections, selection: pane.selection, cellSize: pane.cellSize,
+                                              revision: pane.revision, owner: pane)
+                                if pane.shown.isEmpty, !pane.loading, mode == .icon || pane.listTopFolders.isEmpty {
+                                    Text(pane.entries.isEmpty ? "No media in this folder." : "Nothing matches the search and filters.")
+                                        .font(.callout).foregroundStyle(.secondary).allowsHitTesting(false)
+                                }
                             }
                         }
                     }

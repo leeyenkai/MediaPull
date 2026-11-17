@@ -127,12 +127,25 @@ final class LibraryModel: MediaGridOwner {
     @ObservationIgnored private var fileIndex: [String: Int] = [:]
     @ObservationIgnored private var entryIndex: [String: Int] = [:]
 
-    private func file(_ id: String) -> LibraryFile? { fileIndex[id].map { files[$0] } }
+    /// A file of the folder, or one inside a folder opened in place in the list view (R-1709).
+    private func file(_ id: String) -> LibraryFile? {
+        if let index = fileIndex[id] { return files[index] }
+        return listFolders.entry(id).map {
+            LibraryFile(url: $0.url, name: $0.name, size: $0.size, modified: $0.modified, hasSidecar: $0.source != nil, format: $0.format)
+        }
+    }
+
+    private func entry(_ id: String) -> MediaEntry? { entryIndex[id].map { entries[$0] } ?? listFolders.entry(id) }
+
+    /// The subfolders shown above the files in the list view, and the folders opened in place.
+    @ObservationIgnored let listFolders = FolderChildren()
+    @ObservationIgnored var onListChildrenLoaded: ((String) -> Void)?
     var built: [LibrarySection] = []
     var query: LibraryQuery = AppModel.shared.preferences.libraryQuery {
         didSet {
             guard query != oldValue else { return }
             app.preferences.libraryQuery = query
+            listFolders.forgetContents()
             refilter()
         }
     }
@@ -276,7 +289,7 @@ final class LibraryModel: MediaGridOwner {
         }
         let recursive = includeSubfolders
         reloadTask = Task { [weak self] in
-            let (listed, folders) = await MediaListing.load(folder, recursive: recursive)
+            let (listed, folders, subfolders) = await MediaListing.load(folder, recursive: recursive)
             guard !Task.isCancelled, let self, self.selectedFolder == folder else { return }
             let attached = await self.app.analysis.attach(listed)
             guard !Task.isCancelled, self.selectedFolder == folder else { return }
@@ -295,6 +308,7 @@ final class LibraryModel: MediaGridOwner {
             }
             self.entries = attached
             self.files = loaded
+            self.listFolders.reset(top: subfolders)
             self.refilter()
             self.subfolderCount = folders
             self.selection = self.selection.intersection(Set(loaded.map(\.id)))
@@ -570,32 +584,40 @@ final class LibraryModel: MediaGridOwner {
 
     func gridSelectionChanged(_ ids: Set<String>) {
         selection = ids
-        if ids.count == 1, let file = files.first(where: { ids.contains($0.id) }) { window?.showInPreview(.file(file.url)) }
+        if ids.count == 1, let id = ids.first, let file = file(id) { window?.showInPreview(.file(file.url)) }
     }
 
+    /// A folder (a row of the list or column view) opens in the pane, as in the Finder.
     func gridActivate(_ id: String) {
+        if listFolders.isFolder(id) {
+            selectedFolder = URL(fileURLWithPath: id, isDirectory: true)
+            return
+        }
         guard let file = file(id) else { return }
         NSWorkspace.shared.open(file.url)
     }
 
     func gridQuickLook() {
-        QuickLook.shared.show(files.filter { selection.contains($0.id) }.map(\.url))
+        QuickLook.shared.show(selection.sorted().compactMap { file($0)?.url })
     }
 
     /// Return renames and ⌘⌫ moves to the Trash, in the grid as in the folder tree (R-1707). The editor holds the name.
     func gridReturn(_ id: String) {
-        guard let file = file(id) else { return }
+        guard let file = file(id) else { return gridActivate(id) }
         window?.openEditor(EditorRequest(subject: .file(file.url)))
     }
 
     func gridDelete(_ ids: Set<String>) {
-        trash(files.filter { ids.contains($0.id) }.map(\.url))
+        trash(ids.sorted().compactMap { id in listFolders.isFolder(id) ? URL(fileURLWithPath: id, isDirectory: true) : file(id)?.url })
     }
 
     func gridAppeared(_: String) {}
 
+    func gridFocused() { window?.focusedPane = .library }
+
     func gridWriter(_ id: String) -> NSPasteboardWriting? {
-        file(id).map { $0.url as NSURL }
+        if listFolders.isFolder(id) { return URL(fileURLWithPath: id, isDirectory: true) as NSURL }
+        return file(id).map { $0.url as NSURL }
     }
 
     /// Library items dragged to the Finder are copied with their metadata files (R-1801).
@@ -615,8 +637,14 @@ final class LibraryModel: MediaGridOwner {
         return handleDrop(pasteboard, into: folder, operation: operation)
     }
 
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation, into folder: URL) -> Bool {
+        handleDrop(pasteboard, into: folder, operation: operation)
+    }
+
     func gridMenu(_ ids: Set<String>) -> NSMenu? {
-        let chosen = files.filter { ids.contains($0.id) }
+        let folders = ids.filter(listFolders.isFolder).sorted().map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if !folders.isEmpty { return folderMenu(folders) }
+        let chosen = ids.sorted().compactMap(file)
         guard !chosen.isEmpty else { return nil }
         let menu = NSMenu()
         menu.addItem(ActionMenuItem("Open") { chosen.forEach { NSWorkspace.shared.open($0.url) } })
@@ -666,4 +694,70 @@ final class LibraryModel: MediaGridOwner {
         menu.addItem(ActionMenuItem("Move to Trash") { [weak self] in self?.trash(chosen.map(\.url)) })
         return menu
     }
+
+    /// Folder rows of the list or column view: open in the pane, show in the Finder, move to the Trash.
+    private func folderMenu(_ folders: [URL]) -> NSMenu {
+        let menu = NSMenu()
+        if folders.count == 1, let folder = folders.first {
+            menu.addItem(ActionMenuItem("Open") { [weak self] in self?.selectedFolder = folder })
+        }
+        menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(folders) })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Move to Trash") { [weak self] in self?.trash(folders) })
+        return menu
+    }
+}
+
+// MARK: - List view (R-1709)
+
+extension LibraryModel: MediaListOwner {
+    var listColumns: [ListColumn] { ListColumn.fileColumns }
+
+    func listText(_ id: String, _ column: ListColumn) -> String {
+        if listFolders.isFolder(id) { return ListText.folder(id, column) }
+        guard let entry = entry(id) else { return "" }
+        return ListText.entry(entry, column, measured: details[id]?.0 ?? nil)
+    }
+
+    var listSort: (column: ListColumn, ascending: Bool)? {
+        ListColumn(librarySort: query.sort).map { ($0, query.ascending) }
+    }
+
+    func listSortChanged(_ column: ListColumn, ascending: Bool) {
+        guard let sort = column.librarySort else { return }
+        query.sort = sort
+        query.ascending = ascending
+    }
+
+    func listCanSort(_ column: ListColumn) -> Bool { column.librarySort != nil }
+
+    /// Subfolders come first, as in the Finder, unless the list is flat: search, Include Subfolders, duplicates or groups.
+    var listTopFolders: [String] {
+        let flat = !query.search.trimmingCharacters(in: .whitespaces).isEmpty || includeSubfolders || showOnlyDuplicates || built.count > 1
+        return flat ? [] : listFolders.top
+    }
+
+    func listIsFolder(_ id: String) -> Bool { listFolders.isFolder(id) }
+
+    func listChildren(_ folderID: String) -> [String]? {
+        listFolders.onLoaded = { [weak self] id in self?.onListChildrenLoaded?(id) }
+        return listFolders.contents(of: folderID, query: query)
+    }
+}
+
+extension LibraryModel: MediaColumnsOwner {
+    var columnBase: URL? { nil }
+
+    /// The library folders, then the save folder outside them (D-70), as in the folder tree.
+    var columnRoots: [URL] {
+        let roots = app.roots.map { URL(fileURLWithPath: $0.path, isDirectory: true) }
+        guard let other = otherFolder, app.root(containing: other) == nil else { return roots }
+        return roots + [other]
+    }
+
+    var columnFolder: URL? { selectedFolder }
+
+    func columnFolderChanged(_ folder: URL) { selectedFolder = folder }
+
+    func columnNoteFolders(_ ids: [String]) { listFolders.note(ids) }
 }

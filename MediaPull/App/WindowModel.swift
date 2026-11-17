@@ -691,6 +691,28 @@ final class WindowModel: Identifiable, MediaGridOwner {
         return panes
     }
 
+    // MARK: Views (R-1708)
+
+    func viewMode(for pane: PaneID) -> PaneViewMode {
+        app.preferences.paneViewModes.mode(for: pane)
+    }
+
+    func setViewMode(_ mode: PaneViewMode, for pane: PaneID) {
+        app.preferences.paneViewModes.set(mode, for: pane)
+        focusedPane = pane
+    }
+
+    /// The pane last clicked or focused, so ⌘1 to ⌘3 change the pane the person is working in.
+    var focusedPane: PaneID?
+
+    /// The pane the View menu's view commands act on: the focused one when it is on screen in this section, else the
+    /// main pane of the section.
+    var viewModeTarget: PaneID {
+        let candidates: [PaneID] = section == .collect ? [.library, .extracted] : [.organiseSource, .organiseTarget]
+        if let focusedPane, candidates.contains(focusedPane), isShowing(focusedPane) { return focusedPane }
+        return candidates.first(where: isShowing) ?? candidates[0]
+    }
+
     func isShowing(_ pane: PaneID) -> Bool {
         pane.group == .collect ? visiblePanes.contains(pane) : organiseVisiblePanes.contains(pane)
     }
@@ -734,6 +756,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
             return files
         }
     }
+
+    func gridFocused() { focusedPane = .extracted }
 
     func gridAppeared(_ id: String) {
         guard app.preferences.autoProbe, let item = itemsByID[id] else { return }
@@ -1083,5 +1107,44 @@ extension WindowModel {
             MainActor.assumeIsolated { window.organise.undo(entry) }
         }
         manager.setActionName(entry.title)
+    }
+}
+
+/// Extracted Media as a list (R-1709): one row per item, sorted by the pane's own sort.
+extension WindowModel: MediaListOwner {
+    var listColumns: [ListColumn] { ListColumn.extractedColumns }
+
+    func listText(_ id: String, _ column: ListColumn) -> String {
+        guard let item = itemsByID[id] else { return "" }
+        switch column {
+        case .name:
+            return item.source.engine?.fileName ?? item.best.flatMap { URLNormalizer.baseName(of: $0.url) } ?? item.alt ?? item.kind.label
+        case .dimensions: return item.displaySize.map { "\($0.width) × \($0.height)" } ?? ""
+        case .size: return item.displayBytes.map(Format.bytes) ?? ""
+        case .kind: return item.displayFormat?.label ?? item.kind.label
+        case .duration: return item.duration.map(Format.duration) ?? ""
+        case .source:
+            return item.source.engine.map { $0.isInstagram ? $0.instagramSection.capitalized : $0.category } ?? item.host
+        case .found: return "\(item.discoveryIndex + 1)"
+        case .date: return item.source.engine?.date?.formatted(date: .abbreviated, time: .shortened) ?? ""
+        }
+    }
+
+    var listSort: (column: ListColumn, ascending: Bool)? {
+        ListColumn(extractedSort: filter.sort).map { ($0, filter.ascending) }
+    }
+
+    func listSortChanged(_ column: ListColumn, ascending: Bool) {
+        guard let sort = column.extractedSort else { return }
+        filter.sort = sort
+        filter.ascending = ascending
+    }
+
+    func listCanSort(_ column: ListColumn) -> Bool { column.extractedSort != nil }
+
+    /// Extracted Media has no folders to open, so nothing is ever loaded.
+    var onListChildrenLoaded: ((String) -> Void)? {
+        get { nil }
+        set { _ = newValue }
     }
 }

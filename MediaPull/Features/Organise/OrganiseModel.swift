@@ -122,8 +122,18 @@ final class OrganisePane: MediaGridOwner {
     }
 
     var query = LibraryQuery() {
-        didSet { if query != oldValue { refilter() } }
+        didSet {
+            if query != oldValue {
+                listFolders.forgetContents()
+                refilter()
+            }
+        }
     }
+
+    /// Subfolders and opened folders of the list view (R-1709).
+    @ObservationIgnored let listFolders = FolderChildren()
+    @ObservationIgnored var onListChildrenLoaded: ((String) -> Void)?
+    @ObservationIgnored private var shownIndex: [String: Int] = [:]
 
     var loading = false
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -148,12 +158,13 @@ final class OrganisePane: MediaGridOwner {
         loading = true
         let recursive = includeSubfolders
         loadTask = Task { [weak self] in
-            let (listed, folders) = await MediaListing.load(folder, recursive: recursive)
+            let (listed, folders, subfolders) = await MediaListing.load(folder, recursive: recursive)
             guard let self, !Task.isCancelled, self.folder == folder else { return }
             let attached = await self.app.analysis.attach(listed)
             guard !Task.isCancelled, self.folder == folder else { return }
             self.entries = attached
             self.subfolderCount = folders
+            self.listFolders.reset(top: subfolders)
             self.selection = self.selection.intersection(Set(attached.map(\.path)))
             self.loading = false
             self.refilter()
@@ -191,6 +202,7 @@ final class OrganisePane: MediaGridOwner {
             guard !Task.isCancelled else { return }
             self.sections = built
             self.shown = built.flatMap(\.items)
+            self.shownIndex = Dictionary(self.shown.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { first, _ in first })
             self.revision += 1
         }
     }
@@ -199,9 +211,14 @@ final class OrganisePane: MediaGridOwner {
         sections.enumerated().map { GridSection(id: "\($0.offset)", title: $0.element.title ?? "", ids: $0.element.items.map(\.path)) }
     }
 
-    func entry(_ path: String) -> MediaEntry? { shown.first { $0.path == path } }
+    func entry(_ path: String) -> MediaEntry? { shownIndex[path].map { shown[$0] } ?? listFolders.entry(path) }
 
-    var selectedURLs: [URL] { shown.filter { selection.contains($0.path) }.map(\.url) }
+    /// The selected files and folders; files inside folders opened in the list view count too.
+    var selectedURLs: [URL] { urls(selection) }
+
+    private func urls(_ ids: Set<String>) -> [URL] {
+        ids.sorted().compactMap { id in listFolders.isFolder(id) ? URL(fileURLWithPath: id, isDirectory: true) : entry(id)?.url }
+    }
 
     // MARK: Grid owner
 
@@ -222,18 +239,40 @@ final class OrganisePane: MediaGridOwner {
 
     func gridSelectionChanged(_ ids: Set<String>) { selection = ids }
 
-    func gridActivate(_ id: String) { NSWorkspace.shared.open(URL(fileURLWithPath: id)) }
+    /// A folder (a row of the list or column view) opens in the pane, as in the Finder.
+    func gridActivate(_ id: String) {
+        if listFolders.isFolder(id) {
+            folder = URL(fileURLWithPath: id, isDirectory: true)
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: id))
+    }
 
-    func gridQuickLook() { QuickLook.shared.show(selectedURLs) }
+    func gridQuickLook() { QuickLook.shared.show(selection.sorted().compactMap { entry($0)?.url }) }
+
+    func gridDelete(_ ids: Set<String>) {
+        let chosen = urls(ids)
+        guard !chosen.isEmpty else { return }
+        owner?.run(FolderOperations.trash(chosen))
+    }
 
     func gridAppeared(_: String) {}
 
-    func gridWriter(_ id: String) -> NSPasteboardWriting? { URL(fileURLWithPath: id) as NSURL }
+    var paneID: PaneID { role == .source ? .organiseSource : .organiseTarget }
+
+    func gridFocused() { owner?.window?.focusedPane = paneID }
+
+    func gridWriter(_ id: String) -> NSPasteboardWriting? { URL(fileURLWithPath: id, isDirectory: listFolders.isFolder(id)) as NSURL }
 
     var gridAcceptsDrops: Bool { folder != nil }
 
-    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation _: NSDragOperation) -> Bool {
-        guard let folder, let owner else { return false }
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation: NSDragOperation) -> Bool {
+        guard let folder else { return false }
+        return gridAcceptDrop(pasteboard, operation: operation, into: folder)
+    }
+
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation _: NSDragOperation, into folder: URL) -> Bool {
+        guard let owner else { return false }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
         guard !urls.isEmpty else { return false }
         owner.drop(Sidecar.withoutCompanions(urls), into: folder)
@@ -244,7 +283,7 @@ final class OrganisePane: MediaGridOwner {
 
     func gridMenu(_ ids: Set<String>) -> NSMenu? {
         guard let owner else { return nil }
-        let chosen = shown.filter { ids.contains($0.path) }.map(\.url)
+        let chosen = urls(ids)
         guard !chosen.isEmpty else { return nil }
         let menu = NSMenu()
         menu.addItem(ActionMenuItem("Open") { chosen.forEach { NSWorkspace.shared.open($0) } })
@@ -262,6 +301,38 @@ final class OrganisePane: MediaGridOwner {
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Move to Trash") { owner.run(FolderOperations.trash(chosen)) })
         return menu
+    }
+}
+
+extension OrganisePane: MediaListOwner {
+    var listColumns: [ListColumn] { ListColumn.fileColumns }
+
+    func listText(_ id: String, _ column: ListColumn) -> String {
+        if listFolders.isFolder(id) { return ListText.folder(id, column) }
+        return entry(id).map { ListText.entry($0, column) } ?? ""
+    }
+
+    var listSort: (column: ListColumn, ascending: Bool)? { ListColumn(librarySort: query.sort).map { ($0, query.ascending) } }
+
+    func listSortChanged(_ column: ListColumn, ascending: Bool) {
+        guard let sort = column.librarySort else { return }
+        query.sort = sort
+        query.ascending = ascending
+    }
+
+    func listCanSort(_ column: ListColumn) -> Bool { column.librarySort != nil }
+
+    /// Subfolders come first, as in the Finder, unless the list is flat: search, Include Subfolders or groups.
+    var listTopFolders: [String] {
+        let flat = !query.search.trimmingCharacters(in: .whitespaces).isEmpty || includeSubfolders || sections.count > 1
+        return flat ? [] : listFolders.top
+    }
+
+    func listIsFolder(_ id: String) -> Bool { listFolders.isFolder(id) }
+
+    func listChildren(_ folderID: String) -> [String]? {
+        listFolders.onLoaded = { [weak self] id in self?.onListChildrenLoaded?(id) }
+        return listFolders.contents(of: folderID, query: query)
     }
 }
 
@@ -650,4 +721,14 @@ final class OrganiseModel {
         let hasSidecars = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.contains { $0.hasSuffix(".json") } ?? false
         return hasSidecars ? .archive : .plain
     }
+}
+
+extension OrganisePane: MediaColumnsOwner {
+    var columnBase: URL? { root }
+    var columnRoots: [URL] { [] }
+    var columnFolder: URL? { folder }
+
+    func columnFolderChanged(_ folder: URL) { self.folder = folder }
+
+    func columnNoteFolders(_ ids: [String]) { listFolders.note(ids) }
 }

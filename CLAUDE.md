@@ -37,13 +37,14 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
                                   Preferences, Theme, PaneMenu, Jobs, SelfTest
     Features/                     Browser (pane, TabStrip, BrowsingPanel), Extracted, Preview (pane, details, inline editor host), Library, Instagram (EngineService, PullSheet),
                                   Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView),
-                                  Analysis (AnalysisService, MediaListing, QueryBar), Organise (OrganiseModel, OrganiseView: Source, Organise, Target panes),
+                                  Analysis (AnalysisService, MediaListing, QueryBar, ViewModePicker, PaneMediaView, FolderChildren), Organise (OrganiseModel, OrganiseView: Source, Organise, Target panes),
                                   People, Downloads (DownloadsPane: Instagram, video and gallery forms)
-    Platform/                     AppKit: ReadOnlyWebView, MediaGridView (NSCollectionView), PaneSplit (nested split views per arrangement),
+    Platform/                     AppKit: ReadOnlyWebView, MediaGridView (NSCollectionView), MediaListView (NSOutlineView),
+                                  MediaColumnsView (NSBrowser), PaneSplit (nested split views per arrangement),
                                   MediaPreviewViews (player, animated image), VideoStage (editor player, trim bar), DragSupport, QuickLook, SVGRasterizer
     Resources/                    Assets.xcassets (accent colour) and AppIcon.icon (Liquid Glass icon: icon.json + SVG layers)
   MediaPullKit/                   local Swift package (macOS 26, iOS 26)
-    Sources/MediaPullCore/        types, sniffing, URL rules, CDN rules, ranking, filters, naming, sidecar, ExtractionIngestor, PaneArrangement, BrowsingData, VideoDownload
+    Sources/MediaPullCore/        types, sniffing, URL rules, CDN rules, ranking, filters, naming, sidecar, ExtractionIngestor, PaneArrangement, PaneViewMode, BrowsingData, VideoDownload
     Sources/MediaPullNet/         NetworkGate (GET and HEAD only), cookies, host limiter, hashing
     Sources/MediaPullMedia/       ImageIO conversion, thumbnails, image and MP4 probes, PDFImageExtractor, ImageEditing, PerceptualHash, VideoTools
     Sources/MediaPullEngines/     bridge protocol and client, cookie files, ffmpeg runner, engine manager
@@ -68,7 +69,7 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `--selftest-edit`, `--selftest-site`, `--selftest-pdf-links`, `--selftest-theme <name>`, `--selftest-layout <preset index>`,
   `--selftest-browser <second url>` (tabs, bookmarks, history, panel, walkthrough), `--selftest-idle <seconds>` (idle CPU),
   `--selftest-duplicates`, `--selftest-video`, `--selftest-zoom <points>`, `--selftest-pullsheet <account>`,
-  `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio),
+  `--selftest-video-download <page url>` (downloads a 360p H.264 copy and the audio), `--selftest-views` (Icon, List and Column views),
   `--selftest-galleries <file>` (downloads the first 3 items from each address in the file through the whole app),
   `--selftest-analyse <folder>` (copies the folder into the test library, analyses it with faces on, checks no sockets open, searches,
   filters, sorts it in Organise and undoes the sort, comparing checksums)

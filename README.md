@@ -14,6 +14,7 @@
 - **Download from hundreds of sites.** Instagram, YouTube, Bluesky, Pinterest, ArtStation, Imgur and the other sites gallery-dl and yt-dlp support, each with its own options.
 - **Search your photos** by what they show, the text in them, places and people. Everything runs on your Mac.
 - **Organise any folder** by date, event, subject or person, in place or into a new folder. Undo with ⌘Z.
+- **View folders as icons, a list or columns**, as in the Finder (⌘1, ⌘2, ⌘3). Each pane keeps its own view.
 
 | Organise | Downloads |
 |---|---|

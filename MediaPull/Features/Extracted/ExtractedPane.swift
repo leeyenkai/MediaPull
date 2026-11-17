@@ -15,8 +15,8 @@ struct ExtractedPane: View {
                 Divider()
             }
             ZStack {
-                MediaGrid(sections: model.sections, selection: model.selection, cellSize: model.cellSize,
-                          revision: model.gridRevision, owner: model)
+                PaneMediaView(mode: model.viewMode(for: .extracted), sections: model.sections, selection: model.selection,
+                              cellSize: model.cellSize, revision: model.gridRevision, owner: model)
                 if model.visible.isEmpty {
                     EmptyExtracted(model: model)
                 }
@@ -42,6 +42,7 @@ struct ExtractedHeader: View {
                 // Wide panes show every action; narrow ones keep sort and filters and fold the rest into a menu.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
+                        ViewModePicker(model: model, pane: .extracted)
                         extractionButton
                         sortMenu
                         scrollButton
@@ -50,6 +51,7 @@ struct ExtractedHeader: View {
                         clearButton
                     }
                     HStack(spacing: 8) {
+                        ViewModePicker(model: model, pane: .extracted)
                         extractionButton
                         sortMenu
                         overflowMenu

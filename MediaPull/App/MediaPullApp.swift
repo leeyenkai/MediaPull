@@ -77,6 +77,8 @@ struct AppCommands: Commands {
     @FocusedValue(\.windowModel) private var window
     /// The browser is on screen: Collect is shown.
     private var browsing: Bool { window?.section == .collect }
+    /// Thumbnail size is for Extracted Media's icon view (R-1711).
+    private var extractedIcons: Bool { window?.viewMode(for: .extracted) == .icon }
     @Environment(\.openWindow) private var openWindow
 
     private func paneToggle(_ pane: PaneID, key: Character) -> some View {
@@ -178,6 +180,16 @@ struct AppCommands: Commands {
                 Button("Reset Pane Sizes") { PaneSplitController.resetSavedSizes() }
             }
             Divider()
+            // As in the Finder: ⌘1 icons, ⌘2 list, ⌘3 columns, for the pane last clicked (R-1708).
+            ForEach(Array(PaneViewMode.allCases.enumerated()), id: \.element) { index, mode in
+                Toggle(mode.label, isOn: Binding(
+                    get: { window.map { $0.viewMode(for: $0.viewModeTarget) == mode } ?? false },
+                    set: { _ in if let window { window.setViewMode(mode, for: window.viewModeTarget) } }
+                ))
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .disabled(window.map { !PaneViewMode.allowed(for: $0.viewModeTarget).contains(mode) } ?? true)
+            }
+            Divider()
             Button("Zoom In Page") { window?.browser.zoomIn() }
                 .keyboardShortcut("+")
                 .disabled(!browsing)
@@ -189,8 +201,10 @@ struct AppCommands: Commands {
                 .disabled(!browsing)
             Button("Larger Thumbnails") { if let window { window.cellSize = min(WindowModel.zoomRange.upperBound, window.cellSize + 40) } }
                 .keyboardShortcut("+", modifiers: [.command, .option])
+                .disabled(!extractedIcons)
             Button("Smaller Thumbnails") { if let window { window.cellSize = max(WindowModel.zoomRange.lowerBound, window.cellSize - 40) } }
                 .keyboardShortcut("-", modifiers: [.command, .option])
+                .disabled(!extractedIcons)
             Divider()
             Button("Filters") { window?.showFilters.toggle() }
                 .keyboardShortcut("f")
