@@ -396,7 +396,9 @@ public actor AppStore {
         let entries = (try? modelContext.fetch(FetchDescriptor<ArchiveEntryModel>())) ?? []
         var referenced = Set<String>()
         for entry in entries {
-            if fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path) {
+            // Instagram entries are what 1.7 remembered of files saved and deleted since: they wait until a folder's record
+            // takes them over (takeInstagramKeys), so an Update never brings those files back (audit 3, C3-M1).
+            if entry.key.hasPrefix("ig:") || fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path) {
                 referenced.insert(entry.account)
             } else {
                 modelContext.delete(entry)
@@ -410,6 +412,22 @@ public actor AppStore {
             modelContext.delete(account)
         }
         try? modelContext.save()
+    }
+
+    /// The Instagram items saved into a folder before it had a record (versions before 1.8), deleted since or not; the
+    /// entries of deleted files are removed once handed over.
+    public func takeInstagramKeys(account: String, under folder: String) -> Set<String> {
+        let name = account.lowercased()
+        let prefix = folder.precomposedStringWithCanonicalMapping.lowercased() + "/"
+        let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.account == name })
+        let entries = ((try? modelContext.fetch(descriptor)) ?? []).filter {
+            $0.key.hasPrefix("ig:") && $0.path.precomposedStringWithCanonicalMapping.lowercased().hasPrefix(prefix)
+        }
+        for entry in entries where !FileManager.default.fileExists(atPath: entry.path) && Self.volumeMounted(entry.path) {
+            modelContext.delete(entry)
+        }
+        try? modelContext.save()
+        return Set(entries.map(\.key))
     }
 
     static func volumeMounted(_ path: String) -> Bool {

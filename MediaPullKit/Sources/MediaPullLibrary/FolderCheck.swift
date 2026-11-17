@@ -26,7 +26,8 @@ public enum FolderCheck {
         let fm = FileManager.default
         var media: [URL] = []
         var metadata: [URL] = []
-        let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], options: [])
+        let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+                                   options: [.skipsPackageDescendants])
         while let url = walker?.nextObject() as? URL {
             if Task.isCancelled { return report }
             let name = url.lastPathComponent

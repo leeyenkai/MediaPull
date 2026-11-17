@@ -9,4 +9,9 @@ public enum FileFlags {
         guard lstat(url.path, &info) == 0 else { return false }
         return info.st_flags & 0x4000_0000 != 0 // SF_DATALESS
     }
+
+    /// Whether a path is in a Trash: `~/.Trash` on the start-up disk, `.Trashes/<user>` on any other (audit 3, B3-M3).
+    public static func isInTrash(_ url: URL) -> Bool {
+        url.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
+    }
 }

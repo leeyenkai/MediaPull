@@ -151,6 +151,16 @@ final class SelfTestRunner {
             try? await Task.sleep(for: .seconds(1))
             snapshot(to: out.appendingPathComponent("downloads-list.png"))
             note("downloads list: " + model.downloads.batch.map { "\($0.text) = \($0.label)" }.joined(separator: "; "))
+            // Every line recognised for what it is: @accounts and #hashtags as Instagram, nothing left checking (C3-m12).
+            let right = model.downloads.batch.allSatisfy { entry in
+                if entry.kind == .checking { return false }
+                if entry.text.hasPrefix("@") || entry.text.hasPrefix("#") {
+                    if case .instagram = entry.kind { return true }
+                    return false
+                }
+                return true
+            }
+            note("downloads list: \(right && model.downloads.batch.count > 1 ? "PASS" : "FAIL")")
         }
         if let second = Self.value(after: "--selftest-browser").flatMap(URL.init(string:)) {
             await exerciseBrowser(second: second, out: out)
@@ -560,6 +570,16 @@ final class SelfTestRunner {
             + "as \(analysis.map { "\($0.width)x\($0.height)" } ?? "?"), original kept: "
                 + "\(FileManager.default.fileExists(atPath: file.path)), "
             + "sidecar width \(sidecar?["width"] ?? "none"), edited \(sidecar?["edited"] ?? "no")")
+        // An edit saved in place keeps the file's name, metadata file and all (audit 3, B3-M1).
+        let inPlace = EditorModel(request: EditorRequest(subject: .file(saved)), window: model)
+        await inPlace.load()
+        inPlace.rotate(clockwise: true)
+        await inPlace.settled()
+        let replaced = await inPlace.saveFile(asCopy: false)
+        let sameName = replaced?.lastPathComponent == saved.lastPathComponent
+        let keptSidecar = replaced.map { FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: $0).path) } ?? false
+        note("editor: \(sameName && keptSidecar ? "PASS" : "FAIL") an edit saved in place keeps the name "
+            + "(\(replaced?.lastPathComponent ?? "not saved"), metadata file \(keptSidecar))")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).
@@ -676,7 +696,7 @@ final class SelfTestRunner {
         let code4 = InstagramIDs.shortcode(fromID: ids[4]) ?? "-"
         let restored = fm.enumerator(atPath: folder.path)?.allObjects.contains { ($0 as? String)?.contains(code4) ?? false }
         // An update that stopped part way (R-1904): the next one pulls from the top, then continues from where it stopped.
-        await app.accountFolders.update(record.id, cursor: .some("after-3"))
+        await app.accountFolders.setPlace(ResumePlace(cursor: "after-3", untilEnd: true), in: record.id)
         let pulls = { app.jobs.jobs.filter { $0.kind == .pull }.count }
         let jobsBefore = pulls()
         _ = await run("Update after a stop", findMissing: false)
@@ -684,7 +704,7 @@ final class SelfTestRunner {
         // The continuation starts at the stored place: only the 2 items after the third are listed.
         let continuation = app.jobs.jobs.filter { $0.kind == .pull }.last { $0.title.contains("@alice") && $0.skipped == 2 }
         let continued = pulls() - jobsBefore == 2 && continuation != nil
-        let cleared = await app.accountFolders.all().first { $0.id == record.id }?.cursor == nil
+        let cleared = await app.accountFolders.all().first { $0.id == record.id }?.stoppedPartWay == false
         note("update: after a stop, \(pulls() - jobsBefore) jobs ran (top, then the rest); place cleared \(cleared)")
         // A first pull into a new folder that stops part way keeps its place and what it saved (audit round 1, C3).
         var cut = replay
@@ -705,16 +725,77 @@ final class SelfTestRunner {
         let interrupted = app.engines.startPull(draft, scanOnly: false, window: model)
         await waitUntil(timeout: 120) { interrupted?.state.isFinished ?? true }
         let bobRecord = await app.accountFolders.all().first { $0.account == "bob" }
-        let keptPlace = bobRecord?.cursor == "after-2" && bobRecord?.keys.count == 2
-        note("update: a first pull stopped part way kept its place \(bobRecord?.cursor ?? "none") and \(bobRecord?.keys.count ?? 0) items")
+        let bobPlace = bobRecord?.places?.first
+        let keptPlace = bobPlace?.cursor == "after-2" && bobPlace?.untilEnd == true && bobRecord?.keys.count == 2
+        note("update: a first pull stopped part way kept its place \(bobPlace?.cursor ?? "none") and \(bobRecord?.keys.count ?? 0) items")
+        // Places (D-87), each a case an audit found going wrong.
+        func writeReplay(_ value: [String: Any]) {
+            try? JSONSerialization.data(withJSONObject: value).write(to: home.appendingPathComponent("replay.json"))
+        }
+        func waitForPulls() async { await waitUntil(timeout: 120) { !app.jobs.jobs.contains { $0.kind == .pull && !$0.state.isFinished } } }
+        func places(_ account: String) async -> [ResumePlace] {
+            await app.accountFolders.all().first { $0.account == account }?.places ?? []
+        }
+        let bobFolder = URL(fileURLWithPath: bobRecord?.path ?? "/", isDirectory: true)
+        // A pull that does not walk the posts listing (stories only) leaves bob's place alone (A3-M3).
+        var storiesOnly = app.engines.draft(username: "bob")
+        storiesOnly.content = [.stories]
+        storiesOnly.contentFromAddress = true
+        storiesOnly.accountFolder = bobFolder
+        let storiesJob = app.engines.startPull(storiesOnly, scanOnly: false, window: model)
+        await waitUntil(timeout: 60) { storiesJob?.state.isFinished ?? true }
+        let placeKept = await places("bob").first?.cursor == "after-2"
+        // Activity's Resume continues from the place, not from the top (A3-M5): only items 3 to 5 are listed.
+        cut["stop_after"] = nil
+        writeReplay(cut)
+        let jobsBeforeResume = Set(app.jobs.jobs.map(\.id))
+        await app.engines.resumePlaces(account: "bob", folder: bobFolder, window: model)
+        await waitForPulls()
+        let resumed = app.jobs.jobs.first { $0.kind == .pull && !jobsBeforeResume.contains($0.id) }
+        let resumedFromPlace = resumed?.saved == 3 && resumed?.skipped == 0
+        note("update: Resume of bob: \(resumed?.title ?? "none") saved \(resumed?.saved ?? -1), duplicates \(resumed?.duplicates ?? -1), "
+            + "skipped \(resumed?.skipped ?? -1), failed \(resumed?.failed ?? -1)")
+        let bobDone = await places("bob").isEmpty
+        // A continuation whose place has gone does nothing (A3-M4).
+        var stale = app.engines.draft(username: "bob")
+        stale.accountFolder = bobFolder
+        stale.continueFrom = ResumePlace(cursor: "after-1", untilEnd: true)
+        stale.content = [.posts]
+        let staleJob = app.engines.startPull(stale, scanOnly: false, window: model)
+        await waitUntil(timeout: 60) { staleJob?.state.isFinished ?? true }
+        let staleIdle = staleJob?.saved == 0 && staleJob?.skipped == 0
+        // An update whose posts listing ended, then failed (a Reel), leaves no place (A3-M2).
+        var failing = replay
+        failing["fail_after_listing"] = true
+        writeReplay(failing)
+        _ = await run("Update that fails after the posts", findMissing: false)
+        await waitForPulls()
+        let noPlaceAfterLateFailure = await places("alice").isEmpty
+        // An update stopped part way leaves a place that may stop at known posts; the next Update continues it (D-87).
+        var cutUpdate = replay
+        cutUpdate["stop_after"] = 2
+        writeReplay(cutUpdate)
+        _ = await run("Update stopped part way", findMissing: false)
+        await waitForPulls()
+        let updatePlace = await places("alice").first
+        writeReplay(replay)
+        _ = await run("Update after it", findMissing: false)
+        await waitForPulls()
+        let updateContinued = updatePlace?.untilEnd == false && updatePlace?.cursor == "after-2"
+        let aliceDone = await places("alice").isEmpty
+        note("update: places: stories-only kept bob's \(placeKept), Resume from the place \(resumedFromPlace) and cleared \(bobDone), "
+            + "stale continuation idle \(staleIdle), no place after a late failure \(noPlaceAfterLateFailure), "
+            + "interrupted update left \(updatePlace.map { "\($0.cursor) untilEnd \($0.untilEnd)" } ?? "none") "
+            + "and was continued \(aliceDone)")
+        let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
-            && keptPlace
+            && keptPlace && placesPass
         note("update: \(passed ? "PASS" : "FAIL") (new items placed \(first?.saved ?? 0) of 2, story in stories/ \(story), "
             + "nested folder \(nested), "
             + "numbered copies \(numbered), existing files unchanged \(after == before), second Update saved \(second?.saved ?? -1), "
             + "Find Missing restored the deleted file \(restored == true), resumed after a stop \(continued && cleared), "
-            + "first pull kept its place \(keptPlace), stopped early \(stoppedEarly))")
+            + "first pull kept its place \(keptPlace), stopped early \(stoppedEarly), places \(placesPass))")
         writeLog(to: out)
     }
 
@@ -955,7 +1036,15 @@ final class SelfTestRunner {
         _ = libraryNode()?.children
         await waitUntil(timeout: 10) { (libraryNode()?.children?.count ?? 0) > 0 }
         let shown = libraryNode()?.children?.map(\.name) ?? []
-        note("views: folder tree shows \(shown.joined(separator: ", ")) under the library folder")
+        note("views: \(shown.isEmpty ? "FAIL" : "PASS") folder tree shows \(shown.joined(separator: ", ")) under the library folder")
+        // Folder sizes in List view (R-1714): measured in the background, then shown.
+        if let first = shown.first {
+            let path = library.appendingPathComponent(first).path
+            await waitUntil(timeout: 15) { ListText.folder(path, .size) { _ in } != "--" }
+            let size = ListText.folder(path, .size)
+            let kind = ListText.folder(path, .kind)
+            note("views: \(size != "--" ? "PASS" : "FAIL") folder size \(size), \(kind)")
+        }
         let savedSubfolders = lib.includeSubfolders
         defer { lib.includeSubfolders = savedSubfolders }
         lib.includeSubfolders = false

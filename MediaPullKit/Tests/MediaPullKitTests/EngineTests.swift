@@ -381,6 +381,8 @@ final class InstagramContentTests: XCTestCase {
         XCTAssertEqual(folder("avatar", target: account), "/acct/profile pictures")
         XCTAssertEqual(folder("tagged", target: account), "/acct/tagged")
         XCTAssertEqual(folder("reposts", target: account), "/acct/reposts")
+        XCTAssertEqual(folder("tagged", owner: "acct", target: account), "/acct/posts",
+                       "a post of the account's own, saved from a scan of tagged posts, is one of its posts (audit 3, C3-m15)")
         XCTAssertEqual(folder("stories", target: account), "/acct/stories")
         XCTAssertEqual(folder("highlights-covers", target: account), "/acct/highlights/Trips")
         XCTAssertEqual(folder("saved", target: account), "/Saved posts")

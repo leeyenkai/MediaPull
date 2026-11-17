@@ -219,6 +219,8 @@ final class AppModel {
         Task {
             let bookmark = (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)) ?? Data()
             await store?.updateRoot(id, path: url.path, bookmark: bookmark)
+            // Left out of analysis stays left out where it is now (audit 3, B3-m3).
+            if preferences.analysisExcludedRoots.remove(old.path) != nil { preferences.analysisExcludedRoots.insert(url.path) }
             noteMoved([(from: old.path, to: url.path)])
             for window in windows { window.library.rootMoved(from: old, to: url) }
             await reloadRoots()
@@ -237,7 +239,7 @@ final class AppModel {
                 // A library folder moved to the Trash is not followed there: saves would land in the Trash. It shows as Not
                 // Found until it is put back or located.
                 guard let (url, stale) = root.resolvedURL(), FileManager.default.fileExists(atPath: url.path),
-                      !url.pathComponents.contains(".Trash")
+                      !FileFlags.isInTrash(url)
                 else { return (root.id, nil, false) }
                 return (root.id, url.standardizedFileURL, stale)
             }
@@ -444,7 +446,7 @@ final class AppModel {
 
     /// A site's saved API key and its remembered switches, as a site download sends them (R-1111b).
     func siteSettings(for category: String) -> (keys: [String: String], switches: [String: Bool]) {
-        let keys = SiteKeys.forSite(category).map { SiteKeychain.keys(for: category, fields: $0.fields) } ?? [:]
+        let keys = engines.siteKeys(for: category).map { SiteKeychain.keys(for: category, fields: $0.fields) } ?? [:]
         return (keys, preferences.gallerySwitches[category] ?? [:])
     }
 
@@ -501,7 +503,11 @@ final class AppModel {
             // Instagram items go into their account's folder when the save folder is, holds or is inside one (D-78), as a
             // pull would place them, and are remembered there (D-79).
             let rootURL = self.root(containing: folder)?.url
-            let instagram = items.filter { $0.source.engine?.isInstagram == true && $0.source.engine?.username != nil }
+            // Saved posts go to Saved posts, not to their owner's folder, and are not that folder's to remember (audit 3, C3-M5).
+            let instagram = items.filter { item in
+                guard let engine = item.source.engine, engine.isInstagram, engine.username != nil else { return false }
+                return !["saved", "collection"].contains(engine.subcategory)
+            }
             let byAccount = Dictionary(grouping: instagram,
                                        by: { $0.source.engine?.username?.lowercased() ?? "" })
             var batches: [(items: [MediaItem], target: SaveTarget, folder: URL?, account: String?)] = []

@@ -62,8 +62,8 @@ struct PullDraft: Identifiable, Equatable {
     var accountFolder: URL?
     /// Walk every post and add what the folder lacks, including items deleted from it (D-79); otherwise only new items.
     var findMissing = false
-    /// Continue an update that stopped part way, from where it stopped (R-1904).
-    var continueFromCursor = false
+    /// Continue a walk that stopped part way, from that place (R-1904, D-87).
+    var continueFrom: ResumePlace?
     /// The content was chosen by the address (a story link pulls stories), so the account's remembered choices do not
     /// replace it.
     var contentFromAddress = false
@@ -280,8 +280,9 @@ final class EngineService {
 
     // MARK: Pull
 
+    /// `saveFolder` overrides the window's (Download All keeps the folder chosen when it was clicked).
     @discardableResult
-    func startPull(_ draft: PullDraft, scanOnly: Bool, window: WindowModel?) -> Job? {
+    func startPull(_ draft: PullDraft, scanOnly: Bool, window: WindowModel?, saveFolder: URL? = nil) -> Job? {
         guard let bridge else { return nil }
         let isPost = draft.postURL != nil
         let subject = draft.hashtag.map { "#\($0)" } ?? (draft.username.isEmpty ? "your account" : "@\(draft.username)")
@@ -296,7 +297,7 @@ final class EngineService {
             SaveDestination(url: folder.deletingLastPathComponent(),
                             layout: app.root(containing: folder)?.layout ?? app.preferences.defaultLayout)
         } else {
-            (window?.saveFolder ?? app.defaultRoot?.url).map(app.destination(for:))
+            (saveFolder ?? window?.saveFolder ?? app.defaultRoot?.url).map(app.destination(for:))
         }
         if !scanOnly, root == nil {
             app.jobs.finish(job, .failed("Choose where to save first."))
@@ -325,7 +326,19 @@ final class EngineService {
                 await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: true)
             }
         }
-        job.retry = job.resume
+        // Retry Failed walks again from where the job began, so files that failed on any page are fetched again.
+        job.retry = { [weak self, weak job, weak window] in
+            guard let self, let job else { return }
+            job.state = .queued
+            job.failed = 0
+            job.failures = []
+            job.finishedAt = nil
+            job.lastCursor = nil
+            self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
+                guard let job else { return }
+                await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
+            }
+        }
         enqueueInstagram(job: job) { [weak self, weak job, weak window] in
             guard let job else { return }
             await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
@@ -459,9 +472,8 @@ final class EngineService {
         // An account is pulled into its own folder (D-78): an existing one, found by what it holds whatever it is called,
         // or a new one. What that folder already holds is what the engine skips (D-79); another folder of the same account
         // never counts, so a new folder gets a complete copy.
-        // Only the continuation of an update that stopped part way starts from the folder's stored place; Resume of any job
-        // continues that job's own pass (R-1112, D-80).
-        let continuing = draft.continueFromCursor
+        // Places (D-87): only a continuation starts from one; Resume of any job continues that job's own walk.
+        let continuing = draft.continueFrom != nil
         var place: AccountPlace?
         if isAccount, draft.postURL == nil, !scanOnly, let root {
             place = await resolvePlace(account: account, draft: draft, root: root)
@@ -480,7 +492,8 @@ final class EngineService {
         if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
             var known: Set<String> = []
             if let place {
-                known = draft.findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
+                let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
+                known = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
             } else if draft.hashtag != nil, draft.incremental || resuming {
                 known = await app.store?.knownKeys(account: account) ?? []
             }
@@ -493,26 +506,34 @@ final class EngineService {
                 job.notes.append("Saved posts could not be listed for the engine (\(error.localizedDescription)), "
                     + "so every post is checked.")
             }
-            // Only an update of new posts ends early; finding missing items and continuing where a pull stopped walk on.
-            let earlyStop = draft.incremental && !draft.findMissing && !continuing && !(resuming && place == nil)
+            // An update ends early at the folder's known posts, and so does the continuation of an update's place; Find
+            // Missing, full walks and places that run to the oldest post walk on.
+            let earlyStop = draft.incremental && !draft.findMissing && !(draft.continueFrom?.untilEnd ?? false)
+                && !(resuming && place == nil)
             request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
         }
-        let storedNow = place?.record?.cursor ?? (place == nil ? stored?.resumeCursor : nil)
+        // A continuation whose place is gone (continued or replaced meanwhile) has nothing left to do.
+        if let from = draft.continueFrom {
+            guard let record = place?.record, await app.accountFolders.place(from.id, in: record.id) != nil else {
+                job.notes.append("Nothing was left to continue.")
+                app.jobs.finish(job, .completed)
+                return
+            }
+        }
         if draft.postURL == nil, !scanOnly {
             if resuming, let own = job.lastCursor {
                 request.cursor = own
-            } else if continuing || (resuming && place == nil) {
-                request.cursor = storedNow
+            } else if let from = draft.continueFrom {
+                request.cursor = from.cursor
+            } else if resuming, place == nil {
+                request.cursor = stored?.resumeCursor
             }
         }
-        // Whether this job's own place replaces the stored one: a continuation, a first pull, Find Missing and a full walk
-        // all go from the top or from that place, so theirs does. A top pass of an update leaves the older place for the
-        // continuation after it. Decided once per job, so Resume keeps the same rule (audit 2, A2-M1).
-        let plan = job.pullPlan
-            ?? (keepsCursor: continuing || storedNow == nil || draft.findMissing || !draft.incremental, priorCursor: storedNow)
-        job.pullPlan = plan
-        let storedCursor = plan.priorCursor
-        let keepsCursor = plan.keepsCursor
+        // Places are kept for walks of the account's own posts listing with no date window (D-87).
+        let walksPosts = isAccount && draft.postURL == nil && !scanOnly && place != nil && draft.content.contains(.posts)
+            && draft.dateWindow == .allTime
+        let fullWalk = !continuing && (!draft.incremental || draft.findMissing)
+        var postsComplete = false
 
         // The folder decides the layout, not the draft (D-70).
         var target: SaveTarget? = root.map { root in
@@ -530,7 +551,6 @@ final class EngineService {
             }
             return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true)
         }
-        var savedKeys = Set<String>()
         var unrecordedKeys = Set<String>()
         // A new folder gets its record as soon as it exists, so an interruption keeps its place and what it saved (R-1904).
         func folderRecord() async -> AccountFolderRecord? {
@@ -549,7 +569,6 @@ final class EngineService {
             await app.accountFolders.addKeys([key], to: record.id)
         }
         func remember(_ key: String, subcategory: String) async {
-            savedKeys.insert(key)
             // Others' stories and saved posts belong to other folders, not to this account's record.
             guard !["stories-tray", "saved", "collection"].contains(subcategory) else { return }
             unrecordedKeys.insert(key)
@@ -588,7 +607,9 @@ final class EngineService {
                     }
                     if let saved = savedFromStaging[file.path.path], !FileManager.default.fileExists(atPath: file.path.path) {
                         job.duplicates += 1
-                        await remember(file.key, subcategory: file.subcategory ?? "")
+                        let repeated = EngineContext.from(meta: file.meta, key: file.key, subcategory: file.subcategory,
+                                                          sourceURL: sourceURL)
+                        await remember(file.key, subcategory: repeated.subcategory)
                         window?.markSaved(file.key, url: saved)
                         continue
                     }
@@ -601,13 +622,14 @@ final class EngineService {
                         if let known = postPlaces[user] {
                             found = known
                         } else {
-                            found = await resolvePlace(account: user, draft: draft, root: root)
+                            found = await resolvePlace(account: user, draft: draft, root: root, name: user)
                             postPlaces[user] = found
                         }
                         target.accountUsername = user
                         target.accountFolder = found.folder
                         target.typeSubfolders = found.sortsByType
-                        if found.record != nil { job.destination = found.folder }
+                        // A single post's job is its account's; a tray story never changes the running pull's folder.
+                        if found.record != nil, draft.postURL != nil { job.destination = found.folder }
                     }
                     let isVideo = Self.videoExtensions.contains(file.path.pathExtension.lowercased())
                     let input = EngineItemInput(
@@ -672,15 +694,31 @@ final class EngineService {
                         job.fraction = nil; job.currentItem = "\(Format.bytes(received)) of \(Format.bytes(total))"
                     }
                 case let .cursor(subcategory, value):
-                    // Where the posts listing has got to, so an interruption can continue from there (R-1112). A pass from
-                    // the top while an earlier place is kept never replaces it: that place is continued afterwards.
+                    // Where the posts listing has got to (R-1112). Written as the place this walk would leave if it stopped
+                    // now, so a quit or crash keeps it (D-87); the end of the listing removes it again.
                     guard subcategory == "posts", !scanOnly, isAccount else { break }
                     job.lastCursor = value
-                    guard keepsCursor else { break }
-                    if let record = await folderRecord() {
-                        await app.accountFolders.update(record.id, cursor: .some(value), findMissing: draft.findMissing)
+                    guard walksPosts, !postsComplete, let record = await folderRecord() else { break }
+                    if let from = draft.continueFrom {
+                        await app.accountFolders.setPlace(ResumePlace(id: from.id, cursor: value, untilEnd: from.untilEnd,
+                                                                      findMissing: from.findMissing), in: record.id)
+                    } else if fullWalk {
+                        await app.accountFolders.replacePlaces(with: [ResumePlace(id: job.placeID, cursor: value, untilEnd: true,
+                                                                                  findMissing: draft.findMissing)], in: record.id)
                     } else {
-                        await app.store?.updateAccount(account, resumeCursor: .some(value))
+                        await app.accountFolders.setPlace(ResumePlace(id: job.placeID, cursor: value, untilEnd: false), in: record.id)
+                    }
+                case let .listing(subcategory, complete, _):
+                    // The posts listing ended: walked to its end, or to the folder's known posts. Nothing is missing from the
+                    // part this walk covered, so its place goes (D-87).
+                    guard subcategory == "posts", complete, walksPosts, let record = await folderRecord() else { break }
+                    postsComplete = true
+                    if let from = draft.continueFrom {
+                        await app.accountFolders.removePlace(from.id, in: record.id)
+                    } else if fullWalk {
+                        await app.accountFolders.replacePlaces(with: [], in: record.id)
+                    } else {
+                        await app.accountFolders.removePlace(job.placeID, in: record.id)
                     }
                 case let .checkpoint(kind, url, message):
                     blocked = true
@@ -710,12 +748,9 @@ final class EngineService {
         // next Update (D-79). A new folder gets its record once it exists.
         if let record = await folderRecord() {
             await app.accountFolders.addKeys(unrecordedKeys, to: record.id)
-            if finishedCleanly, keepsCursor {
-                await app.accountFolders.update(record.id, cursor: .some(nil), findMissing: false)
-            }
-            // Only a pull of the account's posts that reached the end counts as an update; any other leaves the date of the
-            // last one (a stories link does not make the folder up to date).
-            let complete = finishedCleanly && fatal == nil && !blocked && job.state != .cancelled && draft.content.contains(.posts)
+            // Only a pull whose posts listing was walked counts as an update; any other leaves the date of the last one (a
+            // stories link does not make the folder up to date).
+            let complete = postsComplete && finishedCleanly && fatal == nil && !blocked && job.state != .cancelled
             await app.accountFolders.update(record.id, lastUpdate: complete ? Date() : nil, lastResult: job.summary)
             await app.refreshAccountFolders()
         }
@@ -753,13 +788,24 @@ final class EngineService {
         app.jobs.finish(job, .completed)
         // An earlier update of this folder stopped part way: new posts are in now, so the rest continues from where it
         // stopped (R-1904), as its own job.
-        // The stored place is in the posts listing, so only posts continue. Find Missing already walked everything.
-        if finishedCleanly, !continuing, !draft.findMissing, draft.incremental, storedCursor != nil, draft.content.contains(.posts),
-           let place
-        {
+        // The newest posts are in: places left by earlier walks that stopped part way continue now, one job each, posts
+        // only (R-1904, D-87). A full walk covered everything, and a continuation is one itself.
+        if postsComplete, !continuing, !fullWalk, let place {
+            await continuePlaces(of: place.folder, account: account, draft: draft, window: window)
+        }
+    }
+
+    /// Starts a continuation for each place where posts may still be missing in an account folder (D-87).
+    func continuePlaces(of folder: URL, account: String, draft: PullDraft, window: WindowModel?) async {
+        guard let record = await app.accountFolders.all().first(where: {
+            AccountFolderStore.key($0.path) == AccountFolderStore.key(folder.path) && $0.account == account.lowercased()
+        }) else { return }
+        for place in record.places ?? [] {
             var next = draft
-            next.accountFolder = place.folder
-            next.continueFromCursor = true
+            next.accountFolder = folder
+            next.continueFrom = place
+            next.findMissing = false
+            next.incremental = true
             next.content = [.posts]
             startPull(next, scanOnly: false, window: window)
         }
@@ -773,11 +819,13 @@ final class EngineService {
         var sortsByType: Bool?
     }
 
-    private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination) async -> AccountPlace {
+    /// `name` names a new folder: the pulled account's own choice by default; another account met in the pull (a tray
+    /// story's owner, a post's) gets its own name (audit 3, A3-M1).
+    private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination, name ownName: String? = nil) async -> AccountPlace {
         let libraryRoot = app.root(containing: root.url)?.url
-        let chosen = draft.accountFolder
+        let chosen = ownName == nil ? draft.accountFolder : nil
         let saveFolder = root.url
-        let name = draft.folderName.nonEmpty ?? account
+        let name = ownName ?? draft.folderName.nonEmpty ?? account
         // Reading the folder (names, and a sample of metadata files) happens off the main actor.
         let (folder, index, byType, existing) = await Task.detached(priority: .userInitiated) {
             () -> (URL, AccountFolders.Index, Bool?, Bool) in
@@ -785,18 +833,34 @@ final class EngineService {
                 ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: libraryRoot)
             guard let existing = resolved.existing else {
                 // A new folder never goes into one of that name that already holds something else (another account's).
-                var folder = resolved.parent.appendingPathComponent(FileNaming.safeTopFolder(name), isDirectory: true)
-                var number = 2
-                while FileManager.default.fileExists(atPath: folder.path) {
-                    folder = resolved.parent.appendingPathComponent("\(FileNaming.safeTopFolder(name)) \(number)", isDirectory: true)
-                    number += 1
-                }
-                return (folder, AccountFolders.Index(), nil, false)
+                return (AccountFolders.newFolder(named: name, in: resolved.parent), AccountFolders.Index(), nil, false)
             }
             return (existing, AccountFolders.index(existing), AccountFolders.sortsByType(existing), true)
         }.value
-        let record = existing ? await app.accountFolders.record(account: account, folder: folder) : nil
+        var record = existing ? await app.accountFolders.record(account: account, folder: folder) : nil
+        // A folder that had no record yet (made by 1.7, or before its first update) takes over what was remembered of it:
+        // the items saved there, deleted since or not, and where an interrupted pull stopped (audit 3, C3-M1, C3-m14).
+        if let new = record, new.keys.isEmpty, new.lastUpdate == nil, new.places == nil {
+            let keys = await app.store?.takeInstagramKeys(account: account, under: folder.path) ?? []
+            if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: new.id) }
+            if let cursor = await app.store?.account(account)?.resumeCursor, !cursor.isEmpty {
+                await app.accountFolders.setPlace(ResumePlace(cursor: cursor, untilEnd: true), in: new.id)
+                await app.store?.updateAccount(account, resumeCursor: .some(nil))
+            }
+            record = await app.accountFolders.record(account: account, folder: folder)
+        }
         return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
+    }
+
+    /// Activity's Resume: continues each place where an update or Find Missing stopped part way, without walking from the
+    /// top again (R-1904, D-87).
+    func resumePlaces(account: String, folder: URL, window: WindowModel?) async {
+        guard let folder = await app.accountFolders.currentFolder(for: folder) else { return }
+        var draft = self.draft(username: account)
+        await applyStoredOptions(to: &draft)
+        draft.accountFolder = folder
+        draft.folderName = folder.lastPathComponent
+        await continuePlaces(of: folder, account: account, draft: draft, window: window)
     }
 
     /// Update an account's folder in one click (D-80): the account's remembered media choices and pace, no form. `findMissing`
@@ -810,6 +874,13 @@ final class EngineService {
             app.jobs.finish(job, .failed("The folder of @\(account) is no longer there. It may have been moved to the Trash."))
             await app.refreshAccountFolders()
             return job
+        }
+        // One update of a folder at a time: a second click, or Update All twice, adds nothing (audit 3, C3-m10).
+        let key = AccountFolderStore.key(folder.path)
+        if let running = app.jobs.jobs.first(where: {
+            $0.kind == .pull && $0.state.canCancel && $0.destination.map { AccountFolderStore.key($0.path) == key } == true
+        }) {
+            return running
         }
         var draft = self.draft(username: account)
         await applyStoredOptions(to: &draft)
@@ -1091,9 +1162,20 @@ final class EngineService {
         request.url = url.absoluteString
         guard let events = try? await bridge.collect(request) else { return nil }
         for event in events {
-            if case let .supports(site) = event { return site }
+            if case let .supports(site) = event {
+                if let site, !site.baseCategory.isEmpty { siteBases[site.category] = site.baseCategory }
+                return site
+            }
         }
         return nil
+    }
+
+    /// The base family of sites seen this session (derpibooru is philomena's), so scans and re-fetches find the key
+    /// saved for it (audit 3, A3-m7).
+    var siteBases: [String: String] = [:]
+
+    func siteKeys(for category: String) -> SiteKeys? {
+        SiteKeys.forSite(category, baseCategory: siteBases[category] ?? "")
     }
 
     @discardableResult
@@ -1119,14 +1201,14 @@ final class EngineService {
             request.cookies = cookies?.file.path
             request.userAgent = self.app.userAgent
             request.category = category
-            if let keys = SiteKeys.forSite(category) {
+            if let keys = siteKeys(for: category) {
                 let saved = SiteKeychain.keys(for: category, fields: keys.fields)
                 if !saved.isEmpty { request.siteKeys = saved }
             }
             request.staging = staging?.path
             request.setPacing([1, 2])
             let siteName = self.app.sites.name(SiteInfoKey(category: category))
-            let ownKey = SiteKeys.forSite(category) != nil
+            let ownKey = siteKeys(for: category) != nil
             var fatal: String?
             var blocked = false
             var batch: [EngineItemInput] = []

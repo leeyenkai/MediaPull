@@ -226,7 +226,8 @@ public final class SavePipeline: Sendable {
         }
         let result = await finalize(conversion, item: item, sourceURL: item.best?.url, lastModified: nil, target: target,
                                     settings: settings, index: index, saveDate: Date(), nameOverride: nameOverride)
-        await self.index.persist()
+        // Batched: rewriting the whole index after every file of a long pull wrote gigabytes (audit 3, A3-m8).
+        await self.index.saveSoon()
         return result
     }
 

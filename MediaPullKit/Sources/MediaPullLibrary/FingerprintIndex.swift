@@ -86,6 +86,11 @@ public actor FingerprintIndex {
         scheduleSave()
     }
 
+    /// Saves within two seconds, once for a burst of changes (a pull saving file after file).
+    public func saveSoon() {
+        scheduleSave()
+    }
+
     private func scheduleSave() {
         guard dirty, !saveScheduled, storeURL != nil else { return }
         saveScheduled = true

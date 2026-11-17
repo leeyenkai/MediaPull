@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     {
         let link = (pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL])?.first?.absoluteString
         guard let text = (link ?? pasteboard.string(forType: .string))?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty, text.count < 4096
+              !text.isEmpty, text.utf8.count < 1 << 20
         else { return }
         NSApp.activate()
         let app = AppModel.shared
@@ -273,13 +273,17 @@ struct AppCommands: Commands {
             Button("Look for Media Again") { window?.browser.rescan() }
                 .disabled(window?.section != .collect)
             Divider()
-            Button("Sign In to Instagram") { window?.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!) }
+            Button("Sign In to Instagram") {
+                window?.section = .collect
+                window?.browser.load(URL(string: "https://www.instagram.com/accounts/login/")!)
+            }
         }
         CommandMenu("Bookmarks") {
             Button("Bookmark This Page…") { window?.bookmarkRequest += 1 }
                 .keyboardShortcut("d")
                 .disabled(window?.browser.url == nil || !browsing)
             Button("Show Bookmarks") {
+                window?.section = .collect
                 window?.browsingPanelTab = .bookmarks
                 window?.showBrowsingPanel = true
             }
@@ -288,7 +292,10 @@ struct AppCommands: Commands {
             ForEach(AppModel.shared.browsing.bookmarks.folders) { folder in
                 Menu(folder.name) {
                     ForEach(folder.bookmarks.prefix(40)) { bookmark in
-                        Button(bookmark.title) { window?.browser.load(bookmark.url) }
+                        Button(bookmark.title) {
+                            window?.section = .collect
+                            window?.browser.load(bookmark.url)
+                        }
                     }
                     if folder.bookmarks.isEmpty { Text("No bookmarks") }
                     if !folder.bookmarks.isEmpty {
@@ -300,13 +307,17 @@ struct AppCommands: Commands {
         }
         CommandMenu("History") {
             Button("Show History") {
+                window?.section = .collect
                 window?.browsingPanelTab = .history
                 window?.showBrowsingPanel = true
             }
             .keyboardShortcut("y")
             Divider()
             ForEach(AppModel.shared.browsing.history.entries.prefix(15)) { entry in
-                Button(entry.title.isEmpty ? (entry.url.host ?? entry.url.absoluteString) : entry.title) { window?.browser.load(entry.url) }
+                Button(entry.title.isEmpty ? (entry.url.host ?? entry.url.absoluteString) : entry.title) {
+                    window?.section = .collect
+                    window?.browser.load(entry.url)
+                }
             }
             Divider()
             Menu("Clear History") {

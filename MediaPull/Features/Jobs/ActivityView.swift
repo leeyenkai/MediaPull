@@ -26,13 +26,15 @@ struct ActivityView: View {
             // R-1904: an update that stopped part way (quit, crash, cancelled) can be resumed from where it stopped.
             ForEach(stoppedUpdates) { record in
                 Banner(symbol: "arrow.clockwise.circle", tint: .accentColor,
-                       text: "\(record.cursorFindMissing == true ? "Find Missing" : "An update") of @\(record.account) into "
+                       text: (record.places?.contains(where: \.findMissing) == true ? "Find Missing" : "An update")
+                           + " of @\(record.account) into "
                            + "“\((record.path as NSString).lastPathComponent)” stopped part way.") {
                     Button("Resume") {
                         Task {
-                            await app.engines.startUpdate(account: record.account,
-                                                          folder: URL(fileURLWithPath: record.path, isDirectory: true),
-                                                          findMissing: record.cursorFindMissing == true, window: app.frontWindow)
+                            // Continues from where it stopped, not from the top (D-87).
+                            await app.engines.resumePlaces(account: record.account,
+                                                           folder: URL(fileURLWithPath: record.path, isDirectory: true),
+                                                           window: app.frontWindow)
                         }
                     }
                 }
@@ -66,7 +68,7 @@ struct ActivityView: View {
 
     private var stoppedUpdates: [AccountFolderRecord] {
         let busy = Set(app.jobs.jobs.filter { $0.state.canCancel }.compactMap { $0.destination?.standardizedFileURL.path })
-        return app.accountFolderList.filter { $0.cursor != nil && !busy.contains($0.path) }
+        return app.accountFolderList.filter { $0.stoppedPartWay && !busy.contains($0.path) }
     }
 }
 

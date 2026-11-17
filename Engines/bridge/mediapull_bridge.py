@@ -483,6 +483,9 @@ def patch_instagram():
         result = original_cursor(self, cursor)
         if cursor:
             EMITTER.emit("cursor", subcategory=self.subcategory, value=str(cursor))
+        else:
+            # gallery-dl clears the cursor when the listing has no more pages: it reached the end.
+            self._mediapull_listing_end = True
         return result
 
     instagram.InstagramExtractor._update_cursor = update_cursor
@@ -669,6 +672,7 @@ class KnownTracker:
         self.post_known = True
         self.post_pinned = False
         self.run = 0
+        self.stopped = False
 
     def observe(self, kwdict, key):
         from gallery_dl import exception
@@ -686,6 +690,8 @@ class KnownTracker:
         if not is_known:
             self.post_known = False
         if self.limit and self.run >= self.limit:
+            # The listing ends at posts the folder has: everything older was walked before.
+            self.stopped = True
             raise exception.StopExtraction()
         return is_known
 
@@ -776,7 +782,9 @@ def make_jobs(request):
     class PullJob(job.DownloadJob):
         def __init__(self, url, parent=None):
             job.DownloadJob.__init__(self, url, parent)
-            self.tracker = KnownTracker(known, limit)
+            # Saved posts and others' stories are not the account's: its folder's known items and early stop do not
+            # apply to them.
+            self.tracker = KnownTracker(set(), None) if STATE.get("collection") else KnownTracker(known, limit)
 
         def initialize(self, kwdict=None):
             job.DownloadJob.initialize(self, kwdict)
@@ -851,6 +859,12 @@ def make_jobs(request):
             cursor = getattr(self.extractor, "_cursor", None)
             if cursor:
                 EMITTER.emit("cursor", subcategory=self.extractor.subcategory, value=str(cursor))
+            # Whether the posts listing was walked to its end or to the folder's known posts, or stopped part way
+            # (an error, a check), so MediaPull knows where posts may still be missing (D-87).
+            if getattr(self.extractor, "category", None) == "instagram" and self.extractor.subcategory == "posts" \
+                    and not STATE.get("collection"):
+                complete = self.tracker.stopped or getattr(self.extractor, "_mediapull_listing_end", False)
+                EMITTER.emit("listing", subcategory="posts", complete=bool(complete), cursor=str(cursor) if cursor else None)
             job.DownloadJob.handle_finalize(self)
 
     return ScanJob, PullJob

@@ -25,6 +25,8 @@ public enum AccountFolders {
     /// parent an account folder. Without a library root the climb stops at the home folder and after a few levels.
     public static func detect(_ folder: URL, stopAt root: URL?) -> Match? {
         var current = folder.standardizedFileURL
+        // Hashtags/<tag> and Saved posts hold many accounts' posts: never an account's folder, nor anything in them.
+        if collectionFolder(containing: current, root: root) != nil { return nil }
         let top = root?.standardizedFileURL.path
         let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path
         var account: String?
@@ -32,11 +34,21 @@ public enum AccountFolders {
         var levels = 0
         while let here = dominantAccount(in: current), account == nil || here == account {
             account = here
-            // A type folder (posts/, highlights/…) is inside the account's folder, never the folder itself, even when a
-            // highlight inside it is titled like another type ("Stories").
-            if typeFolders.contains(current.lastPathComponent.lowercased()) {
+            let name = current.lastPathComponent.lowercased()
+            let parent = current.deletingLastPathComponent()
+            // A highlight's title is never the account's folder, even when it is the account's name or a type's ("Stories").
+            let inHighlights = parent.lastPathComponent.lowercased() == "highlights"
+            let parentInside = top.map { parent.path == $0 || parent.path.hasPrefix($0 + "/") } ?? (parent.path != home)
+            if typeFolders.contains(name), !inHighlights {
+                // A type folder of the account's belongs to the folder above it, even when that folder holds other things
+                // too (another account inside a library folder that is an account's, web saves): that is its folder.
+                if parentInside {
+                    found = Match(account: here, folder: parent.standardizedFileURL)
+                    break
+                }
+            } else if inHighlights {
                 // keep climbing
-            } else if current.lastPathComponent.lowercased() == here {
+            } else if name == here {
                 // A folder named after the account that holds only its media is its folder, whatever is inside.
                 found = Match(account: here, folder: current)
                 break
@@ -45,7 +57,6 @@ public enum AccountFolders {
                 if kind == .typeFolders { break }
             }
             levels += 1
-            let parent = current.deletingLastPathComponent()
             if current.path == top || current.path == "/" || parent.path == home || current.path == home { break }
             if let top, !(parent.path == top || parent.path.hasPrefix(top + "/")) { break }
             if top == nil, levels >= 4 { break }
@@ -55,6 +66,31 @@ public enum AccountFolders {
     }
 
     enum FolderKind { case typeFolders, ownFiles }
+
+    /// The Hashtags or Saved posts folder `folder` is, or is inside (below `root` when there is one).
+    static func collectionFolder(containing folder: URL, root: URL?) -> URL? {
+        let names = [SaveTarget.tagsFolder, SaveTarget.savedFolder].map { $0.lowercased() }
+        var current = folder.standardizedFileURL
+        let top = root?.standardizedFileURL.path
+        while current.path != "/", current.path != top {
+            if names.contains(current.lastPathComponent.lowercased()) { return current }
+            current = current.deletingLastPathComponent()
+        }
+        return nil
+    }
+
+    /// A free name for a new account folder: the account's own, or numbered when a folder of that name holds something
+    /// else (another account's files).
+    public static func newFolder(named name: String, in parent: URL) -> URL {
+        let base = FileNaming.safeTopFolder(name)
+        var folder = parent.appendingPathComponent(base, isDirectory: true)
+        var number = 2
+        while FileManager.default.fileExists(atPath: folder.path) {
+            folder = parent.appendingPathComponent("\(base) \(number)", isDirectory: true)
+            number += 1
+        }
+        return folder
+    }
 
     /// Whether `folder` itself is `account`'s folder: it holds the account's type folders, or the account's own files.
     static func accountFolderKind(_ folder: URL, account: String) -> FolderKind? {
@@ -73,7 +109,8 @@ public enum AccountFolders {
     }
 
     static func holdsMedia(_ folder: URL) -> Bool {
-        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
+                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
         while let url = walker?.nextObject() as? URL {
             if url.pathExtension.lowercased() != "json", MediaFormat.fromExtension(url.pathExtension) != nil { return true }
         }
@@ -133,7 +170,8 @@ public enum AccountFolders {
         }
         for subfolder in subfolders.prefix(40) where seen < 80 {
             var taken = 0
-            let walker = fm.enumerator(at: subfolder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            let walker = fm.enumerator(at: subfolder, includingPropertiesForKeys: nil,
+                                       options: [.skipsHiddenFiles, .skipsPackageDescendants])
             while let url = walker?.nextObject() as? URL, taken < 6 {
                 if vote(url) { taken += 1 }
             }
@@ -156,7 +194,7 @@ public enum AccountFolders {
     public static func index(_ folder: URL) -> Index {
         var index = Index()
         let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
-                                                    options: [.skipsHiddenFiles])
+                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
         while let url = walker?.nextObject() as? URL {
             let name = url.lastPathComponent
             let ext = url.pathExtension.lowercased()
@@ -201,6 +239,10 @@ public enum AccountFolders {
     /// account's folder: then the new one goes beside it.
     public static func resolveTarget(account: String, saveFolder: URL, root: URL?) -> (existing: URL?, parent: URL) {
         let account = account.lowercased()
+        // From inside Hashtags or Saved posts, an account's folder goes beside that folder.
+        if let collection = collectionFolder(containing: saveFolder, root: root) {
+            return resolveTarget(account: account, saveFolder: collection.deletingLastPathComponent(), root: root)
+        }
         if let match = detect(saveFolder, stopAt: root) {
             if match.account == account { return (match.folder, match.folder.deletingLastPathComponent()) }
             // Beside the other account's folder; when that folder is the library folder itself, inside it, never outside
@@ -222,6 +264,8 @@ public enum AccountFolders {
             var next: [URL] = []
             for folder in level where visited < 300 {
                 visited += 1
+                let lowered = folder.lastPathComponent.lowercased()
+                if [SaveTarget.tagsFolder, SaveTarget.savedFolder].map({ $0.lowercased() }).contains(lowered) { continue }
                 guard let owner = dominantAccount(in: folder) else {
                     next += subfolders(folder) // several accounts, or none: look inside
                     continue
@@ -247,17 +291,41 @@ public enum AccountFolders {
 /// What MediaPull remembers about each account folder (D-79): the items it ever saved there (so items deleted on purpose
 /// stay deleted on Update), where an interrupted update stopped, and when the folder was last updated. One small JSON
 /// file per folder in Application Support, found again through a bookmark when the folder moves.
+/// A place in an account's posts listing from which posts may still be missing (D-87): where a walk stopped part way.
+public struct ResumePlace: Codable, Sendable, Identifiable, Equatable {
+    public var id: UUID
+    /// The engine's position in the posts listing, newest first.
+    public var cursor: String
+    /// True when posts may be missing all the way to the oldest (a walk with no early stop stopped here); false when the
+    /// missing posts end where the folder's known posts begin (an update stopped here), so continuing may stop there too.
+    public var untilEnd: Bool
+    /// Continued as Find Missing: what the folder lacks, deleted files included (D-79).
+    public var findMissing: Bool
+
+    public init(id: UUID = UUID(), cursor: String, untilEnd: Bool, findMissing: Bool = false) {
+        self.id = id
+        self.cursor = cursor
+        self.untilEnd = untilEnd
+        self.findMissing = findMissing
+    }
+}
+
 public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     public var id: UUID
     public var account: String
     public var path: String
     public var bookmark: Data?
     public var keys: Set<String>
+    /// Written by 1.8 builds before D-87: one place, taken over into `places` when read.
     public var cursor: String?
-    /// Whether the place in `cursor` was reached by Find Missing, so resuming it continues Find Missing.
     public var cursorFindMissing: Bool?
+    /// Where posts may still be missing, in the order to continue them (D-87).
+    public var places: [ResumePlace]?
     public var lastUpdate: Date?
     public var lastResult: String?
+
+    /// Whether an update or Find Missing stopped part way and can be continued.
+    public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
 
     public init(account: String, folder: URL) {
         id = UUID()
@@ -286,8 +354,14 @@ public actor AccountFolderStore {
         loaded = true
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
         for file in files where file.pathExtension == "json" {
-            guard let record = (try? Data(contentsOf: file)).flatMap({ try? JSONDecoder().decode(AccountFolderRecord.self, from: $0) })
+            guard var record = (try? Data(contentsOf: file)).flatMap({ try? JSONDecoder().decode(AccountFolderRecord.self, from: $0) })
             else { continue }
+            if let cursor = record.cursor, (record.places ?? []).isEmpty {
+                record.places = [ResumePlace(cursor: cursor, untilEnd: true, findMissing: record.cursorFindMissing ?? false)]
+                record.cursor = nil
+                record.cursorFindMissing = nil
+                save(record)
+            }
             records[record.id] = record
         }
         followMoves()
@@ -317,7 +391,7 @@ public actor AccountFolderStore {
     /// followed there: it is gone for now, and its record waits in case it is put back.
     private func followMoves() {
         for (id, var record) in records {
-            guard let url = Self.resolve(record), !url.pathComponents.contains(".Trash") else { continue }
+            guard let url = Self.resolve(record), !FileFlags.isInTrash(url) else { continue }
             let path = url.standardizedFileURL.path
             guard path != record.path, FileManager.default.fileExists(atPath: path) else { continue }
             record.path = path
@@ -400,10 +474,39 @@ public actor AccountFolderStore {
         save(record)
     }
 
-    public func update(_ id: UUID, cursor: String?? = nil, findMissing: Bool? = nil, lastUpdate: Date? = nil, lastResult: String? = nil) {
+    /// Adds a place, or moves it on when one with its id is already there (D-87).
+    public func setPlace(_ place: ResumePlace, in id: UUID) {
         guard var record = records[id] else { return }
-        if let cursor { record.cursor = cursor }
-        if let findMissing { record.cursorFindMissing = findMissing }
+        var places = record.places ?? []
+        if let index = places.firstIndex(where: { $0.id == place.id }) { places[index] = place } else { places.append(place) }
+        record.places = places
+        records[id] = record
+        save(record)
+    }
+
+    public func removePlace(_ placeID: UUID, in id: UUID) {
+        guard var record = records[id], (record.places ?? []).contains(where: { $0.id == placeID }) else { return }
+        record.places?.removeAll { $0.id == placeID }
+        records[id] = record
+        save(record)
+    }
+
+    /// A walk from the top with no early stop covers everything after its own place: it replaces all others.
+    public func replacePlaces(with places: [ResumePlace], in id: UUID) {
+        guard var record = records[id] else { return }
+        record.places = places
+        records[id] = record
+        save(record)
+    }
+
+    /// The place as it is now, or nil when it is gone (continued or replaced meanwhile).
+    public func place(_ placeID: UUID, in id: UUID) -> ResumePlace? {
+        load()
+        return records[id]?.places?.first { $0.id == placeID }
+    }
+
+    public func update(_ id: UUID, lastUpdate: Date? = nil, lastResult: String? = nil) {
+        guard var record = records[id] else { return }
         if let lastUpdate { record.lastUpdate = lastUpdate }
         if let lastResult { record.lastResult = lastResult }
         records[id] = record

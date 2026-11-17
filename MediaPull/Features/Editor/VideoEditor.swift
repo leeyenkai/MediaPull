@@ -174,7 +174,7 @@ final class VideoEditorModel: UnsavedEditing {
                 // full copy: not on the main actor.
                 let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
                     if replacing { try FileManager.default.trashItem(at: url, resultingItemURL: nil) } // lint:allow main-io detached
-                    let target = LibraryModel.uniqueURL(wanted)
+                    let target = LibraryModel.uniqueURL(wanted, replacing: replacing ? url : nil)
                     try FileManager.default.moveItem(at: trimmed, to: target) // lint:allow main-io detached
                     return target
                 }.value

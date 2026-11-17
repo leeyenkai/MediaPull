@@ -204,6 +204,39 @@ final class AccountFolderTests: XCTestCase {
                        "an account folder that is the library folder takes other accounts inside, never outside the library")
     }
 
+    /// Audit round 3 (C3-M3, C3-m1, C3-m2, C3-m4, B3-M3).
+    func testRoundThreeAccountFolderCases() {
+        let lib = root.appendingPathComponent("lib")
+        for index in 0 ..< 4 {
+            file("lib/Hashtags/alicetravels/\(index).jpg", account: "alice")
+            file("lib/Saved posts/\(index).jpg", account: "bob")
+            file("lib/Alice Smith/posts/\(index).jpg", account: "alice")
+            file("lib/Alice Smith/www.example.com/w\(index).jpg")
+            file("lib/carol/highlights/carol/\(index).jpg", account: "carol")
+            file("lib/carol/posts/\(index).jpg", account: "carol")
+        }
+        XCTAssertNil(AccountFolders.detect(lib.appendingPathComponent("Hashtags/alicetravels"), stopAt: lib), "a hashtag folder")
+        XCTAssertNotEqual(AccountFolders.resolveTarget(account: "bob", saveFolder: lib, root: lib).existing?.lastPathComponent,
+                          "Saved posts")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "alice", saveFolder: lib, root: lib).existing?.lastPathComponent,
+                       "Alice Smith", "a renamed account folder that also holds web saves")
+        XCTAssertEqual(AccountFolders.detect(lib.appendingPathComponent("carol/highlights/carol"), stopAt: lib)?.folder.lastPathComponent,
+                       "carol", "a highlight titled like the account is not its folder")
+        XCTAssertEqual(AccountFolders.detect(lib.appendingPathComponent("carol/highlights/carol"), stopAt: lib)?.folder.path,
+                       lib.appendingPathComponent("carol").standardizedFileURL.path)
+        let solo = root.appendingPathComponent("solo")
+        for index in 0 ..< 3 {
+            file("solo/posts/\(index).jpg", account: "dave")
+            file("solo/erin/posts/\(index).jpg", account: "erin")
+        }
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "dave", saveFolder: solo, root: solo).existing?.path,
+                       solo.standardizedFileURL.path, "a library folder that is an account's, with another account inside it")
+        XCTAssertEqual(AccountFolders.newFolder(named: "solo", in: root).lastPathComponent, "solo 2")
+        XCTAssertTrue(FileFlags.isInTrash(URL(fileURLWithPath: "/Volumes/Disk/.Trashes/501/Library")))
+        XCTAssertTrue(FileFlags.isInTrash(URL(fileURLWithPath: "/Users/someone/.Trash/Library")))
+        XCTAssertFalse(FileFlags.isInTrash(URL(fileURLWithPath: "/Users/someone/Pictures/Trash talk")))
+    }
+
     func testIndexReadsNamesAndRenamedFilesAcrossSubfolders() throws {
         let code = try XCTUnwrap(InstagramIDs.shortcode(fromID: "3008811223344556677"))
         file("alice/posts/2023-01-06_022210_\(code)_01.jpg", account: "alice")
@@ -315,12 +348,12 @@ final class AccountFolderTests: XCTestCase {
         let store = try AppStore.make(inMemory: true)
         let kept = file("pruned/a.jpg")
         await store.recordArchive(key: "ig:1", account: "alice", path: kept.path, sha256: "")
-        await store.recordArchive(key: "ig:2", account: "bob", path: root.appendingPathComponent("gone.jpg").path, sha256: "")
+        await store.recordArchive(key: "web:2", account: "bob", path: root.appendingPathComponent("gone.jpg").path, sha256: "")
         await store.updateAccount("bob", lastResult: "x")
         await store.updateAccount("alice", lastResult: "x")
         await store.updateAccount("carol", lastResult: "x")
         await store.prune(keepAccounts: ["carol"], now: Date().addingTimeInterval(400 * 24 * 3600))
-        let found = await store.archivedPaths(for: ["ig:1", "ig:2"])
+        let found = await store.archivedPaths(for: ["ig:1", "web:2"])
         XCTAssertEqual(Array(found.keys), ["ig:1"])
         let bob = await store.account("bob")
         let alice = await store.account("alice")
@@ -357,17 +390,33 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(kept.id, record.id, "a folder in the Trash keeps its record, in case it is put back")
     }
 
+    /// Audit round 3 (C3-M1): what 1.7 remembered of a folder (files saved there, deleted since or not) is kept until the
+    /// folder's record takes it over, so a first Update after upgrading never brings deleted files back.
+    func testRecordsTakeOverWhatEarlierVersionsRemembered() async throws {
+        let store = try AppStore.make(inMemory: true)
+        let kept = file("old/alice/posts/a.jpg")
+        await store.recordArchive(key: "ig:1", account: "alice", path: kept.path, sha256: "")
+        await store.recordArchive(key: "ig:2", account: "alice", path: root.appendingPathComponent("old/alice/posts/deleted.jpg").path,
+                                  sha256: "")
+        await store.recordArchive(key: "ig:3", account: "alice", path: root.appendingPathComponent("elsewhere/x.jpg").path, sha256: "")
+        await store.prune(keepAccounts: [])
+        let taken = await store.takeInstagramKeys(account: "Alice", under: root.appendingPathComponent("old/alice").path)
+        XCTAssertEqual(taken, ["ig:1", "ig:2"], "the deleted file is remembered too, and the prune kept it")
+        let again = await store.takeInstagramKeys(account: "alice", under: root.appendingPathComponent("old/alice").path)
+        XCTAssertEqual(again, ["ig:1"], "a handed-over entry of a deleted file is gone; the saved file's stays")
+    }
+
     func testStoreRemembersKeysAndCursorPerFolder() async {
         let store = AccountFolderStore(folder: root.appendingPathComponent("records"))
         let folder = root.appendingPathComponent("alice")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let record = await store.record(account: "Alice", folder: folder)
         await store.addKeys(["ig:1", "ig:2"], to: record.id)
-        await store.update(record.id, cursor: .some("abc"))
+        await store.setPlace(ResumePlace(cursor: "abc", untilEnd: false), in: record.id)
         let reloaded = AccountFolderStore(folder: root.appendingPathComponent("records"))
         let again = await reloaded.record(account: "alice", folder: folder)
         XCTAssertEqual(again.id, record.id)
         XCTAssertEqual(again.keys, ["ig:1", "ig:2"])
-        XCTAssertEqual(again.cursor, "abc")
+        XCTAssertEqual(again.places?.first?.cursor, "abc")
     }
 }

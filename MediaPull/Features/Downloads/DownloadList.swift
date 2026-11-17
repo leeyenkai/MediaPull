@@ -102,7 +102,10 @@ extension DownloadsModel {
                 self.batch[index].progress = .running
                 let job = await self.start(entry, root: root, window: window)
                 if let job {
+                    // A job held by Instagram (a check, a wait) is left in Activity to resume; the list goes on.
                     while !job.state.isFinished {
+                        if case .blocked = job.state { break }
+                        if case .paused = job.state { break }
                         try? await Task.sleep(for: .milliseconds(500))
                     }
                 }
@@ -111,6 +114,7 @@ extension DownloadsModel {
                 case .completed: self.batch[index].progress = .done
                 case let .failed(reason): self.batch[index].progress = .failed(reason)
                 case .none: self.batch[index].progress = .failed("It could not be started.")
+                case .blocked, .paused: self.batch[index].progress = .failed("Waiting for Instagram: resume it in Activity.")
                 default: self.batch[index].progress = .failed("Stopped.")
                 }
             }
@@ -126,7 +130,7 @@ extension DownloadsModel {
         switch entry.kind {
         case var .instagram(draft):
             if draft.postURL == nil, draft.hashtag == nil { await app.engines.applyStoredOptions(to: &draft) }
-            return app.engines.startPull(draft, scanOnly: false, window: window)
+            return app.engines.startPull(draft, scanOnly: false, window: window, saveFolder: root.url)
         case let .gallery(url, site):
             let options = rememberedOptions(site)
             let choices = SiteCatalogue.visibleChoices(site.choices).filter { options.include.contains($0) }

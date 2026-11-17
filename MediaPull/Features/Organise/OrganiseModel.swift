@@ -423,9 +423,18 @@ final class OrganiseModel {
     var batchRename: BatchRenameDraft?
 
     func startBatchRename(_ files: [URL]) {
-        // Archive by its library folder, or (outside the library) by holding metadata files (R-3804).
-        let archive = Set(files.map { $0.deletingLastPathComponent() }).contains { layoutFor($0) == .archive }
-        batchRename = BatchRenameDraft(files: files, archive: archive)
+        // Archive until known otherwise: by its library folder, or (outside the library) by holding metadata files (R-3804),
+        // read off the main actor.
+        batchRename = BatchRenameDraft(files: files, archive: true)
+        let folders = Set(files.map { $0.deletingLastPathComponent() })
+        Task { [weak self] in
+            guard let self else { return }
+            var archive = false
+            for folder in folders where await self.layoutFor(folder) == .archive {
+                archive = true
+            }
+            if self.batchRename?.files == files { self.batchRename?.archive = archive }
+        }
         tab = .sort
         window?.setShowing(.organiseWork, true)
         // The preview shows {date} as it will be: the first few files' dates, read off the main actor.
@@ -607,9 +616,15 @@ final class OrganiseModel {
     func run(_ plan: OrganisePlan, preview: Bool = false, note: String? = nil) {
         // A library folder itself is never moved, renamed or trashed from Organise: the Library does that, so its saves,
         // records and analysis follow (audit 2, B2-M5).
-        let roots = Set(app.roots.map { AccountFolderStore.key($0.path) })
-        if plan.itemsToTrash.contains(where: { roots.contains(AccountFolderStore.key($0.path)) })
-            || plan.moves.contains(where: { roots.contains(AccountFolderStore.key($0.source.path)) })
+        // A folder that is a library folder or holds one counts: trashing, emptying or moving it changes the library folder
+        // too. Copies change nothing and are allowed (audit 3, B3-M4, B3-m1).
+        let roots = app.roots.map { AccountFolderStore.key($0.path) }
+        func touchesRoot(_ url: URL) -> Bool {
+            let key = AccountFolderStore.key(url.path)
+            return roots.contains { $0 == key || $0.hasPrefix(key + "/") }
+        }
+        if plan.itemsToTrash.contains(where: touchesRoot) || plan.foldersToTrash.contains(where: touchesRoot)
+            || plan.moves.contains(where: { $0.kind != .clone && touchesRoot($0.source) })
         {
             message = "A library folder is not changed from Organise. Rename or remove it in the Library."
             return
@@ -655,6 +670,17 @@ final class OrganiseModel {
                 job,
                 entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be moved")) : .cancelled
             )
+            // A rename through temporary names that stopped between its two steps would leave files under hidden names:
+            // it is taken back at once (audit 3, B3-m7, C3-m9).
+            let usedTemporaryNames = plan.moves.contains { $0.destination.lastPathComponent.hasPrefix(".mediapull-rename-") }
+            if usedTemporaryNames, !entry.finished || !entry.failures.isEmpty {
+                _ = await app.undoChange(entry.id)
+                guard let self else { return }
+                self.message = "\(plan.title) stopped part way, so it was taken back: every file has its old name."
+                self.working = nil
+                await self.refreshHistory()
+                return
+            }
             guard let self else { return }
             self.message = entry.failures.isEmpty
                 ? "\(plan.title): done. ⌘Z undoes it."
@@ -748,14 +774,14 @@ final class OrganiseModel {
     }
 
     /// Folders next to `folder`, for Merge Into.
+    /// The folders beside `folder`, read off the main actor the first time (audit 3, B3-m5): the menu shows them as soon
+    /// as they are read.
     func siblings(of folder: URL) -> [URL] {
-        let parent = folder.deletingLastPathComponent()
-        // lint:allow main-io one folder's entries, when its menu opens
-        let items = (try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isDirectoryKey],
-                                                                   options: [.skipsHiddenFiles])) ?? []
-        return items.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true && $0 != folder }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        siblingCache.onLoaded = { [weak self] in self?.source.treeRevision += 1 }
+        return siblingCache.children(of: folder.deletingLastPathComponent()).filter { $0.standardizedFileURL != folder.standardizedFileURL }
     }
+
+    @ObservationIgnored private let siblingCache = FolderTreeCache()
 
     // MARK: Automatic sorts
 
@@ -798,9 +824,9 @@ final class OrganiseModel {
         let gap = app.preferences.eventGapHours * 3600
         let threshold = Float(app.preferences.subjectThreshold)
         let placement = app.preferences.groupPhotoPlacement
-        let layoutForRoot = layoutFor(destination)
         let copy = mode == .copy
         Task {
+            let layoutForRoot = await self.layoutFor(destination)
             var assignment: [String: [[String]]] = [:]
             var note: String?
             switch kind {
@@ -849,10 +875,16 @@ final class OrganiseModel {
         }
     }
 
-    func layoutFor(_ folder: URL) -> SaveLayout {
+    /// A folder's layout: its library folder's, or for a folder outside the library, Archive when it holds metadata files
+    /// (R-3804). Reads names, so it runs off the main actor (audit 3, B3-m5).
+    func layoutFor(_ folder: URL) async -> SaveLayout {
         if let root = app.root(containing: folder) { return root.layout }
-        // Names only, stopping at the first metadata file: once per planned change.
-        // lint:allow main-io names of one folder, no file is opened
+        return await Task.detached(priority: .userInitiated) { Self.layoutOfFolder(folder) }.value
+    }
+
+    nonisolated static func layoutOfFolder(_ folder: URL) -> SaveLayout {
+        // Names only, stopping at the first metadata file.
+        // lint:allow main-io called from a detached task
         let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
                                                     options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles])
         while let url = walker?.nextObject() as? URL {

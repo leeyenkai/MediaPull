@@ -62,7 +62,8 @@ nonisolated enum MediaListing {
             let ext = url.pathExtension.lowercased()
             guard ext != "json", let format = MediaFormat.fromExtension(ext) else { continue }
             let sidecar = Sidecar.sidecarURL(for: url)
-            let source = fm.fileExists(atPath: sidecar.path) ? SourceInfo.read(sidecarOf: url) : nil
+            // A metadata file kept only in iCloud is not read: reading it would download it (audit 3, B3-m6).
+            let source = fm.fileExists(atPath: sidecar.path) && !FileFlags.isDataless(sidecar) ? SourceInfo.read(sidecarOf: url) : nil
             var entry = MediaEntry(url: url, size: Int64(values.fileSize ?? 0), created: values.creationDate,
                                    modified: values.contentModificationDate ?? .distantPast, format: format, source: source)
             entry.finderTags = values.tagNames ?? []

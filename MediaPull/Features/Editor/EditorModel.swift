@@ -316,7 +316,7 @@ final class EditorModel: UnsavedEditing {
             let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
                 // The original goes to the Trash (D-34), then the edit takes a free name next to it.
                 if !asCopy { try FileManager.default.trashItem(at: url, resultingItemURL: nil) } // lint:allow main-io detached
-                let target = LibraryModel.uniqueURL(wanted)
+                let target = LibraryModel.uniqueURL(wanted, replacing: asCopy ? nil : url)
                 try FileManager.default.moveItem(at: edited, to: target) // lint:allow main-io detached
                 return target
             }.value

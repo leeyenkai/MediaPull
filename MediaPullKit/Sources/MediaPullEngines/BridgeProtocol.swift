@@ -126,6 +126,8 @@ public enum BridgeEvent: Sendable {
     case progress(received: Int64?, total: Int64?, speed: Double?)
     case wait(seconds: Double, reason: String)
     case cursor(subcategory: String, value: String)
+    /// A listing finished: walked to its end or to known items (`complete`), or stopped part way at `cursor` (D-87).
+    case listing(subcategory: String, complete: Bool, cursor: String?)
     /// The formats a video page offers (SPEC section 35).
     case videoInfo(VideoInfo)
     /// A non-media file written by the bridge in staging: a followers or following list, or the profile.
@@ -191,6 +193,8 @@ public enum BridgeEvent: Sendable {
             return .wait(seconds: SafeNumber.finite(value["seconds"]?.double, in: 0 ... 86400) ?? 0, reason: string("reason") ?? "pacing")
         case "cursor":
             return .cursor(subcategory: string("subcategory") ?? "", value: string("value") ?? "")
+        case "listing":
+            return .listing(subcategory: string("subcategory") ?? "", complete: value["complete"]?.bool ?? false, cursor: string("cursor"))
         case "video_info":
             guard let page = string("webpage_url").flatMap(URL.init(string:)) else { return nil }
             var formats: [VideoFormatInfo] = []

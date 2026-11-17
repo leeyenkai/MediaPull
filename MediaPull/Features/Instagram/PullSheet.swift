@@ -124,7 +124,9 @@ struct InstagramForm: View {
         let note = await Task.detached(priority: .utility) { () -> String in
             let target = AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: root)
             guard let existing = target.existing else {
-                return "Saves into a new folder “\(name)” in “\(target.parent.lastPathComponent)”."
+                // The name the pull will really use: numbered when a folder of that name holds something else.
+                let folder = AccountFolders.newFolder(named: name, in: target.parent)
+                return "Saves into a new folder “\(folder.lastPathComponent)” in “\(target.parent.lastPathComponent)”."
             }
             // Named only: reading every file just to count them would repeat what the pull itself does (audit 2, C2-m11).
             return "Adds only what “\(existing.lastPathComponent)” doesn't have yet."

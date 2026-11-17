@@ -148,7 +148,12 @@ final class AnalysisService {
         for listener in onFolderChange.values {
             listener(paths)
         }
-        schedule(after: .seconds(4))
+        // Only changes in analysed folders mean work; a watched save folder outside them (a busy home folder, say) would
+        // otherwise keep putting the scan off (audit 3, B3-m4).
+        let analysed = scanFolders.map(\.path)
+        if paths.contains(where: { path in analysed.contains { path == $0 || path.hasPrefix($0 + "/") } }) {
+            schedule(after: .seconds(4))
+        }
     }
 
     /// Runs a scan soon, coalescing bursts of changes.
@@ -194,10 +199,13 @@ final class AnalysisService {
         // Every library folder is remembered, including one whose disk is not connected and one left out of analysis in
         // Settings; so are recent Organise folders. Only folders removed from the library are forgotten (audit 2, B2-M1).
         let keep = preferences.recentOrganiseFolders + app.roots.map(\.path)
+        // A library folder that is missing for now (in the Trash, on a disk not connected) may come back: nothing under it
+        // is forgotten, so its people and corrections survive (audit 3, B3-M2).
+        let holding = app.roots.filter { app.missingRoots.contains($0.id) }.map(\.path)
         scanTask = Task { [weak self] in
             let skip = self?.noPicture ?? []
             let (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
-                                                   noPicture: skip, keep: keep)
+                                                   noPicture: skip, keep: keep, holding: holding)
             await store.forget(paths: gone)
             guard let self else { return }
             if !work.isEmpty {
@@ -270,7 +278,7 @@ final class AnalysisService {
     /// Files that need analysing (new, changed, analysed by an older version, or not yet checked for people), and paths gone from disk.
     @concurrent
     private static func findWork(folders: [URL], store: AnalysisStore, wantFaces: Bool, embeddings: Bool,
-                                 noPicture: Set<String>, keep: [String]) async -> ([Work], [String])
+                                 noPicture: Set<String>, keep: [String], holding: [String]) async -> ([Work], [String])
     {
         var files: [Work] = []
         for folder in folders {
@@ -306,6 +314,7 @@ final class AnalysisService {
             guard !onDisk.contains(path) else { return false }
             if reachable.contains(where: { path.hasPrefix($0.path + "/") }) { return true }
             if unreachable.contains(where: { path.hasPrefix($0.path + "/") }) { return false }
+            if holding.contains(where: { path.hasPrefix($0 + "/") }) { return false }
             guard keep.contains(where: { path.hasPrefix($0 + "/") }) else { return true }
             return Self.isGoneOutsideScan(path)
         }
@@ -567,9 +576,12 @@ final class AnalysisService {
         let paths = await store.allPaths()
         let peopleBySha = await store.peopleBySha()
         let accounts = Set(app.engines.accounts.keys.map { $0.lowercased() })
+        // Folders MediaPull knows hold an account, whatever they are called (D-78): never a person's name (R-3905).
+        let accountFolders = app.accountFolderList.map(\.path)
         // Thousands of paths and folder checks: worked out off the main actor (R-3905).
         suggestions = await Task.detached(priority: .utility) {
-            Self.suggestNames(unnamed: unnamed, paths: paths, peopleBySha: peopleBySha, accounts: accounts)
+            Self.suggestNames(unnamed: unnamed, paths: paths, peopleBySha: peopleBySha, accounts: accounts,
+                              accountFolders: accountFolders)
         }.value
     }
 
@@ -577,7 +589,8 @@ final class AnalysisService {
         unnamed: [PersonInfo],
         paths: [String: String],
         peopleBySha: [String: [UUID]],
-        accounts: Set<String>
+        accounts: Set<String>,
+        accountFolders: [String] = []
     ) -> [UUID: String]
     {
         let pathsBySha = Dictionary(grouping: paths, by: \.value).mapValues { $0.map(\.key) }
@@ -600,9 +613,9 @@ final class AnalysisService {
         func accountFolder(_ folder: String) -> Bool {
             if let known = isAccountFolder[folder] { return known }
             let name = (folder as NSString).lastPathComponent.lowercased()
-            let found = accounts.contains(name) || ["posts", "reels", "stories", "highlights", "tagged"].contains { child in
-                FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(child))
-            }
+            let types = ["posts", "reels", "stories", "highlights", "tagged", "reposts", "profile pictures"]
+            let found = accounts.contains(name) || accountFolders.contains { folder == $0 || folder.hasPrefix($0 + "/") }
+                || types.contains { child in FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent(child)) }
             isAccountFolder[folder] = found
             return found
         }

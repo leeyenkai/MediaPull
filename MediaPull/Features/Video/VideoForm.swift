@@ -180,7 +180,8 @@ struct VideoForm: View {
     }
 
     private func heightLabel(_ value: Int, in info: VideoInfo) -> String {
-        let fps = format.videoFormats(in: info.formats).filter { $0.height == value }.compactMap(\.fps).max()
+        let fps = format.videoFormats(in: info.formats, policy: codecPolicy, av1Decodable: canDecodeAV1).filter { $0.height == value }
+            .compactMap(\.fps).max()
         let name = value >= 2160 ? "\(value)p (4K)" : value >= 1440 ? "\(value)p (2K)" : "\(value)p"
         return fps.map { $0 > 30 ? "\(name), \(Int($0)) fps" : name } ?? name
     }
@@ -192,7 +193,9 @@ struct VideoForm: View {
 
     private func summary(_ info: VideoInfo) -> String {
         var parts: [String] = []
-        if !extras.playlist, let bytes = format.estimatedBytes(in: info.formats, height: height, duration: info.duration) {
+        if !extras.playlist, let bytes = format.estimatedBytes(in: info.formats, height: height, duration: info.duration,
+                                                               policy: codecPolicy, av1Decodable: canDecodeAV1)
+        {
             parts.append("About \(Format.bytes(bytes)).")
         }
         if format.needsConversion(in: info.formats, height: height, policy: codecPolicy, av1Decodable: canDecodeAV1) {

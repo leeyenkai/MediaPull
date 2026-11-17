@@ -35,6 +35,14 @@ extension AppModel {
         await store?.moveArchivePaths(moves)
         await accountFolders.moveFolders(moves)
         await refreshAccountFolders()
+        // A window's save folder moved or renamed (in Organise, say) is followed, so Save goes where it went (B3-m8).
+        for window in windows {
+            let held = [window.library.selectedFolder, window.library.otherFolder].compactMap { $0?.standardizedFileURL.path }
+            for move in moves where held.contains(where: { $0 == move.from || $0.hasPrefix(move.from + "/") }) {
+                window.library.rootMoved(from: URL(fileURLWithPath: move.from, isDirectory: true),
+                                         to: URL(fileURLWithPath: move.to, isDirectory: true))
+            }
+        }
     }
 }
 

@@ -100,7 +100,10 @@ public enum ArchivePlanner {
             let intoAccountFolder = context.isInstagram && pinnedOwner != nil ? target.accountFolder : nil
             var folder = intoAccountFolder ?? target.folder.appendingPathComponent(FileNaming.safeTopFolder(owner), isDirectory: true)
             let byType = target.typeSubfolders ?? settings.typeSubfolders
-            if context.isInstagram, ["tagged", "reposts"].contains(context.subcategory) {
+            // Another account's post that tags or was reposted by this one; in its own poster's folder it is just a post.
+            if context.isInstagram, ["tagged", "reposts"].contains(context.subcategory),
+               target.accountUsername == nil || target.accountUsername != context.username?.lowercased()
+            {
                 return folder.appendingPathComponent(context.subcategory, isDirectory: true)
             }
             if context.isInstagram {

@@ -173,6 +173,16 @@ final class BrowsingStore {
     /// A file that exists but cannot be read is set aside (name.damaged-<date>.json), never written over.
     nonisolated private static func read<Value: Decodable>(_ type: Value.Type, _ name: String, in folder: URL) -> Value? {
         let file = folder.appendingPathComponent(name)
+        // Copies set aside more than 30 days ago go (lifecycle, SPEC 6.3; audit 3, B3-m10): long enough to recover by hand.
+        let prefix = (name as NSString).deletingPathExtension + ".damaged-"
+        // lint:allow main-io a few names, once at launch
+        for old in (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [] where old.hasPrefix(prefix) {
+            let stamp = Double(old.dropFirst(prefix.count).prefix { $0.isNumber }) ?? 0
+            if Date().timeIntervalSince1970 - stamp > 30 * 86400 {
+                // lint:allow silent-write a copy that stays is removed at a later launch
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(old))
+            }
+        }
         guard let data = try? Data(contentsOf: file) else { return nil } // lint:allow main-io two small JSON files, once at launch
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

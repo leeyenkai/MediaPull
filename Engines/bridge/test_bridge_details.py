@@ -315,6 +315,21 @@ def test_files_from_the_stories_tray_and_saved_posts_say_so():
     bridge.STATE["collection"] = None
 
 
+
+def test_the_known_run_marks_the_listing_as_walked():
+    """D-87: an early stop at the folder's known posts is a complete walk of what was missing."""
+    from gallery_dl import exception
+
+    tracker = bridge.KnownTracker({"ig:1", "ig:2"}, 2)
+    for number in (1, 2):
+        tracker.observe({"category": "instagram", "subcategory": "posts", "post_id": str(number)}, f"ig:{number}")
+    try:
+        tracker.observe({"category": "instagram", "subcategory": "posts", "post_id": "3"}, "ig:3")
+    except exception.StopExtraction:
+        pass
+    assert tracker.stopped
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

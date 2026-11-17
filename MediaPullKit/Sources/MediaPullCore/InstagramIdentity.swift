@@ -25,11 +25,6 @@ public enum InstagramIdentity {
         return out
     }
 
-    /// Whether `identities(fileName:)` can tell this file without its metadata file.
-    public static func nameSuffices(_ fileName: String) -> Bool {
-        archiveCode(stemWithoutNumbering((fileName as NSString).deletingPathExtension)) != nil
-    }
-
     /// "name 2" (a collision number) is the same item as "name".
     static func stemWithoutNumbering(_ stem: String) -> String {
         guard let range = stem.range(of: #" \d+$"#, options: .regularExpression) else { return stem }

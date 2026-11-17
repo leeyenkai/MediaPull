@@ -45,6 +45,8 @@ def main():
         start = int(str(request["cursor"]).split("-", 1)[1])
     stop_known = request.get("stop_after_known")
     known_in_a_row = 0
+    # "fail_after_listing": the posts listing ends, then the pull fails (as a failed Reel download would).
+    fail_after_listing = replay.get("fail_after_listing")
     emit("log", level="info", logger="stand-in", message=f"start {start}")
     for number, item in enumerate(replay["items"], 1):
         if number <= start:
@@ -64,6 +66,7 @@ def main():
             counts["skipped"] += 1
             known_in_a_row += 1
             emit("skip", key=item["key"], reason="known")
+            emit("cursor", subcategory="posts", value=f"after-{number}")
             continue
         known_in_a_row = 0
         target = os.path.join(request["staging"], os.path.basename(item["source"]))
@@ -71,6 +74,12 @@ def main():
         counts["downloaded"] += 1
         emit("file", key=item["key"], path=target, bytes=os.path.getsize(target), subcategory=meta.get("subcategory"), meta=meta)
         emit("cursor", subcategory="posts", value=f"after-{number}")
+    # The listing ended: at its last item, or at the folder's known posts (D-87).
+    emit("listing", subcategory="posts", complete=True, cursor=None)
+    if fail_after_listing:
+        emit("error", code="network", message="A Reel could not be downloaded.", fatal=True)
+        emit("done", status="failed", counts=counts)
+        return 0
     emit("done", status="completed", counts=counts)
     return 0
 

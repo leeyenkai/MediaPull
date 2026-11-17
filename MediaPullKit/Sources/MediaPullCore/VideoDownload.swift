@@ -192,7 +192,9 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
     }
 
     /// The approximate size of the download: the reported size, or the bitrate times the duration.
-    public func estimatedBytes(in formats: [VideoFormatInfo], height: Int?, duration: Double? = nil) -> Int64? {
+    public func estimatedBytes(in formats: [VideoFormatInfo], height: Int?, duration: Double? = nil,
+                               policy: VideoCodecPolicy = .highestReencodeIfNeeded, av1Decodable: Bool = true) -> Int64?
+    {
         func bytes(_ format: VideoFormatInfo?) -> Int64? {
             guard let format else { return nil }
             if let size = format.size { return size }
@@ -202,7 +204,8 @@ public enum VideoDownloadFormat: String, CaseIterable, Sendable, Hashable {
         let audio = formats.filter { $0.isAudioOnly && !$0.drm && (self == .webm ? $0.ext == "webm" : $0.ext == "m4a") }
             .max { ($0.abr ?? 0) < ($1.abr ?? 0) }
         if isAudioOnly { return bytes(audio) }
-        guard let videoSize = bytes(chosenVideo(in: formats, height: height)) else { return nil }
+        let video = chosenVideo(in: formats, height: height, policy: policy, av1Decodable: av1Decodable)
+        guard let videoSize = bytes(video) else { return nil }
         return videoSize + (bytes(audio) ?? 0)
     }
 

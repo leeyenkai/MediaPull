@@ -399,7 +399,7 @@ struct FolderContents: View {
         if let root = library.selectedFolder.flatMap({ app.root(containing: $0) }) { parts.append(root.layout.label) }
         if let match = library.account {
             let record = app.accountFolder(containing: match.folder)
-            if record?.cursor != nil {
+            if record?.stoppedPartWay == true {
                 parts.append("@\(match.account): an earlier update stopped part way")
             } else if let date = record?.lastUpdate {
                 parts.append("@\(match.account) updated \(date.formatted(.relative(presentation: .named)))")

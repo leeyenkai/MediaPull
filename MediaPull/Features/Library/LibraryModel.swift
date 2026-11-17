@@ -136,6 +136,8 @@ final class LibraryModel: MediaGridOwner {
 
     isolated deinit {
         AppModel.shared.analysis.onFolderChange[listenerID] = nil
+        // This window's save folder outside the library is no longer watched.
+        Task { @MainActor in AppModel.shared.analysis.updateWatch() }
         // A closed window's work stops with it; the watcher's cancel handler closes its file descriptor.
         watcher?.cancel()
         for task in [changeTask, filterTask, reloadTask, duplicateTask, treeRefresh, checkTask] {
@@ -200,11 +202,13 @@ final class LibraryModel: MediaGridOwner {
     func trashExtraCopies() {
         guard let report = duplicates else { return }
         let here = Set(files.map(\.url.standardizedFileURL.path))
-        // Copies of each other within the folder shown: one of them stays here, and copies in other folders (another
-        // account's folder, a collab post saved twice) are never touched from here (audit 2, C2-M6).
-        let groups = report.groups.compactMap { group -> (members: [URL], identical: Bool)? in
+        // Copies of each other side by side in one folder: one of them stays there, and copies in other folders (another
+        // account's folder, a collab post saved twice, a subfolder shown with Include Subfolders) are never touched
+        // (audits 2 and 3, C2-M6, B3-M5).
+        let groups = report.groups.flatMap { group -> [(members: [URL], identical: Bool)] in
             let inHere = group.members.filter { here.contains($0.standardizedFileURL.path) }
-            return inHere.count > 1 ? (inHere, group.identical) : nil
+            return Dictionary(grouping: inHere) { $0.deletingLastPathComponent().standardizedFileURL.path }.values
+                .filter { $0.count > 1 }.map { ($0, group.identical) }
         }
         guard !groups.isEmpty else {
             message = "No file here has a copy in this same folder."
@@ -735,10 +739,13 @@ final class LibraryModel: MediaGridOwner {
 
     /// A free name for `url`: neither the file nor a metadata file of that name may exist, so a later sidecar write never
     /// replaces an orphaned one.
-    nonisolated static func uniqueURL(_ url: URL) -> URL {
+    /// `replacing` is the file an edit replaces: its own metadata file goes with the edit, so it does not take the name
+    /// (audit 3, B3-M1).
+    nonisolated static func uniqueURL(_ url: URL, replacing: URL? = nil) -> URL {
         func free(_ candidate: URL) -> Bool {
             let fm = FileManager.default
-            return !fm.fileExists(atPath: candidate.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path)
+            let ownSidecar = replacing.map { $0.standardizedFileURL == candidate.standardizedFileURL } ?? false
+            return !fm.fileExists(atPath: candidate.path) && (ownSidecar || !fm.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path))
         }
         guard !free(url) else { return url }
         let stem = url.deletingPathExtension().lastPathComponent
