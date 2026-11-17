@@ -101,7 +101,7 @@ change as the code.
 | R-1107 | person | `EngineService.startPull`, `SavePipeline.acquire`, `BridgeEngineFetcher.fetch` | `--selftest-site` | Scan then save with re-resolve on 403 or 410; Instagram scans need a signed-in person |
 | R-1108 | person | `EngineService.startPull`, `ArchivePlanner.folder` | none | Download This Post pulls one post into the owner's folder; needs a signed-in pull |
 | R-1109 | partial | `ArchivePlanner.sidecar`, `ItemDetails` | none | original_width and height recorded, but the 1080 or 1440 px note is not in the UI; no test |
-| R-1110 | partial | `VideoCodecPolicy.selector`, `MediaConverter.convertVideo` | none | Inherits R-1607 gaps (hev1 not retagged, AV1 fails without hardware decode); no test |
+| R-1110 | person | `MediaConverter.convertVideo`, `PullJob` | `testHEVCTaggedHev1IsRetaggedWithoutReencoding` | Codec policy as R-1607; Instagram videos need a signed-in pull to check |
 | R-1111 | built | `ArchivePlanner.sidecar`, `NameTemplate.archiveEngine` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Carousel items numbered from 1 with num and count in the sidecar |
 | R-1112 | partial | `KnownTracker`, `EngineService.startPull` | none | Cursor saved per page but used only by the in-memory Resume; a new pull after quitting starts over |
 | R-1113 | person | `PacingPreset.delay`, `EngineService.enqueueInstagram`, `HostLimiter` | none | Presets, one Instagram job at a time and 2 CDN downloads; only a signed-in pull shows them |
@@ -127,7 +127,7 @@ change as the code.
 | R-1404 | built | `WindowModel.saveFolder`, `WindowModel.useSaveFolder`, `SaveFolderMenu` | `--selftest-analyse` | One save folder per window, outside folders shown without joining the library (D-70) |
 | R-1501 | built | `Sidecar.sidecarURL` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Sidecar named after the full file name |
 | R-1502 | built | `SaveLayout.allows`, `SavePipeline.finalize` | `testSVGIsSkippedInArchiveButKeptInPlain`, `--selftest-video-download` | Archive formats only; chosen WebM or M4A kept without metadata (D-56, D-13) |
-| R-1503 | partial | `ArchivePlanner.fileName` | `testArchiveNamesNeverMatchForbiddenPattern` | Names start with the timestamp, but an audio-only MP4 is saved as a video in Archive folders |
+| R-1503 | built | `ArchivePlanner.fileName`, `MediaConverter.convertVideo` | `testAudioOnlyMP4IsAudio`, `testArchiveNamesNeverMatchForbiddenPattern` | Audio-only MP4 is treated as audio, which Archive folders do not take (1.8) |
 | R-1504 | built | `ArchivePlanner.fileName`, `FileNaming.isForbiddenArchiveName` | `testArchiveNamesNeverMatchForbiddenPattern`, `testCleanedNamesAreCheckedAndNeverHidden` | Checked on the cleaned name since 1.8 |
 | R-1505 | built | `FileNaming.safeTopFolder`, `ArchivePlanner.folder` | `testReservedFoldersAndLengths`, `testReservedNamesGetAnUnderscore` | Reserved first-level names get a leading underscore |
 | R-1506 | partial | `AppModel.locationWarning`, `LibraryPane` | none | iCloud and network warning shown under the folder; no test |
@@ -135,13 +135,13 @@ change as the code.
 | R-1508 | partial | `DateFormats.utc`, `DateFormats.sidecarString` | `testDatesIgnoreUserCalendar` | Formatter fixed, but the test never switches to a non-Gregorian calendar or 12-hour locale |
 | R-1509 | built | `ArchivePlanner.sidecar` | `testNumAndCountComeTogether` | Web sidecars carry no num or count (D-10) |
 | R-1510 | built | `FileNaming.sanitize` | `testCleanedNamesAreCheckedAndNeverHidden`, `testReservedFoldersAndLengths` | Joiners kept (D-74); trimming repeats until stable so no hidden names (1.8) |
-| R-1601 | partial | `ImageConversion.stillTarget`, `ImageConversion.analyze`, `MediaConverter.convertImage` | `testPNGStaysUntouchedAndHEICBecomesJPEG`, `testAnimatedPNGAndWebPWithAlpha` | WebP lossless re-sniff past a large profile chunk is a no-op |
+| R-1601 | built | `ImageConversion.analyze`, `ImageConversion.stillTarget`, `Sniffer.sniff` | `testLosslessWebPBehindALargeProfileIsFound`, `testAnimatedPNGAndWebPWithAlpha` | Lossless WebP is found behind a large colour profile (1.8) |
 | R-1602 | partial | `ImageConversion.convertStill` | `testPDFProfileIsAddedWithoutReencoding` | Properties carried by ImageIO; the Display P3 test covers PDF extraction, not conversion |
-| R-1603 | partial | `MediaConverter.convertAnimated`, `FFmpeg.gif`, `ImageConversion.frames` | none | GIF loop count forced to infinite and AVIF frame delays ignored; no test |
+| R-1603 | built | `ImageConversion.plays`, `ImageConversion.forEachFrame`, `FFmpeg.gif`, `MediaConverter.convertAnimated` | `testPlayCountsSurviveConversion` | Play counts kept (ImageIO and ffmpeg), AVIF delays read, frames streamed with a 3,000-frame cap (1.8) |
 | R-1604 | partial | `MediaConverter.convertImage`, `ConversionPolicy` | none | Keep original WebP, AVIF, HEIC applies only to Plain; no test |
 | R-1605 | amended | `ConverterView`, `MediaConverter` | `testAnimatedPNGAndWebPWithAlpha` | D-77: no per-run options; follows section 16.1 and the Formats settings |
 | R-1606 | partial | `LibraryModel.gridMenu`, `AppModel.convertFiles` | none | Convert to JPEG or PNG in the Library menu; no test |
-| R-1607 | partial | `MediaConverter.convertVideo`, `FFmpeg.transcodeToHEVC`, `VideoCodecPolicy.selector` | none | hev1 not retagged, Highest compatible re-encodes, higher_res_available never written, AV1 needs hardware |
+| R-1607 | built | `MediaConverter.convertVideo`, `FFmpeg.remuxToMP4`, `FFmpeg.transcodeToHEVC`, `higher_resolution` | `testHEVCTaggedHev1IsRetaggedWithoutReencoding`, `test_a_taller_video_in_another_codec_is_noted` | hvc1 always, Highest compatible never re-encodes, higher_res_available written, AV1 decoded by VideoToolbox (1.8) |
 | R-1608 | partial | `FFmpeg.remuxToMP4`, `VideoStreamInfo.audioNeedsConversion` | none | Opus and Vorbis to AAC 256 kbit/s with aac_at, MOV kept; no test |
 | R-1701 | built | `LibraryPane`, `LibraryModel` | `--selftest-views`, `--selftest-url` | Folder tree over contents, sidecars hidden with a badge, columns replace both (D-76) |
 | R-1702 | person | `AppModel.followRootLocations`, `AppModel.renameRoot`, `AppModel.locateRoot`, `LibraryRootInfo.resolvedURL` | `--selftest-analyse` | Roots follow Finder moves, show Not Found with Locate, and rename in the list (1.8); needs a person to move a folder |
@@ -168,7 +168,7 @@ change as the code.
 | R-3102 | built | `PDFImageExtractor.extract` | `testEmbeddedImagesComeOutAtOriginalSize` | Inherited resources, nested forms, one copy per object, 24 px floor, masks skipped, locked PDFs reported |
 | R-3103 | built | `ArchivePlanner.sidecar`, `ArchivePlanner.folder` | `--selftest-pdf-links` | PDF folder for local files, subcategory pdf, page_url never a local path |
 | R-3201 | built | `EditorModel`, `CropAspect`, `CropCanvas` | `--selftest-edit`, `testRotateFlipAndCrop` | Crop box dragging itself is checked by a person |
-| R-3202 | partial | `EditorModel.saveFile` | `--selftest-edit` | A rotate-only edit re-encodes JPEG at quality 1.0 (D-34 wording) although a lossless rotation exists |
+| R-3202 | built | `EditorModel.saveFile`, `ImageEditing.writeReoriented`, `ImageEditing.Reorientation` | `testRotationAndFlipComposeAndStayLossless`, `--selftest-edit` | D-34 amended: rotate or flip of a JPEG is lossless; sidecar follows |
 | R-3203 | partial | `EditorModel.saveItem`, `EditorModel.keepNameOnly` | | no test: saving an edited extracted item and Keep Name Only are not exercised |
 | R-3301 | built | `DuplicateCommands`, `LibraryModel` | `--selftest-duplicates` | Frames, badges, bar with colour key, Only Duplicates, context menu and Preview list |
 | R-3302 | built | `DuplicateFinder`, `PerceptualHash` | `testFingerprintsMatchResizedCopiesButNotOtherPictures`, `testGroupsIdenticalAndSimilarFilesAcrossFolders` | Size-gated SHA-256, pHash, dHash, colour grid, 8 bands |
@@ -183,7 +183,7 @@ change as the code.
 | R-3505 | built | `stream_options`, `VideoForm` | `test_stream_options_map_extras` | Playlist range, count, dates, subtitles, thumbnail, description, speed limit |
 | R-3503 | built | `EngineService.saveVideo` | `--selftest-video-download` | site/uploader folders, upload date names, MP4 sidecar; WebM and M4A without one (D-56) |
 | R-3504 | amended | `YOUTUBE_PATHS` | `test_youtube_video_reads_are_allowed_and_nothing_else`, `test_youtube_channel_pages_are_read` | D-72 adds /youtubei/v1/browse beside player and next |
-| R-3601 | partial | `Analyzer.analyse`, `Thumbnailer.videoFrame` | `--selftest-analyse` | Videos are analysed at min(1 s, 10 %) of their length, not a tenth of the way in |
+| R-3601 | built | `Analyzer.analyse`, `Thumbnailer.videoFrame` | `--selftest-analyse` | Videos are analysed a tenth of the way in (1.8) |
 | R-3602 | built | `Analyzer`, `scripts/models.lock` | `--selftest-analyse` | Bundled pinned models on Neural Engine and CPU; duplicates stay model-free |
 | R-3603 | partial | `AnalysisService`, `Analyzer.recogniseText` | `--selftest-analyse` | A failure to open the analysis store is silent (try?), so analysis quietly does nothing |
 | R-3604 | built | `ScreenshotRule` | `testScreenshotRule` | Marker, file name and screen-size rules only |

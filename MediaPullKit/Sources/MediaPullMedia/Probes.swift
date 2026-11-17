@@ -30,14 +30,24 @@ public enum Thumbnailer {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
-    /// A poster frame from a local video file.
-    public static func videoFrame(at url: URL, maxPixel: Int) async -> CGImage? {
+    /// Where a frame is taken from.
+    public enum FramePosition: Sendable {
+        /// Early (a tenth of the way in, at most a second): a poster that looks like the start.
+        case poster
+        /// A tenth of the way in, past title cards and fades (R-3601).
+        case analysis
+    }
+
+    /// A frame from a local video file.
+    public static func videoFrame(at url: URL, maxPixel: Int, position: FramePosition = .poster) async -> CGImage? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maxPixel, height: maxPixel)
-        let duration = (try? await asset.load(.duration)).map(CMTimeGetSeconds) ?? 0
-        let time = CMTime(seconds: min(1, max(duration * 0.1, 0)), preferredTimescale: 600)
+        let loaded = (try? await asset.load(.duration)).map(CMTimeGetSeconds) ?? 0
+        let duration = loaded.isFinite ? max(loaded, 0) : 0
+        let seconds = position == .poster ? min(1, duration * 0.1) : duration * 0.1
+        let time = CMTime(seconds: seconds, preferredTimescale: 600)
         return try? await generator.image(at: time).image
     }
 }
@@ -195,7 +205,8 @@ public struct LocalVideoInfo: Sendable {
     public static func load(_ url: URL) async -> LocalVideoInfo {
         let asset = AVURLAsset(url: url)
         var info = LocalVideoInfo()
-        info.duration = (try? await asset.load(.duration)).map(CMTimeGetSeconds)
+        // An indefinite or invalid length is NaN, which a metadata file cannot hold: no length is better.
+        info.duration = (try? await asset.load(.duration)).map(CMTimeGetSeconds).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         if let track = try? await asset.loadTracks(withMediaType: .video).first {
             if let natural = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
                 let rect = CGRect(origin: .zero, size: natural).applying(transform)

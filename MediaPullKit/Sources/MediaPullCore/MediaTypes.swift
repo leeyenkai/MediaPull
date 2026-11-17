@@ -309,6 +309,8 @@ public struct EngineContext: Codable, Hashable, Sendable {
     public var headers: [String: String]
     /// The page or profile the scan started from.
     public var sourceURL: URL?
+    /// A higher resolution the site offered only in a codec the policy did not take ("2160p"), for the sidecar (R-1607).
+    public var higherResolutionAvailable: String?
 
     public init(key: String, category: String, subcategory: String) {
         self.key = key

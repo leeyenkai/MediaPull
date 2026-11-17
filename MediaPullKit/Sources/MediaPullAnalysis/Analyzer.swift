@@ -63,7 +63,7 @@ public final class Analyzer: Sendable {
     public func analyse(_ url: URL, sha256: String, recogniseFaces: Bool) async -> AnalysisOutput {
         var facts = await MediaFactsReader.facts(for: url)
         let isVideo = facts.format?.kind == .video
-        let image: CGImage? = isVideo ? await Thumbnailer.videoFrame(at: url, maxPixel: Self.analysisSize)
+        let image: CGImage? = isVideo ? await Thumbnailer.videoFrame(at: url, maxPixel: Self.analysisSize, position: .analysis)
             : Thumbnailer.image(at: url, maxPixel: Self.analysisSize)
         var record = AnalysisRecord(sha256: sha256, facts: facts)
         record.isScreenshot = ScreenshotRule.isScreenshot(facts: facts, fileName: url.lastPathComponent)

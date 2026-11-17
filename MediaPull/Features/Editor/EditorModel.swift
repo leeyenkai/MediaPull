@@ -81,6 +81,8 @@ final class EditorModel: UnsavedEditing {
     var hasUnsavedChanges: Bool { hasImageEdits || hasNameChange }
     private(set) var turns = 0
     private(set) var flipped = false
+    /// The rotations and flips made, in order, so a JPEG that was only turned is saved without re-encoding.
+    private var reorientation = ImageEditing.Reorientation()
     private var sourceFile: URL?
     private var format: MediaFormat = .jpeg
 
@@ -196,6 +198,7 @@ final class EditorModel: UnsavedEditing {
             self?.applyAspect()
         }
         turns += quarter
+        reorientation.rotate(clockwise: clockwise)
         crop = clockwise ? CGRect(x: 1 - crop.maxY, y: crop.minX, width: crop.height, height: crop.width)
             : CGRect(x: crop.minY, y: 1 - crop.maxX, width: crop.height, height: crop.width)
         applyAspect()
@@ -205,6 +208,7 @@ final class EditorModel: UnsavedEditing {
         guard working != nil else { return }
         transform { ImageEditing.flippedHorizontally($0) }
         flipped.toggle()
+        reorientation.flip()
         crop = CGRect(x: 1 - crop.maxX, y: crop.minY, width: crop.width, height: crop.height)
     }
 
@@ -213,6 +217,7 @@ final class EditorModel: UnsavedEditing {
         editChain = nil
         working = original
         turns = 0
+        reorientation = ImageEditing.Reorientation()
         flipped = false
         aspect = .free
         crop = CGRect(x: 0, y: 0, width: 1, height: 1)
@@ -255,8 +260,14 @@ final class EditorModel: UnsavedEditing {
         guard let working else { throw ImageConversionError.cannotWrite }
         try FileManager.default.createDirectory(at: WindowModel.editsCache, withIntermediateDirectories: true)
         let output = WindowModel.editsCache.appendingPathComponent(UUID().uuidString + "." + format.fileExtension)
-        let (crop, format, source) = (crop, format, sourceFile)
+        let (crop, format, source, reorientation) = (crop, format, sourceFile, reorientation)
+        let uncropped = crop.width >= 0.999 && crop.height >= 0.999
         try await Task.detached(priority: .userInitiated) {
+            // Only turned or flipped: a JPEG keeps its exact image data and gets a new orientation tag (lossless).
+            if uncropped, format == .jpeg, let source {
+                try ImageEditing.writeReoriented(source, by: reorientation, to: output)
+                return
+            }
             guard let image = ImageEditing.cropped(working, to: crop) else { throw ImageConversionError.cannotWrite }
             try ImageEditing.write(image, format: format, metadataFrom: source, to: output)
         }.value

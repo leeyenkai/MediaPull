@@ -47,14 +47,18 @@ public enum ImageConversion {
         }
         var sniff = Sniffer.sniff(head(4096))
         // A WebP's lossless chunk can come after a large colour profile chunk: read further before deciding it is lossy.
-        if sniff.format == .webp, sniff.webp?.lossless == false { sniff = Sniffer.sniff(head(512 * 1024)) }
+        if sniff.format == .webp, sniff.webp?.lossless == false { sniff = Sniffer.sniff(head(512 * 1024), limit: 512 * 1024) }
         var count = CGImageSourceGetCount(source)
         // Several images in a HEIC or AVIF are an animation only when they are a sequence with frame timing; a stereo
         // pair (spatial photo) or an image with its depth map is one picture.
         if sniff.format == .heic || sniff.format == .avif, count > 1, !Self.hasFrameTiming(source) { count = 1 }
         guard count > 0, let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
-        let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
-        let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+        var width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+        var height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+        // The size as the picture is seen: orientations 5 to 8 turn it a quarter, as ImageProbe.size does (R-1503).
+        if let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue, (5 ... 8).contains(orientation) {
+            swap(&width, &height)
+        }
         var hasAlpha = (properties[kCGImagePropertyHasAlpha] as? NSNumber)?.boolValue ?? false
         let depth = (properties[kCGImagePropertyDepth] as? NSNumber)?.intValue ?? 8
         var lossless = sniff.format?.isLosslessImage ?? false
@@ -141,28 +145,60 @@ public enum ImageConversion {
         public var delay: Double
     }
 
-    /// All frames of an animated image with their delays in seconds.
-    public static func frames(of input: URL) throws -> (frames: [Frame], loopCount: Int) {
-        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil) else { throw ImageConversionError.unreadable }
-        let count = CGImageSourceGetCount(source)
-        var frames: [Frame] = []
-        frames.reserveCapacity(count)
-        var loop = 0
-        if let properties = CGImageSourceCopyProperties(source, nil) as? [CFString: Any] {
-            for key in [kCGImagePropertyGIFDictionary, kCGImagePropertyPNGDictionary, kCGImagePropertyWebPDictionary] {
-                if let dictionary = properties[key] as? [CFString: Any] {
-                    let loopKey: CFString = key == kCGImagePropertyGIFDictionary ? kCGImagePropertyGIFLoopCount
-                        : key == kCGImagePropertyPNGDictionary ? kCGImagePropertyAPNGLoopCount : kCGImagePropertyWebPLoopCount
-                    loop = (dictionary[loopKey] as? NSNumber)?.intValue ?? loop
-                }
+    /// The most frames converted from one animation; longer ones are cut there, with a note.
+    public static let maxFrames = 3000
+
+    /// How many times an animation plays: 0 for forever. ImageIO reports plays for every format, GIF included (a GIF
+    /// with no loop block reads as 1; measured on macOS 27).
+    public static func plays(of source: CGImageSource) -> Int {
+        guard let properties = CGImageSourceCopyProperties(source, nil) as? [CFString: Any] else { return 0 }
+        if let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any] {
+            return (gif[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue ?? 1
+        }
+        let keys: [(CFString, CFString)] = [
+            (kCGImagePropertyPNGDictionary, kCGImagePropertyAPNGLoopCount),
+            (kCGImagePropertyWebPDictionary, kCGImagePropertyWebPLoopCount),
+            (kCGImagePropertyHEICSDictionary, kCGImagePropertyHEICSLoopCount),
+            (kCGImagePropertyAVISDictionary, kCGImagePropertyHEICSLoopCount),
+        ]
+        for (dictionaryKey, loopKey) in keys {
+            if let dictionary = properties[dictionaryKey] as? [CFString: Any] {
+                return (dictionary[loopKey] as? NSNumber)?.intValue ?? 0
             }
         }
-        for index in 0 ..< count {
-            guard let image = CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
-            frames.append(Frame(image: image, delay: delay(source, index)))
+        return 0
+    }
+
+    /// Hands each frame to `body` with its delay in seconds, one at a time, so a long animation is never held in memory
+    /// whole (at most `maxFrames`). Returns the number of frames handed over and whether the animation was cut short.
+    @discardableResult
+    public static func forEachFrame(of input: URL, limit: Int = maxFrames, _ body: (CGImage, Double) throws -> Void) throws
+        -> (count: Int, truncated: Bool)
+    {
+        guard let source = CGImageSourceCreateWithURL(input as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else {
+            throw ImageConversionError.unreadable
         }
-        guard !frames.isEmpty else { throw ImageConversionError.unreadable }
-        return (frames, loop)
+        let total = CGImageSourceGetCount(source)
+        var handed = 0
+        for index in 0 ..< min(total, limit) {
+            try autoreleasepool {
+                guard let image = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCache: false] as CFDictionary)
+                else { return }
+                try body(image, delay(source, index))
+                handed += 1
+            }
+        }
+        guard handed > 0 else { throw ImageConversionError.unreadable }
+        return (handed, total > limit)
+    }
+
+    /// The frames of an animated image with their delays (at most `maxFrames`), for ImageIO's own writers, which need
+    /// them all at once; and how many times it plays.
+    public static func frames(of input: URL) throws -> (frames: [Frame], plays: Int) {
+        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil) else { throw ImageConversionError.unreadable }
+        var frames: [Frame] = []
+        try forEachFrame(of: input) { image, delay in frames.append(Frame(image: image, delay: delay)) }
+        return (frames, plays(of: source))
     }
 
     static func delay(_ source: CGImageSource, _ index: Int) -> Double {
@@ -172,6 +208,8 @@ public enum ImageConversion {
             (kCGImagePropertyPNGDictionary, kCGImagePropertyAPNGUnclampedDelayTime, kCGImagePropertyAPNGDelayTime),
             (kCGImagePropertyWebPDictionary, kCGImagePropertyWebPUnclampedDelayTime, kCGImagePropertyWebPDelayTime),
             (kCGImagePropertyHEICSDictionary, kCGImagePropertyHEICSUnclampedDelayTime, kCGImagePropertyHEICSDelayTime),
+            // Animated AVIF uses the HEIC sequence keys inside its own dictionary.
+            (kCGImagePropertyAVISDictionary, kCGImagePropertyHEICSUnclampedDelayTime, kCGImagePropertyHEICSDelayTime),
         ]
         for (dictionaryKey, unclamped, clamped) in pairs {
             if let dictionary = properties[dictionaryKey] as? [CFString: Any] {
@@ -184,14 +222,16 @@ public enum ImageConversion {
     }
 
     /// Writes frames with ImageIO as GIF or animated PNG.
-    public static func writeAnimated(_ frames: [Frame], loopCount: Int, as type: UTType, to output: URL) throws {
+    /// `plays` is how many times the animation plays (0: forever), kept from the source (R-1603).
+    public static func writeAnimated(_ frames: [Frame], plays: Int, as type: UTType, to output: URL) throws {
         guard let destination = CGImageDestinationCreateWithURL(output as CFURL, type.identifier as CFString, frames.count, nil) else {
             throw ImageConversionError.cannotWrite
         }
         let isGIF = type == .gif
+        // ImageIO takes plays for GIF too, and writes the file's repeat count (and no loop block for a single play).
         let fileProperties: [CFString: Any] = isGIF
-            ? [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: loopCount]]
-            : [kCGImagePropertyPNGDictionary: [kCGImagePropertyAPNGLoopCount: loopCount]]
+            ? [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: plays]]
+            : [kCGImagePropertyPNGDictionary: [kCGImagePropertyAPNGLoopCount: plays]]
         CGImageDestinationSetProperties(destination, fileProperties as CFDictionary)
         for frame in frames {
             let frameProperties: [CFString: Any] = isGIF

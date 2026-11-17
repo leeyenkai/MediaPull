@@ -66,6 +66,73 @@ public enum ImageEditing {
                          space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info)
     }
 
+    /// Quarter turns and mirroring, composed in the order they were made (they do not commute): the picture as shown is
+    /// rotated `rotation` quarter turns clockwise after being mirrored left to right when `mirrored`.
+    public struct Reorientation: Sendable, Equatable {
+        public var rotation = 0
+        public var mirrored = false
+
+        public init() {}
+
+        public mutating func rotate(clockwise: Bool) { rotation += clockwise ? 1 : -1 }
+
+        /// A flip after a rotation by r equals a rotation by -r after a flip.
+        public mutating func flip() {
+            rotation = -rotation
+            mirrored.toggle()
+        }
+
+        var normalised: (rotation: Int, mirrored: Bool) { (((rotation % 4) + 4) % 4, mirrored) }
+
+        /// The EXIF orientation (1 to 8) for (rotation, mirrored).
+        static func exif(_ rotation: Int, _ mirrored: Bool) -> Int {
+            switch ((((rotation % 4) + 4) % 4), mirrored) {
+            case (0, false): 1
+            case (0, true): 2
+            case (2, false): 3
+            case (2, true): 4
+            case (3, true): 5
+            case (1, false): 6
+            case (1, true): 7
+            default: 8
+            }
+        }
+
+        static func components(_ exif: Int) -> (rotation: Int, mirrored: Bool) {
+            switch exif {
+            case 2: (0, true)
+            case 3: (2, false)
+            case 4: (2, true)
+            case 5: (3, true)
+            case 6: (1, false)
+            case 7: (1, true)
+            case 8: (3, false)
+            default: (0, false)
+            }
+        }
+
+        /// The orientation tag that shows the picture with this edit made on top of `current`.
+        public func applied(to current: Int) -> Int {
+            let (r0, m0) = Self.components(current)
+            let (re, me) = normalised
+            return me ? Self.exif(re - r0, !m0) : Self.exif(re + r0, m0)
+        }
+    }
+
+    /// A rotate or flip of a JPEG without re-encoding (R-3202, D-34 as amended): the image data is copied as it is and
+    /// only the orientation tag changes.
+    public static func writeReoriented(_ source: URL, by edit: Reorientation, to output: URL) throws {
+        guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil), let type = CGImageSourceGetType(imageSource),
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let destination = CGImageDestinationCreateWithURL(output as CFURL, type, 1, nil)
+        else { throw ImageConversionError.unreadable }
+        let current = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let options: [CFString: Any] = [kCGImageDestinationOrientation: edit.applied(to: current)]
+        guard CGImageDestinationCopyImageSource(destination, imageSource, options as CFDictionary, nil) else {
+            throw ImageConversionError.cannotWrite
+        }
+    }
+
     /// Writes the edited image as JPEG (quality 1.0) or PNG, carrying over the source's metadata
     /// except orientation, which the pixels now already reflect.
     public static func write(_ image: CGImage, format: MediaFormat, metadataFrom source: URL?, to output: URL) throws {

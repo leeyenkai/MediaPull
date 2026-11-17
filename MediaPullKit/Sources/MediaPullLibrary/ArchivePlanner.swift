@@ -213,6 +213,7 @@ public enum ArchivePlanner {
             sidecar.height = info.pixelSize?.height
             sidecar.originalWidth = engine.originalWidth
             sidecar.originalHeight = engine.originalHeight
+            sidecar.higherResolutionAvailable = engine.higherResolutionAvailable
             sidecar.duration = info.duration
             if let owner = engine.username, owner.lowercased() != account.lowercased() { sidecar.ownerUsername = owner }
             sidecar.highlightTitle = engine.highlightTitle

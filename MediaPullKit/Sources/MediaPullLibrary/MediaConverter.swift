@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 import MediaPullCore
 import MediaPullEngines
 import MediaPullMedia
@@ -119,37 +120,43 @@ public struct MediaConverter: Sendable {
     }
 
     func convertAnimated(_ file: URL, policy: AnimatedPolicy, size: PixelSize, workDirectory: URL) async throws -> ConversionResult {
-        let (frames, loop) = try ImageConversion.frames(of: file)
+        let plays = CGImageSourceCreateWithURL(file as CFURL, nil).map(ImageConversion.plays(of:)) ?? 0
+        let cut = "; only the first \(ImageConversion.maxFrames) frames were kept"
         switch policy {
         case .apng:
+            let (frames, _) = try ImageConversion.frames(of: file)
             let output = workDirectory.appendingPathComponent(UUID().uuidString + ".png")
-            try ImageConversion.writeAnimated(frames, loopCount: loop, as: .png, to: output)
+            try ImageConversion.writeAnimated(frames, plays: plays, as: .png, to: output)
             return ConversionResult(url: output, format: .png, converted: true,
-                                    note: "Converted animation to animated PNG", pixelSize: size)
+                                    note: "Converted animation to animated PNG" + (frames.count == ImageConversion.maxFrames ? cut : ""),
+                                    pixelSize: size)
         case .gif, .mp4:
             if let ffmpeg {
                 let folder = workDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 defer { try? FileManager.default.removeItem(at: folder) }
+                // One frame decoded and written at a time: a long animation never sits in memory whole.
                 var list = "ffconcat version 1.0\n"
-                for (index, frame) in frames.enumerated() {
+                var index = 0
+                let written = try ImageConversion.forEachFrame(of: file) { image, delay in
                     let name = String(format: "f%05d.png", index)
-                    try ImageConversion.writePNG(frame.image, to: folder.appendingPathComponent(name))
-                    list += "file '\(name)'\nduration \(String(format: "%.3f", max(frame.delay, 0.02)))\n"
+                    index += 1
+                    try ImageConversion.writePNG(image, to: folder.appendingPathComponent(name))
+                    list += "file '\(name)'\nduration \(String(format: "%.3f", max(delay, 0.02)))\n"
                 }
-                list += "file '\(String(format: "f%05d.png", frames.count - 1))'\n"
+                list += "file '\(String(format: "f%05d.png", written.count - 1))'\n"
                 let listURL = folder.appendingPathComponent("frames.txt")
                 try list.write(to: listURL, atomically: true, encoding: .utf8)
                 let ext = policy == .gif ? "gif" : "mp4"
                 let output = workDirectory.appendingPathComponent(UUID().uuidString + "." + ext)
                 do {
                     if policy == .gif {
-                        try await ffmpeg.gif(fromConcatList: listURL, output: output)
+                        try await ffmpeg.gif(fromConcatList: listURL, output: output, plays: plays)
                     } else {
                         try await ffmpeg.mp4(fromConcatList: listURL, output: output)
                     }
                     return ConversionResult(url: output, format: policy == .gif ? .gif : .mp4, converted: true,
-                                            note: "Converted animation to \(policy.label)", pixelSize: size)
+                                            note: "Converted animation to \(policy.label)" + (written.truncated ? cut : ""), pixelSize: size)
                 } catch where policy == .mp4 {
                     throw error
                 } catch {
@@ -157,8 +164,9 @@ public struct MediaConverter: Sendable {
                 }
             }
             if policy == .mp4 { throw ConversionIssue.cannotDecode("Converting animations to video needs ffmpeg.") }
+            let (frames, _) = try ImageConversion.frames(of: file)
             let output = workDirectory.appendingPathComponent(UUID().uuidString + ".gif")
-            try ImageConversion.writeAnimated(frames, loopCount: loop, as: .gif, to: output)
+            try ImageConversion.writeAnimated(frames, plays: plays, as: .gif, to: output)
             return ConversionResult(url: output, format: .gif, converted: true, note: "Converted animation to GIF", pixelSize: size)
         }
     }
@@ -206,15 +214,23 @@ public struct MediaConverter: Sendable {
         let incompatible = info.needsReencodeForCompatibility
         let output = workDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
 
+        // An MP4 with sound and no picture is audio (an .m4a), which Archive folders do not take (D-13, R-1502).
+        if info.videoCodec == nil, info.audioCodec != nil, isMP4Family || format == .m4a {
+            if !info.audioNeedsConversion { return ConversionResult(url: file, format: .m4a, converted: false, duration: info.duration) }
+            let audio = workDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
+            try await ffmpeg.remuxToMP4(file, output: audio, convertAudio: true)
+            return ConversionResult(url: audio, format: .m4a, converted: true, note: "Audio converted to AAC", duration: info.duration)
+        }
         if !incompatible {
-            if isMP4Family, !info.audioNeedsConversion {
+            if isMP4Family, !info.audioNeedsConversion, !info.needsHVC1Tag {
                 return ConversionResult(url: file, format: format, converted: false, pixelSize: size, duration: info.duration)
             }
-            try await ffmpeg.remuxToMP4(file, output: output, convertAudio: info.audioNeedsConversion)
+            try await ffmpeg.remuxToMP4(file, output: output, convertAudio: info.audioNeedsConversion, hevc: info.needsHVC1Tag)
             return ConversionResult(url: output, format: .mp4, converted: true, note: "Repackaged as MP4 without re-encoding",
                                     pixelSize: size, duration: info.duration)
         }
-        if policy.video == .keepOriginal {
+        // "Highest compatible" never re-encodes (R-1607): when only VP9 or AV1 was there, it is kept as it is.
+        if policy.video == .keepOriginal || policy.video == .highestCompatible {
             try await ffmpeg.remuxToMP4(file, output: output, convertAudio: info.audioNeedsConversion)
             return ConversionResult(url: output, format: .mp4, converted: true,
                                     note: "Kept \(codec.uppercased()) video in MP4 (may not play in QuickTime)", pixelSize: size,
@@ -223,7 +239,13 @@ public struct MediaConverter: Sendable {
         if codec == "av1", !FFmpeg.canDecodeAV1 {
             throw ConversionIssue.cannotDecode("This Mac cannot decode AV1 video, so it cannot be converted to HEVC.")
         }
-        try await ffmpeg.transcodeToHEVC(file, output: output, convertAudio: info.audioNeedsConversion)
+        do {
+            try await ffmpeg.transcodeToHEVC(file, output: output, convertAudio: info.audioNeedsConversion, hardwareDecode: codec == "av1")
+        } catch {
+            // A conversion that fails is treated like one that cannot be done, so the next version, or the original
+            // codec, is used with a note (D-32), never a failed save.
+            throw ConversionIssue.cannotDecode("The \(codec.uppercased()) video could not be converted to HEVC: \(error.localizedDescription)")
+        }
         return ConversionResult(url: output, format: .mp4, converted: true, note: "Converted \(codec.uppercased()) to HEVC",
                                 pixelSize: size, duration: info.duration)
     }

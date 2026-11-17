@@ -983,9 +983,19 @@ def op_supports(request):
     EMITTER.emit("done", status="completed", counts={})
 
 
+def higher_resolution(info):
+    """The tallest video the site offered, when it is taller than the one downloaded (R-1607: a policy that never
+    re-encodes takes the best H.264 or HEVC, and the sidecar says what else there was)."""
+    heights = [f.get("height") for f in info.get("formats") or []
+               if f.get("vcodec") not in (None, "none") and isinstance(f.get("height"), int)]
+    best, chosen = max(heights, default=None), info.get("height")
+    return f"{best}p" if best and isinstance(chosen, int) and best > chosen else None
+
+
 def video_meta(info):
     """The details of a downloaded video that its metadata file and name are built from."""
     return {
+        "higher_res_available": higher_resolution(info),
         "title": info.get("title"), "width": info.get("width"), "height": info.get("height"), "vcodec": info.get("vcodec"),
         "duration": info.get("duration"), "uploader": info.get("uploader") or info.get("channel"),
         "uploader_id": info.get("uploader_id") or info.get("channel_id"), "id": info.get("id"),

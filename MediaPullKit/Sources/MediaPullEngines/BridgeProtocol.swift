@@ -413,6 +413,7 @@ public extension EngineContext {
         context.pinned = meta["pinned"]?.bool ?? false
         context.originalWidth = meta["width_original"]?.int
         context.originalHeight = meta["height_original"]?.int
+        context.higherResolutionAvailable = meta["higher_res_available"]?.string
         if let name = meta["filename"]?.string, let ext = meta["extension"]?.string {
             context.fileName = "\(name).\(ext)"
         }

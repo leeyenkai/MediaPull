@@ -23,8 +23,10 @@ public struct WebPInfo: Equatable, Sendable {
 }
 
 public enum Sniffer {
-    public static func sniff(_ data: Data) -> SniffResult {
-        let bytes = [UInt8](data.prefix(4096))
+    /// `limit` bytes are looked at (4 KB by default); a caller that needs a chunk found further in (a WebP's lossless
+    /// chunk after a large colour profile, an APNG's acTL) passes more.
+    public static func sniff(_ data: Data, limit: Int = 4096) -> SniffResult {
+        let bytes = [UInt8](data.prefix(limit))
         guard !bytes.isEmpty else { return SniffResult() }
 
         func starts(_ prefix: [UInt8], at offset: Int = 0) -> Bool {

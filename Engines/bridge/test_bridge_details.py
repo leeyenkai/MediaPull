@@ -257,6 +257,14 @@ def test_folder_names_from_site_metadata_never_leave_the_job_folder():
         assert real.startswith(os.path.realpath(job) + os.sep), real
         config.clear()
 
+def test_a_taller_video_in_another_codec_is_noted():
+    info = {"height": 1080, "formats": [{"vcodec": "avc1", "height": 1080}, {"vcodec": "vp9", "height": 2160},
+                                        {"vcodec": "none", "height": None}]}
+    assert bridge.higher_resolution(info) == "2160p"
+    assert bridge.video_meta(info)["higher_res_available"] == "2160p"
+    assert bridge.higher_resolution({"height": 2160, "formats": [{"vcodec": "vp9", "height": 2160}]}) is None
+    assert bridge.higher_resolution({"height": None, "formats": []}) is None
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

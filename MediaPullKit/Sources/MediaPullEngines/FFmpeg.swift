@@ -4,6 +4,8 @@ import VideoToolbox
 
 public struct VideoStreamInfo: Sendable, Equatable {
     public var videoCodec: String?
+    /// The container's tag for the video codec ("hvc1", "hev1", "avc1"); QuickTime and Photos play HEVC only as hvc1.
+    public var videoTag: String?
     public var audioCodec: String?
     public var width: Int?
     public var height: Int?
@@ -15,6 +17,11 @@ public struct VideoStreamInfo: Sendable, Equatable {
     public var needsReencodeForCompatibility: Bool {
         guard let codec = videoCodec?.lowercased() else { return false }
         return !["h264", "hevc", "h265", "avc1", "hvc1", "mpeg4", "prores"].contains(codec)
+    }
+
+    /// HEVC tagged hev1 (parameter sets in the stream), which QuickTime and Photos refuse; a remux retags it hvc1.
+    public var needsHVC1Tag: Bool {
+        ["hevc", "h265"].contains(videoCodec?.lowercased() ?? "") && videoTag?.lowercased() != "hvc1"
     }
 
     public var audioNeedsConversion: Bool {
@@ -71,6 +78,7 @@ public struct FFmpeg: Sendable {
             let type = stream["codec_type"] as? String
             if type == "video", info.videoCodec == nil, (stream["disposition"] as? [String: Any])?["attached_pic"] as? Int != 1 {
                 info.videoCodec = stream["codec_name"] as? String
+                info.videoTag = stream["codec_tag_string"] as? String
                 info.width = stream["width"] as? Int
                 info.height = stream["height"] as? Int
             } else if type == "audio", info.audioCodec == nil {
@@ -85,8 +93,10 @@ public struct FFmpeg: Sendable {
     }
 
     /// Copies streams into an MP4 container without re-encoding.
-    public func remuxToMP4(_ input: URL, output: URL, convertAudio: Bool) async throws {
+    public func remuxToMP4(_ input: URL, output: URL, convertAudio: Bool, hevc: Bool = false) async throws {
         var args = ["-hide_banner", "-nostdin", "-y", "-i", input.path, "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy"]
+        // HEVC is written as hvc1 whatever it was tagged, so QuickTime and Photos play it (R-1607).
+        if hevc { args += ["-tag:v", "hvc1"] }
         args += convertAudio ? ["-c:a", "aac_at", "-b:a", "256k"] : ["-c:a", "copy"]
         args += ["-movflags", "+faststart", "-f", "mp4", output.path]
         _ = try await Self.run(ffmpeg, args)
@@ -94,9 +104,10 @@ public struct FFmpeg: Sendable {
 
     /// Re-encodes video to HEVC with the hardware encoder at high constant quality, tagged hvc1 so
     /// QuickTime and Photos play it (SPEC R-1607).
-    public func transcodeToHEVC(_ input: URL, output: URL, convertAudio: Bool) async throws {
-        var args = [
-            "-hide_banner", "-nostdin", "-y", "-i", input.path, "-map", "0:v:0", "-map", "0:a:0?",
+    public func transcodeToHEVC(_ input: URL, output: URL, convertAudio: Bool, hardwareDecode: Bool = false) async throws {
+        // The bundled ffmpeg decodes AV1 only through VideoToolbox, which it uses only when asked.
+        var args = ["-hide_banner", "-nostdin", "-y"] + (hardwareDecode ? ["-hwaccel", "videotoolbox"] : []) + [
+            "-i", input.path, "-map", "0:v:0", "-map", "0:a:0?",
             "-c:v", "hevc_videotoolbox", "-q:v", "72", "-tag:v", "hvc1", "-pix_fmt", "yuv420p",
         ]
         args += convertAudio ? ["-c:a", "aac_at", "-b:a", "256k"] : ["-c:a", "copy"]
@@ -105,12 +116,15 @@ public struct FFmpeg: Sendable {
     }
 
     /// Builds a GIF from a concat list of PNG frames with an optimized palette (SPEC R-1603).
-    public func gif(fromConcatList list: URL, output: URL) async throws {
+    /// `plays` is how many times the animation plays (0: forever), kept from the source (R-1603). ffmpeg's `-loop` counts
+    /// repeats after the first play, with -1 for none.
+    public func gif(fromConcatList list: URL, output: URL, plays: Int = 0) async throws {
+        let loop = plays == 0 ? 0 : plays == 1 ? -1 : plays - 1
         _ = try await Self.run(ffmpeg, [
             "-hide_banner", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list.path,
             "-filter_complex",
             "split[a][b];[a]palettegen=stats_mode=diff:max_colors=256[p];[b][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle",
-            "-loop", "0", output.path,
+            "-loop", String(loop), output.path,
         ])
     }
 
