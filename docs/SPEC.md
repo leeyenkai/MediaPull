@@ -169,13 +169,13 @@ MediaPull is a lightweight native macOS app for collecting media from the web in
 
 **R-304** No third-party Swift packages. Third-party code is limited to the bundled engines and their runtime (section 13), each pinned to an exact version with a recorded SHA-256 by the build scripts.
 
-**R-305** Distribution is direct: Developer ID signed, hardened runtime, notarized, shipped as a DMG (D-02). The app is not sandboxed (D-03) so that it can run its bundled helper processes and write to any folder the user chooses. File access is still modelled through bookmarks (section 17) so that sandboxing remains possible later.
+**R-305** *(Amended by D-77: For this personal tool the disk image is signed with an Apple Development identity; Developer ID signing and notarization apply only to a public release.)* Distribution is direct: Developer ID signed, hardened runtime, notarized, shipped as a DMG (D-02). The app is not sandboxed (D-03) so that it can run its bundled helper processes and write to any folder the user chooses. File access is still modelled through bookmarks (section 17) so that sandboxing remains possible later.
 
-**R-306** Every Mach-O file in the bundle (app, Python interpreter, Python extension modules, ffmpeg, ffprobe, dylibs) is signed individually, inside out, with the hardened runtime and a secure timestamp. Helpers get only the entitlements M0 proves they need (expected: none).
+**R-306** *(Amended by D-77: Applies to a public release only (see R-305).)* Every Mach-O file in the bundle (app, Python interpreter, Python extension modules, ffmpeg, ffprobe, dylibs) is signed individually, inside out, with the hardened runtime and a secure timestamp. Helpers get only the entitlements M0 proves they need (expected: none).
 
 **R-307** The bundle contains the licence texts of every bundled component and a plain-language notice of where to obtain their source code (section 26).
 
-**R-308** App Transport Security stays on for the app's own requests except for plain-http media downloads (D-21). The browser pane follows WebKit's normal rules.
+**R-308** *(Amended by D-77: App Transport Security allows arbitrary loads, because http media (D-21) can come from any host; every request still passes the gate (GET and HEAD only).)* App Transport Security stays on for the app's own requests except for plain-http media downloads (D-21). The browser pane follows WebKit's normal rules.
 
 ---
 
@@ -268,7 +268,7 @@ The package builds for iOS from the first milestone so the port stays cheap. The
 
 **R-503** Every request is appended to an in-memory egress log (ring buffer of 2,000 entries: time, method, host, path, purpose, status, bytes received). Settings > Advanced shows it as "Network activity". It is never written anywhere unless the user exports diagnostics.
 
-**R-504** Remote media is never handed directly to a framework that would fetch it outside the gate. `AsyncImage`, `AVURLAsset(url:)` with a remote URL, `Data(contentsOf:)` with a remote URL, `NSImage(contentsOf:)` with a remote URL and Quick Look on remote URLs are forbidden. Video preview uses an `AVAssetResourceLoaderDelegate` with a custom scheme that fetches ranges through the gate. Quick Look previews a file downloaded to the cache first.
+**R-504** *(Amended by D-77: There is no custom resource loader: media is downloaded through the gate to a cache file before AVFoundation opens it.)* Remote media is never handed directly to a framework that would fetch it outside the gate. `AsyncImage`, `AVURLAsset(url:)` with a remote URL, `Data(contentsOf:)` with a remote URL, `NSImage(contentsOf:)` with a remote URL and Quick Look on remote URLs are forbidden. Video preview uses an `AVAssetResourceLoaderDelegate` with a custom scheme that fetches ranges through the gate. Quick Look previews a file downloaded to the cache first.
 
 ### 5.3 Engine egress guard
 
@@ -413,7 +413,7 @@ A sheet in one window:
 
 **R-802a** Pages can be zoomed: ⌘+ and ⌘- step through 50 % to 300 %, ⌘0 returns to actual size, and a trackpad pinch magnifies.
 
-**R-803** The address field accepts:
+**R-803** *(Amended by D-77: An @name, story or highlight link typed in the address field opens the Downloads pane (D-69), which offers the actions; the field itself offers none.)* The address field accepts:
 
 | Input | Behaviour |
 |---|---|
@@ -450,7 +450,7 @@ Tracking parameters such as `igsh`, `utm_*` and `fbclid` are removed from Instag
 
 **R-901** `extract.js` is injected as a `WKUserScript` at document start, into all frames, in an isolated `WKContentWorld`, so that page scripts cannot see or tamper with it and page Content Security Policy does not block it. It reports through a script message handler registered only in that world.
 
-**R-902** The script collects candidates from:
+**R-902** *(Amended by D-77: There is no "Include inline SVG" setting (inline SVG is not collected), and the network observer reports manifests and media files, not individual stream segments.)* The script collects candidates from:
 
 - `img` (`currentSrc`, `src`, every `srcset` candidate with its descriptor, `naturalWidth` and `naturalHeight` once loaded).
 - `picture > source` (`srcset`, `type`, `media`).
@@ -486,7 +486,7 @@ Tracking parameters such as `igsh`, `utm_*` and `fbclid` are removed from Instag
 
 ### 9.4 Probing
 
-**R-911** The Prober fills in unknown byte size, pixel size, format and duration with a single `Range: bytes=0-65535` GET: the size comes from `Content-Range`, the format from magic bytes, image dimensions from an incremental ImageIO source, and video dimensions and duration from the MP4 `moov` box (fetching the last 512 KB when `moov` is at the end). HEAD is used only as a fallback because many CDNs answer HEAD poorly.
+**R-911** *(Amended by D-77: The tail read for a `moov` box at the end is the last 1 MB.)* The Prober fills in unknown byte size, pixel size, format and duration with a single `Range: bytes=0-65535` GET: the size comes from `Content-Range`, the format from magic bytes, image dimensions from an incremental ImageIO source, and video dimensions and duration from the MP4 `moov` box (fetching the last 512 KB when `moov` is at the end). HEAD is used only as a fallback because many CDNs answer HEAD poorly.
 
 **R-912** Only items that are visible in the grid, selected, or needed by an active filter are probed. At most 6 probes run at once. Results are cached per session.
 
@@ -515,9 +515,9 @@ The Preview pane shows the full variant table and the reason for the choice.
 
 **R-917** HLS (`.m3u8`) and DASH (`.mpd`) manifests found on a page appear as **Stream** items with the best rendition's resolution once the manifest is parsed. Saving a stream runs a yt-dlp job through the bridge with the page's Referer and first-party cookies, which downloads the best rendition and merges it with ffmpeg into MP4, applying the video codec policy (section 16.3).
 
-**R-918** Streams with DRM (FairPlay, Widevine, PlayReady, `SAMPLE-AES`, MPD `ContentProtection`) or AES-128 key encryption are marked **Protected**, shown greyed with the reason, and never downloaded (D-19).
+**R-918** *(Amended by D-77: An item is Protected when the page uses Encrypted Media Extensions for it, or when yt-dlp reports its formats as DRM; MediaPull does not parse manifests for key systems itself.)* Streams with DRM (FairPlay, Widevine, PlayReady, `SAMPLE-AES`, MPD `ContentProtection`) or AES-128 key encryption are marked **Protected**, shown greyed with the reason, and never downloaded (D-19).
 
-**R-919** `blob:` video sources (Media Source Extensions) cannot be downloaded directly. They are shown as "Stream (find manifest)" and linked to any manifest the PerformanceObserver recorded for the same frame. `blob:` images are read inside the page context at save time (up to 25 MB) and saved without a network request.
+**R-919** *(Amended by D-77: `blob:` videos are listed as unavailable with a pointer to Save Video… (which reads the page with yt-dlp); they are not linked to a recorded manifest.)* `blob:` video sources (Media Source Extensions) cannot be downloaded directly. They are shown as "Stream (find manifest)" and linked to any manifest the PerformanceObserver recorded for the same frame. `blob:` images are read inside the page context at save time (up to 25 MB) and saved without a network request.
 
 ---
 
@@ -529,17 +529,17 @@ The Preview pane shows the full variant table and the reason for the choice.
 
 **R-1001a** Zoom: a slider in the Extracted pane's status bar (with zoom-out and zoom-in buttons either side), a trackpad pinch on the grid, ⌥⌘+ and ⌥⌘- (⌘+ and ⌘- zoom the web page, R-802a), and Zoom In and Zoom Out in the sort menu set the thumbnail size from 80 to 360 points, so the pane shows more or fewer items at once. The size is kept between launches. Thumbnails are decoded in 128-pixel steps, so dragging the slider does not decode on every step.
 
-**R-1002** Thumbnails load lazily through the gate using the smallest variant at least as large as the cell, are decoded downsampled to at most twice the cell size (512 px maximum), and are cached within the budget in section 22.
+**R-1002** *(Amended by D-77: Thumbnails are decoded at most 768 px on the longer side (twice the largest cell).)* Thumbnails load lazily through the gate using the smallest variant at least as large as the cell, are decoded downsampled to at most twice the cell size (512 px maximum), and are cached within the budget in section 22.
 
 **R-1003** Selection: click, ⇧-click range, ⌘-click toggle, ⌘A select all shown, ⌘⇧A deselect, drag-rectangle select. Arrow keys move focus; Space opens Quick Look; double-click shows the item in the Preview pane.
 
 **R-1004** Context menu: Save to the save folder, Save to…, Copy Image (images only, after download), Copy URL, Copy Original URL, Open Page in Pane, Show in Preview, Hide Items from This Domain.
 
-**R-1005** The pane header shows the page session title. When the pane shows an Instagram profile or post, or a page that gallery-dl supports, the header shows the matching action buttons ("Pull @name…", "Scan @name", "Save This Post", "Scan with Site Extractor").
+**R-1005** *(Amended by D-77: The header buttons are named as in the Downloads pane (D-69): "Download…" and "List in Extracted Media".)* The pane header shows the page session title. When the pane shows an Instagram profile or post, or a page that gallery-dl supports, the header shows the matching action buttons ("Pull @name…", "Scan @name", "Save This Post", "Scan with Site Extractor").
 
 ### 10.2 Filters
 
-**R-1006** The filter bar (⌘F) offers:
+**R-1006** *(Amended by D-77: The filter bar offers search text, minimum width and height, file size range, shape, format, source, Instagram items, state, domains and the toggles below; the quick row's resolution slider covers the resolution presets. Maximum width and height, shorter side, megapixels, duration, a custom ratio and an Instagram date range are not offered.)* The filter bar (⌘F) offers:
 
 | Filter | Values |
 |---|---|
@@ -912,7 +912,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 ### 16.2 Converter
 
-**R-1605** The Converter window (⇧⌘K) accepts files and folders dragged from Finder or the Library pane. Options: output policy (Automatic per the table, Always JPEG, Always PNG), keep metadata (on), include subfolders (on), destination (next to originals, or a chosen folder), skip files already in a normal format (on). It shows per-file results. It never modifies or deletes originals; an existing output name gets a numbered suffix.
+**R-1605** *(Amended by D-77: The Converter has no per-run options: it follows section 16.1 and the Formats settings.)* The Converter window (⇧⌘K) accepts files and folders dragged from Finder or the Library pane. Options: output policy (Automatic per the table, Always JPEG, Always PNG), keep metadata (on), include subfolders (on), destination (next to originals, or a chosen folder), skip files already in a normal format (on). It shows per-file results. It never modifies or deletes originals; an existing output name gets a numbered suffix.
 
 **R-1606** The Library pane's context menu offers "Convert to JPEG/PNG" for convertible files, using the same rules.
 
@@ -980,7 +980,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1902** Job states: queued, running, paused, waiting (pacing or cooldown, with a countdown), blocked (checkpoint), completed, failed, cancelled.
 
-**R-1903** The Activity panel (⇧⌘J) lists jobs with progress (items and bytes), current item, speed, and actions: Pause, Resume, Cancel, Retry Failed, Show Page (for checkpoints), Reveal Folder.
+**R-1903** *(Amended by D-77: Pause and Resume are offered for Analyse jobs; other jobs offer Cancel and Retry Failed (Instagram pulls continue from their cursor). Speed is not shown, and checkpoints are handled by the browser banner (R-808).)* The Activity panel (⇧⌘J) lists jobs with progress (items and bytes), current item, speed, and actions: Pause, Resume, Cancel, Retry Failed, Show Page (for checkpoints), Reveal Folder.
 
 **R-1904** Interrupted Pull jobs (app quit, crash, cancelled) keep their cursor; on next launch the panel offers "Resume Pull".
 
@@ -993,16 +993,13 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 | Pane | Settings |
 |---|---|
 | General | Library roots and default root; default layout; name templates (with live preview and validation); conflict policy (number, skip); set file dates (on); set "Where from" (on); "Clear extracted media on navigation" (off) |
-| Conversion | WebP/AVIF/HEIC handling for Plain (convert, keep original); animated images (GIF, MP4, APNG); SVG (keep in Plain, rasterize in Archive); include inline SVG (off) |
-| Video | Codec policy (section 16.3) |
-| Instagram | Sign in, sign-in state, Clear Instagram Session; default content; pacing (Gentle, Standard); Reels in a subfolder (off); incremental stop count (12) |
+| Formats | WebP/AVIF/HEIC handling for Plain (convert, keep original); animated images (GIF, MP4, APNG); SVG (kept in Plain, rasterized in Archive); video codec policy (section 16.3) |
+| Instagram | Sign in, sign-in state, Clear Instagram Session; default content; pacing (Gentle, Standard); sort into folders by type (on, D-54); incremental stop count (12) |
 | Engines | Installed and active versions; Check for Updates; weekly check (on); Use Previous Version; Reset to Built-In Engines; licences and source links |
-| Browser | Clear All Website Data; allow pop-ups in new windows |
-| Analysis | On (default) or off; which library roots; pause on battery (on); event gap (3 hours); subject list and confidence threshold for Sort by Subject; Rebuild Analysis; Delete All Analysis Data (section 36) |
+| Analysis | On (default) or off; which library roots; pause on battery (on); event gap (3 hours); subject list and confidence threshold for Sort by Subject; Analyse Again; Delete All Analysis Data (section 36); keep Organise undo history for (30 days) |
 | Faces | Off until opted in (R-3901); match threshold; group photos when sorting by person; Delete All Face Data |
-| Organise | Keep undo history for (30 days) |
 | Appearance | Theme (R-2010); pane arrangement presets with a diagram; Reset Pane Sizes |
-| Advanced | Download concurrency limits; allow insecure http media (on, D-21); Network activity log; Export Diagnostics; verbose engine logging (off) |
+| Advanced | Network activity log; Clear All Website Data; Export Diagnostics (D-77) |
 
 **R-2010** Themes: System (the accent colour from System Settings), Ocean, Sunset, Forest, Lavender, Graphite, Rose Gold, Aurora and Spectrum (a full colour spectrum). A theme sets the accent for controls, chips and grid selection, and a soft gradient wash behind pane titles that keeps text legible in light and dark appearances. Themes are static: no animation, so idle CPU is unaffected.
 
@@ -1220,6 +1217,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-74 | File names keep the zero-width joiner and non-joiner (U+200C, U+200D); control codes and text-direction overrides are still replaced and zero-width spaces removed. Names already saved are not changed. This amends R-1510 | Persian and Hindi words and joined emoji (a family, a flag) were broken by an underscore |
 | D-75 | A file from an engine is keyed by its post and its number in the post (`category:id:num`) whenever the post numbers its files, for `id` as well as `post_id`. Keys already recorded for such sites change once: their next incremental pull may fetch those files again, and they are recognised as duplicates, not saved twice | On sites that give every file of a post the post's id (Pixiv, Kemono), all files of a post had one key, so scans kept one and incremental pulls skipped the rest |
 | D-76 | The folder panes (Library, Organise Source and Target) and Extracted Media can be shown as Icons, a List or Columns, like the Finder (Extracted Media: Icons and List, since it is not a folder). Each pane keeps its own view; ⌘1 to ⌘3 switch the focused pane. Column view replaces the folder tree and the search and filter row, and sorts each column by name with folders first. Amends R-1701 and R-3802 | Requested: the same view choices as the Finder |
+| D-77 | Version 1.8 aligns the spec with the app where the app's behaviour is simpler and sound, instead of adding options that add little: R-305, R-306, R-308, R-504, R-803, R-902, R-911, R-918, R-919, R-1002, R-1005, R-1006, R-1605, R-1903 and R-3906 are amended in place; Settings > Advanced keeps the network log and Export Diagnostics and drops download concurrency limits, the insecure-http switch and verbose engine logging; there is no separate Browser or Organise settings pane, no pop-up setting (pop-ups always open as tabs) and no inline-SVG setting | A requirement-by-requirement pass (docs/CONFORMANCE.md) found these written but never built; the person asked for a simple app without a pile of options |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1418,7 +1416,7 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 
 **R-3905** When at least 5 photos and at least 60 % of an unnamed person's photos sit in one folder whose name looks like a person's name (not a date, an account folder, a reserved, type or generic name such as `Unsorted`, `posts` or `Saved posts`), and that folder mostly holds this person, the person shows "Alice? (from folder Alice)". One click accepts the name; it is never applied without that click (D-66).
 
-**R-3906** Sort into Folders by Person makes one folder per named person (unnamed people optional, off by default); photos without a recognised person stay where they are, or go to `Unsorted/` (option). A photo of several people goes into each person's folder as an APFS clone, each copy with its own metadata file. In Archive-layout folders group photos go into one shared `Group photos/` folder instead (D-64). Settings > Faces offers: every person's folder, a shared `Group photos/` folder, or the first person's folder only.
+**R-3906** *(Amended by D-77: Photos without a recognised person stay where they are; there is no Unsorted option for this sort.)* Sort into Folders by Person makes one folder per named person (unnamed people optional, off by default); photos without a recognised person stay where they are, or go to `Unsorted/` (option). A photo of several people goes into each person's folder as an APFS clone, each copy with its own metadata file. In Archive-layout folders group photos go into one shared `Group photos/` folder instead (D-64). Settings > Faces offers: every person's folder, a shared `Group photos/` folder, or the first person's folder only.
 
 **R-3907** Accuracy limits, stated in Settings > Faces and the People list: faces turned well away from the camera (side profiles) are matched much less reliably; children's faces change with age and are confused more often; faces narrower than 32 px are not used; JPEG compression matters only at very small sizes, while blur, poor light and partial covering matter more. The accuracy measured on this Mac is recorded in D-67.
 

@@ -18,17 +18,17 @@ change as the code.
 | R-302 | built | `MediaPull.xcodeproj/project.pbxproj`, `MediaPullKit/Package.swift` | `scripts/check.sh` | Swift 6, approachable concurrency, MainActor default in the app; @concurrent used in the package |
 | R-303 | built | `MediaPull/Platform/PaneSplit.swift`, `MediaPull/Platform/MediaGridView.swift` | `scripts/check.sh` | check.sh lint allows import AppKit only under MediaPull/ |
 | R-304 | built | `MediaPullKit/Package.swift`, `scripts/fetch-engines.sh`, `scripts/build-ffmpeg.sh` | `scripts/fetch-engines.sh` | No package dependencies; engine wheels and ffmpeg source verified by SHA-256 when fetched |
-| R-305 | partial | `scripts/make-dmg.sh`, `MediaPullKit/Sources/MediaPullStore/Store.swift` | none | Not sandboxed and bookmarks kept; DMG is Apple Development signed, not Developer ID or notarized |
-| R-306 | partial | `scripts/bundle-engines.sh` | `scripts/install-app.sh` | Nested Mach-O re-signed only for Release with an identity; nothing checks runtime flag or timestamp |
+| R-305 | amended | `Config/Info.plist`, `scripts/make-dmg.sh` | — | D-77: Apple Development signed for personal use; Developer ID and notarization for a public release only |
+| R-306 | amended | `scripts/make-dmg.sh` | — | D-77: applies to a public release only |
 | R-307 | partial | `scripts/bundle-engines.sh`, `EngineSettings` | none | Licence texts are bundled; no notice of where to obtain source code; no test |
-| R-308 | partial | `Config/Info.plist`, `RequestPolicy.evaluate` | none | Info.plist sets NSAllowsArbitraryLoads, so ATS is off for all app requests, not only http media |
+| R-308 | amended | `Config/Info.plist`, `RequestPolicy.evaluate` | `testOnlyReadsAreAllowed` | D-77: arbitrary loads allowed for http media from any host; the gate still allows only GET and HEAD |
 | R-401 | built | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans |
 | R-402 | partial | `ExtractionIngestor`, `MediaProber`, `ThumbnailLoader` | none | Decoding, parsing and hashing run off the main actor by design; no test or lint checks it |
 | R-403 | partial | `BridgeClient.run`, `stop_children` | none | Bridge and ffmpeg run per job and are stopped with it; no test checks no process remains |
 | R-501 | built | `GatedRequest`, `NetworkGate`, `RedirectGuard`, `RedirectPolicy.nextHeaders` | `testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer`, `testCookiesStayBehindAndEveryHopIsLogged`, `testACutShortDownloadIsNotKept` | Per-hop Referer and same-origin cookies since 1.8; per-host limits follow redirects |
 | R-502 | partial | `RequestPolicy.evaluate`, `RedirectPolicy.nextHeaders` | `testOnlyReadsAreAllowed`, `testRedirectsAreCheckedAgainstThePolicy` | Plain http is allowed for every purpose, not only media; spec or code to decide |
 | R-503 | built | `NetworkGate.entries`, `NetworkGate.logCapacity`, `AdvancedSettings` | `testCookiesStayBehindAndEveryHopIsLogged` | 2,000-entry in-memory log shown as Network activity; never written to disk |
-| R-504 | partial | `ItemMediaPreview`, `WindowModel.previewFile`, `QuickLook` | `scripts/check.sh` | No resource-loader scheme: video plays from a gate download; lint covers only AsyncImage and remote Data |
+| R-504 | amended | `WindowModel.previewFile`, `PlayerView` | `--selftest-video` | D-77: media is downloaded through the gate to a cache file before AVFoundation opens it |
 | R-505 | built | `Engines/bridge/egress_guard.py`, `READ_POSTS`, `install_guard` | `test_write_operations_are_blocked`, `test_audited_site_reads_are_allowed`, `test_uploads_and_other_methods_are_blocked` | Read-only POST list per D-72 (amends D-40), already in the spec text |
 | R-506 | built | `configure_gallery_dl`, `stream_options` | `test_engine_cache_stays_in_memory` | Config cleared per job, caches in memory, no cookies-from-browser, only the job's site cookies |
 | R-507 | partial | `scripts/build-ffmpeg.sh` | none | Built with --disable-network and only file and pipe protocols; no test |
@@ -49,7 +49,7 @@ change as the code.
 | R-801 | built | `ReadOnlyWebView`, `WebViewSetup.configuration` | `--selftest-browser` | Default persistent data store shared by every tab and window |
 | R-802 | person | `BrowserBar`, `AddressField`, `TabStrip`, `PaneMenu` | none | Nav bar, fading address, star, panel button, Cmd-L, Cmd-[ and Cmd-]; UI check only |
 | R-802a | person | `BrowserController.zoomIn`, `BrowserController.zoomSteps`, `AppCommands` | none | Steps 50 to 300 percent and pinch; shortcut bound to plus with no equals alternative, check by hand |
-| R-803 | partial | `AddressInput.parse`, `WindowModel.submitAddress` | `testClassification` | No Pull or Scan offers for @name in the field; no Save Stories or Save Highlight actions |
+| R-803 | amended | `AddressInput.parse`, `WindowModel.showDownloads` | `--selftest-browser` | D-77: @name, story and highlight links open the Downloads pane, which offers the actions |
 | R-804 | person | `CookieBridge.isSignedInToInstagram`, `InstagramSettings`, `AppCommands` | none | Sign In in Go menu and Settings (toolbar moved by D-48); needs a real sign-in |
 | R-805a | built | `TabStrip`, `TabChip`, `WindowModel.newTab`, `WindowModel.reopenClosedTab`, `BrowserController` | `--selftest-browser` | Tabs, context menu, Cmd-click tabs and This Page chip; self-test opens, filters and closes tabs |
 | R-805b | built | `BookmarkStar`, `BookmarksList`, `StartPage`, `BookmarkCollection` | `testBookmarksAndFolders`, `--selftest-browser` | Star editor, folders, Bookmarks menu and start page with four starting points |
@@ -59,7 +59,7 @@ change as the code.
 | R-807 | person | `BrowserController`, `FolderPicker.chooseSaveLocation` | none | Pop-ups open as tabs; page downloads use the save dialog in the save folder (D-73) |
 | R-808 | person | `Banner`, `EngineService.handleCheckpoint`, `EngineService.resumeAfterCheckpoint` | none | Checkpoint banner with Resume and Cancel Instagram Jobs; needs a real checkpoint |
 | R-901 | built | `WebViewSetup.configuration`, `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | Document start, all frames, isolated MediaPull world, handler only in that world |
-| R-902 | partial | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `testSrcsetCandidatesMergeAndRank`, `--selftest-url` | No Include inline SVG option; PerformanceObserver skips media segments |
+| R-902 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | D-77: no inline SVG setting; manifests and media files reported, not stream segments |
 | R-903 | built | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | MutationObserver with filtered attributes, idle chunks of 2,000, load events captured |
 | R-904 | built | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js` | `--selftest-url` | 50 ms first flush, 300 ms after, 500 candidates or 256 KB per message |
 | R-905 | partial | `ExtractionMessageHandler`, `ExtractionIngestor.ingest` | `testLateBatchKeepsItsOwnPage` | Frame origin from frameInfo, but the main-frame page URL is taken from the batch's own page field |
@@ -68,22 +68,22 @@ change as the code.
 | R-908 | built | `WindowModel.clear`, `MediaFilter`, `Preferences` | `--selftest-browser` | Accumulates until Cmd-K; grouped by page; This Page filter; Clear on navigation setting |
 | R-909 | built | `URLNormalizer.normalize` | `testSrcsetCandidatesMergeAndRank`, `testRulesKeepOtherParametersAndPaths` | Resolved against the frame; queries kept unless a CDN rule applies |
 | R-910 | built | `ExtractionIngestor.markDuplicate`, `CDNRules` | `testRenditionsInDifferentElementsMerge`, `testWordPressRenditionsShareOneAsset` | Same element and CDN asset key merge; identical checksums marked duplicate |
-| R-911 | partial | `MediaProber`, `NetworkGate.head`, `MP4Probe` | `testMalformedMP4BoxesDoNotCrash`, `--selftest-url` | Range 0-65535 GET as written, but the moov tail read is the last 1 MB, not 512 KB |
+| R-911 | amended | `MediaProber.probe` | `testMalformedMP4BoxesDoNotCrash` | D-77: the tail read is the last 1 MB |
 | R-912 | built | `MediaProber`, `WindowModel.ensureProbed`, `WindowModel.gridAppeared` | `--selftest-url` | Visible, selected or filter-needed items only; 6 at once; cached per session |
 | R-913 | built | `CDNRules`, `WindowModel.ensureProbed` | `testNYTimesRendition`, `testTwitterWordPressAndSigned`, `testSmallerGuessedOriginalIsRejected` | Derived originals unverified until checked; signed URLs untouched |
 | R-914 | partial | `VariantRanker.best`, `VariantRow` | `testSrcsetCandidatesMergeAndRank`, `testEqualValuesKeepDiscoveryOrder` | Ranking as written; Preview marks the chosen variant but never says why |
 | R-915 | built | `URLNormalizer.referer`, `RequestContext`, `SavePipeline` | `--selftest-url` | Pane User-Agent, image Accept header, strict-origin-when-cross-origin Referer |
 | R-916 | built | `URLNormalizer.mayCarryCookies`, `PublicSuffix` | `testCookiesNeedTheFrameToo`, `testRegistrableDomain` | Cookies only when the media is same-site with the page and the reporting frame (1.8) |
 | R-917 | built | `MediaProber.bestHLSResolution`, `BridgeEngineFetcher`, `stream_options` | `test_stream_options_map_extras` | Stream items sized from the manifest; saved by yt-dlp with Referer and first-party cookies |
-| R-918 | partial | `ExtractionIngestor`, `SaveFailure` | none | Only EME mediaKeys marks Protected; manifests not checked for SAMPLE-AES, AES-128 or ContentProtection |
-| R-919 | partial | `BrowserController.readBlob`, `ExtractionIngestor` | none | blob: images read in the page at save; blob: videos not shown as Stream or linked to a manifest |
+| R-918 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `VideoFormatInfo.drm` | `--selftest-url` | D-77: Protected from EME use in the page or DRM reported by yt-dlp |
+| R-919 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `BrowserController.readBlob` | `--selftest-url` | D-77: blob videos listed as unavailable with a pointer to Save Video |
 | R-1001 | partial | `MediaGrid`, `WindowModel.gridInfo` | `--selftest-url` | Virtualized grid with type, format, size, bytes, duration and state badges; no insecure badge |
 | R-1001a | partial | `ZoomSlider`, `WindowModel.gridMagnify`, `WindowModel.zoomRange`, `AppCommands` | `--selftest-zoom` | Audit: shortcuts unverified; Opt-Cmd-plus bound to plus only and disabled outside Icons view |
-| R-1002 | partial | `ThumbnailLoader`, `WindowModel.gridThumbnail` | `--selftest-views` | Smallest adequate variant through the gate, but decodes up to 768 px, not 512 |
+| R-1002 | amended | `ThumbnailLoader` | `--selftest-url` | D-77: decoded at most 768 px on the longer side |
 | R-1003 | partial | `MediaCollectionView`, `GridKeyRouter`, `WindowModel.selectAll`, `WindowModel.deselectAll` | none | Audit: Select All Media is Opt-Cmd-A, not Cmd-A; other selection keys need a person |
 | R-1004 | partial | `WindowModel.gridMenu` | none | No Copy Image or Copy Original URL items |
-| R-1005 | partial | `ExtractedHeader` | none | Header shows no page session title; buttons are named Download and List, not Pull, Scan, Save This Post |
-| R-1006 | partial | `FilterBar`, `QuickFilterBar`, `MediaFilter` | `testFilterHidesTinyAndMatchesSize`, `testLengthFilterKinds` | UI lacks max width and height, shorter side, presets, megapixels, duration, custom ratio, IG dates |
+| R-1005 | amended | `ExtractedPane` | `--selftest-browser` | D-77: header buttons named as in the Downloads pane |
+| R-1006 | amended | `FilterBar`, `MediaFilter` | `testFilterHidesTinyAndMatchesSize` | D-77: the filter bar offers the listed subset; the slider covers resolution presets |
 | R-1006a | built | `QuickFilterBar`, `MediaFilter` | `testResolutionSliderUsesLongestSide`, `testLengthFilterKinds` | Type chips, longest-side slider with the listed stops, shown of found count |
 | R-1007 | built | `SortOrder`, `MediaFilter.sorted` | `testEqualValuesKeepDiscoveryOrder` | All seven sort orders |
 | R-1008 | partial | `MediaFilter`, `WindowModel.refilter` | none | Audit gap: filter state not persisted per window, no named presets, no 5,000-item timing test |
@@ -139,7 +139,7 @@ change as the code.
 | R-1602 | partial | `ImageConversion.convertStill` | `testPDFProfileIsAddedWithoutReencoding` | Properties carried by ImageIO; the Display P3 test covers PDF extraction, not conversion |
 | R-1603 | partial | `MediaConverter.convertAnimated`, `FFmpeg.gif`, `ImageConversion.frames` | none | GIF loop count forced to infinite and AVIF frame delays ignored; no test |
 | R-1604 | partial | `MediaConverter.convertImage`, `ConversionPolicy` | none | Keep original WebP, AVIF, HEIC applies only to Plain; no test |
-| R-1605 | partial | `ConverterView`, `AppModel.convertFiles` | none | No output policy, keep-metadata, subfolder or skip options; no test |
+| R-1605 | amended | `ConverterView`, `MediaConverter` | `testAnimatedPNGAndWebPWithAlpha` | D-77: no per-run options; follows section 16.1 and the Formats settings |
 | R-1606 | partial | `LibraryModel.gridMenu`, `AppModel.convertFiles` | none | Convert to JPEG or PNG in the Library menu; no test |
 | R-1607 | partial | `MediaConverter.convertVideo`, `FFmpeg.transcodeToHEVC`, `VideoCodecPolicy.selector` | none | hev1 not retagged, Highest compatible re-encodes, higher_res_available never written, AV1 needs hardware |
 | R-1608 | partial | `FFmpeg.remuxToMP4`, `VideoStreamInfo.audioNeedsConversion` | none | Opus and Vorbis to AAC 256 kbit/s with aac_at, MOV kept; no test |
@@ -158,7 +158,7 @@ change as the code.
 | R-1802 | person | `ItemDragPayload`, `MediaPull/Platform/DragSupport.swift` | none | Large drags and file promises need a person to check |
 | R-1901 | built | `JobKind` | `--selftest-analyse`, `--selftest-galleries`, `--selftest-video-download` | All eight kinds exist; Convert and Engine Update not run by a self-test |
 | R-1902 | partial | `JobState` | none | All states exist, but waiting shows an end time, not a countdown; no test |
-| R-1903 | partial | `ActivityView`, `JobRow` | none | No speed and no Show Page for checkpoints; Pause only for Analyse jobs |
+| R-1903 | amended | `ActivityView`, `Job` | `--selftest-analyse` | D-77: Pause for Analyse jobs; Cancel and Retry Failed elsewhere; no speed column |
 | R-1904 | partial | `EngineService.startPull`, `AppStore.updateAccount` | none | Cursor kept, but no Resume Pull offer at launch |
 | R-1905 | partial | `JobCenter.finish`, `JobCenter.post`, `EngineService.handleCheckpoint` | none | Finish notice after 1 minute; blocked notice ignores the setting; no test |
 | R-2010 | built | `AppTheme`, `AppTheme.currentAccent` | `--selftest-theme`, `--selftest-idle` | Nine static themes; accent, chips, grid selection and title wash |
@@ -208,7 +208,7 @@ change as the code.
 | R-3903 | built | `FaceGrouping.group`, `AnalysisStore.pruneOrphans` | `testFaceGroupingRespectsCorrections`, `testOrphanedResultsFacesAndPeopleArePruned` | Faces of files that are gone are pruned after each scan (1.8) |
 | R-3904 | built | `PeopleView`, `AnalysisService.split`, `AnalysisService.notThisPerson`, `AnalysisStore.pruneOrphans` | `testNotThisPersonSurvivesRegrouping`, `testOrphanedResultsFacesAndPeopleArePruned` | Corrections persist; people of deleted files no longer linger (1.8) |
 | R-3905 | built | `NameSuggestion.suggest`, `NameSuggestion.looksLikeName` | `testNameSuggestion` | Suggested only; applied after one click on Use Name |
-| R-3906 | partial | `SortRules.personFolders`, `GroupPhotoPlacement` | `testSortClonesGroupPhotosAndUsesUnsorted`, `testGroupPhotoPlacement` | The option to leave photos without a person in place is missing: they always go to Unsorted |
+| R-3906 | amended | `FolderOperations.sort`, `OrganiseModel.autoSort` | `testSortClonesGroupPhotosAndUsesUnsorted` | D-77: photos without a recognised person stay where they are |
 | R-3907 | partial | `FaceOptIn.limits` | | Limits text omits JPEG, blur, light and covering, and the 32 px figure |
 
 ## Settings and shortcuts (sections 20 and 21)
