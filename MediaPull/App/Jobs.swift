@@ -88,6 +88,8 @@ final class Job: Identifiable {
     var finishedAt: Date?
     var task: Task<Void, Never>?
     var retry: (() -> Void)?
+    /// Where an Instagram listing had got to in this job, so Resume continues this job's own pass (R-1112).
+    var lastCursor: String?
     var resume: (() -> Void)?
 
     init(kind: JobKind, title: String) {

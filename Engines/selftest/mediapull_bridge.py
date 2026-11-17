@@ -36,7 +36,13 @@ def main():
             known = set(json.load(handle))
     emit("account", **replay["account"])
     counts = {"found": 0, "downloaded": 0, "skipped": 0, "failed": 0}
-    for item in replay["items"]:
+    # "stop_after": the pull is cut off after that many items, as when MediaPull quits part way.
+    stop_after = replay.get("stop_after")
+    for number, item in enumerate(replay["items"], 1):
+        if stop_after is not None and number > stop_after:
+            emit("error", code="network", message="Stopped part way.", fatal=True)
+            emit("done", status="failed", counts=counts)
+            return 0
         meta = item["meta"]
         keys = {item["key"]}
         if meta.get("subcategory") in POSITIONAL and meta.get("post_id") and meta.get("num"):
@@ -50,6 +56,7 @@ def main():
         shutil.copyfile(item["source"], target)
         counts["downloaded"] += 1
         emit("file", key=item["key"], path=target, bytes=os.path.getsize(target), subcategory=meta.get("subcategory"), meta=meta)
+        emit("cursor", subcategory="posts", value=f"after-{number}")
     emit("done", status="completed", counts=counts)
     return 0
 

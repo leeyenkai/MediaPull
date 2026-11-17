@@ -371,8 +371,27 @@ Instagram identifiers are always stored as strings (they exceed 2^53).
 | `UserDefaults` / `@AppStorage` | Preferences (section 20), last-used filters and presets, pane widths. |
 | Application Support `~/Library/Application Support/MediaPull/` | `Engines/` (updated engine versions and `active.json`), `EngineHome/` (empty home folder for engine processes), `Staging/` (per-job download staging, cleaned at launch). |
 | Application Support `Analysis/` and `Organise/` | `Analysis.store` (SwiftData, separate from the main store) and memory-mapped vector files (section 36; face data in its own files, excluded from backups, D-61); Organise journals for undo (R-3806). |
-| Caches `~/Library/Caches/MediaPull/` | URL cache (256 MB disk), `Partial/` downloads (cleared at launch), preview files. |
+| Caches `~/Library/Caches/MediaPull/` | `Partial/` downloads (cleared at launch), preview files. The URL cache is in memory only (B4.16 in 1.8): responses fetched with cookies never reach the disk, and an old disk cache is deleted at launch. |
 | Library roots | Media files and sidecars only. **R-601** MediaPull never writes hidden state files, databases or folders inside a library root, including analysis results, face data and journals (D-60, D-63). |
+
+### 6.3 Data lifecycle
+
+Everything MediaPull keeps, what creates it, and what removes it. A row without a removal path is a defect.
+
+| Data | Created by | Updated by | Removed by |
+|---|---|---|---|
+| Library roots (SwiftData) | Add Folder, first run | Rename in List, Layout, Locate…, Finder moves (bookmark) | Remove from Library |
+| Instagram accounts (SwiftData) | The first pull or lookup of an account | Every pull (options, newest post, result) | Pruned at launch when no archive entry or account folder refers to the account and it was last pulled over a year ago |
+| Archive entries (SwiftData: key, path) | Every save and pull (engine keys, `web:` keys, D-84) | Moves and renames inside MediaPull follow them | Pruned at launch, off the main thread, when the file is gone and its volume is mounted |
+| Account folder records (`AccountFolders/`, D-79) | A pull or update into an account folder | Every pull into it; Finder moves through its bookmark | Pruned at load when the folder is gone and its bookmark no longer resolves |
+| Operation journal (`Organise/`) | Every file change (R-3806) | Undo, Redo | Entries older than "Keep undo history for" (Settings) |
+| Analysis store, image and face vectors (`Analysis/`) | Analysis of files under library roots and Organise folders | Changed files are analysed again; moves follow | Files gone or outside every scanned root are forgotten; Delete All Analysis Data; Delete All Face Data (faces only) |
+| Duplicate and fingerprint caches | Duplicate detection, saves | Changed files are read again | Entries for files that no longer exist are dropped on every save of the cache |
+| Browsing history and bookmarks | Visiting pages, Add Bookmark | | Clear History; deleting a bookmark |
+| Website data (cookies, storage) | Pages in the browser | | Clear All Website Data |
+| Engine updates (`Engines/`) | Install Update (R-1305) | | Use Previous Version, Reset to Built-in |
+| Staging, `Partial/`, preview and edit caches | Jobs, previews, editors | | Each job's own cleanup; all of them at launch |
+| Preferences, filter presets, Instagram cooldowns (`UserDefaults`) | Settings and use | | Deleting a preset; cooldowns expire per day |
 
 ---
 

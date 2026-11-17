@@ -82,8 +82,33 @@ final class AccountFolderTests: XCTestCase {
         for index in 0 ..< 3 {
             file("only/alice/posts/\(index).jpg", account: "alice")
         }
-        XCTAssertEqual(AccountFolders.detect(only, stopAt: only)?.folder.lastPathComponent, "alice",
-                       "a library holding only the account's folder points at that folder")
+        XCTAssertNil(AccountFolders.detect(only, stopAt: only), "a library holding one account is not that account's folder")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "alice", saveFolder: only, root: only).existing?.lastPathComponent, "alice")
+    }
+
+    /// Audit round 1 (C1, C5, C6, C15): folders without media, accounts one level further down, a Plain folder named after
+    /// the account, and an account folder whose files were all sorted into one subfolder.
+    func testAccountFoldersAmongOtherFolders() throws {
+        for index in 0 ..< 3 {
+            file("lib/alice/posts/\(index).jpg", account: "alice")
+            file("lib/Friends/carol/posts/\(index).jpg", account: "carol")
+            file("lib/Friends/dave/posts/\(index).jpg", account: "dave")
+            file("lib/erin/2024/\(index).jpg", account: "erin")
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("lib/Favourites"), withIntermediateDirectories: true)
+        file("lib/frank/frank_photo.jpg")
+        let lib = root.appendingPathComponent("lib")
+        XCTAssertNil(AccountFolders.detect(lib, stopAt: lib), "an empty folder beside one account does not make the root its folder")
+        XCTAssertNil(AccountFolders.detect(lib.appendingPathComponent("Favourites"), stopAt: lib))
+        let bob = AccountFolders.resolveTarget(account: "bob", saveFolder: lib, root: lib)
+        XCTAssertNil(bob.existing)
+        XCTAssertEqual(bob.parent.path, lib.standardizedFileURL.path, "a new account goes inside the library")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "carol", saveFolder: lib, root: lib).existing?.lastPathComponent, "carol",
+                       "found two levels down, in a folder of several accounts")
+        XCTAssertEqual(AccountFolders.resolveTarget(account: "frank", saveFolder: lib, root: lib).existing?.lastPathComponent, "frank",
+                       "a folder named after the account with no metadata is reused")
+        XCTAssertEqual(AccountFolders.detect(lib.appendingPathComponent("erin/2024"), stopAt: lib)?.folder.lastPathComponent, "erin",
+                       "files sorted into one subfolder: the account folder is still the one above")
     }
 
     func testCheckFolderFindsOrphansMissingMetadataAndChangedFiles() throws {
@@ -213,6 +238,26 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(found.count, 1500)
         XCTAssertNil(found["web:gone"])
         XCTAssertNil(found["web:never"])
+    }
+
+    /// Audit round 1 (C4, C27): a folder renamed while MediaPull runs keeps its record; a deleted folder's record goes.
+    func testRecordsFollowRenamesAndForgetDeletedFolders() async throws {
+        let records = root.appendingPathComponent("records")
+        let store = AccountFolderStore(folder: records)
+        let folder = root.appendingPathComponent("alice")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let record = await store.record(account: "alice", folder: folder)
+        await store.addKeys(["ig:9"], to: record.id)
+        let renamed = root.appendingPathComponent("Alice (friend)")
+        try FileManager.default.moveItem(at: folder, to: renamed)
+        let again = await store.record(account: "alice", folder: renamed)
+        XCTAssertEqual(again.id, record.id)
+        XCTAssertEqual(again.keys, ["ig:9"], "items deleted on purpose stay known after a rename in the Finder")
+        try FileManager.default.removeItem(at: renamed)
+        let reloaded = AccountFolderStore(folder: records)
+        let left = await reloaded.all()
+        XCTAssertTrue(left.isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: records.path).isEmpty, "the record file is removed")
     }
 
     func testStoreRemembersKeysAndCursorPerFolder() async {

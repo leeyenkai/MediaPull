@@ -679,12 +679,34 @@ final class SelfTestRunner {
         let continued = pulls() - jobsBefore == 2
         let cleared = await app.accountFolders.all().first { $0.id == record.id }?.cursor == nil
         note("update: after a stop, \(pulls() - jobsBefore) jobs ran (top, then the rest); place cleared \(cleared)")
+        // A first pull into a new folder that stops part way keeps its place and what it saved (audit round 1, C3).
+        var cut = replay
+        cut["account"] = ["username": "bob", "user_id": "43", "post_count": 5, "is_private": false]
+        cut["items"] = items.map { item -> [String: Any] in
+            var copy = item
+            copy["key"] = "ig:bob\(item["key"] as? String ?? "")"
+            var meta = item["meta"] as? [String: Any] ?? [:]
+            meta["username"] = "bob"
+            copy["meta"] = meta
+            return copy
+        }
+        cut["stop_after"] = 2
+        try? JSONSerialization.data(withJSONObject: cut).write(to: home.appendingPathComponent("replay.json"))
+        var draft = app.engines.draft(username: "bob")
+        draft.content = [.posts]
+        draft.incremental = false
+        let interrupted = app.engines.startPull(draft, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { interrupted?.state.isFinished ?? true }
+        let bobRecord = await app.accountFolders.all().first { $0.account == "bob" }
+        let keptPlace = bobRecord?.cursor == "after-2" && bobRecord?.keys.count == 2
+        note("update: a first pull stopped part way kept its place \(bobRecord?.cursor ?? "none") and \(bobRecord?.keys.count ?? 0) items")
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
-            && after == before && second?.saved == 0 && missing?.saved == 1 && restored == true && continued && cleared
+            && after == before && second?.saved == 0 && missing?.saved == 1 && restored == true && continued && cleared && keptPlace
         note("update: \(passed ? "PASS" : "FAIL") (new items placed \(first?.saved ?? 0) of 2, story in stories/ \(story), "
             + "nested folder \(nested), "
             + "numbered copies \(numbered), existing files unchanged \(after == before), second Update saved \(second?.saved ?? -1), "
-            + "Find Missing restored the deleted file \(restored == true), resumed after a stop \(continued && cleared))")
+            + "Find Missing restored the deleted file \(restored == true), resumed after a stop \(continued && cleared), "
+            + "first pull kept its place \(keptPlace))")
         writeLog(to: out)
     }
 

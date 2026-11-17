@@ -50,8 +50,9 @@ extension WindowModel {
     }
 
     func undoChange(_ entry: JournalEntry) {
-        // Registered while undoing, so it lands on the redo stack.
-        if let manager = hostWindow?.undoManager {
+        // Only an undo the undo manager is running may register the redo: it then lands on the redo stack. From the
+        // History it would land on the undo stack, and ⌘Z would do the change again.
+        if let manager = hostWindow?.undoManager, manager.isUndoing {
             manager.registerUndo(withTarget: self) { window in
                 MainActor.assumeIsolated { window.redoChange(entry) }
             }

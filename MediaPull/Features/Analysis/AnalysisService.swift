@@ -207,10 +207,13 @@ final class AnalysisService {
                     if Task.isCancelled {
                         return false
                     }
+                    // Read for every file, so turning recognition off stops it at once, in the middle of a scan (R-3901).
+                    let enabled = await self.preferences.facesEnabled
+                    let facesNow = wantFaces ? enabled : false
                     // Utility, not background: background priority was throttled about tenfold in the benchmark.
                     group.addTask(priority: .utility) {
                         let result = await Self.process(item, analyzer: analyzer, store: store, images: images, faces: faces,
-                                                        wantFaces: wantFaces)
+                                                        wantFaces: facesNow)
                         return (item.url.path, result.faces, result.noPicture)
                     }
                     return true
@@ -673,6 +676,7 @@ final class AnalysisService {
         await faceVectors?.deleteAll()
         // Every face vector file, including those of an earlier face model or ones no store has loaded (D-61).
         await Self.removeVectorFiles(prefix: "faces-", in: vectorFolder)
+        await Self.removeSetAsideStores(in: Self.folder)
         deletions -= 1
         // Files are checked for people again only after a new opt-in.
         people = []
@@ -689,6 +693,7 @@ final class AnalysisService {
         await faceVectors?.deleteAll()
         await Self.removeVectorFiles(prefix: "faces-", in: vectorFolder)
         await Self.removeVectorFiles(prefix: "image-", in: vectorFolder)
+        await Self.removeSetAsideStores(in: Self.folder)
         deletions -= 1
         people = []
         suggestions = [:]
@@ -777,6 +782,19 @@ final class AnalysisService {
         let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
         for name in names where name.hasPrefix(prefix) && (name.hasSuffix(".vec") || name.hasSuffix(".ids")) {
             // lint:allow silent-write a file that is already gone needs no report; one that stays is caught by the test
+            try? fm.removeItem(at: folder.appendingPathComponent(name))
+        }
+    }
+
+    /// Database copies set aside after a failure to open (openStore) hold faces, people and names too: deleting the data
+    /// deletes them (D-61).
+    @concurrent
+    nonisolated static func removeSetAsideStores(in folder: URL) async {
+        let fm = FileManager.default
+        // lint:allow main-io runs off the main actor (@concurrent)
+        let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix("Analysis.store") && name.contains(".damaged-") {
+            // lint:allow silent-write a file that is already gone needs no report
             try? fm.removeItem(at: folder.appendingPathComponent(name))
         }
     }

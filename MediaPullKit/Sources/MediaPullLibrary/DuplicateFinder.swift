@@ -111,7 +111,8 @@ public actor DuplicateFinder {
             let entry = current(file)
             let needSha = shaSet.contains(file.path) && entry?.sha256 == nil
             let needPrint = printSet.contains(file.path) && entry?.fingerprinted != true
-            if needSha || needPrint { work.append((file, needSha, needPrint)) }
+            // A file kept only in iCloud would be downloaded by reading it; it is left out until it is on this Mac.
+            if needSha || needPrint, !FileFlags.isDataless(file.url) { work.append((file, needSha, needPrint)) }
         }
 
         var done = 0

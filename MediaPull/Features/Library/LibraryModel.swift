@@ -526,21 +526,14 @@ final class LibraryModel: MediaGridOwner {
     /// The folder being renamed in place in the tree (no pop-up, D-69).
     var renaming: String?
 
+    /// Through the journal, so ⌘Z takes it back (SPEC 21, R-3806), then renamed in place.
     func newFolder(in parent: URL) {
-        var name = "New Folder"
-        var counter = 2
-        while FileManager.default.fileExists(atPath: parent.appendingPathComponent(name).path) {
-            name = "New Folder \(counter)"
-            counter += 1
-        }
-        let url = parent.appendingPathComponent(name, isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-            invalidateTree()
-            selectedFolder = url
-            renaming = url.path
-        } catch {
-            message = error.localizedDescription
+        let plan = FolderOperations.newFolder(named: "New Folder", in: parent)
+        guard let url = plan.foldersToCreate.first else { return }
+        perform(plan) { [weak self] entry in
+            guard let self, entry.failures.isEmpty else { return }
+            self.selectedFolder = url
+            self.renaming = url.path
         }
     }
 
@@ -676,15 +669,21 @@ final class LibraryModel: MediaGridOwner {
         source.standardizedFileURL.path.lowercased() == target.standardizedFileURL.path.lowercased() ? target : uniqueURL(target)
     }
 
+    /// A free name for `url`: neither the file nor a metadata file of that name may exist, so a later sidecar write never
+    /// replaces an orphaned one.
     nonisolated static func uniqueURL(_ url: URL) -> URL {
-        guard FileManager.default.fileExists(atPath: url.path) else { return url }
+        func free(_ candidate: URL) -> Bool {
+            let fm = FileManager.default
+            return !fm.fileExists(atPath: candidate.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path)
+        }
+        guard !free(url) else { return url }
         let stem = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
         var counter = 2
         while true {
             let candidate = url.deletingLastPathComponent()
                 .appendingPathComponent(ext.isEmpty ? "\(stem) \(counter)" : "\(stem) \(counter).\(ext)")
-            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            if free(candidate) { return candidate }
             counter += 1
         }
     }

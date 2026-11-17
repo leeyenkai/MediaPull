@@ -15,44 +15,75 @@ public enum AccountFolders {
         }
     }
 
-    /// The account folder `folder` is, or is inside: the highest folder (up to `root`) whose metadata files name one
-    /// Instagram account for at least four in five of a sample. Nil for a folder of several accounts or none.
+    /// The folders a pull sorts an account into (D-54).
+    static let typeFolders: Set<String> = ["posts", "reels", "stories", "highlights", "profile pictures", "tagged", "reposts"]
+
+    /// The account folder `folder` is, or is inside (D-78). Climbing from `folder` while everything sampled below still
+    /// belongs to one account, the account folder is the nearest folder named after the account or holding its type
+    /// folders, or else the highest one holding the account's own files. A folder with no media (an empty one, a web-saves one) never makes
+    /// its
+    /// parent an account folder. Without a library root the climb stops at the home folder and after a few levels.
     public static func detect(_ folder: URL, stopAt root: URL?) -> Match? {
         var current = folder.standardizedFileURL
         let top = root?.standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        var account: String?
         var found: Match?
-        while true {
-            if let account = dominantAccount(in: current) {
-                if let found, found.account != account { break }
-                found = Match(account: account, folder: current)
-            } else if found != nil {
-                break // above the account's folder: a folder of several accounts
+        var levels = 0
+        while let here = dominantAccount(in: current), account == nil || here == account {
+            account = here
+            // A folder named after the account that holds only its media is its folder, whatever is inside.
+            if current.lastPathComponent.lowercased() == here {
+                found = Match(account: here, folder: current)
+                break
             }
-            guard current.path != top, current.path != "/" else { break }
+            if let kind = accountFolderKind(current, account: here) {
+                found = Match(account: here, folder: current)
+                if kind == .typeFolders { break }
+            }
+            levels += 1
             let parent = current.deletingLastPathComponent()
+            if current.path == top || current.path == "/" || parent.path == home || current.path == home { break }
             if let top, !(parent.path == top || parent.path.hasPrefix(top + "/")) { break }
+            if top == nil, levels >= 4 { break }
             current = parent
         }
-        return found.map(narrowed)
+        return found
     }
 
-    /// A folder whose only content is one subfolder of the same account (a library holding one account) is not the
-    /// account's folder: that subfolder is.
-    static func narrowed(_ match: Match) -> Match {
-        var folder = match.folder
-        while true {
-            let entries = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey],
-                                                                         options: [.skipsHiddenFiles])) ?? []
-            let subfolders = entries.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-            let ownMedia = entries.contains {
-                MediaFormat.fromExtension($0.pathExtension) != nil && $0.pathExtension.lowercased() != "json"
-            }
-            let typeFolder = subfolders.contains { ["posts", "reels", "stories", "highlights", "profile pictures", "tagged", "reposts"]
-                .contains($0.lastPathComponent.lowercased()) }
-            guard !ownMedia, !typeFolder, subfolders.count == 1, dominantAccount(in: subfolders[0]) == match.account else { break }
-            folder = subfolders[0].standardizedFileURL
+    enum FolderKind { case typeFolders, ownFiles }
+
+    /// Whether `folder` itself is `account`'s folder: it holds the account's type folders, or the account's own files.
+    static func accountFolderKind(_ folder: URL, account: String) -> FolderKind? {
+        let fm = FileManager.default
+        let entries = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]))
+            ?? []
+        for entry in entries where typeFolders.contains(entry.lastPathComponent.lowercased()) {
+            if dominantAccount(in: entry) == account { return .typeFolders }
         }
-        return Match(account: match.account, folder: folder)
+        let own = entries.filter { $0.pathExtension.lowercased() != "json" && MediaFormat.fromExtension($0.pathExtension) != nil }
+        if !own.isEmpty, sampledAccount(own.sorted { $0.lastPathComponent < $1.lastPathComponent }.prefix(12)) == account {
+            return .ownFiles
+        }
+        return nil
+    }
+
+    /// The account four in five of these media files belong to, by their metadata files.
+    static func sampledAccount(_ files: some Collection<URL>) -> String? {
+        var counts: [String: Int] = [:]
+        for file in files {
+            if let user = instagramUser(of: file) { counts[user, default: 0] += 1 }
+        }
+        guard let best = counts.max(by: { $0.value < $1.value }), best.value * 5 >= files.count * 4 else { return nil }
+        return best.key
+    }
+
+    static func instagramUser(of file: URL) -> String? {
+        guard let data = try? Data(contentsOf: Sidecar.sidecarURL(for: file)), data.count < 1 << 20,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], (json["category"] as? String) == "instagram",
+              let user = (json["username"] as? String)?.lowercased(), !user.isEmpty
+        else { return nil }
+        return user
     }
 
     /// The account four in five of a sample of `folder`'s media files belong to, by their metadata files. Every sampled
@@ -105,8 +136,9 @@ public enum AccountFolders {
         public init() {}
     }
 
-    /// Reads names only, except for files whose name does not say which item they are (renamed ones, profile pictures),
-    /// whose metadata file is read. Includes every subfolder: Organise sorts, group photos and moved files all count.
+    /// Reads every file's metadata file when it has one (names alone are trusted only without one: a custom naming template
+    /// can put another id where the default puts the media's). Includes every subfolder: Organise sorts, group photos and
+    /// moved files all count.
     public static func index(_ folder: URL) -> Index {
         var index = Index()
         let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
@@ -116,12 +148,16 @@ public enum AccountFolders {
             let ext = url.pathExtension.lowercased()
             guard ext != "json", MediaFormat.fromExtension(ext) != nil else { continue }
             index.files += 1
-            var metadata: [String: Any]?
-            if !InstagramIdentity.nameSuffices(name) {
-                let sidecar = Sidecar.sidecarURL(for: url)
-                metadata = (try? Data(contentsOf: sidecar)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let sidecar = Sidecar.sidecarURL(for: url)
+            let metadata = (try? Data(contentsOf: sidecar)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            // The metadata says which item a file is; the name is read only when the metadata does not name the media
+            // itself (files saved before 1.8, or no metadata at all).
+            if let metadata, (metadata["category"] as? String) == "instagram" {
+                index.identities.formUnion(InstagramIdentity.identities(fileName: "", metadata: metadata))
+                if metadata["media_id"] == nil { index.identities.formUnion(InstagramIdentity.identities(fileName: name)) }
+            } else {
+                index.identities.formUnion(InstagramIdentity.identities(fileName: name))
             }
-            index.identities.formUnion(InstagramIdentity.identities(fileName: name, metadata: metadata))
         }
         return index
     }
@@ -138,22 +174,44 @@ public enum AccountFolders {
         return nil
     }
 
-    /// Where a pull of `account` into `saveFolder` goes: the save folder itself when it is (or is inside) that account's
-    /// folder, a folder of the account inside the save folder whatever it is called, or nil for a new folder. An account
-    /// folder is never made inside another account's folder: then the new one goes beside it.
+    /// Where a pull of `account` into `saveFolder` goes (D-78): the account's folder when the save folder is it, is inside
+    /// it, or contains it (searched three levels down, never inside another account's folder), else a folder named after
+    /// the account that is already there, else nil for a new folder. An account folder is never made inside another
+    /// account's folder: then the new one goes beside it.
     public static func resolveTarget(account: String, saveFolder: URL, root: URL?) -> (existing: URL?, parent: URL) {
         let account = account.lowercased()
         if let match = detect(saveFolder, stopAt: root) {
             if match.account == account { return (match.folder, match.folder.deletingLastPathComponent()) }
             return (nil, match.folder.deletingLastPathComponent())
         }
-        let children = (try? FileManager.default.contentsOfDirectory(at: saveFolder, includingPropertiesForKeys: [.isDirectoryKey],
-                                                                     options: [.skipsHiddenFiles])) ?? []
-        let named = children.first { $0.lastPathComponent.lowercased() == account }
-        for child in ([named].compactMap(\.self) + children.filter { $0 != named })
-            where (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        {
-            if dominantAccount(in: child) == account { return (child, saveFolder) }
+        let fm = FileManager.default
+        func subfolders(_ folder: URL) -> [URL] {
+            ((try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                // The account's name first at each level, then the rest in order.
+                .sorted { ($0.lastPathComponent.lowercased() == account ? 0 : 1, $0.lastPathComponent) <
+                    ($1.lastPathComponent.lowercased() == account ? 0 : 1, $1.lastPathComponent) }
+        }
+        var level = subfolders(saveFolder)
+        var visited = 0
+        for _ in 0 ..< 3 where !level.isEmpty {
+            var next: [URL] = []
+            for folder in level where visited < 300 {
+                visited += 1
+                guard let owner = dominantAccount(in: folder) else {
+                    next += subfolders(folder) // several accounts, or none: look inside
+                    continue
+                }
+                guard owner == account else { continue } // another account's folder is never entered
+                if let match = detect(folder, stopAt: saveFolder), match.account == account { return (match.folder, saveFolder) }
+            }
+            level = next
+        }
+        // A folder named after the account that holds nothing recognisable (Plain layout, older saves) is still its folder.
+        let named = saveFolder.appendingPathComponent(FileNaming.safeTopFolder(account), isDirectory: true)
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: named.path, isDirectory: &isDirectory), isDirectory.boolValue, dominantAccount(in: named) == nil {
+            return (named, saveFolder)
         }
         return (nil, saveFolder)
     }
@@ -199,26 +257,64 @@ public actor AccountFolderStore {
         loaded = true
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
         for file in files where file.pathExtension == "json" {
-            guard var record = (try? Data(contentsOf: file)).flatMap({ try? JSONDecoder().decode(AccountFolderRecord.self, from: $0) })
+            guard let record = (try? Data(contentsOf: file)).flatMap({ try? JSONDecoder().decode(AccountFolderRecord.self, from: $0) })
             else { continue }
-            // A folder moved or renamed in the Finder is found again through its bookmark.
-            var stale = false
-            if let bookmark = record.bookmark,
-               let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], relativeTo: nil,
-                                  bookmarkDataIsStale: &stale), url.standardizedFileURL.path != record.path
-            {
-                record.path = url.standardizedFileURL.path
-                record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                save(record)
-            }
             records[record.id] = record
         }
+        followMoves()
+        // A folder deleted for good forgets its record; one on a disk that is not connected keeps it (lifecycle, SPEC 6.3).
+        for record in records.values where !FileManager.default.fileExists(atPath: record.path) && Self.volumeMounted(record.path) {
+            forget(record.id)
+        }
+        // Two records of one folder (a move found twice) become one, with the items of both.
+        let grouped = Dictionary(grouping: records.values) { "\($0.account)\u{0}\($0.path)" }
+        for (_, same) in grouped where same.count > 1 {
+            let sorted = same.sorted { ($0.lastUpdate ?? .distantPast) > ($1.lastUpdate ?? .distantPast) }
+            var kept = sorted[0]
+            for other in sorted.dropFirst() {
+                kept.keys.formUnion(other.keys)
+                kept.cursor = kept.cursor ?? other.cursor
+                forget(other.id)
+            }
+            records[kept.id] = kept
+            save(kept)
+        }
+    }
+
+    /// Folders renamed or moved in the Finder are found again through their bookmarks, while MediaPull runs too. A folder
+    /// moved to the Trash counts as gone.
+    private func followMoves() {
+        for (id, var record) in records where !FileManager.default.fileExists(atPath: record.path) {
+            var stale = false
+            guard let bookmark = record.bookmark,
+                  let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], relativeTo: nil,
+                                     bookmarkDataIsStale: &stale),
+                  FileManager.default.fileExists(atPath: url.path), !url.pathComponents.contains(".Trash")
+            else { continue }
+            record.path = url.standardizedFileURL.path
+            record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            records[id] = record
+            save(record)
+        }
+    }
+
+    private func forget(_ id: UUID) {
+        records[id] = nil
+        // lint:allow silent-write a record that cannot be removed is only found again and pruned next time
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(id.uuidString).json"))
+    }
+
+    static func volumeMounted(_ path: String) -> Bool {
+        let parts = URL(fileURLWithPath: path).pathComponents
+        guard parts.count > 2, parts[1] == "Volumes" else { return true }
+        return FileManager.default.fileExists(atPath: "/Volumes/" + parts[2])
     }
 
     /// The record of an account's folder, made when there is none yet.
     public func record(account: String, folder url: URL) -> AccountFolderRecord {
         load()
         let path = url.standardizedFileURL.path
+        if !records.values.contains(where: { $0.path == path }) { followMoves() }
         if let existing = records.values.first(where: { $0.path == path && $0.account == account.lowercased() }) { return existing }
         let record = AccountFolderRecord(account: account, folder: url)
         records[record.id] = record
@@ -229,6 +325,7 @@ public actor AccountFolderStore {
     /// Every remembered account folder that still exists.
     public func all() -> [AccountFolderRecord] {
         load()
+        followMoves()
         return records.values.filter { FileManager.default.fileExists(atPath: $0.path) }.sorted { $0.path < $1.path }
     }
 

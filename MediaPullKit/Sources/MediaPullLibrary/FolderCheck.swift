@@ -56,6 +56,10 @@ public enum FolderCheck {
         let total = media.count
         for (done, file) in media.enumerated() {
             if done % 20 == 0 { progress(done, total) }
+            if FileFlags.isDataless(file) {
+                report.notDownloaded.append(file)
+                continue
+            }
             report.checked += 1
             let sidecar = Sidecar.sidecarURL(for: file)
             guard let data = try? Data(contentsOf: sidecar) else {

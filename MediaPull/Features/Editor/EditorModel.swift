@@ -283,6 +283,17 @@ final class EditorModel: UnsavedEditing {
         do {
             if !hasImageEdits {
                 guard hasNameChange || asCopy else { return url }
+                if !asCopy {
+                    // A new name only: one journaled rename, so ⌘Z takes it back and the metadata file moves with it (R-3806).
+                    let plan = FolderOperations.rename(url, to: FileNaming.fileName(stem: cleanName, ext: fileExtension))
+                    let entry = await AppModel.shared.applyChange(plan)
+                    window?.registerUndo(entry)
+                    if let failure = entry.failures.first {
+                        message = failure
+                        return nil
+                    }
+                    return plan.moves.first?.destination ?? url
+                }
                 let wanted = folder.appendingPathComponent(FileNaming.fileName(
                     stem: asCopy ? "\(cleanName) copy" : cleanName,
                     ext: fileExtension
