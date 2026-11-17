@@ -13,7 +13,7 @@ change as the code.
 | Requirement | Status | Implemented by | Proved by | Note |
 |---|---|---|---|---|
 | R-201 | person | `InstagramNotice.terms`, `WalkthroughView`, `InstagramForm` | `--selftest-browser` | Instagram terms and account risk on first run and in the sign-in banner (1.8); copy needs a person to read |
-| R-202 | partial | `PacingPreset`, `EngineService.enqueueInstagram`, `EngineService.resumeAfterCheckpoint`, `configure_gallery_dl` | none | Gentle default, one Instagram job at a time and no retries are in code; no test |
+| R-202 | built | `configure_gallery_dl`, `EngineService.enqueueInstagram`, `Preferences.pacing` | `test_instagram_is_gentle_by_default_and_never_retried` | Gentle by default, no retries after a limit; one Instagram job at a time (queue) |
 | R-301 | built | `MediaPull.xcodeproj/project.pbxproj`, `MediaPullKit/Package.swift` | `scripts/check.sh` | macOS 26 deployment target, ARCHS arm64; check.sh builds for arm64 |
 | R-302 | built | `MediaPull.xcodeproj/project.pbxproj`, `MediaPullKit/Package.swift` | `scripts/check.sh` | Swift 6, approachable concurrency, MainActor default in the app; @concurrent used in the package |
 | R-303 | built | `MediaPull/Platform/PaneSplit.swift`, `MediaPull/Platform/MediaGridView.swift` | `scripts/check.sh` | check.sh lint allows import AppKit only under MediaPull/ |
@@ -24,16 +24,16 @@ change as the code.
 | R-308 | amended | `Config/Info.plist`, `RequestPolicy.evaluate` | `testOnlyReadsAreAllowed` | D-77: arbitrary loads allowed for http media from any host; the gate still allows only GET and HEAD |
 | R-401 | built | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans |
 | R-402 | built | `scripts/lint_invariants.py`, `LibraryModel.offMain`, `MediaListing.load` | `scripts/lint_invariants.py` | The main-io lint fails on file moves, copies, listings and reads in the app target unless justified (1.8) |
-| R-403 | partial | `BridgeClient.run`, `stop_children` | none | Bridge and ffmpeg run per job and are stopped with it; no test checks no process remains |
+| R-403 | person | `BridgeClient.run`, `FFmpeg.run`, `CookieFile.cleanUpAll` | `testFinalEventsAreNeverLost` | Helpers run per job and stop with it; Activity Monitor check needs a person |
 | R-501 | built | `GatedRequest`, `NetworkGate`, `RedirectGuard`, `RedirectPolicy.nextHeaders` | `testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer`, `testCookiesStayBehindAndEveryHopIsLogged`, `testACutShortDownloadIsNotKept` | Per-hop Referer and same-origin cookies since 1.8; per-host limits follow redirects |
 | R-502 | built | `RequestPolicy.urlRequest`, `RedirectGuard` | `testEngineUpdatesNeedHTTPS`, `testOnlyReadsAreAllowed` | Plain http is for media only (D-21); engine updates and their redirects are https only (1.8) |
 | R-503 | built | `NetworkGate.entries`, `NetworkGate.logCapacity`, `AdvancedSettings` | `testCookiesStayBehindAndEveryHopIsLogged` | 2,000-entry in-memory log shown as Network activity; never written to disk |
 | R-504 | amended | `WindowModel.previewFile`, `PlayerView` | `--selftest-video` | D-77: media is downloaded through the gate to a cache file before AVFoundation opens it |
 | R-505 | built | `Engines/bridge/egress_guard.py`, `READ_POSTS`, `install_guard` | `test_write_operations_are_blocked`, `test_audited_site_reads_are_allowed`, `test_uploads_and_other_methods_are_blocked` | Read-only POST list per D-72 (amends D-40), already in the spec text |
 | R-506 | built | `configure_gallery_dl`, `stream_options` | `test_engine_cache_stays_in_memory` | Config cleared per job, caches in memory, no cookies-from-browser, only the job's site cookies |
-| R-507 | partial | `scripts/build-ffmpeg.sh` | none | Built with --disable-network and only file and pipe protocols; no test |
+| R-507 | built | `scripts/build-ffmpeg.sh`, `FFmpeg.run` | `testFFmpegHasNoNetworkProtocols` | ffmpeg reaches only file and pipe (1.8 test) |
 | R-508 | built | `ReadOnlyWebView`, `BrowserController.install`, `WebViewSetup.uploadBlockingRules`, `MediaPullKit/Sources/MediaPullBrowser/Resources/guard.js` | `--selftest-browser` | Rules compile first at launch; pages wait for them; a failure is reported (1.8) |
-| R-509 | partial | `WebViewSetup.uploadBlockingRules` | none | Rules block only upload hosts, not analytics; no test |
+| R-509 | built | `WebViewSetup.uploadBlockingRules` | `testUploadBlockingRulesCompile` | The rules compile; they block upload hosts only, as D-17 keeps analytics |
 | R-510 | built | `scripts/lint_invariants.py` | `scripts/lint_invariants.py` | Lint: only Apple frameworks and MediaPull modules, no package dependencies (1.8) |
 | R-511 | person | `AppModel.exportDiagnostics`, `AppModel.diagnosticsReport`, `AdvancedSettings` | `--selftest-url` | Logs in the unified log (app.mediapull); Export Diagnostics writes a readable text file (1.8) |
 | R-512 | built | `CookieFile.write`, `CookieFile.cleanUpAll`, `EngineCookies` | `testCookieFileRoundTrip` | 0600 file in a 0700 folder, deleted at job end and cleaned at launch |
@@ -78,9 +78,9 @@ change as the code.
 | R-918 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `VideoFormatInfo.drm` | `--selftest-url` | D-77: Protected from EME use in the page or DRM reported by yt-dlp |
 | R-919 | amended | `MediaPullKit/Sources/MediaPullBrowser/Resources/extract.js`, `BrowserController.readBlob` | `--selftest-url` | D-77: blob videos listed as unavailable with a pointer to Save Video |
 | R-1001 | person | `MediaGrid`, `WindowModel.gridInfo` | `--selftest-url` | Insecure (http) badge added in 1.8; badges need a person to look at |
-| R-1001a | partial | `ZoomSlider`, `WindowModel.gridMagnify`, `WindowModel.zoomRange`, `AppCommands` | `--selftest-zoom` | Audit: shortcuts unverified; Opt-Cmd-plus bound to plus only and disabled outside Icons view |
+| R-1001a | person | `MediaPullApp`, `WindowModel.cellSize` | `--selftest-zoom` | Thumbnail zoom keys work in Icon view, as R-1711 says; keys need a person |
 | R-1002 | amended | `ThumbnailLoader` | `--selftest-url` | D-77: decoded at most 768 px on the longer side |
-| R-1003 | partial | `MediaCollectionView`, `GridKeyRouter`, `WindowModel.selectAll`, `WindowModel.deselectAll` | none | Audit: Select All Media is Opt-Cmd-A, not Cmd-A; other selection keys need a person |
+| R-1003 | person | `MediaCollectionView`, `WindowModel.gridSelectionChanged` | `--selftest-url` | Edit > Select All (Command-A) reaches the focused grid; Select All Media is Option-Command-A; keys need a person |
 | R-1004 | person | `WindowModel.gridMenu` | `--selftest-url` | Copy Image and Copy Original URL added (1.8); menus need a person |
 | R-1005 | amended | `ExtractedPane` | `--selftest-browser` | D-77: header buttons named as in the Downloads pane |
 | R-1006 | amended | `FilterBar`, `MediaFilter` | `testFilterHidesTinyAndMatchesSize` | D-77: the filter bar offers the listed subset; the slider covers resolution presets |
@@ -115,11 +115,11 @@ change as the code.
 | R-1204 | amended | `ArchivePlanner.sidecar` | `--selftest-site` | D-28: uploader recorded as author, username only for user pages, files under the site folder |
 | R-1301 | built | `BridgeClient.run`, `EnginePaths.pythonPaths`, `configure_paths` | `testFinalEventsAreNeverLost`, `testSelfTestPassesAndGuardBlocksWrites` | Isolated interpreter, clean environment, staging working folder, request on standard input |
 | R-1302 | built | `BridgeClient.run`, `BridgeEvent.decode`, `Emitter` | `testFinalEventsAreNeverLost`, `test_events_are_valid_json_even_with_nan_or_huge_numbers` | JSON Lines events; standard error logged privately |
-| R-1303 | partial | `BridgeClient.run`, `EngineService.startPull` | `test_signal_path_writes_a_parsable_line_without_the_lock` | Escalation and staging cleanup built; no test of SIGINT, SIGTERM, SIGKILL timing |
-| R-1304 | partial | `EnginePaths.pythonPaths`, `EngineManager.install` | none | Updates go to Application Support and the bundle is untouched; no test |
+| R-1303 | person | `BridgeClient.run`, `FFmpeg.run` | `testFinalEventsAreNeverLost` | Cancel escalates SIGINT, SIGTERM, SIGKILL and removes staging; timing needs a person (a 10-second test) |
+| R-1304 | built | `EngineManager.install`, `EnginePaths.updates` | `testEngineUpdatesStayOutOfTheBundleAndCanBeUndone` | Updates under Application Support; the bundle is never written |
 | R-1305 | built | `EngineManager.install`, `EnginePaths.pythonPaths` | `testCandidateEnginePathsComeFirstWithoutTouchingActiveFile`, `testVersionComparisonAndDependencies` | The candidate is self-tested from its folder; active.json is written only after it passes (1.8) |
 | R-1306 | person | `ActivityView`, `EngineSettings`, `AppModel.checkForEngineUpdates` | `testUpdateCheckReadsPyPI` | Updates announced in Activity and listed in Settings; installing stays a choice (1.8) |
-| R-1307 | partial | `EngineManager.usePreviousVersions`, `EngineManager.resetToBuiltIn` | none | Previous version kept, two per engine, reset built; no test |
+| R-1307 | built | `EngineManager.usePreviousVersions`, `EngineManager.resetToBuiltIn` | `testEngineUpdatesStayOutOfTheBundleAndCanBeUndone` | Use Previous Version and Reset to Built-In tested (1.8) |
 | R-1308 | built | `EngineManager.updatable`, `EngineManager.unmetDependency` | `testVersionComparisonAndDependencies` | Only gallery-dl and yt-dlp update; dependency needs block the update |
 | R-1401 | built | `SavePipeline.saveOne`, `SavePipeline.finalize`, `NetworkGate.download` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites`, `testACutShortDownloadIsNotKept` | Step 3 Content-Length check added in 1.8; identical concurrent saves re-checked after reserving |
 | R-1402 | built | `SavePipeline.place` | `testParallelPlacementNeverOverwrites`, `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Exclusive rename, never overwrites media or a left-behind metadata file |
@@ -130,19 +130,19 @@ change as the code.
 | R-1503 | built | `ArchivePlanner.fileName`, `MediaConverter.convertVideo` | `testAudioOnlyMP4IsAudio`, `testArchiveNamesNeverMatchForbiddenPattern` | Audio-only MP4 is treated as audio, which Archive folders do not take (1.8) |
 | R-1504 | built | `ArchivePlanner.fileName`, `FileNaming.isForbiddenArchiveName` | `testArchiveNamesNeverMatchForbiddenPattern`, `testCleanedNamesAreCheckedAndNeverHidden` | Checked on the cleaned name since 1.8 |
 | R-1505 | built | `FileNaming.safeTopFolder`, `ArchivePlanner.folder` | `testReservedFoldersAndLengths`, `testReservedNamesGetAnUnderscore` | Reserved first-level names get a leading underscore |
-| R-1506 | partial | `AppModel.locationWarning`, `LibraryPane` | none | iCloud and network warning shown under the folder; no test |
+| R-1506 | person | `AppModel.locationWarning`, `LibraryPane` | `--selftest-analyse` | The iCloud and network warning needs a folder in iCloud to see |
 | R-1507 | built | `Sidecar`, `ArchivePlanner.sidecar` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites`, `testInstagramSidecarMatchesContract` | Closed struct; no location, engagement or identity keys (D-12) |
-| R-1508 | partial | `DateFormats.utc`, `DateFormats.sidecarString` | `testDatesIgnoreUserCalendar` | Formatter fixed, but the test never switches to a non-Gregorian calendar or 12-hour locale |
+| R-1508 | built | `DateFormats.utc`, `DateFormats.sidecarString` | `testMetadataDatesUseAFixedCalendar`, `testDatesIgnoreUserCalendar` | POSIX locale, Gregorian calendar and UTC set explicitly, tested (1.8) |
 | R-1509 | built | `ArchivePlanner.sidecar` | `testNumAndCountComeTogether` | Web sidecars carry no num or count (D-10) |
 | R-1510 | built | `FileNaming.sanitize` | `testCleanedNamesAreCheckedAndNeverHidden`, `testReservedFoldersAndLengths` | Joiners kept (D-74); trimming repeats until stable so no hidden names (1.8) |
 | R-1601 | built | `ImageConversion.analyze`, `ImageConversion.stillTarget`, `Sniffer.sniff` | `testLosslessWebPBehindALargeProfileIsFound`, `testAnimatedPNGAndWebPWithAlpha` | Lossless WebP is found behind a large colour profile (1.8) |
-| R-1602 | partial | `ImageConversion.convertStill` | `testPDFProfileIsAddedWithoutReencoding` | Properties carried by ImageIO; the Display P3 test covers PDF extraction, not conversion |
+| R-1602 | built | `ImageConversion.convertStill` | `testDisplayP3SurvivesConversion`, `testPDFProfileIsAddedWithoutReencoding` | Display P3 kept through conversion (1.8 test) |
 | R-1603 | built | `ImageConversion.plays`, `ImageConversion.forEachFrame`, `FFmpeg.gif`, `MediaConverter.convertAnimated` | `testPlayCountsSurviveConversion` | Play counts kept (ImageIO and ffmpeg), AVIF delays read, frames streamed with a 3,000-frame cap (1.8) |
-| R-1604 | partial | `MediaConverter.convertImage`, `ConversionPolicy` | none | Keep original WebP, AVIF, HEIC applies only to Plain; no test |
+| R-1604 | built | `MediaConverter.convert`, `ConversionPolicy` | `testModernFormatsAreKeptOnlyInPlainFolders` | Keep original applies to Plain only (1.8 test) |
 | R-1605 | amended | `ConverterView`, `MediaConverter` | `testAnimatedPNGAndWebPWithAlpha` | D-77: no per-run options; follows section 16.1 and the Formats settings |
-| R-1606 | partial | `LibraryModel.gridMenu`, `AppModel.convertFiles` | none | Convert to JPEG or PNG in the Library menu; no test |
+| R-1606 | person | `LibraryModel.gridMenu`, `AppModel.convertFiles` | `testModernFormatsAreKeptOnlyInPlainFolders` | The menu item is named by what it produces (1.8); menus need a person |
 | R-1607 | built | `MediaConverter.convertVideo`, `FFmpeg.remuxToMP4`, `FFmpeg.transcodeToHEVC`, `higher_resolution` | `testHEVCTaggedHev1IsRetaggedWithoutReencoding`, `test_a_taller_video_in_another_codec_is_noted` | hvc1 always, Highest compatible never re-encodes, higher_res_available written, AV1 decoded by VideoToolbox (1.8) |
-| R-1608 | partial | `FFmpeg.remuxToMP4`, `VideoStreamInfo.audioNeedsConversion` | none | Opus and Vorbis to AAC 256 kbit/s with aac_at, MOV kept; no test |
+| R-1608 | built | `MediaConverter.convertVideo`, `FFmpeg.remuxToMP4` | `testNonAACSoundBecomesAAC` | Non-AAC sound becomes AAC, the picture is copied (1.8 test) |
 | R-1701 | built | `LibraryPane`, `LibraryModel` | `--selftest-views`, `--selftest-url` | Folder tree over contents, sidecars hidden with a badge, columns replace both (D-76) |
 | R-1702 | person | `AppModel.followRootLocations`, `AppModel.renameRoot`, `AppModel.locateRoot`, `LibraryRootInfo.resolvedURL` | `--selftest-analyse` | Roots follow Finder moves, show Not Found with Locate, and rename in the list (1.8); needs a person to move a folder |
 | R-1703 | built | `LibraryModel.commitRename`, `LibraryModel.trash`, `LibraryModel.perform`, `OperationJournal.run` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testRedoDoesTheChangeAgainAndCanBeUndone` | Library rename, move and Trash go through the journal with sidecars and are undoable (1.8) |
@@ -169,7 +169,7 @@ change as the code.
 | R-3103 | built | `ArchivePlanner.sidecar`, `ArchivePlanner.folder` | `--selftest-pdf-links` | PDF folder for local files, subcategory pdf, page_url never a local path |
 | R-3201 | built | `EditorModel`, `CropAspect`, `CropCanvas` | `--selftest-edit`, `testRotateFlipAndCrop` | Crop box dragging itself is checked by a person |
 | R-3202 | built | `EditorModel.saveFile`, `ImageEditing.writeReoriented`, `ImageEditing.Reorientation` | `testRotationAndFlipComposeAndStayLossless`, `--selftest-edit` | D-34 amended: rotate or flip of a JPEG is lossless; sidecar follows |
-| R-3203 | partial | `EditorModel.saveItem`, `EditorModel.keepNameOnly` | | no test: saving an edited extracted item and Keep Name Only are not exercised |
+| R-3203 | person | `EditorModel.saveItem` | `--selftest-edit` | Saving an edited extracted item and Keep Name Only need a person |
 | R-3301 | built | `DuplicateCommands`, `LibraryModel` | `--selftest-duplicates` | Frames, badges, bar with colour key, Only Duplicates, context menu and Preview list |
 | R-3302 | built | `DuplicateFinder`, `PerceptualHash` | `testFingerprintsMatchResizedCopiesButNotOtherPictures`, `testGroupsIdenticalAndSimilarFilesAcrossFolders` | Size-gated SHA-256, pHash, dHash, colour grid, 8 bands |
 | R-3303 | built | `DuplicateSensitivity`, `DuplicateCommands` | `testColourVersionsOfOnePhotoAreNotDuplicates` | Three sensitivities with the stated thresholds; highlight on by default |
@@ -202,7 +202,7 @@ change as the code.
 | R-3804 | built | `FolderOperations.sort`, `FolderOperations.samePlace`, `OperationJournal.run` | `testCaseOnlyFolderDifferenceRenamesTheFolderOnce`, `testFlattenNumbersCollisionsAndKeepsDatePrefix` | Case-only folder differences rename the folder once (1.8) |
 | R-3805 | built | `OrganiseModel.autoSort`, `OrganisePlan` | `--selftest-analyse` | Sorts only what the Source shows; no matches means no plan and a message (1.8) |
 | R-3806 | built | `OperationJournal.undo`, `OperationJournal.redo`, `WindowModel.registerUndo`, `AppModel.applyChange` | `testRedoDoesTheChangeAgainAndCanBeUndone`, `testUndoOfACopyKeepsCopiesEditedSince`, `testUndoLeavesChangedFilesInPlace` | Every Library and Organise change undoable with ⌘Z and redoable with Shift-⌘Z (1.8) |
-| R-3807 | partial | `OrganiseModel.execute`, `OperationJournal` | `--selftest-analyse` | no test: Cancel of an Organise job and undoing a cancelled operation are not exercised |
+| R-3807 | built | `OperationJournal.run`, `OrganiseModel.execute` | `testACancelledOperationCanBeUndone` | A cancelled operation stops and can be undone (1.8 test) |
 | R-3901 | built | `FaceOptIn`, `FaceSettings`, `AnalysisService.deleteAllFaceData`, `AnalysisService.removeVectorFiles` | `--selftest-analyse`, `testFaceVectorsStayExcludedFromBackups` | Opt-in, off switch that keeps data, and Delete All removing every face file (1.8) |
 | R-3902 | built | `FaceDetector`, `FaceEncoder`, `FaceRules.minimumPixels` | `--selftest-analyse` | SCRFD with five landmarks, Vision fallback, 32 px floor, mirrored-crop fusion |
 | R-3903 | built | `FaceGrouping.group`, `AnalysisStore.pruneOrphans` | `testFaceGroupingRespectsCorrections`, `testOrphanedResultsFacesAndPeopleArePruned` | Faces of files that are gone are pruned after each scan (1.8) |

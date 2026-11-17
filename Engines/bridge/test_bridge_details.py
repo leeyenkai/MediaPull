@@ -274,6 +274,16 @@ def test_a_sites_own_request_interval_is_never_undercut():
         assert interval and interval[0] >= 0.6, interval
     config.clear()
 
+def test_instagram_is_gentle_by_default_and_never_retried():
+    from gallery_dl import config
+
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"url": "https://www.instagram.com/someone/"}, staging)
+        assert config.get(("extractor",), "sleep-request") == [8.0, 15.0]
+        assert config.get(("extractor", "instagram"), "retries") == 0
+        assert config.get(("extractor", "instagram"), "sleep-429") == 0
+    config.clear()
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
