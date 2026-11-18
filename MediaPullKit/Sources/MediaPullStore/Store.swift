@@ -425,15 +425,15 @@ public actor AppStore {
 
     /// The Instagram items saved into a folder before it had a record (versions before 1.8), deleted since or not; the
     /// entries of deleted files are removed once handed over.
-    /// `savedSince`: only items saved since the folder was made; those saved before belonged to an earlier folder at that
-    /// path, which a new folder never takes over (audit 10, A10-M2).
-    public func takeInstagramKeys(account: String, under folder: String, savedSince: Date? = nil) -> Set<String> {
+    /// `savedBefore`: only items an earlier version remembered (saved before account folder records began); items saved
+    /// since belong to the record of the folder they were saved into (audit 10, A10-M2; audit 11, A11-M2).
+    public func takeInstagramKeys(account: String, under folder: String, savedBefore: Date? = nil) -> Set<String> {
         let name = account.lowercased()
         let prefix = folder.precomposedStringWithCanonicalMapping.lowercased() + "/"
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.account == name })
         let entries = ((try? modelContext.fetch(descriptor)) ?? []).filter {
             $0.key.hasPrefix("ig:") && $0.path.precomposedStringWithCanonicalMapping.lowercased().hasPrefix(prefix)
-                && $0.savedAt >= (savedSince ?? .distantPast)
+                && $0.savedAt < (savedBefore ?? .distantFuture)
         }
         for entry in entries where !FileManager.default.fileExists(atPath: entry.path) && Self.volumeMounted(entry.path) {
             modelContext.delete(entry)

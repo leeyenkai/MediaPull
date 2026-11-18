@@ -32,6 +32,13 @@ extension AppModel {
         }
     }
 
+    /// Account folders put back from the Trash or trashed again show in the lists and Activity at once (audit 11, B11-m4,
+    /// C11-m3); moves already refresh them.
+    private func refreshAfterTrash(_ steps: [JournalStep], moved: [(from: String, to: String)]) async {
+        guard moved.isEmpty, steps.contains(where: { if case .trash = $0 { true } else { false } }) else { return }
+        await refreshAccountFolders(followJobs: false)
+    }
+
     /// Folders an Undo removed or a Redo trashed.
     private func foldersRemoved(by steps: [JournalStep]) -> [String] {
         steps.compactMap { step -> String? in
@@ -49,6 +56,7 @@ extension AppModel {
         let report = await journal.undo(id)
         await followMoves(report.moves, changedBy: id)
         foldersGone(foldersRemoved(by: entry.steps))
+        await refreshAfterTrash(entry.steps, moved: report.moves)
         fileChangeRevision += 1
         return report
     }
@@ -58,7 +66,10 @@ extension AppModel {
         if let entry = before, let refusal = libraryFolderRefusal(entry.undoneSteps ?? []) { return refusal }
         let report = await journal.redo(id)
         await followMoves(report.moves, changedBy: id)
-        if let entry = await journal.entry(id) { foldersGone(foldersRemoved(by: entry.steps)) }
+        if let entry = await journal.entry(id) {
+            foldersGone(foldersRemoved(by: entry.steps))
+            await refreshAfterTrash(entry.steps, moved: report.moves)
+        }
         fileChangeRevision += 1
         return report
     }
@@ -165,6 +176,9 @@ extension WindowModel {
             if report.done == 0 {
                 showFileMessage("Nothing of “\(entry.title)” could be undone"
                     + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
+            } else if report.restored == 0, report.skipped.isEmpty {
+                // A New Folder taken back puts no item back (B11-m5).
+                showFileMessage("Undid “\(entry.title)”.")
             } else {
                 showFileMessage(report.skipped.isEmpty
                     ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."

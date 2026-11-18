@@ -94,6 +94,8 @@ final class AppModel {
     }
 
     private func bootstrap() async {
+        // The first run with account folder records: what was saved before it is what earlier versions remembered.
+        if preferences.accountFoldersBegan == nil { preferences.accountFoldersBegan = Date() }
         // First, before anything else at launch: tabs hold their first page until the rules are in place (R-508).
         do {
             ruleList = try await WebViewSetup.uploadBlockingRules()
@@ -537,7 +539,7 @@ final class AppModel {
                 guard let now = await followed.now() else {
                     // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7); the row
                     // says why (audit 10, C10-m4).
-                    self.jobs.finish(job, .failed(FollowedFolder.goneMessage(folder)))
+                    self.jobs.finish(job, .failed(FollowedFolder.goneMessage(folder)), notify: false)
                     return
                 }
                 job.failed = 0
@@ -647,15 +649,19 @@ final class AppModel {
                 for item in toSave where !placedNow.contains(item.id) {
                     guard let engine = item.source.engine, engine.isInstagram, let name = engine.username?.lowercased(),
                           let owner = engine.ownerID, made[name] == nil,
-                          !["saved", "collection", "stories-tray"].contains(engine.subcategory) else { continue }
+                          !["saved", "collection"].contains(engine.subcategory) else { continue }
                     // The folder below the save folder this item goes into, in either layout (audit 10, A10-M1).
-                    let planned = ArchivePlanner.folder(for: item, target: target, settings: settings).standardizedFileURL
-                    let base = target.folder.standardizedFileURL
-                    let depth = base.pathComponents.count
-                    guard planned.pathComponents.count > depth else { continue }
-                    let top = base.appendingPathComponent(planned.pathComponents[depth], isDirectory: true)
-                    guard top.lastPathComponent.lowercased() == FileNaming.safeTopFolder(name).lowercased(),
-                          !FileManager.default.fileExists(atPath: top.path) else { continue }
+                    // Compared as path keys: "/private" is dropped only from paths that exist, and the planned folder does
+                    // not yet (audit 11).
+                    let planned = ArchivePlanner.folder(for: item, target: target, settings: settings)
+                    let baseKey = AccountFolderStore.key(target.folder.path), plannedKey = AccountFolderStore.key(planned.path)
+                    guard plannedKey.hasPrefix(baseKey + "/") else { continue }
+                    let below = plannedKey.dropFirst(baseKey.count + 1).split(separator: "/")
+                    let parts = planned.pathComponents
+                    guard let first = below.first, first == FileNaming.safeTopFolder(name).lowercased(), parts.count >= below.count
+                    else { continue }
+                    let top = target.folder.appendingPathComponent(parts[parts.count - below.count], isDirectory: true)
+                    guard !FileManager.default.fileExists(atPath: top.path) else { continue }
                     made[name] = (top, owner)
                 }
                 return made

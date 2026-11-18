@@ -19,6 +19,9 @@ final class Preferences {
     var pacing: PacingPreset { didSet { set(pacing.rawValue, "pacing") } }
     var typeSubfolders: Bool { didSet { set(typeSubfolders, "instagramTypeSubfolders") } }
     var stopAfterKnown: Int { didSet { set(stopAfterKnown, "stopAfterKnown") } }
+    /// When this Mac first ran a version with account folder records (1.8): what earlier versions remembered was saved
+    /// before it; anything saved since belongs to a folder's own record (audit 11, A11-M2).
+    var accountFoldersBegan: Date? { didSet { set(accountFoldersBegan, "accountFoldersBegan") } }
     var weeklyEngineCheck: Bool { didSet { set(weeklyEngineCheck, "weeklyEngineCheck") } }
     var lastEngineCheck: Date? { didSet { set(lastEngineCheck, "lastEngineCheck") } }
     var notifyWhenDone: Bool { didSet { set(notifyWhenDone, "notifyWhenDone") } }
@@ -87,6 +90,7 @@ final class Preferences {
         pacing = PacingPreset(rawValue: d.string(forKey: "pacing") ?? "") ?? .gentle
         typeSubfolders = d.object(forKey: "instagramTypeSubfolders") as? Bool ?? true
         stopAfterKnown = d.object(forKey: "stopAfterKnown") as? Int ?? 12
+        accountFoldersBegan = d.object(forKey: "accountFoldersBegan") as? Date
         weeklyEngineCheck = d.object(forKey: "weeklyEngineCheck") as? Bool ?? true
         lastEngineCheck = d.object(forKey: "lastEngineCheck") as? Date
         notifyWhenDone = d.object(forKey: "notifyWhenDone") as? Bool ?? true

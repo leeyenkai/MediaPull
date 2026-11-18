@@ -90,6 +90,10 @@ final class Job: Identifiable {
     var retry: (() -> Void)?
     /// Set while a Retry Failed is starting (its folder is being found), so a second click starts nothing more (A9-m2).
     var retryStarting = false
+    /// The latest time the job was put in the Instagram queue; older queue entries of it do nothing.
+    @ObservationIgnored var queueToken: UUID?
+    /// A pull that walks the whole account (Find Missing, Retry Failed), told apart from an Update of the same folder.
+    var walksAll = false
     /// Where an Instagram listing had got to in this job, so Resume continues this job's own pass (R-1112).
     var lastCursor: String?
     /// The id of the place this job's walk leaves in its account folder if it stops part way (D-87); the same across Resume.
@@ -152,7 +156,7 @@ final class JobCenter {
         }
     }
 
-    func finish(_ job: Job, _ state: JobState) {
+    func finish(_ job: Job, _ state: JobState, notify notifies: Bool = true) {
         // A job the person cancelled stays cancelled, even when its task then ends with an error.
         if job.state != .cancelled, !job.state.isFinished || state != .cancelled { job.state = state }
         let state = job.state
@@ -162,7 +166,7 @@ final class JobCenter {
         let record = JobRecordInfo(id: job.id, kind: job.kind.rawValue, title: job.title, status: state.label, summary: job.summary,
                                    startedAt: job.startedAt, finishedAt: Date())
         if let store { Task { await store.recordJob(record) } }
-        if notify(), Date().timeIntervalSince(job.startedAt) > 60 {
+        if notifies, notify(), Date().timeIntervalSince(job.startedAt) > 60 {
             Self.post(title: "\(job.kind.rawValue) finished: \(job.title)", body: job.summary.isEmpty ? state.label : job.summary)
         }
     }

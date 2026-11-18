@@ -1000,11 +1000,11 @@ final class SelfTestRunner {
             + "and as a single post \(single?.skipped ?? -1); folder unchanged \(filesIn() == beforeRefusals)")
         // A folder made by saving listed items records its owner's id, and then refuses another owner's items (A9-M3,
         // A10-M1).
-        func listed(_ id: String, owner: String, colour: Int) -> MediaItem {
+        func listed(_ id: String, owner: String, colour: Int, name: String = "ivy") -> MediaItem {
             let source = fixtures.appendingPathComponent("\(id).jpg")
             try? Self.jpeg(colour).write(to: source)
             var context = EngineContext(key: "ig:\(id)", category: "instagram", subcategory: "posts")
-            context.username = "ivy"
+            context.username = name
             context.ownerID = owner
             context.postID = "35\(colour)"
             context.mediaID = "36\(colour)"
@@ -1021,6 +1021,29 @@ final class SelfTestRunner {
             && (otherSave?.skipped ?? 0) == 1
         note("update: a folder made by saving listed items took its owner's id \(ivyRecord?.userID ?? "none") "
             + "and refused another owner's item \(otherSave?.skipped ?? -1)")
+        // The same in a Plain library, the case A10-M1 was about (audit 11, A11-m1, C11-m5).
+        let plainLibrary = out.appendingPathComponent("plain-library", isDirectory: true)
+        try? fm.createDirectory(at: plainLibrary, withIntermediateDirectories: true)
+        await app.addRoot(plainLibrary, layout: .plain)
+        let plainSave = app.save([listed("ivo1", owner: "70", colour: 44, name: "ivo")], from: model, to: plainLibrary)
+        await waitUntil(timeout: 60) { plainSave?.state.isFinished ?? true }
+        let ivoRecord = await app.accountFolders.all().first { $0.account == "ivo" }
+        let plainChecked = ivoRecord?.userID == "70" && plainSave?.saved == 1
+        note("update: in a Plain library the new folder took its owner's id \(ivoRecord?.userID ?? "none")")
+        // Where an earlier version's first pull stopped is continued by the first Update (C3-m14, audit 11, A11-M1).
+        let jay = library.appendingPathComponent("jay", isDirectory: true)
+        try? fm.createDirectory(at: jay.appendingPathComponent("posts"), withIntermediateDirectories: true)
+        let jayFile = jay.appendingPathComponent("posts/2025-01-28_100000_x_01.jpg")
+        try? Self.jpeg(45).write(to: jayFile)
+        sidecar(["category": "instagram", "subcategory": "posts", "username": "jay", "post_id": "1", "num": 1], for: jayFile)
+        writeReplay(account("jay", id: "61", count: 6))
+        await app.store?.updateAccount("jay", resumeCursor: .some("after-3"))
+        let jayJobsBefore = pulls()
+        _ = await app.engines.startUpdate(account: "jay", folder: jay, findMissing: false, window: model)
+        await waitForPulls()
+        let jayCursorLeft = await app.store?.account("jay")?.resumeCursor
+        let jayContinued = pulls() - jayJobsBefore == 2 && (jayCursorLeft ?? "").isEmpty
+        note("update: an earlier version's stopped place was continued \(jayContinued) (\(pulls() - jayJobsBefore) jobs)")
         // A save folder renamed after a download was queued is followed (C6-M3).
         let saves = library.appendingPathComponent("Saves", isDirectory: true)
         try? fm.createDirectory(at: saves, withIntermediateDirectories: true)
@@ -1055,7 +1078,7 @@ final class SelfTestRunner {
         writeReplay(replay)
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
             && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash && refusedRoutes
-            && savedFollowed && listFollowed && madeFolderChecked
+            && savedFollowed && listFollowed && madeFolderChecked && plainChecked && jayContinued
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass

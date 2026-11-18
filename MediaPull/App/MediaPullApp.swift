@@ -248,6 +248,7 @@ struct AppCommands: Commands {
             Divider()
             Button("Find") { window?.find() }
                 .keyboardShortcut("f")
+                .disabled(window?.section == .organise && window?.keyboardFolderPane == nil)
             Button("Clear Extracted Media") { window?.clear() }
                 .keyboardShortcut("k")
                 .disabled(window?.section != .collect)
@@ -262,6 +263,8 @@ struct AppCommands: Commands {
                 .disabled(!browsing)
             Button(window?.keyboardFolderPane != nil ? "Show in Finder" : "Reload Page") { window?.revealOrReload() }
                 .keyboardShortcut("r")
+                // Nothing to show or reload in Organise with both panes hidden (audit 11, B11-m6).
+                .disabled(window?.section == .organise && window?.keyboardFolderPane == nil)
             Button("Stop") { window?.stop() }
                 .keyboardShortcut(".")
                 .disabled(!browsing || window?.section == .organise)

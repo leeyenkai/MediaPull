@@ -1277,6 +1277,7 @@ def op_stream(request):
     staging = request["staging"]
     os.makedirs(staging, exist_ok=True)
     STAGING["root"] = staging
+    playlist = bool((request.get("extras") or {}).get("playlist"))
 
     class Logger:
         def debug(self, message):
@@ -1291,6 +1292,10 @@ def op_stream(request):
         def error(self, message):
             STATE["errors"].append(_clean(message))
             EMITTER.emit("log", level="error", logger="yt-dlp", message=_clean(message))
+            # In a playlist yt-dlp goes on past a video it cannot download: that video is a failure the app counts and
+            # offers to retry, never only a log line (audit 11, A11-M3).
+            if playlist:
+                EMITTER.emit("error", code="download_failed", message=_clean(message)[:300], fatal=False)
 
     last = {"t": 0.0}
 
@@ -1320,7 +1325,7 @@ def op_stream(request):
     except yt_dlp.utils.MaxDownloadsReached:
         pass
     if emitted["count"]:
-        finish("completed", {"files": emitted["count"]})
+        finish("partial" if playlist and STATE["errors"] else "completed", {"files": emitted["count"]})
     else:
         message = STATE["errors"][-1] if STATE["errors"] else "The stream could not be downloaded."
         EMITTER.emit("error", code="download_failed", message=message[:300], fatal=True)

@@ -407,7 +407,14 @@ final class EngineService {
 
     /// One Instagram job at a time, across all windows (SPEC R-1113).
     private func enqueueInstagram(job: Job, _ run: @escaping () async -> Void) {
-        instagramQueue.append((job, run))
+        // Only the latest queuing of a job runs: a Resume left queued when the job was cancelled never runs after a later
+        // Retry Failed puts the job back in the queue (audit 11, C11-m2).
+        let token = UUID()
+        job.queueToken = token
+        instagramQueue.append((job, { [weak job] in
+            guard job?.queueToken == token else { return }
+            await run()
+        }))
         pumpInstagram()
     }
 
@@ -1108,18 +1115,15 @@ final class EngineService {
     /// shared table, so a second call finds nothing; scanned saves call it too (audit 4, C4-m1).
     func adoptEarlierMemory(of record: AccountFolderRecord, account: String) async {
         guard record.lastUpdate == nil, (record.places ?? []).isEmpty else { return }
-        // Only what was saved since this folder was made: a folder made where an earlier one was (trashed or deleted) starts
-        // afresh, and so does the account's stored place from before it (audit 10, A10-M2).
-        let path = record.path
-        let made = await Task.detached(priority: .userInitiated) {
-            try? URL(fileURLWithPath: path).resourceValues(forKeys: [.creationDateKey]).creationDate
-        }.value
-        let since = made.map { $0.addingTimeInterval(-60) }
-        let keys = await app.store?.takeInstagramKeys(account: account, under: record.path, savedSince: since) ?? []
+        // Only what an earlier version remembered: items saved since account folder records began belong to the record of
+        // the folder they were saved into, never to a new folder made at its path later (audit 10, A10-M2). A folder's
+        // creation date is not used: a move or copy to another disk resets it (audit 11, A11-M2). The place where an earlier
+        // version's pull stopped (only earlier versions stored one) is taken over as before (C3-m14, A11-M1).
+        let keys = await app.store?.takeInstagramKeys(account: account, under: record.path,
+                                                      savedBefore: app.preferences.accountFoldersBegan) ?? []
         if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: record.id) }
         let info = await app.store?.account(account)
-        let pulledBefore = since.map { (info?.lastPullAt ?? .distantPast) < $0 } ?? false
-        if let cursor = info?.resumeCursor, !cursor.isEmpty, !pulledBefore {
+        if let cursor = info?.resumeCursor, !cursor.isEmpty {
             await app.accountFolders.setPlace(ResumePlace(cursor: cursor, untilEnd: true), in: record.id)
             await app.store?.updateAccount(account, resumeCursor: .some(nil))
         }
@@ -1150,8 +1154,10 @@ final class EngineService {
         }
         // One update of a folder at a time: a second click, or Update All twice, adds nothing (audit 3, C3-m10).
         let key = AccountFolderStore.key(folder.path)
+        // Find Missing is not the same work as an Update: it queues after one (audit 11, C11-m6).
         if let running = app.jobs.jobs.first(where: {
-            $0.kind == .pull && $0.state.canCancel && $0.destination.map { AccountFolderStore.key($0.path) == key } == true
+            $0.kind == .pull && $0.state.canCancel && $0.walksAll == findMissing
+                && $0.destination.map { AccountFolderStore.key($0.path) == key } == true
         }) {
             return running
         }
@@ -1169,7 +1175,9 @@ final class EngineService {
         draft.folderName = folder.lastPathComponent
         // An earlier update that stopped part way needs nothing more: this pass covers the top, and the rest continues from
         // where it stopped right after (runPull).
-        return startPull(draft, scanOnly: false, window: window)
+        let job = startPull(draft, scanOnly: false, window: window)
+        job?.walksAll = findMissing
+        return job
     }
 
     /// Moves a followers or following list, or the profile, into `<account>/Account details/` with the date in its name.
@@ -1247,7 +1255,7 @@ final class EngineService {
                 guard let now = await folder.now() else {
                     // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7); the job
                     // says it failed, whatever it had saved (audit 9, A9-m2).
-                    self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)))
+                    self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)), notify: false)
                     return
                 }
                 job.failed = 0
@@ -1325,8 +1333,15 @@ final class EngineService {
                     } else {
                         waiting[key, default: []].append((path, kind))
                     }
-                case let .error(_, message, _, fatal):
-                    if fatal || failure == nil { failure = message }
+                case let .error(code, message, key, fatal):
+                    if code == "download_failed", !fatal {
+                        // A video of a playlist that could not be downloaded is counted, so Retry Failed is offered
+                        // (audit 11, A11-M3).
+                        job.failed += 1
+                        job.failures.append((key ?? message, message))
+                    } else if fatal || failure == nil {
+                        failure = message
+                    }
                 case let .policyViolation(method, host, _, reason):
                     failure = "MediaPull blocked a \(method) request to \(host): \(reason)"
                 default:
@@ -1579,7 +1594,7 @@ final class EngineService {
                 defer { job?.retryStarting = false }
                 guard let self else { return }
                 guard let now = await folder.now() else {
-                    if let job { self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url))) }
+                    if let job { self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)), notify: false) }
                     return
                 }
                 job?.failed = 0

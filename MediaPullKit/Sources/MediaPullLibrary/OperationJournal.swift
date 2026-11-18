@@ -278,8 +278,8 @@ public actor OperationJournal {
         let isFolder = values?.isDirectory == true
         entry.steps.append(.move(from: from.path, to: to.path, size: isFolder ? nil : values?.fileSize.map(Int64.init),
                                  modified: isFolder ? nil : values?.contentModificationDate))
-        Self.note(to.path, in: &entry)
-        Self.note(from.deletingLastPathComponent().path, in: &entry)
+        note(to.path, in: &entry)
+        note(from.deletingLastPathComponent().path, in: &entry)
     }
 
     // MARK: Identities
@@ -299,21 +299,34 @@ public actor OperationJournal {
         return (path as URL).standardizedFileURL.path
     }
 
-    /// Remembers what is at `path` now.
-    static func note(_ path: String, in entry: inout JournalEntry) {
-        guard let identity = AccountFolderRecord.number(of: URL(fileURLWithPath: path)) else { return }
+    /// Remembers what is at `path` now (or at `current`, when the thing a step names went elsewhere). A folder or copy made
+    /// again by Redo is a new file: the identity it replaces is remembered as it, so later changes that rely on it still
+    /// find it (audit 11, B11-M2).
+    func note(_ path: String, at current: String? = nil, in entry: inout JournalEntry) {
+        guard let identity = AccountFolderRecord.number(of: URL(fileURLWithPath: current ?? path)) else { return }
         var identities = entry.identities ?? [:]
         identities[path] = identity
         entry.identities = identities
     }
+
+    /// A folder or copy made again (by Redo) at `path`: its new identity stands for the one it replaces.
+    func noteRemade(_ path: String, in entry: inout JournalEntry) {
+        let old = entry.identities?[path]
+        note(path, in: &entry)
+        if let old, let new = entry.identities?[path], old != new { remade[old] = new }
+    }
+
+    /// Identities of folders and copies made again by Redo, by the identity they replace (this session: Redo lives in it).
+    private var remade: [String: String] = [:]
 
     /// Names under a temporary name (a swap of names) are never shown to the person: the name it had is.
     static func isTemporary(_ path: String) -> Bool {
         URL(fileURLWithPath: path).lastPathComponent.hasPrefix(".mediapull-rename-")
     }
 
-    static func shownName(_ path: String) -> String {
-        URL(fileURLWithPath: path).lastPathComponent
+    /// The name to show for a step's item: never a temporary name, but the name it had (`otherwise`) (B11-m2).
+    static func shownName(_ path: String, otherwise: String? = nil) -> String {
+        isTemporary(path) ? URL(fileURLWithPath: otherwise ?? path).lastPathComponent : URL(fileURLWithPath: path).lastPathComponent
     }
 
     /// During one Undo: items put back under another name because theirs was taken, by the path they came from.
@@ -323,8 +336,12 @@ public actor OperationJournal {
     /// volumes without a UUID) is taken as it is.
     func isSame(_ path: String, in entry: JournalEntry) -> Bool {
         guard fm.fileExists(atPath: path) else { return false }
-        guard let noted = entry.identities?[path], let now = AccountFolderRecord.number(of: URL(fileURLWithPath: path)) else {
+        guard var noted = entry.identities?[path], let now = AccountFolderRecord.number(of: URL(fileURLWithPath: path)) else {
             return true
+        }
+        var seen = Set<String>()
+        while noted != now, let next = remade[noted], seen.insert(noted).inserted {
+            noted = next
         }
         return noted == now
     }
@@ -343,11 +360,11 @@ public actor OperationJournal {
             missing.append(current)
             current = current.deletingLastPathComponent()
         }
-        if !missing.isEmpty { Self.note(current.path, in: &entry) }
+        if !missing.isEmpty { note(current.path, in: &entry) }
         for created in missing.reversed() {
             try fm.createDirectory(at: created, withIntermediateDirectories: false)
             entry.steps.append(.makeFolder(created.path))
-            Self.note(created.path, in: &entry)
+            noteRemade(created.path, in: &entry)
         }
     }
 
@@ -360,10 +377,10 @@ public actor OperationJournal {
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: to.path])
         }
         entry.steps.append(.clone(from: from.path, to: to.path, files: Self.stamps(of: to)))
-        Self.note(to.path, in: &entry)
-        Self.note(from.path, in: &entry)
+        noteRemade(to.path, in: &entry)
+        note(from.path, in: &entry)
         // The folder it went into, so Redo never copies into another folder of that name (audit 10, B10-m5, C10-m1).
-        Self.note(to.deletingLastPathComponent().path, in: &entry)
+        note(to.deletingLastPathComponent().path, in: &entry)
     }
 
     /// Size and date of a file, or of every file inside a folder (relative paths); nil when it cannot be read.
@@ -401,10 +418,10 @@ public actor OperationJournal {
         try fm.trashItem(at: item, resultingItemURL: &trashed)
         let inTrash = (trashed as URL?)?.path ?? ""
         entry.steps.append(.trash(original: item.path, trashed: inTrash))
-        Self.note(item.deletingLastPathComponent().path, in: &entry)
+        note(item.deletingLastPathComponent().path, in: &entry)
         // What is in the Trash under that name: another item trashed later with the same name is never taken for it
         // (audit 9, B9-M2).
-        if !inTrash.isEmpty { Self.note(inTrash, in: &entry) }
+        if !inTrash.isEmpty { note(inTrash, in: &entry) }
         // Where an item went in the Trash cannot be found again, so it is saved soon: at once for the first 200 steps, then
         // at most five times a second (rewriting a long entry after every item would write gigabytes for a large Trash).
         if entry.steps.count < 200 || Date().timeIntervalSince(lastTrashSave) >= 0.2 {
@@ -464,6 +481,7 @@ public actor OperationJournal {
     public func redo(_ id: UUID) -> UndoReport {
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
+        fallbacks = [:]
         // As when it first ran: a folder it worked in that went away since is never made again (audit 6, B6-M1).
         // Folders the change made itself (its root among them) are made again; no others (audit 7, B7-m1).
         let allowed = Set(steps.compactMap { step -> String? in
@@ -505,7 +523,9 @@ public actor OperationJournal {
                 return true
             case let .move(from, to, _, _):
                 guard isSame(from, in: entry) else {
-                    report.skipped.append("\(URL(fileURLWithPath: from).lastPathComponent) is no longer at \(from)")
+                    report.skipped.append(fm.fileExists(atPath: from)
+                        ? "\(Self.shownName(from, otherwise: to)) was changed since, so it was left as it is"
+                        : "\(Self.shownName(from, otherwise: to)) is no longer at \(Self.shownName(from, otherwise: to))")
                     return false
                 }
                 let folder = URL(fileURLWithPath: to).deletingLastPathComponent()
@@ -518,14 +538,27 @@ public actor OperationJournal {
                 } else {
                     try makeMissingFolders(folder, allowed: allowed, entry: &entry)
                 }
-                guard !fm.fileExists(atPath: to) || Self.sameFile(from, to) else {
-                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): another file now has that name")
-                    return false
+                var target = URL(fileURLWithPath: to)
+                if to.hasSuffix(".json"),
+                   let media = fallbacks.first(where: { Sidecar.sidecarURL(for: URL(fileURLWithPath: $0.key)).path == to })
+                {
+                    target = Sidecar.sidecarURL(for: URL(fileURLWithPath: media.value))
+                } else if fm.fileExists(atPath: to), !Self.sameFile(from, to) {
+                    // As on Undo: an item under a temporary name is never left hidden (audit 11, B11-M1).
+                    guard Self.isTemporary(from) else {
+                        report.skipped.append("\(target.lastPathComponent): another file now has that name")
+                        return false
+                    }
+                    var taken = Set<String>()
+                    target = FolderOperations.freeDestination(for: target.lastPathComponent, in: folder, taken: &taken).url
+                    fallbacks[to] = target.path
+                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) was given the name \(target.lastPathComponent): "
+                        + "its name is taken")
                 }
-                try moveItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
+                try moveItem(URL(fileURLWithPath: from), to: target, entry: &entry)
                 if !to.hasSuffix(".json") { report.restored += 1 }
                 report.done += 1
-                report.moves.append((from, to))
+                report.moves.append((from, target.path))
                 return true
             case let .clone(from, to, _):
                 let folder = URL(fileURLWithPath: to).deletingLastPathComponent()
@@ -618,8 +651,8 @@ public actor OperationJournal {
             let dest = URL(fileURLWithPath: to)
             guard isSame(to, in: entry) else {
                 report.skipped.append(fm.fileExists(atPath: to)
-                    ? "\(Self.shownName(to)) was changed since, so it was left as it is"
-                    : "\(Self.shownName(to)) is no longer where the change put it, so it was left where it is")
+                    ? "\(Self.shownName(to, otherwise: from)) was changed since, so it was left as it is"
+                    : "\(Self.shownName(to, otherwise: from)) is no longer where the change put it, so it was left where it is")
                 return false
             }
             if let size {
@@ -661,9 +694,9 @@ public actor OperationJournal {
                 if !to.hasSuffix(".json") { report.restored += 1 }
                 report.done += 1
                 report.moves.append((to, back.path))
-                // For Redo: what is back at its old place, and the folder it left.
-                Self.note(from, in: &entry)
-                Self.note(dest.deletingLastPathComponent().path, in: &entry)
+                // For Redo: what is back at its old place (or under the free name it got), and the folder it left (B11-m1).
+                note(from, at: back.path == from ? nil : back.path, in: &entry)
+                note(dest.deletingLastPathComponent().path, in: &entry)
                 return true
             } catch {
                 report.skipped.append("\(dest.lastPathComponent): \(error.localizedDescription)")
@@ -699,13 +732,17 @@ public actor OperationJournal {
                 let changedSet = Set(changed)
                 for stamp in recorded where !stamp.path.isEmpty && !changedSet.contains(stamp.path) {
                     let file = target.appendingPathComponent(stamp.path)
-                    if fm.fileExists(atPath: file.path) { try? fm.trashItem(at: file, resultingItemURL: nil) }
+                    if fm.fileExists(atPath: file.path), (try? fm.trashItem(at: file, resultingItemURL: nil)) != nil {
+                        // What was taken back counts as undone (audit 11, B11-m3).
+                        report.done += 1
+                        report.restored += 1
+                    }
                 }
             }
             report.skipped.append(changed.count == 1 && changed[0].isEmpty
                 ? "\(target.lastPathComponent) changed since it was copied, so it was kept"
-                : "\(changed.count) file\(changed.count == 1 ? "" : "s") in \(target.lastPathComponent) "
-                    + "changed or were added since, so they were kept")
+                : changed.count == 1 ? "1 file in \(target.lastPathComponent) changed or was added since, so it was kept"
+                    : "\(changed.count) files in \(target.lastPathComponent) changed or were added since, so they were kept")
             return false
         case let .trash(original, trashed):
             let name = URL(fileURLWithPath: original).lastPathComponent
@@ -727,7 +764,7 @@ public actor OperationJournal {
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
                 if !original.hasSuffix(".json") { report.restored += 1 }
                 report.done += 1
-                Self.note(original, in: &entry)
+                note(original, in: &entry)
                 return true
             } catch {
                 report.skipped.append("\(name): \(error.localizedDescription)")
