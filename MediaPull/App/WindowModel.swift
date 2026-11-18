@@ -834,7 +834,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
         if let pane = keyboardFolderPane {
             setShowing(pane, true)
             searchFocusTokens[pane, default: 0] += 1
-        } else {
+        } else if section == .collect {
+            // In Organise with both panes hidden there is nothing to search; Collect's bar is not touched (B10-m4).
             showFilters.toggle()
         }
     }
@@ -850,7 +851,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
             let urls = pane.selectedURLs
             NSWorkspace.shared.activateFileViewerSelecting(urls.isEmpty ? [pane.folder].compactMap(\.self) : urls)
         default:
-            browser.reloadOrStop()
+            // Never the hidden page while Organise is shown (B10-m4).
+            if section == .collect { browser.reloadOrStop() }
         }
     }
 

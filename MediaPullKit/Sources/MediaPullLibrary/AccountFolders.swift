@@ -440,13 +440,24 @@ public actor AccountFolderStore {
         for (id, var record) in records {
             guard let url = Self.resolve(record) else { continue }
             let path = url.standardizedFileURL.path
+            // A reference that no longer resolves (a disk reconnected) is made again from the folder found by its bookmark,
+            // while that is this record's folder (audit 10, A10-m5).
+            if path == record.path, record.reference.flatMap(OperationJournal.resolve) == nil, !record.isAnotherFolder(at: url),
+               let fresh = OperationJournal.reference(path)
+            {
+                record.reference = fresh
+                records[id] = record
+                save(record)
+                continue
+            }
             guard path != record.path, FileManager.default.fileExists(atPath: path) else { continue }
             // A job queued with the old path still finds it (audit 6, C6-M2), unless it went to the Trash.
             if !FileFlags.isInTrash(url) { formerPaths[Self.key(record.path)] = id }
             record.path = path
             record.folderNumber = AccountFolderRecord.number(of: url)
             record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-            if record.reference == nil { record.reference = OperationJournal.reference(path) }
+            // A reference that no longer resolves (a disk reconnected) is made again from the folder found (A10-m5).
+            if record.reference.flatMap(OperationJournal.resolve) == nil { record.reference = OperationJournal.reference(path) }
             records[id] = record
             save(record)
         }

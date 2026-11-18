@@ -96,6 +96,8 @@ struct InstagramForm: View {
                 }
                 Spacer()
                 Button("List in Extracted Media") {
+                    // Listing asks Instagram too: the hold is lifted (A10-m2, C10-m6).
+                    model.downloads.lookUpsHeld = false
                     var scan = draft
                     scan.incremental = false
                     app.engines.startPull(scan, scanOnly: true, window: model)

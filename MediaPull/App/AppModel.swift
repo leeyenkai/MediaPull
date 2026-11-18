@@ -535,8 +535,9 @@ final class AppModel {
                 guard let self else { return }
                 defer { job.retryStarting = false }
                 guard let now = await followed.now() else {
-                    // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7).
-                    job.notes.append(FollowedFolder.goneMessage(folder))
+                    // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7); the row
+                    // says why (audit 10, C10-m4).
+                    self.jobs.finish(job, .failed(FollowedFolder.goneMessage(folder)))
                     return
                 }
                 job.failed = 0
@@ -606,6 +607,8 @@ final class AppModel {
                     }
                 }
                 var accountTarget = target
+                // The account folder's own library decides the layout (D-70, audit 10, A10-m3).
+                if let layout = self.root(containing: existing)?.layout { accountTarget.layout = layout }
                 accountTarget.folder = existing.deletingLastPathComponent()
                 accountTarget.autoSubfolders = true
                 accountTarget.accountUsername = account
@@ -645,11 +648,15 @@ final class AppModel {
                     guard let engine = item.source.engine, engine.isInstagram, let name = engine.username?.lowercased(),
                           let owner = engine.ownerID, made[name] == nil,
                           !["saved", "collection", "stories-tray"].contains(engine.subcategory) else { continue }
-                    let scope = SavePipeline.duplicateScope(of: ArchivePlanner.folder(for: item, target: target, settings: settings),
-                                                            target: target)
-                    guard scope.recursive, scope.folder.lastPathComponent.lowercased() == name,
-                          !FileManager.default.fileExists(atPath: scope.folder.path) else { continue }
-                    made[name] = (scope.folder, owner)
+                    // The folder below the save folder this item goes into, in either layout (audit 10, A10-M1).
+                    let planned = ArchivePlanner.folder(for: item, target: target, settings: settings).standardizedFileURL
+                    let base = target.folder.standardizedFileURL
+                    let depth = base.pathComponents.count
+                    guard planned.pathComponents.count > depth else { continue }
+                    let top = base.appendingPathComponent(planned.pathComponents[depth], isDirectory: true)
+                    guard top.lastPathComponent.lowercased() == FileNaming.safeTopFolder(name).lowercased(),
+                          !FileManager.default.fileExists(atPath: top.path) else { continue }
+                    made[name] = (top, owner)
                 }
                 return made
             }.value

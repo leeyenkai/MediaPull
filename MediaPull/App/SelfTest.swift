@@ -608,8 +608,12 @@ final class SelfTestRunner {
         let started = await itemEditor.saveItem(to: folder)
         await waitUntil(timeout: 60) { AppModel.shared.jobs.activeCount == 0 }
         let added = count() - filesBefore
+        // The copy took the typed name (audit 10, C10-m7).
+        let copyNamed = (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
+            .contains { $0.lastPathComponent.hasPrefix("Edited copy by self-test") }
         // The original is still itself: saved where it was, not taken for its copy (audit 7, C7-M2).
         let originalKept = model.states[savedItem.id] == originalState && model.customNames[savedItem.id] == originalName
+            && copyNamed
         note("editor: \(started && added > 0 && originalKept ? "PASS" : "FAIL") an edited copy of a saved item is saved "
             + "(\(added) files added), the original keeps its own state \(originalKept)")
     }
@@ -994,6 +998,29 @@ final class SelfTestRunner {
             && (single?.skipped ?? 0) >= 1 && filesIn() == beforeRefusals
         note("update: another owner's items refused when saving listed items \(refusedSave?.skipped ?? -1) "
             + "and as a single post \(single?.skipped ?? -1); folder unchanged \(filesIn() == beforeRefusals)")
+        // A folder made by saving listed items records its owner's id, and then refuses another owner's items (A9-M3,
+        // A10-M1).
+        func listed(_ id: String, owner: String, colour: Int) -> MediaItem {
+            let source = fixtures.appendingPathComponent("\(id).jpg")
+            try? Self.jpeg(colour).write(to: source)
+            var context = EngineContext(key: "ig:\(id)", category: "instagram", subcategory: "posts")
+            context.username = "ivy"
+            context.ownerID = owner
+            context.postID = "35\(colour)"
+            context.mediaID = "36\(colour)"
+            return MediaItem(id: "ig:\(id)", kind: .image,
+                             variants: [MediaVariant(id: source.absoluteString, url: source, format: .jpeg, origin: .img)],
+                             source: .engine(context), discoveryIndex: 0, group: "g", groupTitle: "t")
+        }
+        let firstSave = app.save([listed("ivy1", owner: "50", colour: 42)], from: model, to: library)
+        await waitUntil(timeout: 60) { firstSave?.state.isFinished ?? true }
+        let ivyRecord = await app.accountFolders.all().first { $0.account == "ivy" }
+        let otherSave = app.save([listed("ivy2", owner: "51", colour: 43)], from: model, to: library)
+        await waitUntil(timeout: 60) { otherSave?.state.isFinished ?? true }
+        let madeFolderChecked = ivyRecord?.userID == "50" && firstSave?.saved == 1 && otherSave?.saved == 0
+            && (otherSave?.skipped ?? 0) == 1
+        note("update: a folder made by saving listed items took its owner's id \(ivyRecord?.userID ?? "none") "
+            + "and refused another owner's item \(otherSave?.skipped ?? -1)")
         // A save folder renamed after a download was queued is followed (C6-M3).
         let saves = library.appendingPathComponent("Saves", isDirectory: true)
         try? fm.createDirectory(at: saves, withIntermediateDirectories: true)
@@ -1028,7 +1055,7 @@ final class SelfTestRunner {
         writeReplay(replay)
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
             && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash && refusedRoutes
-            && savedFollowed && listFollowed
+            && savedFollowed && listFollowed && madeFolderChecked
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass

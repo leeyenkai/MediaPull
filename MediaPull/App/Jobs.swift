@@ -127,6 +127,8 @@ final class Job: Identifiable {
     }
 
     func cancel() {
+        // A Retry cancelled before it ran leaves Retry Failed usable again (audit 10, A10-m1, C10-m2).
+        retryStarting = false
         task?.cancel()
         if !state.isFinished { state = .cancelled; finishedAt = Date() }
     }

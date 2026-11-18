@@ -14,13 +14,32 @@ extension AppModel {
             if case let .trash(original, _) = step { original } else { nil }
         }
         if !trashed.isEmpty {
-            for window in windows {
-                window.library.foldersTrashed(trashed)
-                window.organise.foldersTrashed(trashed)
-            }
+            foldersGone(trashed)
+            // An account folder in the Trash leaves the lists and Activity's Resume at once (audit 10, C10-m5).
+            if entry.moves.isEmpty { await refreshAccountFolders(followJobs: false) }
         }
         fileChangeRevision += 1
         return entry
+    }
+
+    /// Folders gone from where windows show or save to (trashed, or removed by Undo): the save folder and Organise panes
+    /// go to the folder above (audit 4, B4-m2; audit 10, B10-m7).
+    private func foldersGone(_ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        for window in windows {
+            window.library.foldersTrashed(paths)
+            window.organise.foldersTrashed(paths)
+        }
+    }
+
+    /// Folders an Undo removed or a Redo trashed.
+    private func foldersRemoved(by steps: [JournalStep]) -> [String] {
+        steps.compactMap { step -> String? in
+            switch step {
+            case let .makeFolder(path), let .trash(original: path, _): FileManager.default.fileExists(atPath: path) ? nil : path
+            default: nil
+            }
+        }
     }
 
     func undoChange(_ id: UUID) async -> UndoReport? {
@@ -29,14 +48,17 @@ extension AppModel {
         if let refusal = libraryFolderRefusal(entry.steps) { return refusal }
         let report = await journal.undo(id)
         await followMoves(report.moves, changedBy: id)
+        foldersGone(foldersRemoved(by: entry.steps))
         fileChangeRevision += 1
         return report
     }
 
     func redoChange(_ id: UUID) async -> UndoReport {
-        if let entry = await journal.entry(id), let refusal = libraryFolderRefusal(entry.undoneSteps ?? []) { return refusal }
+        let before = await journal.entry(id)
+        if let entry = before, let refusal = libraryFolderRefusal(entry.undoneSteps ?? []) { return refusal }
         let report = await journal.redo(id)
         await followMoves(report.moves, changedBy: id)
+        if let entry = await journal.entry(id) { foldersGone(foldersRemoved(by: entry.steps)) }
         fileChangeRevision += 1
         return report
     }
@@ -53,7 +75,9 @@ extension AppModel {
             switch step {
             case let .move(from, to, _, _): holdsRoot(from) || holdsRoot(to)
             case let .trash(original, _): holdsRoot(original)
-            case .clone, .makeFolder: false
+            // A folder made or copied that became a library folder is never removed or trashed by Undo (B10-m2).
+            case let .clone(_, to, _): holdsRoot(to)
+            case let .makeFolder(path): holdsRoot(path)
             }
         }
         guard touches else { return nil }
@@ -137,9 +161,15 @@ extension WindowModel {
                 showFileMessage("“\(entry.title)” was already undone.")
                 return
             }
-            showFileMessage(report.skipped.isEmpty
-                ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
-                : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "))
+            // Nothing undone is said as such (audit 10, C10-m3, B10-m3).
+            if report.done == 0 {
+                showFileMessage("Nothing of “\(entry.title)” could be undone"
+                    + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
+            } else {
+                showFileMessage(report.skipped.isEmpty
+                    ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
+                    : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "))
+            }
         }
     }
 

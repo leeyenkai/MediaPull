@@ -800,6 +800,8 @@ final class EngineService {
                         target.accountUsername = user
                         target.accountFolder = found.folder
                         target.accountFolderExisted = found.record != nil
+                        // That folder's own library decides the layout (A10-m3).
+                        if let layout = app.root(containing: found.folder)?.layout { target.layout = layout }
                         target.typeSubfolders = found.sortsByType
                         // A single post's job is its account's; a tray story never changes the running pull's folder.
                         if found.record != nil, draft.postURL != nil { job.destination = found.folder }
@@ -828,6 +830,12 @@ final class EngineService {
                     job.currentItem = context.postShortcode ?? file.path.lastPathComponent
                     let (outcome, note) = await pipeline.saveStaged(file.path, item: item, target: target, settings: settings, index: index)
                     try? FileManager.default.removeItem(at: file.path)
+                    // A file that failed earlier (before a Resume) and is saved or found now is no longer a failure
+                    // (audit 10, A10-m4).
+                    if outcome.url != nil, let failedBefore = job.failures.firstIndex(where: { $0.id == file.key }) {
+                        job.failures.remove(at: failedBefore)
+                        job.failed = max(0, job.failed - 1)
+                    }
                     switch outcome {
                     case let .saved(url):
                         job.saved += 1
@@ -1100,9 +1108,18 @@ final class EngineService {
     /// shared table, so a second call finds nothing; scanned saves call it too (audit 4, C4-m1).
     func adoptEarlierMemory(of record: AccountFolderRecord, account: String) async {
         guard record.lastUpdate == nil, (record.places ?? []).isEmpty else { return }
-        let keys = await app.store?.takeInstagramKeys(account: account, under: record.path) ?? []
+        // Only what was saved since this folder was made: a folder made where an earlier one was (trashed or deleted) starts
+        // afresh, and so does the account's stored place from before it (audit 10, A10-M2).
+        let path = record.path
+        let made = await Task.detached(priority: .userInitiated) {
+            try? URL(fileURLWithPath: path).resourceValues(forKeys: [.creationDateKey]).creationDate
+        }.value
+        let since = made.map { $0.addingTimeInterval(-60) }
+        let keys = await app.store?.takeInstagramKeys(account: account, under: record.path, savedSince: since) ?? []
         if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: record.id) }
-        if let cursor = await app.store?.account(account)?.resumeCursor, !cursor.isEmpty {
+        let info = await app.store?.account(account)
+        let pulledBefore = since.map { (info?.lastPullAt ?? .distantPast) < $0 } ?? false
+        if let cursor = info?.resumeCursor, !cursor.isEmpty, !pulledBefore {
             await app.accountFolders.setPlace(ResumePlace(cursor: cursor, untilEnd: true), in: record.id)
             await app.store?.updateAccount(account, resumeCursor: .some(nil))
         }
@@ -1562,7 +1579,7 @@ final class EngineService {
                 defer { job?.retryStarting = false }
                 guard let self else { return }
                 guard let now = await folder.now() else {
-                    job?.notes.append(FollowedFolder.goneMessage(root.url))
+                    if let job { self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url))) }
                     return
                 }
                 job?.failed = 0
