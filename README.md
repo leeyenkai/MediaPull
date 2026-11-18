@@ -22,9 +22,11 @@
 
 | Organise | Downloads |
 |---|---|
-| ![Organise: sort a folder by subject](docs/images/organise.jpg) | ![Downloads: choose a video's format and resolution](docs/images/downloads.jpg) |
+| ![Organise: sort a folder by subject](docs/images/organise.jpg) | ![Downloads: choose a video's format and resolution, then Download or Save As](docs/images/downloads.jpg) |
 | **List view** | **Column view** |
 | ![List view: sortable columns and folders that open in place](docs/images/list-view.jpg) | ![Column view: folders in columns with a preview of the chosen file](docs/images/column-view.jpg) |
+| **Profile view** | |
+| ![Profile view: a saved account with its highlights, pinned post and Reels, shown from a test folder](docs/images/profile.jpg) | |
 
 ## Install
 
