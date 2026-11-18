@@ -408,6 +408,8 @@ public extension EngineContext {
             context.subcategory = collection
         }
         context.username = meta["username"]?.string ?? meta["user_name"]?.string ?? meta["author"]?.string
+        // As text: the bridge sends ids as text, since a JSON number would round an 18-digit id.
+        context.ownerID = meta["owner_id"]?.string
         context.fullName = meta["fullname"]?.string
         context.shortcode = meta["shortcode"]?.string
         context.postShortcode = meta["post_shortcode"]?.string

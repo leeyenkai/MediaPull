@@ -107,12 +107,13 @@ final class AppModel {
         // Leftovers of the last session: cleared off the main actor, since caches can hold many files.
         let leftovers = [SavePipeline.defaultWorkDirectory, WindowModel.pdfCache, WindowModel.editsCache, WindowModel.previewCache]
             + [enginePaths?.staging].compactMap(\.self)
-        await Task.detached(priority: .utility) {
+        // A self-test shares these folders with the installed app, which may be saving: it leaves them alone (C6-m4).
+        if !SelfTestRunner.isActive { await Task.detached(priority: .utility) {
             CookieFile.cleanUpAll()
             for folder in leftovers {
                 try? FileManager.default.removeItem(at: folder) // lint:allow silent-write a cache that may not exist
             }
-        }.value
+        }.value }
         enginePaths?.prepareFolders()
         do {
             let store = try AppStore.make(inMemory: SelfTestRunner.isActive)
@@ -138,7 +139,10 @@ final class AppModel {
         analysis.start(inMemory: SelfTestRunner.isActive)
         Task { await journal.prune(olderThan: preferences.undoHistoryDays) }
         await refreshEngineVersions()
-        if preferences.weeklyEngineCheck, Date().timeIntervalSince(preferences.lastEngineCheck ?? .distantPast) > 7 * 86400 {
+        // A self-test never asks the network for engine updates nor changes when the installed app last asked (audit 6, C6-m4).
+        if !SelfTestRunner.isActive, preferences.weeklyEngineCheck,
+           Date().timeIntervalSince(preferences.lastEngineCheck ?? .distantPast) > 7 * 86400
+        {
             await checkForEngineUpdates(automatic: true)
         }
         await engines.refreshSignIn()
@@ -446,7 +450,9 @@ final class AppModel {
             await analysis.noteMoves(moves)
             await store?.moveArchivePaths(moves)
             await accountFolders.moveFolders(moves)
+            await journal.followFolderMoves(moves, except: nil)
             await refreshAccountFolders()
+            LibraryModel.followQueuedDestinations(moves)
         }
     }
 
@@ -501,7 +507,8 @@ final class AppModel {
         // copies (audit 4, S4-m2). Where that is depends on where each item goes (its account's folder, a site folder), so
         // it is decided per item with the pipeline's own rule once the job knows (audit 5, B5-m2, A5-m5).
         var savedEarlier: [String: URL] = [:]
-        for item in items {
+        // An edited or trimmed copy keeps its item's id but is a new file on this Mac: always saved (audit 6, A6-M3).
+        for item in items where !(item.best?.url.isFileURL ?? false) {
             switch window?.states[item.id] {
             case let .saved(url)?, let .duplicate(url)?: savedEarlier[item.id] = url
             default: break
@@ -552,6 +559,26 @@ final class AppModel {
                     return (existing, AccountFolders.sortsByType(existing))
                 }.value
                 guard let (existing, byType) = found else { continue }
+                // Items of whoever has the name now never go into the folder of the account that had it (D-88, audit 6,
+                // A6-M2): the folder's account id against each item's owner.
+                let existingKey = AccountFolderStore.key(existing.path)
+                let folderID = await self.accountFolders.all().first {
+                    AccountFolderStore.key($0.path) == existingKey && $0.account == account
+                }?.userID
+                var group = group
+                if let folderID {
+                    let others = group.filter { ($0.source.engine?.ownerID).map { $0 != folderID } ?? false }
+                    for item in others {
+                        job.failed += 1
+                        job.failures.append((item.id, "@\(account) is now a different Instagram account, so this was not saved "
+                                + "into “\(existing.lastPathComponent)”."))
+                    }
+                    if !others.isEmpty {
+                        window?.clearQueued(others.map(\.id))
+                        placed.formUnion(others.map(\.id))
+                        group.removeAll { item in others.contains { $0.id == item.id } }
+                    }
+                }
                 var accountTarget = target
                 accountTarget.folder = existing.deletingLastPathComponent()
                 accountTarget.autoSubfolders = true
@@ -573,7 +600,9 @@ final class AppModel {
                 }.value ?? self.accountFolder(containing: folder).map { URL(fileURLWithPath: $0.path, isDirectory: true) }
                 if let around {
                     var beside = target
-                    beside.folder = around.deletingLastPathComponent()
+                    // Beside it, but never outside the library (audit 6, A6-m3).
+                    let isLibrary = rootURL.map { AccountFolderStore.key($0.path) == AccountFolderStore.key(around.path) } ?? false
+                    beside.folder = isLibrary ? around : around.deletingLastPathComponent()
                     beside.autoSubfolders = true
                     batches.append((savedPosts, beside, nil, nil))
                     placed.formUnion(savedPosts.map(\.id))

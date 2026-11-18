@@ -289,6 +289,8 @@ public struct EngineContext: Codable, Hashable, Sendable {
     public var category: String
     public var subcategory: String
     public var username: String?
+    /// The numeric id of the account that posted it (Instagram), to tell a name's new owner from its old one.
+    public var ownerID: String?
     public var fullName: String?
     public var shortcode: String?
     public var postShortcode: String?

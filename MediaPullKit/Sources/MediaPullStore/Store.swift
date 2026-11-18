@@ -339,7 +339,9 @@ public actor AppStore {
                               pulledNow: Bool = false)
     {
         let model = accountModel(username)
-        if let userID, !userID.isEmpty { model.userID = userID }
+        // The id the name was first seen with stays: a scan or pull after the name changed hands never replaces it, so a
+        // folder from before 1.8 is still compared with its own account (audit 6, A6-M1).
+        if let userID, !userID.isEmpty, model.userID.isEmpty { model.userID = userID }
         if let fullName { model.fullName = fullName }
         if let options, let data = try? JSONEncoder().encode(options) { model.optionsJSON = data }
         if let newestSavedDate, newestSavedDate > model.newestSavedDate { model.newestSavedDate = newestSavedDate }

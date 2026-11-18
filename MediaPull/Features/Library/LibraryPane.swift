@@ -88,7 +88,7 @@ struct FolderTree: View {
         let rootNodes = library.treeNodes()
         List(selection: Binding(get: { library.selectedFolder?.path }, set: { path in
             library.selectedFolder = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            model.focusedPane = .library
+            model.noteLibraryFocus()
         })) {
             ForEach(rootNodes) { node in
                 OutlineGroup(node, children: \.children) { child in
@@ -101,7 +101,7 @@ struct FolderTree: View {
         // The tree is the Library pane at work, as its grid is: ⌘F and ⌘R then act on the Library (audit 5, B5-m4).
         .focused($focused)
         .onChange(of: focused) { _, now in
-            if now { model.focusedPane = .library }
+            if now { model.noteLibraryFocus() }
         }
         // Return renames and ⌘⌫ moves to the Trash, as in the grid (R-1707). Key presses reach the tree only while it has
         // the keyboard, never while typing in the web page; Collect must be shown, since it stays mounted behind Organise.

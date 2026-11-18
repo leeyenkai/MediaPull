@@ -8,7 +8,7 @@ import MediaPullLibrary
 extension AppModel {
     func applyChange(_ plan: OrganisePlan, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> JournalEntry {
         let entry = await journal.run(plan, progress: progress)
-        await followMoves(entry.moves)
+        await followMoves(entry.moves, changedBy: entry.id)
         // A window's save folder or Organise folder that went to the Trash is left for the folder above (audit 4, B4-m2).
         let trashed = entry.steps.compactMap { step -> String? in
             if case let .trash(original, _) = step { original } else { nil }
@@ -27,24 +27,29 @@ extension AppModel {
         // ⌘Z and the History's Undo can both reach an entry: the second one does nothing.
         guard let entry = await journal.entry(id), !entry.undone else { return nil }
         let report = await journal.undo(id)
-        await followMoves(report.moves)
+        await followMoves(report.moves, changedBy: id)
         fileChangeRevision += 1
         return report
     }
 
     func redoChange(_ id: UUID) async -> UndoReport {
         let report = await journal.redo(id)
-        await followMoves(report.moves)
+        await followMoves(report.moves, changedBy: id)
         fileChangeRevision += 1
         return report
     }
 
-    private func followMoves(_ moves: [(from: String, to: String)]) async {
+    private func followMoves(_ moves: [(from: String, to: String)], changedBy id: UUID) async {
         guard !moves.isEmpty else { return }
+        // Other changes' undo records follow a folder renamed or moved, so their Undo puts things back where the folder is
+        // now, never into a folder made again at its old path (audit 6, B6-M1).
+        await journal.followFolderMoves(moves, except: id)
         await analysis.noteMoves(moves)
         await store?.moveArchivePaths(moves)
         await accountFolders.moveFolders(moves)
         await refreshAccountFolders()
+        // Queued and running jobs show where their folder is now (audit 6, B6-m8).
+        LibraryModel.followQueuedDestinations(moves)
         // A window's save folder moved or renamed (in Organise, say) is followed, so Save goes where it went (B3-m8).
         for window in windows {
             let held = [window.library.selectedFolder, window.library.otherFolder].compactMap { $0?.standardizedFileURL.path }

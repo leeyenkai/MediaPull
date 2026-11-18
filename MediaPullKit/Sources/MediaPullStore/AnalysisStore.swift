@@ -248,8 +248,8 @@ public actor AnalysisStore {
         for face in (try? modelContext.fetch(descriptor)) ?? [] where out.count < limit {
             let sha = face.sha256
             var paths = FetchDescriptor<FilePathModel>(predicate: #Predicate { $0.sha256 == sha }, sortBy: [SortDescriptor(\.path)])
-            paths.fetchLimit = 1
-            guard let path = try? modelContext.fetch(paths).first?.path else { continue }
+            if heldPaths.isEmpty { paths.fetchLimit = 1 }
+            guard let path = (try? modelContext.fetch(paths))?.first(where: { !heldPaths.contains($0.path) })?.path else { continue }
             let faceKey = String(face.key.split(separator: "|").last ?? "")
             out.append((face.key, path, record(sha256: sha)?.faces.first { $0.key == faceKey }))
         }
@@ -405,9 +405,20 @@ public actor AnalysisStore {
         }
     }
 
+    /// Paths of files in the Trash that Undo can still put back: their faces and corrections are kept, but they are not
+    /// counted or shown in People until they are back (audit 6, B6-m7).
+    private var heldPaths: Set<String> = []
+
+    public func setHeld(_ paths: Set<String>) {
+        heldPaths = paths
+    }
+
     public func people() -> [PersonInfo] {
         var counts: [UUID: Int] = [:]
-        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] {
+        // Checksums some file on disk holds; nil when nothing is held, so every face counts.
+        let shown: Set<String>? = heldPaths.isEmpty ? nil : Set(((try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? [])
+            .filter { !heldPaths.contains($0.path) }.map(\.sha256))
+        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] where shown?.contains(face.sha256) ?? true {
             if let id = face.personID {
                 counts[id, default: 0] += 1
             }

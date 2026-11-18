@@ -279,7 +279,10 @@ public enum AccountFolders {
         // A folder named after the account that holds nothing recognisable (Plain layout, older saves) is still its folder.
         // Found by its real spelling, whatever the letter case.
         let wanted = FileNaming.safeTopFolder(account).lowercased()
-        if let named = subfolders(saveFolder).first(where: { $0.lastPathComponent.lowercased() == wanted }),
+        // Hashtags and Saved posts are never an account's folder, even one named like them (audit 6, A6-m5).
+        let collections = [SaveTarget.tagsFolder, SaveTarget.savedFolder].map { $0.lowercased() }
+        if !collections.contains(wanted),
+           let named = subfolders(saveFolder).first(where: { $0.lastPathComponent.lowercased() == wanted }),
            dominantAccount(in: named) == nil
         {
             return (named, saveFolder)
@@ -326,6 +329,9 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     /// The Instagram user id of the account this folder holds: a name taken over by someone else is never pulled into it
     /// (SPEC 23, audit 4, C4-M4).
     public var userID: String?
+    /// The folder's identity on its disk (device and file number), which stays through renames and moves and the Trash:
+    /// another folder made later at the same path is told apart from it (audit 6, C6-m2). Nil for older records.
+    public var folderNumber: String?
 
     /// Whether an update or Find Missing stopped part way and can be continued.
     public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
@@ -335,7 +341,14 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
         self.account = account.lowercased()
         path = folder.standardizedFileURL.path
         bookmark = try? folder.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        folderNumber = Self.number(of: folder)
         keys = []
+    }
+
+    static func number(of folder: URL) -> String? {
+        var info = stat()
+        guard stat(folder.path, &info) == 0 else { return nil }
+        return "\(info.st_dev):\(info.st_ino)"
     }
 }
 
@@ -404,6 +417,8 @@ public actor AccountFolderStore {
             guard let url = Self.resolve(record), !FileFlags.isInTrash(url) else { continue }
             let path = url.standardizedFileURL.path
             guard path != record.path, FileManager.default.fileExists(atPath: path) else { continue }
+            // A job queued with the old path still finds it (audit 6, C6-M2).
+            formerPaths[Self.key(record.path)] = id
             record.path = path
             record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             records[id] = record
@@ -475,7 +490,21 @@ public actor AccountFolderStore {
         load()
         let key = Self.key(url.path)
         followMoves()
+        // A record of another folder that was at this path (since trashed or deleted) belongs to that folder: a new folder
+        // made at the path starts afresh, with none of its places, items or account id (audit 6, C6-m2). The old record
+        // goes: nothing can be put back at a path another folder now holds.
+        let number = AccountFolderRecord.number(of: url)
+        for other in records.values where Self.key(other.path) == key && other.account == account.lowercased()
+            && other.folderNumber != nil && number != nil && other.folderNumber != number
+        {
+            forget(other.id)
+        }
         if var existing = records.values.first(where: { Self.key($0.path) == key && $0.account == account.lowercased() }) {
+            if existing.folderNumber == nil, let number {
+                existing.folderNumber = number
+                records[existing.id] = existing
+                save(existing)
+            }
             // The folder's spelling as it is now.
             let path = url.standardizedFileURL.path
             // The bookmark is made again from the folder in hand: one made for an earlier folder at this path (now in the

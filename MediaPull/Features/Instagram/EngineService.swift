@@ -325,6 +325,8 @@ final class EngineService {
         // Resume continues whichever walk the job ran last: after Retry Failed, that is the full walk, not the original
         // update (audit 5, C5-M2).
         let running = PullRun(draft: draft)
+        // The save folder is followed if it is renamed or moved before the job (or its Retry or Resume) runs (audit 6, C6-M3).
+        running.rootBookmark = root.flatMap { try? $0.url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) }
         job.resume = { [weak self, weak job, weak window] in
             guard let self, let job else { return }
             job.state = .queued
@@ -334,7 +336,8 @@ final class EngineService {
             let draft = running.draft
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
                 guard let job else { return }
-                await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: true)
+                await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: true,
+                                    run: running)
             }
         }
         // Retry Failed walks the whole listing again with no early stop, skipping what the folder has, so a file that failed
@@ -348,18 +351,20 @@ final class EngineService {
             job.finishedAt = nil
             job.lastCursor = nil
             job.placeID = UUID()
-            var walk = draft
+            var walk = running.draft
             walk.continueFrom = nil
             if walk.postURL == nil, walk.hashtag == nil { walk.incremental = false }
             running.draft = walk
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
                 guard let job else { return }
-                await self?.runPull(job: job, draft: walk, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
+                await self?.runPull(job: job, draft: walk, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false,
+                                    run: running)
             }
         }
         enqueueInstagram(job: job) { [weak self, weak job, weak window] in
             guard let job else { return }
-            await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
+            await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false,
+                                run: running)
         }
         // A one-click update uses the remembered choices without changing them (D-80).
         // A story link or a single post chose its content from the address: that is not the account's choice either.
@@ -423,9 +428,27 @@ final class EngineService {
     }
 
     private func runPull(job: Job, draft: PullDraft, root: SaveDestination?, scanOnly: Bool, window: WindowModel?, bridge: BridgeClient,
-                         resuming: Bool) async
+                         resuming: Bool, run: PullRun) async
     {
         if case .cancelled = job.state { return }
+        // Nothing is ever saved into a save folder that went away, nor made again at its old path: one renamed or moved
+        // since the job was queued is followed (audit 6, C6-M3).
+        var root = root
+        if !scanOnly, let chosen = root, !OperationJournal.isFolder(chosen.url) {
+            let bookmark = run.rootBookmark
+            let followed = await Task.detached(priority: .userInitiated) { () -> URL? in
+                var stale = false
+                guard let bookmark, let url = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting],
+                                                       relativeTo: nil, bookmarkDataIsStale: &stale),
+                    OperationJournal.isFolder(url), !FileFlags.isInTrash(url) else { return nil }
+                return url.standardizedFileURL
+            }.value
+            guard let followed else {
+                app.jobs.finish(job, .failed("“\(chosen.url.lastPathComponent)” is no longer there. It may have been moved to the Trash."))
+                return
+            }
+            root = SaveDestination(url: followed, layout: chosen.layout)
+        }
         guard canRunInstagram else {
             job.state = .blocked(gateMessage ?? "Instagram is not available right now.")
             return
@@ -503,6 +526,8 @@ final class EngineService {
             }
             place = found
             job.destination = found.folder
+            // Retry and Resume find this folder by its record, wherever it goes (audit 6, C6-M2).
+            if let record = found.record { run.remember(record.id, folder: found.folder) }
         }
         // Hashtags, saved posts and the stories tray go beside the accounts, never inside an account's folder (D-52, audit 4,
         // C4-m10).
@@ -515,7 +540,10 @@ final class EngineService {
                 (AccountFolders.detect(base, stopAt: libraryRoot), AccountFolders.collectionFolder(containing: base, root: libraryRoot))
             }.value
             if let around = collection ?? detected?.folder ?? app.accountFolder(containing: base).map({ URL(fileURLWithPath: $0.path) }) {
-                hashtagBase = around.deletingLastPathComponent()
+                // Beside the account's folder, but never outside the library: a library folder that is an account's keeps
+                // them inside it (D-52, audit 6, A6-m3).
+                let isLibrary = libraryRoot.map { AccountFolderStore.key($0.path) == AccountFolderStore.key(around.path) } ?? false
+                hashtagBase = isLibrary && collection == nil ? around : around.deletingLastPathComponent()
                 if draft.hashtag != nil {
                     job.destination = hashtagBase?.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true)
                 } else {
@@ -601,6 +629,7 @@ final class EngineService {
                 record.userID = accountUserID
             }
             place?.record = record
+            run.remember(record.id, folder: folder)
             return record
         }
         // Single posts, Reels, stories and highlights go into their account's folder (D-78): found once per account, and
@@ -613,11 +642,19 @@ final class EngineService {
             guard let record = found.record else { return found.folder }
             return await app.accountFolders.currentFolder(of: record.id)
         }
-        func rememberPost(_ key: String, account user: String) async {
+        func rememberPost(_ key: String, account user: String, owner: String?) async {
             guard let folder = postPlaces[user]?.folder, FileManager.default.fileExists(atPath: folder.path) else { return }
-            let record = await app.accountFolders.record(account: user, folder: folder)
+            var record = await app.accountFolders.record(account: user, folder: folder)
+            if let owner, record.userID == nil {
+                await app.accountFolders.update(record.id, userID: owner)
+                record.userID = owner
+            }
             await app.accountFolders.addKeys([key], to: record.id)
+            // The folder is followed from now on, even one this pull made (audit 6, A6-m2).
+            postPlaces[user]?.record = record
         }
+        // Accounts the engine looked up in this pull (tray owners included), by name.
+        var seenIDs: [String: String] = [:]
         func remember(_ key: String, subcategory: String) async {
             // Others' stories and saved posts belong to other folders, not to this account's record.
             guard !["stories-tray", "saved", "collection"].contains(subcategory) else { return }
@@ -649,6 +686,7 @@ final class EngineService {
                     // The bridge reports the account when it looks the name up, before any file (audit 5, A5-M1); other
                     // accounts a listing looks up are not this folder's.
                     let isThisAccount = info.username.lowercased() == account.lowercased()
+                    if let id = info.userID?.nonEmpty { seenIDs[info.username.lowercased()] = id }
                     if isAccount, isThisAccount, place != nil, let id = info.userID?.nonEmpty {
                         if let folderRecord = place?.record {
                             let expected = folderRecord.userID ?? (folderRecord.keys.isEmpty ? nil : stored?.userID.nonEmpty)
@@ -668,7 +706,8 @@ final class EngineService {
                     if isAccount, isThisAccount {
                         await app.store?.updateAccount(account, userID: info.userID, fullName: info.fullName)
                     }
-                    accounts[account] = info
+                    // Only this account's card: tray owners looked up on the way are not it (audit 6, A6-m1).
+                    if isThisAccount { accounts[account] = info }
                 case let .item(item):
                     job.found += 1
                     if job.state != .running { job.state = .running }
@@ -725,6 +764,14 @@ final class EngineService {
                         } else {
                             continue
                         }
+                        // A post or story of whoever has the name now never goes into the folder of the account that had it
+                        // (D-88, audit 6, A6-M2).
+                        if let folderID = found.record?.userID, let owner = context.ownerID ?? seenIDs[user], owner != folderID {
+                            job.failed += 1
+                            job.failures.append((file.key, "@\(user) is now a different Instagram account, so this was not saved into "
+                                    + "“\(found.folder.lastPathComponent)”."))
+                            continue
+                        }
                         target.accountUsername = user
                         target.accountFolder = found.folder
                         target.accountFolderExisted = found.record != nil
@@ -755,7 +802,7 @@ final class EngineService {
                         if place != nil, place?.record == nil { _ = await folderRecord() }
                         await remember(file.key, subcategory: context.subcategory)
                         if draft.postURL != nil || context.subcategory == "stories-tray", let user = context.username?.lowercased() {
-                            await rememberPost(file.key, account: user)
+                            await rememberPost(file.key, account: user, owner: context.ownerID ?? seenIDs[user])
                         }
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
@@ -765,7 +812,7 @@ final class EngineService {
                         savedFromStaging[file.path.path] = url
                         await remember(file.key, subcategory: context.subcategory)
                         if draft.postURL != nil || context.subcategory == "stories-tray", let user = context.username?.lowercased() {
-                            await rememberPost(file.key, account: user)
+                            await rememberPost(file.key, account: user, owner: context.ownerID ?? seenIDs[user])
                         }
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
@@ -1056,9 +1103,9 @@ final class EngineService {
         draft.content = draft.content.filter(\.isProfileMedia)
         if draft.content.isEmpty { draft.content = app.preferences.defaultContent.filter(\.isProfileMedia) }
         draft.accountFolder = folder
-        draft.accountFolderID = await app.accountFolders.all().first {
-            AccountFolderStore.key($0.path) == key && $0.account == account.lowercased()
-        }?.id
+        // The folder gets its record now if it has none (one found by its metadata), so the queued update finds it by that
+        // wherever it goes before it starts (audit 6, C6-M2).
+        draft.accountFolderID = await app.accountFolders.record(account: account, folder: folder).id
         draft.findMissing = findMissing
         draft.incremental = !findMissing
         draft.folderName = folder.lastPathComponent
@@ -1451,7 +1498,10 @@ final class EngineService {
         app.jobs.add(job)
         let account = "gallery:\(category):\(url.absoluteString.lowercased())"
         // Retry Failed downloads the address again, skipping what was saved (R-1903).
-        job.retry = { [weak self, weak window] in
+        job.retry = { [weak self, weak window, weak job] in
+            // The new download takes over the failed files; this one no longer offers them (audit 6, A6-m4).
+            job?.failed = 0
+            job?.failures = []
             _ = self?.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: range, from: from, to: to,
                                            onlyNew: true, root: root, window: window)
         }
@@ -1639,9 +1689,18 @@ nonisolated final class OneShot: Sendable {
     }
 }
 
-/// The draft a pull job runs now, shared by its Resume and Retry Failed.
+/// The draft a pull job runs now, shared by its Resume and Retry Failed, and how to find its folders again.
 @MainActor
 private final class PullRun {
     var draft: PullDraft
+    var rootBookmark: Data?
+
     init(draft: PullDraft) { self.draft = draft }
+
+    /// Once the account's folder has a record, Retry and Resume find it by that, not by a path (audit 6, C6-M2, C6-M3).
+    func remember(_ id: UUID, folder: URL) {
+        guard draft.postURL == nil, draft.hashtag == nil else { return }
+        draft.accountFolderID = id
+        draft.accountFolder = folder
+    }
 }

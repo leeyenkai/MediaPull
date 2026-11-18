@@ -235,7 +235,7 @@ public enum FolderOperations {
         while true {
             let candidate = n == 1 ? name : (ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
             let url = folder.appendingPathComponent(candidate)
-            let key = url.standardizedFileURL.path.lowercased()
+            let key = OrganisePlan.key(url)
             if !taken.contains(key), !FileManager.default.fileExists(atPath: url.path),
                !FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: url).path) || ext.isEmpty
             {
@@ -402,11 +402,11 @@ public enum FolderOperations {
         let keeping = Set(wanted.filter { item in
             item.stem.isEmpty || item.stem + (item.file.pathExtension.isEmpty ? "" : "." + item.file.pathExtension)
                 == item.file.lastPathComponent
-        }.map { $0.file.standardizedFileURL.path.lowercased() })
-        let vacated = Set(files.map { $0.standardizedFileURL.path.lowercased() }).subtracting(keeping)
+        }.map { OrganisePlan.key($0.file) })
+        let vacated = Set(files.map { OrganisePlan.key($0) }).subtracting(keeping)
         var chosen = keeping
         func free(_ url: URL) -> Bool {
-            let key = url.standardizedFileURL.path.lowercased()
+            let key = OrganisePlan.key(url)
             guard !chosen.contains(key) else { return false }
             if vacated.contains(key) { return true }
             return !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
@@ -418,11 +418,11 @@ public enum FolderOperations {
             let folder = file.deletingLastPathComponent()
             var destination = folder.appendingPathComponent(stem + ext)
             var counter = 2
-            while !free(destination), destination.standardizedFileURL.path.lowercased() != file.standardizedFileURL.path.lowercased() {
+            while !free(destination), OrganisePlan.key(destination) != OrganisePlan.key(file) {
                 destination = folder.appendingPathComponent("\(stem) \(counter)\(ext)")
                 counter += 1
             }
-            chosen.insert(destination.standardizedFileURL.path.lowercased())
+            chosen.insert(OrganisePlan.key(destination))
             if destination.lastPathComponent == file.lastPathComponent {
                 plan.unchanged += 1
                 continue
@@ -431,8 +431,8 @@ public enum FolderOperations {
             plan.renamed += 1
         }
         // A destination another file still holds when it is reached needs two steps: everything to a temporary name first.
-        let sources = Set(renames.map { $0.source.standardizedFileURL.path.lowercased() })
-        let swaps = renames.contains { sources.contains($0.destination.standardizedFileURL.path.lowercased()) }
+        let sources = Set(renames.map { OrganisePlan.key($0.source) })
+        let swaps = renames.contains { sources.contains(OrganisePlan.key($0.destination)) }
         if swaps {
             let stamp = UUID().uuidString.prefix(8)
             let temporary = renames.enumerated().map { index, rename in

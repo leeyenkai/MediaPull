@@ -99,6 +99,36 @@ public actor OperationJournal {
         return paths
     }
 
+    /// Folders renamed or moved since (by another change, or a library folder followed after a Finder rename): the
+    /// paths in every other journal follow them, so Undo and Redo work where the folder is now (audit 6, B6-M1). Moves of
+    /// single files leave other journals alone; only folders are followed.
+    public func followFolderMoves(_ moves: [(from: String, to: String)], except id: UUID?) {
+        let folders = moves.filter { Self.isFolder(URL(fileURLWithPath: $0.to)) }
+        guard !folders.isEmpty else { return }
+        func moved(_ path: String) -> String {
+            for move in folders where path == move.from || path.hasPrefix(move.from + "/") {
+                return move.to + path.dropFirst(move.from.count)
+            }
+            return path
+        }
+        func moved(_ step: JournalStep) -> JournalStep {
+            switch step {
+            case let .makeFolder(path): .makeFolder(moved(path))
+            case let .move(from, to, size, modified): .move(from: moved(from), to: moved(to), size: size, modified: modified)
+            case let .clone(from, to, files): .clone(from: moved(from), to: moved(to), files: files)
+            case let .trash(original, trashed): .trash(original: moved(original), trashed: trashed)
+            }
+        }
+        for var entry in entries() where entry.id != id {
+            let steps = entry.steps.map(moved), undoneSteps = entry.undoneSteps?.map(moved), root = moved(entry.root)
+            guard steps != entry.steps || undoneSteps != entry.undoneSteps || root != entry.root else { continue }
+            entry.steps = steps
+            entry.undoneSteps = undoneSteps
+            entry.root = root
+            save(entry)
+        }
+    }
+
     /// Forgets journals older than `days` (the files they describe are untouched).
     public func prune(olderThan days: Int) {
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
@@ -150,7 +180,10 @@ public actor OperationJournal {
         // A folder the plan relies on that went away since its preview is never made again (audit 4, B4-M1). Every plan
         // works inside its root, so a root renamed, moved or trashed since (in the Finder or in another pane) stops it
         // too: making the missing folders would recreate it at its old path (audit 5, B5-M1, B5-M2).
-        if let missing = ((plan.rootExisted ? [plan.root] : []) + plan.requiredFolders).first(where: { !Self.isFolder($0) }) {
+        // A root nobody had made yet is made, but never the folders above it: a folder already gone when the plan was made
+        // (a save folder whose parent was renamed in the Finder) is not made again either (audit 6, B6-m1).
+        let required = [plan.rootExisted ? plan.root : plan.root.deletingLastPathComponent()] + plan.requiredFolders
+        if let missing = required.first(where: { !Self.isFolder($0) }) {
             entry.failures = ["“\(missing.lastPathComponent)” is no longer there, so nothing was changed."]
             entry.finished = true
             return entry
@@ -377,6 +410,11 @@ public actor OperationJournal {
     public func redo(_ id: UUID) -> UndoReport {
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
+        // As when it first ran: a folder it worked in that went away since is never made again (audit 6, B6-M1).
+        guard Self.isFolder(URL(fileURLWithPath: entry.root)) else {
+            report.skipped.append("“\(URL(fileURLWithPath: entry.root).lastPathComponent)” is no longer there, so nothing was done again.")
+            return report
+        }
         for unit in Self.units(steps) {
             guard redo(unit[0], entry: &entry, report: &report) else { continue }
             for step in unit.dropFirst() {
@@ -395,7 +433,7 @@ public actor OperationJournal {
             switch step {
             case let .makeFolder(path):
                 if !fm.fileExists(atPath: path) {
-                    try fm.createDirectory(at: URL(fileURLWithPath: path), withIntermediateDirectories: true)
+                    try fm.createDirectory(at: URL(fileURLWithPath: path), withIntermediateDirectories: false)
                     entry.steps.append(.makeFolder(path))
                 }
                 return true
@@ -437,8 +475,12 @@ public actor OperationJournal {
     /// Whether a step that could not be undone might be later: its file's folder is not there at all.
     private func canRetry(_ step: JournalStep) -> Bool {
         switch step {
-        case let .move(_, to, _, _), let .clone(_, to, _): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
-        case .trash, .makeFolder: false
+        case let .move(from, to, _, _):
+            !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
+                || !Self.isFolder(URL(fileURLWithPath: from).deletingLastPathComponent())
+        case let .clone(_, to, _): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
+        case let .trash(original, _): !Self.isFolder(URL(fileURLWithPath: original).deletingLastPathComponent())
+        case .makeFolder: false
         }
     }
 
@@ -496,8 +538,15 @@ public actor OperationJournal {
                 report.skipped.append("\(dest.lastPathComponent): another file now has its old name")
                 return false
             }
+            // Undo never makes a folder: one renamed, moved or deleted since is not made again at its old path; the item stays
+            // where it is and Undo can be tried again (audit 6, B6-M1).
+            let home = URL(fileURLWithPath: from).deletingLastPathComponent()
+            guard Self.isFolder(home) else {
+                report.skipped.append("\(dest.lastPathComponent) was left where it is: its folder “\(home.lastPathComponent)” "
+                    + "is no longer there")
+                return false
+            }
             do {
-                try fm.createDirectory(at: URL(fileURLWithPath: from).deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.moveItem(at: dest, to: URL(fileURLWithPath: from))
                 if !to.hasSuffix(".json") {
                     report.restored += 1
@@ -550,8 +599,12 @@ public actor OperationJournal {
                 report.skipped.append("\(name) exists again")
                 return false
             }
+            let home = URL(fileURLWithPath: original).deletingLastPathComponent()
+            guard Self.isFolder(home) else {
+                report.skipped.append("\(name) was left in the Trash: its folder “\(home.lastPathComponent)” is no longer there")
+                return false
+            }
             do {
-                try fm.createDirectory(at: URL(fileURLWithPath: original).deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
                 if !original.hasSuffix(".json") {
                     report.restored += 1

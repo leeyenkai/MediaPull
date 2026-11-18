@@ -12,12 +12,9 @@ struct PreviewPane: View {
     var body: some View {
         VStack(spacing: 0) {
             PaneTitleBar(title: title, pane: .preview, model: model) {
-                if model.editorRequest == nil, let subject = model.previewSubject, canEdit(subject) {
+                if model.canEditPreview {
                     Button {
-                        switch subject {
-                        case let .item(id): model.edit(id)
-                        case let .file(url): model.openEditor(EditorRequest(subject: .file(url)))
-                        }
+                        model.editPreview()
                     } label: {
                         Image(systemName: "crop.rotate")
                     }
@@ -36,13 +33,6 @@ struct PreviewPane: View {
         case let .file(url): return url.lastPathComponent
         case let .item(id): return model.itemsByID[id].flatMap { $0.best.flatMap { URLNormalizer.baseName(of: $0.url) } } ?? "Preview"
         case nil: return "Preview"
-        }
-    }
-
-    private func canEdit(_ subject: PreviewSubject) -> Bool {
-        switch subject {
-        case let .item(id): model.itemsByID[id] != nil
-        case let .file(url): FileManager.default.fileExists(atPath: url.path)
         }
     }
 

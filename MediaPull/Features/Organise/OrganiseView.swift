@@ -372,10 +372,12 @@ struct OrganiseWorkPane: View {
                         Text("\(organise.source.selectedURLs.count) selected in the source").font(.callout.weight(.semibold))
                         HStack {
                             Button("Copy to \(target.lastPathComponent)") {
-                                organise.run(FolderOperations.copy(organise.source.selectedURLs, to: target))
+                                let chosen = organise.source.selectedURLs
+                                organise.runPlanned { FolderOperations.copy(chosen, to: target) }
                             }
                             Button("Move to \(target.lastPathComponent)") {
-                                organise.run(FolderOperations.move(organise.source.selectedURLs, to: target))
+                                let chosen = organise.source.selectedURLs
+                                organise.runPlanned { FolderOperations.move(chosen, to: target) }
                             }
                         }
                         .controlSize(.small)
@@ -402,7 +404,8 @@ struct OrganiseWorkPane: View {
             Text("Changes you make appear here, and each can be undone.").font(.callout).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List(organise.history.prefix(50)) { entry in
+            // Every change still kept can be undone (R-3806), so all are listed; the list draws only the rows in view.
+            List(organise.history) { entry in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(entry.title).lineLimit(1)

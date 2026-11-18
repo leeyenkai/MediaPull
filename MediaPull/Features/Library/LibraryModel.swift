@@ -306,6 +306,28 @@ final class LibraryModel: MediaGridOwner {
         }
     }
 
+    /// Folders MediaPull moved or renamed: the folders of jobs not yet finished follow, so an update queued for an account
+    /// folder is still that folder's after a rename (audit 6, B6-m8). The jobs find their folders by record when they start;
+    /// this keeps what they show and `isUpdating` current until then.
+    static func followQueuedDestinations(_ moves: [(from: String, to: String)]) {
+        guard !moves.isEmpty else { return }
+        for job in AppModel.shared.jobs.jobs where job.state.canCancel {
+            guard let old = job.destination else { continue }
+            let new = moves.reduce(old) { followed($0, from: $1.from, to: $1.to) }
+            if new != old { job.destination = new }
+        }
+    }
+
+    /// `url` after the folder or file `from` became `to`, compared as the volume compares names; unchanged when outside it.
+    nonisolated static func followed(_ url: URL, from: String, to: String) -> URL {
+        let key = AccountFolderStore.key(url.path), top = AccountFolderStore.key(from)
+        guard key == top || key.hasPrefix(top + "/") else { return url }
+        let depth = key.split(separator: "/").count - top.split(separator: "/").count
+        let rest = url.standardizedFileURL.pathComponents.suffix(depth)
+        let path = rest.isEmpty ? to : to + "/" + rest.joined(separator: "/")
+        return URL(fileURLWithPath: path, isDirectory: url.hasDirectoryPath)
+    }
+
     /// Update an account folder, or find what it is missing (D-79, D-80).
     func update(_ match: AccountFolders.Match, findMissing: Bool = false) {
         Task { [weak self] in
@@ -973,7 +995,7 @@ final class LibraryModel: MediaGridOwner {
 
     func gridAppeared(_: String) {}
 
-    func gridFocused() { window?.focusedPane = .library }
+    func gridFocused() { window?.noteLibraryFocus() }
 
     func gridWriter(_ id: String) -> NSPasteboardWriting? {
         if listFolders.isFolder(id) { return URL(fileURLWithPath: id, isDirectory: true) as NSURL }

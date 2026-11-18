@@ -177,11 +177,10 @@ struct AppCommands: Commands {
         }
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Edit Selected Item…") {
-                if let window, let id = window.selection.first, window.selection.count == 1 { window.edit(id) }
-            }
-            .keyboardShortcut("e")
-            .disabled(window?.selection.count != 1 || window?.section != .collect)
+            // What the Preview pane's edit button does, for whatever it shows: an extracted item or a Library file.
+            Button("Edit…") { window?.editPreview() }
+                .keyboardShortcut("e")
+                .disabled(!(window?.canEditPreview ?? false))
             // Collect's commands never act on it while Organise is shown and it cannot be seen.
             Button("Select All Media") { window?.selectAll() }
                 .keyboardShortcut("a", modifiers: [.command, .option])

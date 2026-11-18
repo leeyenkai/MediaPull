@@ -584,6 +584,25 @@ final class SelfTestRunner {
         let keptSidecar = replaced.map { FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: $0).path) } ?? false
         note("editor: \(sameName && keptSidecar ? "PASS" : "FAIL") an edit saved in place keeps the name "
             + "(\(replaced?.lastPathComponent ?? "not saved"), metadata file \(keptSidecar))")
+        // An edit of an extracted item saved before is saved as a new file, not skipped as already saved (audit 6, A6-M3).
+        let savedItem = model.items.first { item in
+            guard item.kind == .image, case let .saved(url)? = model.states[item.id] else { return false }
+            return ["jpg", "jpeg", "png"].contains(url.pathExtension.lowercased()) && (ImageConversion.analyze(url)?.width ?? 0) >= 64
+        }
+        guard let savedItem, let folder = model.saveFolder else {
+            note("editor: FAIL no saved extracted image to edit again")
+            return
+        }
+        let count = { (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)?.allObjects.count) ?? 0 }
+        let filesBefore = count()
+        let itemEditor = EditorModel(request: EditorRequest(subject: .item(savedItem.id)), window: model)
+        await itemEditor.load()
+        itemEditor.rotate(clockwise: true)
+        await itemEditor.settled()
+        let started = await itemEditor.saveItem(to: folder)
+        await waitUntil(timeout: 60) { AppModel.shared.jobs.activeCount == 0 }
+        let added = count() - filesBefore
+        note("editor: \(started && added > 0 ? "PASS" : "FAIL") an edited copy of a saved item is saved (\(added) files added)")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).

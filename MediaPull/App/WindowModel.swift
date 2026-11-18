@@ -775,14 +775,41 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var searchFocusTokens: [PaneID: Int] = [:]
 
     /// The Library or Organise pane the keyboard is working in, or nil when it is the page or the Extracted pane: the
-    /// pane last clicked, unless the web page has the keyboard now. In Organise, its Source by default.
+    /// pane last clicked, unless the web page or a text field outside the Library has the keyboard now. In Organise, its
+    /// Source by default.
     var keyboardFolderPane: PaneID? {
         if section == .organise {
             if let focusedPane, [.organiseSource, .organiseTarget].contains(focusedPane), isShowing(focusedPane) { return focusedPane }
             return .organiseSource
         }
-        guard !ReadOnlyWebView.isTyping(in: hostWindow), focusedPane == .library, isShowing(.library) else { return nil }
-        return .library
+        guard !ReadOnlyWebView.isTyping(in: hostWindow), isShowing(.library) else { return nil }
+        // Typing in a field: the Library's own (its search, a folder being renamed) keeps ⌘F and ⌘R on the Library; any
+        // other (the address, the Downloads fields) leaves ⌘R to reload and ⌘F to the Extracted filter (audit 6, B6-m5).
+        if let responder = hostWindow?.firstResponder, responder is NSText || responder is NSTextField {
+            guard let libraryPaneView, Self.paneView(of: responder) === libraryPaneView else { return nil }
+            return .library
+        }
+        return focusedPane == .library ? .library : nil
+    }
+
+    /// The Library pane's view, noted when its grid, list or tree takes the keyboard, so a text field inside it is told
+    /// apart from the others.
+    @ObservationIgnored weak var libraryPaneView: NSView?
+
+    /// The Library is being worked in: the pane the keyboard is in is noted as its view.
+    func noteLibraryFocus() {
+        focusedPane = .library
+        if let view = hostWindow.flatMap({ Self.paneView(of: $0.firstResponder) }) { libraryPaneView = view }
+    }
+
+    /// The pane holding `responder`: its view directly inside the split view that arranges the panes.
+    static func paneView(of responder: NSResponder?) -> NSView? {
+        var view = responder as? NSView
+        while let current = view, let parent = current.superview {
+            if parent is NSSplitView { return current }
+            view = parent
+        }
+        return nil
     }
 
     /// ⌘F (SPEC 21): the search field of the Library or Organise pane being worked in, else the Extracted filter bar.
@@ -918,6 +945,24 @@ final class WindowModel: Identifiable, MediaGridOwner {
 
     func edit(_ id: String) {
         openEditor(EditorRequest(subject: .item(id)))
+    }
+
+    /// Whether the Preview pane's edit button is offered for what it shows (an extracted item or a Library file), and so ⌘E.
+    var canEditPreview: Bool {
+        guard section == .collect, editorRequest == nil, let subject = previewSubject else { return false }
+        switch subject {
+        case let .item(id): return itemsByID[id] != nil
+        case let .file(url): return FileManager.default.fileExists(atPath: url.path)
+        }
+    }
+
+    /// ⌘E and the Preview pane's edit button: the editor for what the pane shows (audit 6, B6-m6).
+    func editPreview() {
+        guard canEditPreview, let subject = previewSubject else { return }
+        switch subject {
+        case let .item(id): edit(id)
+        case let .file(url): openEditor(EditorRequest(subject: .file(url)))
+        }
     }
 
     /// Videos open the video editor (frames and trimming); everything else the image editor.

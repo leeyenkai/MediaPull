@@ -355,10 +355,10 @@ final class OrganisePane: MediaGridOwner {
         menu.addItem(.separator())
         if role == .source, let target = owner.targetFolder, target.standardizedFileURL != folder?.standardizedFileURL {
             menu.addItem(ActionMenuItem("Copy to “\(target.lastPathComponent)”") {
-                owner.run(FolderOperations.copy(chosen, to: target))
+                owner.runPlanned { FolderOperations.copy(chosen, to: target) }
             })
             menu.addItem(ActionMenuItem("Move to “\(target.lastPathComponent)”") {
-                owner.run(FolderOperations.move(chosen, to: target))
+                owner.runPlanned { FolderOperations.move(chosen, to: target) }
             })
         }
         // R-3803: any folder, chosen in a panel, as one change ⌘Z takes back.
@@ -370,7 +370,7 @@ final class OrganisePane: MediaGridOwner {
             panel.prompt = "Move Here"
             panel.directoryURL = self?.folder
             guard panel.runModal() == .OK, let destination = panel.url else { return }
-            owner.run(FolderOperations.move(chosen, to: destination))
+            owner.runPlanned { FolderOperations.move(chosen, to: destination) }
         })
         // Numbered in the order the pane shows them.
         let files = shown.filter { ids.contains($0.path) }.map(\.url)
@@ -550,9 +550,11 @@ final class OrganiseModel {
         Task { @MainActor in OrganiseModel.updateAnalysisFolders() }
     }
 
-    /// Opens the default library folder, in place, the first time Organise is shown (D-68).
+    /// Opens the default library folder, in place, the first time Organise is shown (D-68). History is read again: changes
+    /// made before then reached no Organise view (audit 6, B6-m3).
     func prepare() {
         if source.root == nil, let library = app.defaultRoot?.url { open(library) }
+        Task { await refreshHistory() }
     }
 
     var recentFolders: [URL] {
@@ -756,6 +758,20 @@ final class OrganiseModel {
         }
     }
 
+    /// Plans that walk whole folders or check many names (flatten, merge, copies and moves of a large selection) are made
+    /// off the main actor, as sorts and renames are (audit 6, B6-m2), then run or previewed as `run` does.
+    func runPlanned(_ reading: String? = nil, preview: Bool = false, note: String? = nil,
+                    _ make: @escaping @Sendable () -> OrganisePlan)
+    {
+        if let reading { working = reading }
+        Task { [weak self] in
+            let plan = await Task.detached(priority: .userInitiated) { make() }.value
+            guard let self else { return }
+            if let reading, self.working == reading { self.working = nil }
+            self.run(plan, preview: preview, note: note)
+        }
+    }
+
     func execute(_ plan: OrganisePlan, then finished: (@MainActor () -> Void)? = nil) {
         pending = nil
         message = nil
@@ -867,7 +883,7 @@ final class OrganiseModel {
         let roots = [source.root, target.root].compactMap(\.self)
         let fromOutside = urls.contains { url in roots.allSatisfy { !url.path.hasPrefix($0.path + "/") } }
         let copy = mode == .copy || fromOutside || NSEvent.modifierFlags.contains(.option)
-        run(copy ? FolderOperations.copy(urls, to: folder) : FolderOperations.move(urls, to: folder))
+        runPlanned { copy ? FolderOperations.copy(urls, to: folder) : FolderOperations.move(urls, to: folder) }
     }
 
     /// Makes "New Folder" through the journal, so it can be undone (R-3805), and starts renaming it in place.
@@ -887,18 +903,22 @@ final class OrganiseModel {
     }
 
     func flatten(_ folder: URL) {
-        run(FolderOperations.flatten(folder), preview: true,
-            note: "Every file from the subfolders moves up into “\(folder.lastPathComponent)”; the emptied folders go to the Trash.")
+        let note = "Every file from the subfolders moves up into “\(folder.lastPathComponent)”; the emptied folders go to the Trash."
+        runPlanned("Reading “\(folder.lastPathComponent)”…", preview: true, note: note) { FolderOperations.flatten(folder) }
     }
 
     func removeFolder(_ folder: URL) {
-        run(FolderOperations.removeSubfolders([folder]), preview: true,
-            note: "The folder's contents move up one level; the emptied folder goes to the Trash.")
+        runPlanned("Reading “\(folder.lastPathComponent)”…", preview: true,
+                   note: "The folder's contents move up one level; the emptied folder goes to the Trash.") {
+            FolderOperations.removeSubfolders([folder])
+        }
     }
 
     func merge(_ folder: URL, into other: URL) {
-        run(FolderOperations.merge(folder, into: other), preview: true,
-            note: "Folders with the same name are merged; “\(folder.lastPathComponent)” goes to the Trash once empty.")
+        runPlanned("Reading “\(folder.lastPathComponent)”…", preview: true,
+                   note: "Folders with the same name are merged; “\(folder.lastPathComponent)” goes to the Trash once empty.") {
+            FolderOperations.merge(folder, into: other)
+        }
     }
 
     /// Folders next to `folder`, for Merge Into.

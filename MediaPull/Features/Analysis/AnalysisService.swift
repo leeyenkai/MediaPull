@@ -14,6 +14,8 @@ final class AnalysisService {
     /// Bumped when new results arrive, at most every couple of seconds.
     var revision = 0
     var peopleRevision = 0
+    /// Files in the Trash that Undo can still bring back, kept out of People until then.
+    @ObservationIgnored var heldPaths: Set<String> = []
     var progress: (done: Int, total: Int)?
     var pauseReason: String?
     var userPaused = false
@@ -209,12 +211,21 @@ final class AnalysisService {
                                                    noPicture: skip, keep: keep, holding: holding)
             // Files MediaPull moved to the Trash that Undo can still put back keep their faces and corrections until the
             // Trash lets them go (audit 5, B5-M3).
+            var held = Set<String>()
             if !gone.isEmpty {
                 let restorable = await journal.restorablePaths()
-                if !restorable.isEmpty { gone.removeAll { restorable.containsPathOrParent(of: $0) } }
+                if !restorable.isEmpty {
+                    held = Set(gone.filter { restorable.containsPathOrParent(of: $0) })
+                    gone.removeAll { held.contains($0) }
+                }
             }
+            await store.setHeld(held)
             await store.forget(paths: gone)
             guard let self else { return }
+            if held != self.heldPaths {
+                self.heldPaths = held
+                await self.refreshPeople()
+            }
             if !work.isEmpty {
                 beginJob(total: work.count)
                 job?.task = scanTask
