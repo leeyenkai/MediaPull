@@ -787,7 +787,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 return pane
             }
             if let focusedPane, panes.contains(focusedPane), isShowing(focusedPane) { return focusedPane }
-            return .organiseSource
+            // A hidden pane is never acted on (audit 9, B9-m5).
+            return panes.first(where: isShowing)
         }
         guard !ReadOnlyWebView.isTyping(in: hostWindow), isShowing(.library) else { return nil }
         // Typing in a field: the Library's own (its search, a folder being renamed) keeps ⌘F and ⌘R on the Library; any

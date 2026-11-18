@@ -69,14 +69,15 @@ final class Audit8Tests: XCTestCase {
         XCTAssertTrue(exists("Out/Cats/x.jpg"))
         XCTAssertFalse(exists("Out/Dogs/x.jpg"))
 
-        // Kept and renamed: Redo goes into the folder where it is now, and makes nothing at its old path.
+        // Kept and renamed: Redo leaves the file and makes nothing at the old path (D-93).
         let y = file("in/y.jpg")
         file("Year/2024/keep.jpg")
         let second = await journal.run(FolderOperations.sort([y], into: url("Year"), title: "Sort") { _ in [["2024"]] })
         _ = await journal.undo(second.id)
         try fm.moveItem(at: url("Year/2024"), to: url("Year/Year 2024"))
-        _ = await journal.redo(second.id)
-        XCTAssertTrue(exists("Year/Year 2024/y.jpg"))
+        let redone = await journal.redo(second.id)
+        XCTAssertEqual(redone.done, 0)
+        XCTAssertTrue(exists("in/y.jpg"))
         XCTAssertFalse(exists("Year/2024"))
     }
 
@@ -93,16 +94,58 @@ final class Audit8Tests: XCTestCase {
         XCTAssertFalse(entry.failures.isEmpty)
     }
 
-    /// A trash undone after its folder was renamed in the Finder goes back into the folder where it is now.
-    func testUndoFollowsAFinderRename() async throws {
+    /// D-93: a trash undone after its folder was renamed in the Finder leaves the file in the Trash and says so; a new
+    /// folder given the old name is not taken for it (audit 9, B9-M5: the check is by disk identity, which reconnecting a
+    /// disk does not change).
+    func testUndoLeavesWhatMovedAndNeverTakesAnotherFolder() async throws {
         let photo = file("Trip/x.jpg")
         let journal = journal()
         let trashed = await journal.run(FolderOperations.trash([photo]))
         try fm.moveItem(at: url("Trip"), to: url("Trip 2024"))
         let report = await journal.undo(trashed.id)
-        XCTAssertEqual(report.restored, 1, "\(report.skipped)")
-        XCTAssertTrue(exists("Trip 2024/x.jpg"))
-        XCTAssertFalse(exists("Trip"))
+        XCTAssertEqual(report.restored, 0)
+        XCTAssertEqual(report.skipped.count, 1)
+        try fm.createDirectory(at: url("Trip"), withIntermediateDirectories: false)
+        let second = await journal.undo(trashed.id)
+        XCTAssertEqual(second.restored, 0, "another folder named Trip is not the one it came from")
+        XCTAssertFalse(exists("Trip/x.jpg"))
+    }
+
+    /// B9-M2: an item trashed later under the same name is never put back in place of the one the change trashed.
+    func testUndoNeverTakesAnotherItemFromTheTrash() async throws {
+        let journal = journal()
+        let first = await journal.run(FolderOperations.trash([file("A/x.jpg")]))
+        let entry = await journal.entry(first.id)
+        guard case let .trash(_, inTrash)? = entry?.steps.first else { return XCTFail("no trash step") }
+        try fm.removeItem(atPath: inTrash)
+        // Whatever ends up at that Trash path later is another file.
+        try Data("other".utf8).write(to: URL(fileURLWithPath: inTrash))
+        defer { try? fm.removeItem(atPath: inTrash) }
+        let report = await journal.undo(first.id)
+        XCTAssertEqual(report.restored, 0)
+        XCTAssertFalse(exists("A/x.jpg"))
+    }
+
+    /// B9-M3, B9-M4: a copy whose folder was renamed is not counted as undone; Redo never trashes a folder it emptied once
+    /// that now holds files.
+    func testCopiesAndEmptiedFoldersAreChecked() async throws {
+        let journal = journal()
+        let photo = file("in/a.jpg")
+        try fm.createDirectory(at: url("People"), withIntermediateDirectories: true)
+        let sort = await journal.run(FolderOperations.sort([photo], into: url("People"), title: "Sort") { _ in [["Alice"], ["Bob"]] })
+        XCTAssertTrue(exists("People/Bob/a.jpg"))
+        try fm.moveItem(at: url("People/Bob"), to: url("People/Robert"))
+        let report = await journal.undo(sort.id)
+        XCTAssertFalse(report.skipped.isEmpty, "the copy in Robert is reported, not counted as undone")
+        let after = await journal.entry(sort.id)
+        XCTAssertNotEqual(after?.undone, true)
+
+        file("F/sub/x.jpg")
+        let flatten = await journal.run(FolderOperations.flatten(url("F")))
+        _ = await journal.undo(flatten.id)
+        file("F/sub/new.jpg")
+        _ = await journal.redo(flatten.id)
+        XCTAssertTrue(exists("F/sub/new.jpg"), "a folder holding files now is kept")
     }
 
     /// A8-m3, C8-m3: a record whose folder went to the Trash is not listed for, nor followed into, a new folder made at its
@@ -129,8 +172,9 @@ final class Audit8Tests: XCTestCase {
             try fm.createDirectory(at: alice, withIntermediateDirectories: true)
             let listed = await reloaded.all()
             XCTAssertTrue(listed.isEmpty, "\(format): the new folder is not listed as alice's")
+            // A path-based look-up finds the folder at the path; the trashed folder's record does not claim it (A9-M1).
             let followed = await reloaded.currentFolder(for: alice)
-            XCTAssertNil(followed, "\(format): a job for the trashed folder does not take the new one")
+            XCTAssertEqual(followed?.standardizedFileURL.path, alice.standardizedFileURL.path, format)
             let byID = await reloaded.currentFolder(of: record.id)
             XCTAssertNil(byID, format)
         }

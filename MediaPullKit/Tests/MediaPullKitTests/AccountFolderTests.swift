@@ -386,8 +386,13 @@ final class AccountFolderTests: XCTestCase {
         try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: moved, to: trash.appendingPathComponent("Alice 2024"))
         let reloaded = AccountFolderStore(folder: records)
+        let listed = await reloaded.all()
+        XCTAssertTrue(listed.isEmpty, "a folder in the Trash is not listed")
+        // Put back: its record follows it out again (since audit 9 records follow their folder into the Trash).
+        try FileManager.default.moveItem(at: trash.appendingPathComponent("Alice 2024"), to: moved)
         let kept = await reloaded.record(account: "alice", folder: moved)
         XCTAssertEqual(kept.id, record.id, "a folder in the Trash keeps its record, in case it is put back")
+        XCTAssertEqual(kept.keys, ["ig:1"])
     }
 
     /// Audit round 3 (C3-M1): what 1.7 remembered of a folder (files saved there, deleted since or not) is kept until the

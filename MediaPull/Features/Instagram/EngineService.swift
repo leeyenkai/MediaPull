@@ -331,8 +331,8 @@ final class EngineService {
         job.resume = { [weak self, weak job, weak window] in
             guard let self, let job else { return }
             job.state = .queued
-            job.failed = 0
-            job.failures = []
+            // Files that failed before the job was held stay failed: Resume walks on from where it stopped and never
+            // reaches them again, so Retry Failed must still offer them (audit 9, C9-m2).
             job.finishedAt = nil
             let draft = running.draft
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
@@ -347,8 +347,8 @@ final class EngineService {
         job.retry = { [weak self, weak job, weak window] in
             guard let self, let job else { return }
             job.state = .queued
-            job.failed = 0
-            job.failures = []
+            // The failures are handed to the new walk only once its folder is found (audit 9, A9-m1).
+            running.clearFailures = true
             job.finishedAt = nil
             job.lastCursor = nil
             job.placeID = UUID()
@@ -431,6 +431,8 @@ final class EngineService {
     private func runPull(job: Job, draft: PullDraft, root: SaveDestination?, scanOnly: Bool, window: WindowModel?, bridge: BridgeClient,
                          resuming: Bool, run: PullRun) async
     {
+        // A queued job shows Cancel, not Retry: the guard against a second Retry click is no longer needed.
+        job.retryStarting = false
         if case .cancelled = job.state { return }
         // Nothing is ever saved into a save folder that went away, nor made again at its old path: one renamed or moved
         // since the job was queued is followed (audit 6, C6-M3).
@@ -533,6 +535,11 @@ final class EngineService {
             // Retry and Resume find this folder by its record, wherever it goes (audit 6, C6-M2).
             if let record = found.record { run.remember(record.id, folder: found.folder) }
         }
+        if run.clearFailures {
+            run.clearFailures = false
+            job.failed = 0
+            job.failures = []
+        }
         // Hashtags, saved posts and the stories tray go beside the accounts, never inside an account's folder (D-52, audit 4,
         // C4-m10).
         var hashtagBase = root?.url
@@ -612,7 +619,9 @@ final class EngineService {
             }
             if let place {
                 // The metadata names the account; the folder can be called anything (D-78).
-                var target = SaveTarget(folder: place.folder.deletingLastPathComponent(), layout: root.layout, autoSubfolders: true,
+                // The account folder's own library decides the layout, wherever the folder is now (D-70, audit 9, A9-m3).
+                var target = SaveTarget(folder: place.folder.deletingLastPathComponent(),
+                                        layout: app.root(containing: place.folder)?.layout ?? root.layout, autoSubfolders: true,
                                         accountUsername: account)
                 target.accountFolder = place.folder
                 target.accountFolderExisted = place.record != nil
@@ -734,6 +743,7 @@ final class EngineService {
                         place?.folder = moved
                         target?.folder = moved.deletingLastPathComponent()
                         target?.accountFolder = moved
+                        if let layout = app.root(containing: moved)?.layout { target?.layout = layout }
                         job.destination = moved
                     }
                     guard var target else { continue }
@@ -1216,10 +1226,11 @@ final class EngineService {
             guard let self, let job else { return }
             job.task = Task { [weak self, weak job] in
                 guard let self, let job else { return }
+                defer { job.retryStarting = false }
                 guard let now = await folder.now() else {
-                    // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7).
-                    job.notes.append(FollowedFolder.goneMessage(root.url))
-                    self.app.jobs.finish(job, job.failed > 0 ? .completed : .failed(FollowedFolder.goneMessage(root.url)))
+                    // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7); the job
+                    // says it failed, whatever it had saved (audit 9, A9-m2).
+                    self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)))
                     return
                 }
                 job.failed = 0
@@ -1548,6 +1559,7 @@ final class EngineService {
             // where the folder is now, in its library's layout; when the folder is gone, its failures stay (audit 8, A8-m6,
             // A8-m7).
             Task { [weak self, weak window] in
+                defer { job?.retryStarting = false }
                 guard let self else { return }
                 guard let now = await folder.now() else {
                     job?.notes.append(FollowedFolder.goneMessage(root.url))
@@ -1748,6 +1760,8 @@ nonisolated final class OneShot: Sendable {
 private final class PullRun {
     var draft: PullDraft
     var root: FollowedFolder?
+    /// Set by Retry Failed: the failures are cleared when the retry's folder is found, and kept when it is gone.
+    var clearFailures = false
 
     init(draft: PullDraft) { self.draft = draft }
 

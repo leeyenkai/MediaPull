@@ -88,6 +88,8 @@ final class Job: Identifiable {
     var finishedAt: Date?
     var task: Task<Void, Never>?
     var retry: (() -> Void)?
+    /// Set while a Retry Failed is starting (its folder is being found), so a second click starts nothing more (A9-m2).
+    var retryStarting = false
     /// Where an Instagram listing had got to in this job, so Resume continues this job's own pass (R-1112).
     var lastCursor: String?
     /// The id of the place this job's walk leaves in its account folder if it stops part way (D-87); the same across Resume.

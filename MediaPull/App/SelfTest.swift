@@ -155,6 +155,8 @@ final class SelfTestRunner {
             // saved-posts link as the person's saved posts, never an account (audit 5, C5-m9).
             let right = model.downloads.batch.allSatisfy { entry in
                 if entry.kind == .checking || entry.label.hasSuffix("@") { return false }
+                // A web address given to the test is one it should know: a video page or a site gallery (audit 9, C9-m5).
+                if entry.text.hasPrefix("http"), entry.kind == .unrecognised { return false }
                 if entry.text.contains("instagram.com/"), entry.text.contains("/saved") {
                     return entry.label == "Your saved Instagram posts"
                 }
@@ -596,15 +598,18 @@ final class SelfTestRunner {
         let count = { (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)?.allObjects.count) ?? 0 }
         let filesBefore = count()
         let originalState = model.states[savedItem.id]
+        let originalName = model.customNames[savedItem.id]
         let itemEditor = EditorModel(request: EditorRequest(subject: .item(savedItem.id)), window: model)
         await itemEditor.load()
         itemEditor.rotate(clockwise: true)
         await itemEditor.settled()
+        // A name typed with edits names the copy only (audit 8, C8-M1; audit 9, C9-m4).
+        itemEditor.name = "Edited copy by self-test"
         let started = await itemEditor.saveItem(to: folder)
         await waitUntil(timeout: 60) { AppModel.shared.jobs.activeCount == 0 }
         let added = count() - filesBefore
         // The original is still itself: saved where it was, not taken for its copy (audit 7, C7-M2).
-        let originalKept = model.states[savedItem.id] == originalState
+        let originalKept = model.states[savedItem.id] == originalState && model.customNames[savedItem.id] == originalName
         note("editor: \(started && added > 0 && originalKept ? "PASS" : "FAIL") an edited copy of a saved item is saved "
             + "(\(added) files added), the original keeps its own state \(originalKept)")
     }
@@ -940,15 +945,14 @@ final class SelfTestRunner {
         // The same when MediaPull renamed it (the record moves at once, the queued draft keeps the old path; audit 5, C5-M4).
         var byRecord = queued
         byRecord.accountFolderID = record.id
-        try? fm.moveItem(at: folder, to: renamedFolder)
-        await app.accountFolders.moveFolders([(from: folder.path, to: renamedFolder.path)])
+        // Renamed through MediaPull's own change, as the Library's Rename does (audit 9, C9-m6).
+        _ = await app.applyChange(FolderOperations.rename(folder, to: renamedFolder.lastPathComponent))
         let queuedAgain = app.engines.startPull(byRecord, scanOnly: false, window: model)
         await waitUntil(timeout: 120) { queuedAgain?.state.isFinished ?? true }
         let followedOwn = !fm.fileExists(atPath: folder.path)
             && queuedAgain?.destination?.standardizedFileURL == renamedFolder.standardizedFileURL
             && !(queuedAgain?.state.label.contains("no longer there") ?? true)
-        try? fm.moveItem(at: renamedFolder, to: folder)
-        await app.accountFolders.moveFolders([(from: renamedFolder.path, to: folder.path)])
+        _ = await app.applyChange(FolderOperations.rename(renamedFolder, to: folder.lastPathComponent))
         // A folder moved to the Trash while queued stops the pull and is never made again (A4-M5).
         var trashedAt: NSURL?
         try? fm.trashItem(at: folder, resultingItemURL: &trashedAt)

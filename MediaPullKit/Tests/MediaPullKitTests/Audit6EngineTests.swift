@@ -37,8 +37,8 @@ final class Audit6EngineTests: XCTestCase {
         OperationJournal(folder: root.appendingPathComponent(".journal-\(UUID().uuidString)", isDirectory: true))
     }
 
-    /// Audit 6 (B6-M1): Undo never makes a folder again. A folder renamed by a later change is followed by the earlier
-    /// change's undo record; one renamed elsewhere (the Finder) leaves the item where it is, to be tried again.
+    /// Audit 6 (B6-M1): Undo never makes a folder again. Since D-93 a folder renamed since is not followed either: the item
+    /// stays where it is and is reported (R-3806), and Undo can be tried again once the folder has its name back.
     func testUndoFollowsRenamedFoldersAndNeverRemakesThem() async throws {
         let photo = file("Trip/x.jpg")
         file("Trip/keep.jpg")
@@ -48,9 +48,13 @@ final class Audit6EngineTests: XCTestCase {
         let trip = root.appendingPathComponent("Trip", isDirectory: true)
         let renamed = await journal.run(FolderOperations.rename(trip, to: "Trip 2024"))
         let report = await journal.undo(trashed.id)
-        XCTAssertEqual(report.restored, 1)
-        XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent("Trip 2024/x.jpg").path), "back where its folder is now")
+        XCTAssertEqual(report.restored, 0)
         XCTAssertFalse(fm.fileExists(atPath: trip.path), "the old folder is not made again")
+        _ = await journal.undo(renamed.id)
+        let again = await journal.undo(trashed.id)
+        XCTAssertEqual(again.restored, 1, "with its folder back, Undo puts the file back: \(again.skipped)")
+        XCTAssertTrue(fm.fileExists(atPath: trip.appendingPathComponent("x.jpg").path))
+        try fm.moveItem(at: trip, to: root.appendingPathComponent("Trip 2024"))
 
         // Its folder in the Trash (since round 8 a Finder rename is followed): nothing is made, the file stays in the Trash
         // and Undo can be tried again.

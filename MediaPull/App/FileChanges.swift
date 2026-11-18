@@ -26,6 +26,7 @@ extension AppModel {
     func undoChange(_ id: UUID) async -> UndoReport? {
         // ⌘Z and the History's Undo can both reach an entry: the second one does nothing.
         guard let entry = await journal.entry(id), !entry.undone else { return nil }
+        if let refusal = libraryFolderRefusal(entry.steps) { return refusal }
         let report = await journal.undo(id)
         await followMoves(report.moves, changedBy: id)
         fileChangeRevision += 1
@@ -33,10 +34,31 @@ extension AppModel {
     }
 
     func redoChange(_ id: UUID) async -> UndoReport {
+        if let entry = await journal.entry(id), let refusal = libraryFolderRefusal(entry.undoneSteps ?? []) { return refusal }
         let report = await journal.redo(id)
         await followMoves(report.moves, changedBy: id)
         fileChangeRevision += 1
         return report
+    }
+
+    /// Undo and Redo keep the rule changes keep: a library folder, or a folder holding one, is never moved, renamed or put
+    /// in the Trash as a file (B4-M2, audit 9, B9-m6).
+    private func libraryFolderRefusal(_ steps: [JournalStep]) -> UndoReport? {
+        let roots = roots.map { AccountFolderStore.key($0.url.path) }
+        func holdsRoot(_ path: String) -> Bool {
+            let key = AccountFolderStore.key(path)
+            return roots.contains { $0 == key || $0.hasPrefix(key + "/") }
+        }
+        let touches = steps.contains { step in
+            switch step {
+            case let .move(from, to, _, _): holdsRoot(from) || holdsRoot(to)
+            case let .trash(original, _): holdsRoot(original)
+            case .clone, .makeFolder: false
+            }
+        }
+        guard touches else { return nil }
+        return UndoReport(restored: 0, skipped: ["It would move a library folder, so nothing was changed. Use Remove from Library "
+                + "or Locate in its menu instead."], moves: [])
     }
 
     private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID) async {
@@ -161,7 +183,7 @@ extension WindowModel {
             let report = await app.redoChange(entry.id)
             // Nothing done again is said as such (audit 7, B7-m6).
             // Something done again but no file moved (a New Folder made again) is a redo too (audit 8, B8-m2).
-            if report.restored == 0, report.moves.isEmpty, !report.skipped.isEmpty {
+            if report.done == 0 {
                 showFileMessage("Nothing of “\(entry.title)” could be done again"
                     + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
             } else {

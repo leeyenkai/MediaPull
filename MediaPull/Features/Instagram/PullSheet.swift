@@ -27,9 +27,13 @@ struct InstagramForm: View {
                     AccountCard(username: draft.username, showErrors: app.engines.signedIn, held: model.downloads.lookUpsHeld)
                     if model.downloads.lookUpsHeld {
                         Button("Look Up") { model.downloads.lookUpsHeld = false }
-                            .help("Asks Instagram about @\(draft.username). Sent from another app, so nothing was asked yet.")
+                            .help("Asks Instagram about @\(draft.username). Dropped or sent from another app, so nothing was asked yet.")
                     }
-                    Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
+                    Button("Download") {
+                        // Clicking Download is asking: the account card may look the account up now (audit 9, A9-m4).
+                        model.downloads.lookUpsHeld = false
+                        app.engines.startPull(draft, scanOnly: false, window: model)
+                    }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canStart || model.saveFolder == nil)
                 }

@@ -148,7 +148,12 @@ struct JobRow: View {
                 Button { job.cancel() } label: { Image(systemName: "xmark.circle") }.accessibilityLabel("Cancel Job")
                     .help("Cancel")
             } else if job.failed > 0, let retry = job.retry {
-                Button("Retry Failed") { retry() }
+                Button("Retry Failed") {
+                    guard !job.retryStarting else { return }
+                    job.retryStarting = true
+                    retry()
+                }
+                .disabled(job.retryStarting)
             }
         }
         .buttonStyle(.borderless)

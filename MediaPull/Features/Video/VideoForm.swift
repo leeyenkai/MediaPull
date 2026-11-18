@@ -77,7 +77,7 @@ struct VideoForm: View {
                 Label(failure, systemImage: "film.stack").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if model.downloads.lookUpsHeld {
                 HStack(spacing: 8) {
-                    Text("Sent from another app. Nothing is asked of the site until you look it up.").foregroundStyle(.secondary)
+                    Text("Dropped or sent from another app. Nothing is asked of the site until you look it up.").foregroundStyle(.secondary)
                     Button("Look Up") { model.downloads.lookUpsHeld = false }
                 }
             } else {

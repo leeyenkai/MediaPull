@@ -333,6 +333,9 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     /// Trash and reconnecting the disk (a device number would not, audit 7, A7-M1). Another folder made later at the same
     /// path is told apart from it (audit 6, C6-m2). Nil for older records and volumes without a UUID.
     public var folderNumber: String?
+    /// A reference that follows the folder itself through renames, moves and into the Trash, never to another folder
+    /// made at its path (audit 9, A9-M1, A9-M2). Nil for older records, which follow their bookmark.
+    public var reference: String?
 
     /// Whether an update or Find Missing stopped part way and can be continued.
     public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
@@ -343,6 +346,7 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
         path = folder.standardizedFileURL.path
         bookmark = try? folder.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         folderNumber = Self.number(of: folder)
+        reference = OperationJournal.reference(folder.path)
         keys = []
     }
 
@@ -428,25 +432,36 @@ public actor AccountFolderStore {
         }
     }
 
-    /// Folders renamed or moved in the Finder are found again through their bookmarks, while MediaPull runs too, including
-    /// a change of letter case only (the old spelling still "exists" on most Mac volumes). A folder in the Trash is not
-    /// followed there: it is gone for now, and its record waits in case it is put back.
+    /// Folders renamed or moved in the Finder are found again, while MediaPull runs too, including a change of letter case
+    /// only (the old spelling still "exists" on most Mac volumes). A record follows its folder into the Trash as well: it
+    /// waits there in case the folder is put back, and never claims the path a new folder takes meanwhile (audit 9,
+    /// A9-M1, A9-M2). It goes when the Trash is emptied.
     private func followMoves() {
         for (id, var record) in records {
-            guard let url = Self.resolve(record), !FileFlags.isInTrash(url) else { continue }
+            guard let url = Self.resolve(record) else { continue }
             let path = url.standardizedFileURL.path
             guard path != record.path, FileManager.default.fileExists(atPath: path) else { continue }
-            // A job queued with the old path still finds it (audit 6, C6-M2).
-            formerPaths[Self.key(record.path)] = id
+            // A job queued with the old path still finds it (audit 6, C6-M2), unless it went to the Trash.
+            if !FileFlags.isInTrash(url) { formerPaths[Self.key(record.path)] = id }
             record.path = path
             record.folderNumber = AccountFolderRecord.number(of: url)
             record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            if record.reference == nil { record.reference = OperationJournal.reference(path) }
             records[id] = record
             save(record)
         }
     }
 
+    /// Where a record's folder is now: by its reference (the folder itself), else by its bookmark (older records, or a disk
+    /// reconnected, whose references no longer resolve).
     static func resolve(_ record: AccountFolderRecord) -> URL? {
+        if let reference = record.reference, let path = OperationJournal.resolve(reference) {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return bookmarkResolve(record)
+    }
+
+    static func bookmarkResolve(_ record: AccountFolderRecord) -> URL? {
         var stale = false
         guard let bookmark = record.bookmark else { return nil }
         return try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], relativeTo: nil,
@@ -486,19 +501,15 @@ public actor AccountFolderStore {
         var ids = records.values.filter { Self.key($0.path) == key }.map(\.id)
         if let id = formerPaths[key] { ids.append(id) }
         followMoves()
-        var replaced = false
         for id in ids {
             guard let record = records[id], FileManager.default.fileExists(atPath: record.path),
                   !FileFlags.isInTrash(URL(fileURLWithPath: record.path)) else { continue }
             let found = URL(fileURLWithPath: record.path, isDirectory: true)
-            // Another folder made where the job's folder was trashed is not its folder (audit 8, A8-m3).
-            if record.isAnotherFolder(at: found) {
-                replaced = true
-                continue
-            }
+            // Another folder made where a record's folder was is not that record's (audit 8, A8-m3); the folder at the
+            // path is still the one the job was given (audit 9, A9-M1).
+            if record.isAnotherFolder(at: found) { continue }
             return found
         }
-        if replaced { return nil }
         return FileManager.default.fileExists(atPath: url.path) && !FileFlags.isInTrash(url) ? url : nil
     }
 
@@ -531,8 +542,10 @@ public actor AccountFolderStore {
             forget(other.id)
         }
         if var existing = records.values.first(where: { Self.key($0.path) == key && $0.account == account.lowercased() }) {
-            if existing.folderNumber != number, let number {
-                existing.folderNumber = number
+            let reference = OperationJournal.reference(url.path)
+            if existing.reference != reference || existing.folderNumber != number {
+                existing.reference = reference
+                if let number { existing.folderNumber = number }
                 records[existing.id] = existing
                 save(existing)
             }
@@ -561,7 +574,8 @@ public actor AccountFolderStore {
         followMoves()
         // A record whose folder went to the Trash is not the record of a new folder made at its path (audit 8, A8-m3).
         return records.values.filter {
-            FileManager.default.fileExists(atPath: $0.path) && !$0.isAnotherFolder(at: URL(fileURLWithPath: $0.path))
+            let url = URL(fileURLWithPath: $0.path)
+            return FileManager.default.fileExists(atPath: $0.path) && !FileFlags.isInTrash(url) && !$0.isAnotherFolder(at: url)
         }.sorted { $0.path < $1.path }
     }
 

@@ -533,6 +533,7 @@ final class AppModel {
             let retryItems = items.filter { failedIDs.contains($0.id) }
             Task { [weak self, weak window] in
                 guard let self else { return }
+                defer { job.retryStarting = false }
                 guard let now = await followed.now() else {
                     // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7).
                     job.notes.append(FollowedFolder.goneMessage(folder))
@@ -634,6 +635,24 @@ final class AppModel {
                 }
             }
             batches.append((toSave.filter { !placed.contains($0.id) }, target, nil, nil))
+            // Instagram items with no folder of their account get one made by this save (in a library folder): it records
+            // their owner's id, as a pull's new folder does, so later items of whoever has the name are checked against
+            // it (audit 9, A9-M3).
+            let placedNow = placed
+            let newAccountFolders: [String: (folder: URL, owner: String)] = await Task.detached(priority: .userInitiated) {
+                var made: [String: (folder: URL, owner: String)] = [:]
+                for item in toSave where !placedNow.contains(item.id) {
+                    guard let engine = item.source.engine, engine.isInstagram, let name = engine.username?.lowercased(),
+                          let owner = engine.ownerID, made[name] == nil,
+                          !["saved", "collection", "stories-tray"].contains(engine.subcategory) else { continue }
+                    let scope = SavePipeline.duplicateScope(of: ArchivePlanner.folder(for: item, target: target, settings: settings),
+                                                            target: target)
+                    guard scope.recursive, scope.folder.lastPathComponent.lowercased() == name,
+                          !FileManager.default.fileExists(atPath: scope.folder.path) else { continue }
+                    made[name] = (scope.folder, owner)
+                }
+                return made
+            }.value
             var skipped = 0
             for index in batches.indices {
                 let batchTarget = batches[index].target
@@ -686,6 +705,10 @@ final class AppModel {
                         await self.accountFolders.addKeys(keys, to: record.id)
                     }
                 }
+            }
+            for (account, made) in newAccountFolders where FileManager.default.fileExists(atPath: made.folder.path) {
+                let record = await self.accountFolders.record(account: account, folder: made.folder)
+                if record.userID == nil { await self.accountFolders.update(record.id, userID: made.owner) }
             }
             // Items a cancelled job never reached are no longer waiting.
             window?.clearQueued(items.map(\.id).filter { outcomes[$0] == nil })
