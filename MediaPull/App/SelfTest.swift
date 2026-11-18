@@ -795,8 +795,9 @@ final class SelfTestRunner {
             return job
         }
         let channelX = folder("X videos"), channelY = folder("Y videos")
+        // Held files differ in their bytes from what the engine brings, so only skipping by id can keep them single (B26-m3).
         let held = channelX.appendingPathComponent("held.mp4")
-        try? fm.copyItem(at: fixtures.appendingPathComponent("v1.mp4"), to: held)
+        try? await Self.writeTestClip(to: held, seed: 9)
         sidecar(["category": "youtube", "subcategory": "video", "username": "X", "post_id": "v1"], for: held)
         let yFile = channelY.appendingPathComponent("y.mp4")
         try? await Self.writeTestClip(to: yFile, seed: 5)
@@ -844,10 +845,10 @@ final class SelfTestRunner {
         let carol = folder("carol"), dave = folder("dave")
         // carol's folder holds g1 and the second page of g3, with metadata as the app writes it.
         let carolHeld = carol.appendingPathComponent("one.jpg")
-        try? Self.jpeg(80).write(to: carolHeld)
+        try? Self.jpeg(180).write(to: carolHeld)
         sidecar(["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g1", "num": 1, "count": 1], for: carolHeld)
         let carolPage = carol.appendingPathComponent("three-2.jpg")
-        try? Self.jpeg(83).write(to: carolPage)
+        try? Self.jpeg(183).write(to: carolPage)
         sidecar(["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g3", "num": 1, "count": 2], for: carolPage)
         let daveFile = dave.appendingPathComponent("dave.jpg")
         try? Self.jpeg(90).write(to: daveFile)
@@ -889,10 +890,10 @@ final class SelfTestRunner {
                                     "id": "v1", "extractor": "youtube"]
         writeReplay(everything)
         let batch = folder("batch")
-        let myAlice = batch.appendingPathComponent("my alice/posts", isDirectory: true)
+        let myAlice = batch.appendingPathComponent("alice/posts", isDirectory: true)
         try? fm.createDirectory(at: myAlice, withIntermediateDirectories: true)
         let batchFirst = myAlice.appendingPathComponent("first.jpg")
-        try? Self.jpeg(60).write(to: batchFirst)
+        try? Self.jpeg(160).write(to: batchFirst)
         sidecar(igMeta(0), for: batchFirst)
         before = snapshot()
         model.downloads.useList(["@alice", "#sunset", "https://example.org/carol", "https://www.youtube.com/watch?v=v1"])
@@ -902,7 +903,7 @@ final class SelfTestRunner {
         await waitUntil(timeout: 180) { !self.model.downloads.batchRunning }
         (inside, added) = onlyInside(batch, since: before)
         let allNew = snapshot().subtracting(before)
-        let aliceAdded = allNew.filter { $0.hasPrefix("saveas/batch/my alice/") && !$0.hasSuffix(".json") }.count
+        let aliceAdded = allNew.filter { $0.hasPrefix("saveas/batch/alice/") && !$0.hasSuffix(".json") }.count
         let tagAdded = allNew.filter { $0.hasPrefix("saveas/batch/#sunset/") && !$0.hasSuffix(".json") }.count
         let carolAdded = allNew.filter { $0.hasPrefix("saveas/batch/carol (testsite)/") && !$0.hasSuffix(".json") }.count
         let videosAdded = allNew.filter { $0.hasPrefix("saveas/batch/X (youtube.com)/") && !$0.hasSuffix(".json") }.count
@@ -910,6 +911,21 @@ final class SelfTestRunner {
             && model.downloads.batch.allSatisfy { $0.progress == .done },
               "Download All As…: alice's 2 missing into her folder, #sunset 3, carol 4 and channel X 2 into folders of their own, "
                   + "inside \(inside) (\(model.downloads.batch.map { "\($0.progress)" }))")
+        // The same list again adds nothing and makes no new folder (B26-M1, B26-M2).
+        let batchFolders = Set((try? fm.contentsOfDirectory(atPath: batch.path)) ?? [])
+        before = snapshot()
+        model.downloads.useList(["@alice", "#sunset", "https://example.org/carol", "https://www.youtube.com/watch?v=v1"])
+        await waitUntil(timeout: 30) { !self.model.downloads.batch.contains { $0.kind == .checking } }
+        model.downloads.runAll(window: model, exactParent: batch)
+        try? await Task.sleep(for: .seconds(1))
+        await waitUntil(timeout: 180) { !self.model.downloads.batchRunning }
+        let againFolders = Set((try? fm.contentsOfDirectory(atPath: batch.path)) ?? [])
+        (inside, added) = onlyInside(batch, since: before)
+        check(added == 0 && againFolders == batchFolders, "Download All As… again adds nothing and no folder (\(added), "
+            + "\(againFolders.subtracting(batchFolders).sorted()))")
+        // Save As leaves the account's remembered choices alone (A25-M3).
+        let options = await app.store?.account("alice")?.options
+        check(options == nil, "Save As kept no remembered choices for alice")
         // Nor any download archive entry: a later Automatic download of the gallery knows nothing of the copies (B24-M4).
         let archived = await app.store?.knownKeys(account: "gallery:testsite:\(galleryURL.absoluteString.lowercased())") ?? []
         check(archived.isEmpty, "Save As wrote no download archive entries (\(archived.count))")
@@ -953,6 +969,27 @@ final class SelfTestRunner {
         (inside, _) = onlyInside(alice, since: before)
         check(inside && automatic?.destination?.standardizedFileURL.path == alice.standardizedFileURL.path,
               "an Automatic pull afterwards goes to alice's own folder (\(automatic?.destination?.lastPathComponent ?? "none"))")
+
+        // The same into a folder MediaPull remembers as alice's: its Resume never stops at what the job saved either (A26-M1).
+        let remembered = folder("alice remembered")
+        let rememberedRecord = await app.accountFolders.record(account: "alice", folder: remembered)
+        heldReplay["checkpoint_after"] = 13
+        writeReplay(heldReplay)
+        app.engines.gate = .ready
+        let stoppedAgain = app.engines.startPull(reelDraft, scanOnly: false, window: model, saveFolder: remembered, exactly: true)
+        await waitUntil(timeout: 120) { if case .blocked = stoppedAgain?.state { true } else { stoppedAgain?.state.isFinished ?? true } }
+        heldReplay["checkpoint_after"] = nil
+        writeReplay(heldReplay)
+        app.engines.gate = .ready
+        stoppedAgain?.resume?()
+        try? await Task.sleep(for: .seconds(1))
+        await waitFor(stoppedAgain)
+        let rememberedFiles = snapshot().filter { $0.hasPrefix("saveas/alice remembered/") && !$0.hasSuffix(".json") }.count
+        let recordKeys = await app.accountFolders.all().first { $0.id == rememberedRecord.id }?.keys.count ?? 0
+        check(rememberedFiles == 14 && recordKeys >= 14,
+              "a resumed Save As into a remembered folder reaches every Reel and keeps that folder's memory "
+                  + "(\(rememberedFiles) of 14, \(recordKeys) remembered)")
+        app.engines.gate = .ready
 
         note("save-as: \(failures.isEmpty ? "PASS" : "FAIL \(failures.count): \(failures.joined(separator: "; "))")")
     }

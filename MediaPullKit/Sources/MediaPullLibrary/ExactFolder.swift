@@ -68,32 +68,13 @@ public enum ExactFolder {
         return held
     }
 
-    /// The folder inside `parent` for one entry of Download All As… (D-108): a folder there that already holds the Instagram
-    /// account `account`, else one named `name` (when it holds no other account's media), else a new numbered one. Never
+    /// The folder inside `parent` for one entry of Download All As… (D-108 rule 4): the one named after the entry, found by
+    /// that name alone and reused whenever it is there, whatever it holds; a numbered one when a file has the name. Never
     /// outside `parent`. The folder is not made here.
-    public static func entryFolder(named name: String, account: String?, in parent: URL) -> URL {
-        let fm = FileManager.default
-        if let account = account?.lowercased() {
-            let children = ((try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isDirectoryKey],
-                                                         options: [.skipsHiddenFiles])) ?? [])
-                .filter { OperationJournal.isFolder($0) }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            if let held = children.first(where: { AccountFolders.dominantAccount(in: $0) == account }) { return held }
-        }
+    public static func entryFolder(named name: String, in parent: URL) -> URL {
         let named = parent.appendingPathComponent(FileNaming.safeTopFolder(name.nonEmpty ?? "Download"), isDirectory: true)
-        guard fm.fileExists(atPath: named.path) else { return named }
-        // A file of that name: a numbered folder beside it.
-        guard OperationJournal.isFolder(named) else { return AccountFolders.newFolder(named: name, in: parent) }
-        let holder = AccountFolders.dominantAccount(in: named)
-        if let account = account?.lowercased() {
-            // An account's entry takes a folder of that name only when it holds nothing, or the account's own media; never a
-            // hashtag's or another account's (A25-M4).
-            if holder != account, AccountFolders.holdsMedia(named) { return AccountFolders.newFolder(named: name, in: parent) }
-        } else if holder != nil {
-            // Anything else (a hashtag, a post) never goes into an account's folder (A25-M4).
-            return AccountFolders.newFolder(named: name, in: parent)
-        }
-        return named
+        guard FileManager.default.fileExists(atPath: named.path), !OperationJournal.isFolder(named) else { return named }
+        return AccountFolders.newFolder(named: name, in: parent)
     }
 
     /// Whether `path` is `folder` or inside it, compared as the volume compares names.

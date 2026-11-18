@@ -56,6 +56,8 @@ def main():
     # As the real bridge's tracker_for: the stories tray is read against the owners' list, saved posts against the saved
     # list, everything else against the known list.
     known, owners, saved = listed("known_ids"), listed("owners_known_ids"), listed("saved_known_ids")
+    # A job's own items (retry_ids) are skipped but never count towards the early stop, as KnownTracker does.
+    own = listed("retry_ids")
     # A gallery address replays the gallery's own items.
     items = replay.get("gallery_items") if "example.org" in str(request.get("url") or "") else replay["items"]
     emit("account", **replay["account"])
@@ -103,6 +105,11 @@ def main():
             keys.add(f"igp:{meta['post_id']}:{meta['num']}")
         counts["found"] += 1
         against = owners if meta.get("subcategory") == "stories-tray" else saved if meta.get("subcategory") in ("saved", "collection") else known
+        if keys & own and not keys & against:
+            counts["skipped"] += 1
+            emit("skip", key=item["key"], reason="own")
+            emit("cursor", subcategory="posts", value=f"after-{number}")
+            continue
         if keys & against:
             counts["skipped"] += 1
             known_in_a_row += 1

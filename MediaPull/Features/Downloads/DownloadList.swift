@@ -150,11 +150,11 @@ extension DownloadsModel {
     /// The job started, or why none did.
     private func start(_ entry: BatchEntry, root parent: SaveDestination, exact: Bool, window: WindowModel) async -> (Job?, String?) {
         // Download All As…: the entry's own folder inside the chosen one, found or made (D-108).
-        func entryRoot(_ name: String, account: String? = nil) async -> Result<SaveDestination, Error> {
+        func entryRoot(_ name: String) async -> Result<SaveDestination, Error> {
             guard exact else { return .success(parent) }
             let folder = parent.url
             return await Task.detached(priority: .userInitiated) { () -> Result<URL, Error> in
-                let target = ExactFolder.entryFolder(named: name, account: account, in: folder)
+                let target = ExactFolder.entryFolder(named: name, in: folder)
                 do {
                     try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
                     return .success(target)
@@ -172,7 +172,10 @@ extension DownloadsModel {
             let name = draft.hashtag.map { "#\($0)" } ?? draft.username.nonEmpty ?? draft.postURL?.lastPathComponent.nonEmpty
                 ?? (draft.content.contains(.saved) ? SaveTarget.savedFolder : "Stories")
             let root: SaveDestination
-            switch isTray || !exact ? .success(parent) : await entryRoot(name, account: draft.username.nonEmpty) {
+            // An account entry walks its whole listing: the list has no "Only new posts" choice, and its folder keeps no
+            // memory (D-108 rule 4, B26-M4).
+            if exact, !draft.username.isEmpty { draft.incremental = false }
+            switch isTray || !exact ? .success(parent) : await entryRoot(name) {
             case let .success(found): root = found
             case let .failure(error): return (nil, error.localizedDescription)
             }

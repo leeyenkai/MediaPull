@@ -443,7 +443,8 @@ struct GalleryForm: View {
     private func start(into exactFolder: URL? = nil) {
         guard var root = (exactFolder ?? model.saveFolder).map(app.destination(for:)) else { return }
         root.exact = exactFolder != nil
-        downloads.remember(site)
+        // Save As keeps no memory, the site's remembered parts and switches included (D-108, B26-m2).
+        if exactFolder == nil { downloads.remember(site) }
         let dates = downloads.dateWindow.bounds(from: downloads.dateFrom, to: downloads.dateTo)
         let include = choices.filter { downloads.include.contains($0) }
         let switches = Dictionary(uniqueKeysWithValues: app.sites.switches(key).map { ($0.key, downloads.switches[$0.key] ?? $0.default) })

@@ -49,30 +49,21 @@ final class SaveAsTests: XCTestCase {
         XCTAssertEqual(ExactFolder.keys(of: ["category": "fanbox", "post_id": "9001"]).keys, [])
     }
 
+    /// Download All As… finds each entry's folder by its name alone (D-108 rule 4, after B26-M1 and B26-M2): an account, a
+    /// hashtag and a post never take one another's folders, and a rerun reuses them.
     func testDownloadAllEntriesStayInsideTheChosenFolder() throws {
-        try file("parent/my alice/posts/a.jpg", metadata: ["category": "instagram", "username": "alice", "post_id": "1", "num": 1])
-        try file("parent/alice/b.jpg", metadata: ["category": "instagram", "username": "bob", "post_id": "2", "num": 1])
-        let parent = root.appendingPathComponent("parent")
-        XCTAssertEqual(ExactFolder.entryFolder(named: "alice", account: "alice", in: parent).lastPathComponent, "my alice",
-                       "the folder that holds the account, whatever it is called")
-        XCTAssertEqual(ExactFolder.entryFolder(named: "carol", account: "carol", in: parent).lastPathComponent, "carol")
-        XCTAssertEqual(ExactFolder.entryFolder(named: "Some Channel", account: nil, in: parent).lastPathComponent, "Some Channel")
-        // A folder of that name holding another account's media is not taken: a numbered one beside it instead.
-        try fm.removeItem(at: parent.appendingPathComponent("my alice"))
-        XCTAssertEqual(ExactFolder.entryFolder(named: "alice", account: "alice", in: parent).lastPathComponent, "alice 2")
-        // A hashtag never goes into the account of that name, nor an account into a hashtag's folder (A25-M4).
-        try file("parent/nike/posts/n.jpg", metadata: ["category": "instagram", "username": "nike", "post_id": "1", "num": 1])
-        XCTAssertEqual(ExactFolder.entryFolder(named: "#nike", account: nil, in: parent).lastPathComponent, "#nike")
-        XCTAssertEqual(ExactFolder.entryFolder(named: "nike", account: nil, in: parent).lastPathComponent, "nike 2")
-        // An account's entry never takes a folder of its name holding others' media (a hashtag from an earlier version).
-        try file("parent/run/a.jpg", metadata: ["category": "instagram", "username": "x", "post_id": "2", "num": 1])
-        try file("parent/run/b.jpg", metadata: ["category": "instagram", "username": "y", "post_id": "3", "num": 1])
-        XCTAssertEqual(ExactFolder.entryFolder(named: "run", account: "run", in: parent).lastPathComponent, "run 2")
+        let parent = root.appendingPathComponent("parent", isDirectory: true)
+        try file("parent/ABC/a.jpg", metadata: ["category": "instagram", "username": "alice", "post_id": "1", "num": 1, "count": 1])
+        try file("parent/#sunset/b.jpg", metadata: ["category": "instagram", "username": "alice", "post_id": "2", "num": 1, "count": 1])
+        XCTAssertEqual(ExactFolder.entryFolder(named: "alice", in: parent).lastPathComponent, "alice",
+                       "never a post's or a tag's folder that alice's media fills")
+        XCTAssertEqual(ExactFolder.entryFolder(named: "ABC", in: parent).lastPathComponent, "ABC", "a rerun reuses the post's folder")
+        XCTAssertEqual(ExactFolder.entryFolder(named: "#sunset", in: parent).lastPathComponent, "#sunset")
         // A file of that name: a numbered folder beside it, never a failure (B24-m7).
         try Data("x".utf8).write(to: parent.appendingPathComponent("dave"))
-        XCTAssertEqual(ExactFolder.entryFolder(named: "dave", account: nil, in: parent).lastPathComponent, "dave 2")
+        XCTAssertEqual(ExactFolder.entryFolder(named: "dave", in: parent).lastPathComponent, "dave 2")
         for name in ["../escape", "/abs", ".."] {
-            let folder = ExactFolder.entryFolder(named: name, account: nil, in: parent)
+            let folder = ExactFolder.entryFolder(named: name, in: parent)
             XCTAssertTrue(ExactFolder.contains(parent, folder.path), "\(name) stays inside: \(folder.path)")
             XCTAssertNotEqual(folder.standardizedFileURL.path, parent.standardizedFileURL.path)
         }

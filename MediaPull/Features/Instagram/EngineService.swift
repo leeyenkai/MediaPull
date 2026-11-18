@@ -625,12 +625,16 @@ final class EngineService {
                 }
             }
         }
-        if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil || exact {
+        if !scanOnly, draft.postURL == nil && (isAccount || draft.hashtag != nil) || exact {
             var known: Set<String> = []
-            if exact, let place, place.record == nil {
-                // Save As into a folder MediaPull does not remember: what it held when the job began, read once, so a
-                // Resume or Retry never stops early at what the job saved itself (D-108 rule 5, A25-M1).
-                if run.libraryBefore == nil { run.libraryBefore = place.index.identities }
+            if exact, let place {
+                // Save As: what the chosen folder held (with its record's keys when MediaPull remembers it) when the job
+                // began, read once, so a Resume or Retry never stops early at what the job saved itself (D-108 rule 5,
+                // A25-M1, A26-M1).
+                if run.libraryBefore == nil {
+                    let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
+                    run.libraryBefore = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
+                }
                 known = run.libraryBefore ?? []
             } else if let place {
                 let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
@@ -666,7 +670,7 @@ final class EngineService {
             // An update ends early at the folder's known posts, and so does the continuation of an update's place; Find
             // Missing, full walks and places that run to the oldest post walk on.
             // A tag keeps its early stop on Resume too: it has no folder memory (audit 20, A20-M1, C20-M1).
-            let earlyStop = draft.incremental && !draft.findMissing && !(draft.continueFrom?.untilEnd ?? false)
+            let earlyStop = draft.postURL == nil && draft.incremental && !draft.findMissing && !(draft.continueFrom?.untilEnd ?? false)
                 && !(resuming && place == nil && draft.hashtag == nil)
             request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
         }
@@ -973,7 +977,10 @@ final class EngineService {
                     if exact, let chosen = root,
                        place == nil || draft.postURL != nil || ["stories-tray", "saved", "collection"].contains(context.subcategory)
                     {
-                        itemTarget = chosen.exactTarget(source: "", site: "")
+                        // Into the chosen folder where it is now (followed with its record when MediaPull remembers it, A26-m4).
+                        var into = chosen
+                        if let followed = target.accountFolder { into.url = followed }
+                        itemTarget = into.exactTarget(source: "", site: "")
                     }
                     let (outcome, note) = await pipeline.saveStaged(file.path, item: item, target: itemTarget, settings: settings,
                                                                     index: index)
@@ -1159,7 +1166,10 @@ final class EngineService {
             if !scanOnly, draft.postURL == nil, isAccount, keepsHistory {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: fatal)
             }
-            app.jobs.finish(job, .failed("Stopped part way: \(fatal) Pull again to continue from where it stopped."))
+            // A Save As into a folder MediaPull does not remember keeps no place: its own Resume or Retry continues it (A26-m3).
+            let next = exact && place?.record == nil ? "Retry Failed in Activity continues it."
+                : "Pull again to continue from where it stopped."
+            app.jobs.finish(job, .failed("Stopped part way: \(fatal) \(next)"))
             return
         }
         if let fatal { job.notes.append(fatal) }
