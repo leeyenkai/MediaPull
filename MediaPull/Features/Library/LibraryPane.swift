@@ -79,6 +79,7 @@ struct NoRootsView: View {
 struct FolderTree: View {
     @Bindable var model: WindowModel
     @Bindable var library: LibraryModel
+    @FocusState private var focused: Bool
     private var app: AppModel { .shared }
 
     var body: some View {
@@ -87,6 +88,7 @@ struct FolderTree: View {
         let rootNodes = library.treeNodes()
         List(selection: Binding(get: { library.selectedFolder?.path }, set: { path in
             library.selectedFolder = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            model.focusedPane = .library
         })) {
             ForEach(rootNodes) { node in
                 OutlineGroup(node, children: \.children) { child in
@@ -96,6 +98,11 @@ struct FolderTree: View {
             }
         }
         .listStyle(.sidebar)
+        // The tree is the Library pane at work, as its grid is: ⌘F and ⌘R then act on the Library (audit 5, B5-m4).
+        .focused($focused)
+        .onChange(of: focused) { _, now in
+            if now { model.focusedPane = .library }
+        }
         // Return renames and ⌘⌫ moves to the Trash, as in the grid (R-1707). Key presses reach the tree only while it has
         // the keyboard, never while typing in the web page; Collect must be shown, since it stays mounted behind Organise.
         .onKeyPress(keys: [.return, .delete], phases: .down) { press in treeKey(press) }
@@ -333,7 +340,7 @@ struct FolderContents: View {
                 if let match = library.account {
                     Button("Update @\(match.account)") { library.update(match) }
                         .controlSize(.small)
-                        .disabled(library.isUpdating(match.folder))
+                        .disabled(library.isUpdating(match.folder, account: match.account))
                         .help("Add what @\(match.account) posted that “\(match.folder.lastPathComponent)” doesn't have yet. "
                             + "Files you deleted from it stay deleted.")
                 }
@@ -423,8 +430,11 @@ struct FolderContents: View {
         if library.subfolderCount > 0 { parts.append("\(library.subfolderCount) folder\(library.subfolderCount == 1 ? "" : "s")") }
         if let root = library.selectedFolder.flatMap({ app.root(containing: $0) }) { parts.append(root.layout.label) }
         if let match = library.account {
+            // Only the account folder's own record: a folder found inside another account's has none (audit 5, C5-m6).
             let record = app.accountFolder(containing: match.folder)
-            if record?.stoppedPartWay == true {
+                .flatMap { AccountFolderStore.key($0.path) == AccountFolderStore.key(match.folder.path) ? $0 : nil }
+            // While the folder's update runs, it is not one that stopped part way, as in Activity (audit 5, C5-m3).
+            if record?.stoppedPartWay == true, !library.isUpdating(match.folder, account: match.account) {
                 parts.append("@\(match.account): an earlier update stopped part way")
             } else if let date = record?.lastUpdate {
                 parts.append("@\(match.account) updated \(date.formatted(.relative(presentation: .named)))")

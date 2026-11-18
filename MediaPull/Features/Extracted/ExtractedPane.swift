@@ -155,6 +155,15 @@ struct ExtractedHeader: View {
         .help("More actions")
     }
 
+    static func downloadTitle(_ draft: PullDraft?, name: String) -> String {
+        guard let draft else { return "Download @\(name)…" }
+        if draft.content.contains(.saved) { return "Download Saved Posts…" }
+        if draft.content == [.storiesTray] { return "Download Stories from Accounts You Follow…" }
+        if draft.postURL != nil { return "Download This Story…" }
+        if draft.content == [.stories] { return "Download @\(draft.username)'s Stories…" }
+        return "Download @\(name)…"
+    }
+
     @ViewBuilder
     private var contextActions: some View {
         if !model.documents.isEmpty {
@@ -176,12 +185,19 @@ struct ExtractedHeader: View {
             .controlSize(.small)
         }
         switch model.pageKind {
-        case let .instagramProfile(name, _), let .instagramStories(name, _):
+        case let .instagramProfile(name, url), let .instagramStories(name, url):
+            // What the page is, read as the Downloads pane reads it: saved posts and stories are not the whole account.
+            let pageDraft: PullDraft? = if case let .instagram(draft) = model.downloads.immediateTarget(url.absoluteString,
+                                                                                                         typed: false) {
+                draft
+            } else {
+                nil
+            }
             HStack(spacing: 8) {
-                Button("Download @\(name)…") { model.showDownloads("@\(name)") }
+                Button(Self.downloadTitle(pageDraft, name: name)) { model.showDownloads(url.absoluteString) }
                     .buttonStyle(.borderedProminent)
                 Button("List in Extracted Media") {
-                    var draft = app.engines.draft(username: name)
+                    var draft = pageDraft ?? app.engines.draft(username: name)
                     draft.incremental = false
                     app.engines.startPull(draft, scanOnly: true, window: model)
                 }

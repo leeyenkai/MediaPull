@@ -390,6 +390,28 @@ def test_single_failed_files_leave_the_pull_partial():
         bridge.STATE.update(saved)
 
 
+def test_the_account_is_reported_when_its_name_is_looked_up():
+    """Audit 5 (A5-M1): every listing of an account looks the name up first (the real InstagramAPI.user); the account and
+    its id are reported then, once, before any file, whatever content was chosen."""
+    from gallery_dl.extractor import instagram
+
+    capture = Capture()
+    bridge.EMITTER = capture
+    bridge.patch_instagram()
+    extr = instagram.InstagramPostsExtractor.from_url("https://www.instagram.com/alice/posts/")
+    api = instagram.InstagramAPI.__new__(instagram.InstagramAPI)
+    api.extractor = extr
+    api.exc = None
+    api.user_by_web = lambda handle: {"id": "4242", "username": handle}
+    api.user_by_id = lambda user_id: {"id": user_id, "username": "alice", "full_name": "Alice", "media_count": 3}
+    extr._assign_user = lambda user: user
+    for _ in range(2):
+        assert api.user("alice")["id"] == "4242"
+    accounts = [fields for kind, fields in capture.events if kind == "account"]
+    assert len(accounts) == 1, capture.events
+    assert accounts[0]["user_id"] == "4242" and accounts[0]["username"] == "alice", accounts
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

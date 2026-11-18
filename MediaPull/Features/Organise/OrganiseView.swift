@@ -193,6 +193,7 @@ struct OrganiseTree: View {
     @Bindable var organise: OrganiseModel
     @Bindable var pane: OrganisePane
     var root: URL
+    @FocusState private var focused: Bool
 
     var body: some View {
         // A view body cannot discard with `_ =`; reading the revision rebuilds the tree after changes.
@@ -201,6 +202,7 @@ struct OrganiseTree: View {
         let node = pane.rootNode(root)
         List(selection: Binding(get: { pane.folder?.path }, set: { path in
             pane.folder = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            pane.gridFocused()
         })) {
             OutlineGroup(node, children: \.children) { child in
                 OrganiseFolderRow(organise: organise, pane: pane, node: child)
@@ -208,6 +210,11 @@ struct OrganiseTree: View {
             }
         }
         .listStyle(.inset)
+        // The tree is its pane at work, as the grid is: ⌘F and ⌘R then act on this pane (audit 5, B5-m4).
+        .focused($focused)
+        .onChange(of: focused) { _, now in
+            if now { pane.gridFocused() }
+        }
     }
 }
 

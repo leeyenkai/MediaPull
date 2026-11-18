@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 app.analysis.updateWatch()
             }
             await app.refreshAccountFolders()
+            for window in app.windows { await window.organise.followFolders() }
         }
     }
 
@@ -144,7 +145,7 @@ struct AppCommands: Commands {
                 .disabled(!(window?.canReopenClosedTab ?? false))
             Divider()
             Button("Pull Instagram Account…") {
-                window?.showDownloads(window?.pageKind.instagramUsername.map { "@\($0)" })
+                window?.showDownloads(window?.instagramPageAddress)
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
             .disabled(window == nil)

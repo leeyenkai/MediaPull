@@ -202,10 +202,17 @@ final class AnalysisService {
         // A library folder that is missing for now (in the Trash, on a disk not connected) may come back: nothing under it
         // is forgotten, so its people and corrections survive (audit 3, B3-M2).
         let holding = app.roots.filter { app.missingRoots.contains($0.id) }.map(\.path)
+        let journal = app.journal
         scanTask = Task { [weak self] in
             let skip = self?.noPicture ?? []
-            let (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
+            var (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
                                                    noPicture: skip, keep: keep, holding: holding)
+            // Files MediaPull moved to the Trash that Undo can still put back keep their faces and corrections until the
+            // Trash lets them go (audit 5, B5-M3).
+            if !gone.isEmpty {
+                let restorable = await journal.restorablePaths()
+                if !restorable.isEmpty { gone.removeAll { restorable.containsPathOrParent(of: $0) } }
+            }
             await store.forget(paths: gone)
             guard let self else { return }
             if !work.isEmpty {

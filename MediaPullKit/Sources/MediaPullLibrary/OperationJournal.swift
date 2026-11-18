@@ -147,8 +147,10 @@ public actor OperationJournal {
     public func run(_ plan: OrganisePlan, progress: @Sendable (Int, Int) -> Void = { _, _ in }) -> JournalEntry {
         var entry = JournalEntry(id: UUID(), title: plan.title, root: plan.root.path, date: Date(), steps: [], failures: [],
                                  undone: false, finished: false)
-        // A folder the plan relies on that went away since its preview is never made again (audit 4, B4-M1).
-        if let missing = plan.requiredFolders.first(where: { !fm.fileExists(atPath: $0.path) }) {
+        // A folder the plan relies on that went away since its preview is never made again (audit 4, B4-M1). Every plan
+        // works inside its root, so a root renamed, moved or trashed since (in the Finder or in another pane) stops it
+        // too: making the missing folders would recreate it at its old path (audit 5, B5-M1, B5-M2).
+        if let missing = ((plan.rootExisted ? [plan.root] : []) + plan.requiredFolders).first(where: { !Self.isFolder($0) }) {
             entry.failures = ["“\(missing.lastPathComponent)” is no longer there, so nothing was changed."]
             entry.finished = true
             return entry
@@ -228,6 +230,11 @@ public actor OperationJournal {
         entry.finished = !Task.isCancelled
         save(entry)
         return entry
+    }
+
+    public static func isFolder(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     /// True when a folder holds no files at any depth (ignoring Finder's own files), so trashing it loses nothing.

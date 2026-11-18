@@ -246,23 +246,64 @@ final class LibraryModel: MediaGridOwner {
             account = nil
             return
         }
-        if let record = app.accountFolder(containing: folder) {
-            account = AccountFolders.Match(account: record.account, folder: URL(fileURLWithPath: record.path, isDirectory: true))
-            return
+        let record = app.accountFolder(containing: folder)
+        let remembered = record.map { AccountFolders.Match(account: $0.account, folder: URL(fileURLWithPath: $0.path, isDirectory: true)) }
+        if let remembered {
+            if AccountFolderStore.key(remembered.folder.path) == AccountFolderStore.key(folder.path) {
+                account = remembered
+                return
+            }
+            // A folder inside a remembered one may be another account's folder or a Hashtags or Saved posts folder (a library
+            // folder that is an account's holds them too): what it holds decides, not the folder around it (audit 5, C5-m6).
+            if Self.isCollection(folder, below: remembered.folder) {
+                account = nil
+                return
+            }
         }
         account = nil
         let root = app.root(containing: folder)?.url
         accountTask = Task { [weak self] in
             let match = await Task.detached(priority: .utility) { AccountFolders.detect(folder, stopAt: root) }.value
             guard !Task.isCancelled, let self, self.selectedFolder == folder else { return }
-            self.account = match
+            self.account = Self.preferred(match, over: remembered)
         }
     }
 
-    /// Whether an update of `folder` is queued or running.
-    func isUpdating(_ folder: URL) -> Bool {
+    /// The detected account wins over the remembered folder around it only when it is another account whose own folder is
+    /// inside the remembered one; files named after an account's old name never take its folder from it.
+    static func preferred(_ detected: AccountFolders.Match?, over remembered: AccountFolders.Match?) -> AccountFolders.Match? {
+        guard let remembered else { return detected }
+        guard let detected, detected.account != remembered.account else { return remembered }
+        let outer = AccountFolderStore.key(remembered.folder.path)
+        return AccountFolderStore.key(detected.folder.path).hasPrefix(outer + "/") ? detected : remembered
+    }
+
+    /// Whether `folder` is, or is inside, a Hashtags or Saved posts folder below `top`: those hold many accounts' posts.
+    static func isCollection(_ folder: URL, below top: URL) -> Bool {
+        let names = [SaveTarget.tagsFolder, SaveTarget.savedFolder].map { $0.lowercased() }
+        let stop = AccountFolderStore.key(top.path)
+        var current = folder.standardizedFileURL
+        while current.path != "/", AccountFolderStore.key(current.path).hasPrefix(stop + "/") {
+            if names.contains(current.lastPathComponent.lowercased()) { return true }
+            current = current.deletingLastPathComponent()
+        }
+        return false
+    }
+
+    /// Whether an update of the account folder `folder` is queued or running.
+    func isUpdating(_ folder: URL, account: String? = nil) -> Bool {
+        // Compared as the volume compares names (audit 5, C5-m2). A pull of the account into the folder's parent counts too:
+        // it finds the account's folder when it starts (D-78), under whatever name it has.
+        let own = AccountFolderStore.key(folder.path)
+        let named = account.map {
+            AccountFolderStore.key(folder.deletingLastPathComponent().appendingPathComponent(FileNaming.safeTopFolder($0)).path)
+        }
         // Paused or held by a checkpoint counts too: Resume carries it on.
-        app.jobs.jobs.contains { $0.state.canCancel && $0.destination?.standardizedFileURL == folder.standardizedFileURL }
+        return app.jobs.jobs.contains { job in
+            guard job.state.canCancel, let destination = job.destination else { return false }
+            let key = AccountFolderStore.key(destination.path)
+            return key == own || (job.kind == .pull && key == named)
+        }
     }
 
     /// Update an account folder, or find what it is missing (D-79, D-80).
@@ -300,11 +341,18 @@ final class LibraryModel: MediaGridOwner {
 
     /// The account of `folder` when MediaPull knows it without reading the folder: remembered, or the selected folder's.
     func accountMatch(for folder: URL) -> AccountFolders.Match? {
-        if let record = app.accountFolder(containing: folder) {
-            return AccountFolders.Match(account: record.account, folder: URL(fileURLWithPath: record.path, isDirectory: true))
+        let key = AccountFolderStore.key(folder.path)
+        // The selected folder's account is worked out from what it holds (audit 5, C5-m6).
+        if let selectedFolder, AccountFolderStore.key(selectedFolder.path) == key { return account }
+        guard let record = app.accountFolder(containing: folder) else { return nil }
+        let remembered = URL(fileURLWithPath: record.path, isDirectory: true)
+        if AccountFolderStore.key(record.path) != key {
+            if Self.isCollection(folder, below: remembered) { return nil }
+            // A library folder that is an account's folder holds other accounts' folders too: which account a folder in it
+            // belongs to is known only once it is selected and read.
+            if app.roots.contains(where: { AccountFolderStore.key($0.url.path) == AccountFolderStore.key(record.path) }) { return nil }
         }
-        guard let account, folder.standardizedFileURL == selectedFolder?.standardizedFileURL else { return nil }
-        return account
+        return AccountFolders.Match(account: record.account, folder: remembered)
     }
 
     /// A save folder outside the library, shown under the library folders until replaced or removed (D-70).

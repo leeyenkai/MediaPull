@@ -363,6 +363,11 @@ public final class SavePipeline: Sendable {
         guard manager.fileExists(atPath: target.folder.path, isDirectory: &isFolder), isFolder.boolValue else {
             return (.failed("The folder “\(target.folder.lastPathComponent)” is missing. Choose it again in the Library."), nil)
         }
+        if target.accountFolderExisted, let account = target.accountFolder,
+           !manager.fileExists(atPath: account.path, isDirectory: &isFolder) || !isFolder.boolValue || FileFlags.isInTrash(account)
+        {
+            return (.failed("The folder “\(account.lastPathComponent)” was moved, renamed or moved to the Trash while saving."), nil)
+        }
         let folder = ArchivePlanner.folder(for: item, target: target, settings: settings)
         do {
             try manager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -385,8 +390,7 @@ public final class SavePipeline: Sendable {
         // Metadata files belong to the archive's formats only (R-1502); a WebM or audio file chosen by hand goes without one.
         let writesSidecar = target.layout == .archive && Self.archiveFormats.contains(info.format)
         // An existing account folder is searched whole in either layout (D-78): its files may sit in any subfolder.
-        let scopeIsAccount = (target.layout == .archive && target.autoSubfolders) || target.accountFolder != nil
-        let scope = scopeIsAccount ? Self.accountFolder(folder, target: target) : folder
+        let (scope, scopeIsAccount) = Self.duplicateScope(of: folder, target: target)
         func existingCopy() async -> (SaveOutcome, String?)? {
             guard let existing = await self.index.duplicate(sha256: sha, size: size, in: scope, recursive: scopeIsAccount)
             else { return nil }
@@ -456,6 +460,21 @@ public final class SavePipeline: Sendable {
             await self.index.record(placed, sha256: sha)
             return (.saved(placed), conversion.note)
         }
+    }
+
+    /// Where a save into `folder` looks for a copy it already has: an account or site folder is searched whole, in
+    /// either layout (D-78), any other folder by itself. The app asks the same before downloading (audit 5, B5-m2).
+    public static func duplicateScope(of folder: URL, target: SaveTarget) -> (folder: URL, recursive: Bool) {
+        let scopeIsAccount = (target.layout == .archive && target.autoSubfolders) || target.accountFolder != nil
+        return scopeIsAccount ? (accountFolder(folder, target: target), true) : (folder, false)
+    }
+
+    /// Whether a file saved earlier at `saved` is a copy a save of `item` would find (and so need not download again).
+    public static func wouldFind(_ saved: URL, item: MediaItem, target: SaveTarget, settings: SaveSettings) -> Bool {
+        let (scope, recursive) = duplicateScope(of: ArchivePlanner.folder(for: item, target: target, settings: settings), target: target)
+        let top = scope.standardizedFileURL.path, parent = saved.deletingLastPathComponent().standardizedFileURL.path
+        let key = { (path: String) in path.precomposedStringWithCanonicalMapping.lowercased() }
+        return recursive ? key(parent + "/").hasPrefix(key(top + "/")) : key(parent) == key(top)
     }
 
     static func accountFolder(_ folder: URL, target: SaveTarget) -> URL {

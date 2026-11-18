@@ -113,6 +113,15 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var downloadsFocus = 0
 
     /// Shows the Downloads pane set up for `address` (an @account, #hashtag or page address), or for the current page.
+    /// The Instagram page shown, as the Downloads pane reads it: its address, so a saved collection, a person's stories or
+    /// the stories tray are what is downloaded, never the account named in the link (audit 5, C5-M3).
+    var instagramPageAddress: String? {
+        switch pageKind {
+        case let .instagramProfile(_, url), let .instagramStories(_, url): url.absoluteString
+        default: nil
+        }
+    }
+
     func showDownloads(_ address: String? = nil, video: Bool = false) {
         section = .collect
         setShowing(.downloads, true)

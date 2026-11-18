@@ -288,7 +288,8 @@ final class EditorModel: UnsavedEditing {
                     let plan = FolderOperations.rename(url, to: FileNaming.fileName(stem: cleanName, ext: fileExtension))
                     guard !plan.isEmpty else { return url }
                     let entry = await AppModel.shared.applyChange(plan)
-                    window?.registerUndo(entry)
+                    // A rename that changed nothing (the file went away, say) leaves nothing for ⌘Z (audit 5, B5-m5).
+                    if !entry.steps.isEmpty { window?.registerUndo(entry) }
                     if let failure = entry.failures.first {
                         message = failure
                         return nil

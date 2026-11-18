@@ -15,3 +15,16 @@ public enum FileFlags {
         url.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
     }
 }
+
+public extension Set<String> {
+    /// Whether `path` is one of these paths or lies inside one of them (a file inside a trashed folder, say).
+    func containsPathOrParent(of path: String) -> Bool {
+        if contains(path) { return true }
+        var parent = (path as NSString).deletingLastPathComponent
+        while parent.count > 1 {
+            if contains(parent) { return true }
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        return false
+    }
+}

@@ -15,6 +15,9 @@ public struct SaveTarget: Sendable {
     /// An existing folder of the account (D-78): its files go there whatever it is called, and duplicates are looked for
     /// in all of it.
     public var accountFolder: URL?
+    /// The account folder existed when the save began: if it is gone (renamed, moved or trashed meanwhile), nothing is
+    /// saved rather than making it again at its old path (audit 5, A5-M3). False for a folder a pull is about to make.
+    public var accountFolderExisted = false
     /// Whether that folder sorts by type (`posts/`, `reels/`), worked out from what it already holds; nil follows Settings.
     public var typeSubfolders: Bool?
 

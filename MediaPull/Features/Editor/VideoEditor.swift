@@ -220,7 +220,8 @@ final class VideoEditorModel: UnsavedEditing {
         }
         Task {
             let entry = await app.applyChange(plan)
-            window?.registerUndo(entry)
+            // A rename that changed nothing leaves nothing for ⌘Z (audit 5, B5-m5).
+            if !entry.steps.isEmpty { window?.registerUndo(entry) }
             if let failure = entry.failures.first {
                 fail(failure)
                 return

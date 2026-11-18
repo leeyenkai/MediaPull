@@ -404,7 +404,8 @@ public actor AppStore {
             // folder with a record they are that record's to keep (audit 4, C4-m2).
             let path = entry.path.precomposedStringWithCanonicalMapping.lowercased()
             let waiting = entry.key.hasPrefix("ig:") && !recorded.contains { path.hasPrefix($0) }
-            if waiting || fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path) || restorable.contains(entry.path) {
+            if waiting || fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path)
+                || restorable.containsPathOrParent(of: entry.path) {
                 referenced.insert(entry.account)
             } else {
                 modelContext.delete(entry)

@@ -101,7 +101,22 @@ final class OrganisePane: MediaGridOwner {
             if root != oldValue {
                 folder = root
                 treeRevision += 1
+                rememberRoot()
             }
+        }
+    }
+
+    /// The top folder's bookmark, so a folder renamed or moved in the Finder is followed (audit 5, B5-M1).
+    @ObservationIgnored private(set) var rootBookmark: (path: String, data: Data)?
+
+    private func rememberRoot() {
+        rootBookmark = nil
+        guard let root else { return }
+        Task { [weak self] in
+            let data = await Task.detached { try? root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) }
+                .value
+            guard let self, self.root == root, let data else { return }
+            self.rootBookmark = (root.standardizedFileURL.path, data)
         }
     }
 
@@ -515,7 +530,6 @@ final class OrganiseModel {
 
     @ObservationIgnored weak var window: WindowModel?
     @ObservationIgnored private let listenerID = UUID()
-    @ObservationIgnored private var lastEntryID: UUID?
 
     private var app: AppModel { .shared }
 
@@ -615,6 +629,42 @@ final class OrganiseModel {
             }
         }
         if events.contains(where: siblingCache.shows) { refreshSiblings() }
+        Task { await followFolders() }
+    }
+
+    /// Top folders renamed, moved or trashed in the Finder are followed through their bookmarks; a folder shown inside one
+    /// that went away gives way to the nearest folder still there (audit 5, B5-M1). Runs whenever MediaPull comes forward
+    /// and after folder events.
+    func followFolders() async {
+        let panes = [source, target]
+        let bookmarks = panes.map(\.rootBookmark)
+        let shown = panes.map(\.folder)
+        let found = await Task.detached(priority: .userInitiated) {
+            zip(bookmarks, shown).map { bookmark, folder -> (moved: URL?, gone: Bool, folder: URL?) in
+                var folderLeft: URL?
+                if var current = folder, !OperationJournal.isFolder(current) {
+                    while !OperationJournal.isFolder(current), current.pathComponents.count > 1 { current.deleteLastPathComponent() }
+                    folderLeft = current
+                }
+                guard let bookmark, !OperationJournal.isFolder(URL(fileURLWithPath: bookmark.path)) else { return (nil, false, folderLeft) }
+                var stale = false
+                guard let url = try? URL(resolvingBookmarkData: bookmark.data, options: [.withoutUI, .withoutMounting],
+                                         relativeTo: nil, bookmarkDataIsStale: &stale),
+                      OperationJournal.isFolder(url), !FileFlags.isInTrash(url)
+                else { return (nil, true, folderLeft) }
+                return (url.standardizedFileURL, false, folderLeft)
+            }
+        }.value
+        for (pane, result) in zip(panes, found) {
+            guard let old = pane.rootBookmark.map({ URL(fileURLWithPath: $0.path, isDirectory: true) }) ?? pane.root else { continue }
+            if let moved = result.moved {
+                foldersMoved([(from: old.path, to: moved.path)])
+            } else if result.gone {
+                foldersTrashed([old.path])
+            } else if let left = result.folder, let root = pane.root, LibraryModel.isInside(left, root) {
+                pane.folder = left
+            }
+        }
     }
 
     /// MediaPull moved or renamed folders (any window or section): each pane's folder and top folder follow them, so the
@@ -633,7 +683,11 @@ final class OrganiseModel {
             pane.folder = folder
             changed = true
         }
-        if changed { updateAnalysisFolders() }
+        if changed {
+            // A previewed plan names the old paths: it is shown again for the new ones by choosing it again.
+            pending = nil
+            updateAnalysisFolders()
+        }
     }
 
     /// Folders MediaPull moved to the Trash: a pane showing one goes to the folder above, and a pane whose top folder went
@@ -744,7 +798,6 @@ final class OrganiseModel {
                 } else {
                     self.message = "\(plan.title) stopped part way and could not be taken back. Undo it in History to try again."
                     self.window?.registerUndo(entry)
-                    self.lastEntryID = entry.id
                 }
                 self.working = nil
                 await self.refreshHistory()
@@ -756,7 +809,6 @@ final class OrganiseModel {
                 : entry.failures.prefix(3).joined(separator: "\n")
             // A plan that changed nothing (its folder went away since the preview) leaves nothing to undo.
             if !entry.steps.isEmpty { self.window?.registerUndo(entry) }
-            self.lastEntryID = entry.id
             await self.refreshHistory()
             self.working = nil
             self.showResults(of: plan)
@@ -795,13 +847,19 @@ final class OrganiseModel {
         refreshAfterChange()
     }
 
-    /// The toolbar's Undo: this window's last change, as ⌘Z, else the newest change not undone yet.
+    /// The toolbar's Undo: the change ⌘Z would undo, whichever section of this window made it (audit 5, B5-m3). Changes
+    /// made in other windows, or before MediaPull last opened, are undone from History.
     func undoLast() {
-        if let id = lastEntryID, let mine = history.first(where: { $0.id == id && !$0.undone }) {
-            undo(mine)
-        } else if let last = history.first(where: { !$0.undone }) {
-            undo(last)
+        guard let window else { return }
+        if !window.undoLastFileChange(known: history) {
+            message = "Nothing to undo in this window. Earlier changes can be undone in History."
         }
+    }
+
+    /// Whether the toolbar's Undo has a change to undo: this window's ⌘Z stack holds one the History lists as not undone.
+    var canUndoLast: Bool {
+        guard let id = window?.lastFileChange else { return false }
+        return history.first { $0.id == id }.map { !$0.undone } ?? true
     }
 
     /// Files dropped on a folder: copied when copying to the target (or from outside), otherwise moved.

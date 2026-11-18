@@ -228,7 +228,10 @@ final class AppModel {
             // Left out of analysis stays left out where it is now (audit 3, B3-m3).
             if preferences.analysisExcludedRoots.remove(old.path) != nil { preferences.analysisExcludedRoots.insert(url.path) }
             noteMoved([(from: old.path, to: url.path)])
-            for window in windows { window.library.rootMoved(from: old, to: url) }
+            for window in windows {
+                    window.library.rootMoved(from: old, to: url)
+                    window.organise.foldersMoved([(from: old.path, to: url.path)])
+                }
             await reloadRoots()
         }
     }
@@ -266,7 +269,10 @@ final class AppModel {
                 // Left out of analysis stays left out under its new name.
                 if preferences.analysisExcludedRoots.remove(old.path) != nil { preferences.analysisExcludedRoots.insert(url.path) }
                 noteMoved([(from: old.path, to: url.path)])
-                for window in windows { window.library.rootMoved(from: old, to: url) }
+                for window in windows {
+                    window.library.rootMoved(from: old, to: url)
+                    window.organise.foldersMoved([(from: old.path, to: url.path)])
+                }
                 changed = true
             }
         }
@@ -491,20 +497,18 @@ final class AppModel {
         if !SelfTestRunner.isActive {
             preferences.recentSaveFolders = Array(([folder.path] + preferences.recentSaveFolders.filter { $0 != folder.path }).prefix(10))
         }
-        // Items this window already saved into this folder are not downloaded again only to find they are copies (audit 4,
-        // S4-m2); whether their file is still there is checked off the main actor when the job starts.
-        let inside = AccountFolderStore.key(folder.path) + "/"
-        var savedHere: [String: URL] = [:]
+        // Items this window already saved where this save would find them are not downloaded again only to find they are
+        // copies (audit 4, S4-m2). Where that is depends on where each item goes (its account's folder, a site folder), so
+        // it is decided per item with the pipeline's own rule once the job knows (audit 5, B5-m2, A5-m5).
+        var savedEarlier: [String: URL] = [:]
         for item in items {
             switch window?.states[item.id] {
-            case let .saved(url)?, let .duplicate(url)?:
-                if AccountFolderStore.key(url.path).hasPrefix(inside) { savedHere[item.id] = url }
-            default:
-                break
+            case let .saved(url)?, let .duplicate(url)?: savedEarlier[item.id] = url
+            default: break
             }
         }
-        window?.markQueued(items.map(\.id).filter { savedHere[$0] == nil })
-        let alreadySaved = savedHere
+        window?.markQueued(items.map(\.id).filter { savedEarlier[$0] == nil })
+        let alreadySaved = savedEarlier
         job.retry = { [weak self, weak window, weak job] in
             guard let self, let job else { return }
             let failedIDs = Set(job.failures.map(\.id))
@@ -520,14 +524,9 @@ final class AppModel {
             guard let self else { return }
             job.state = .running
             let present = await Task.detached(priority: .userInitiated) {
-                Set(alreadySaved.filter { FileManager.default.fileExists(atPath: $0.value.path) }.keys)
+                alreadySaved.filter { FileManager.default.fileExists(atPath: $0.value.path) }
             }.value
-            if !present.isEmpty {
-                job.duplicates += present.count
-                job.notes.append("\(present.count) item\(present.count == 1 ? " was" : "s were") already in this folder, so "
-                    + "\(present.count == 1 ? "it was" : "they were") not downloaded again.")
-            }
-            let toSave = items.filter { !present.contains($0.id) }
+            let toSave = items
             let inline = await window?.blobData(for: toSave) ?? [:]
             let context = SaveContext(cookies: await self.cookieJar(), userAgent: self.userAgent, inlineData: inline,
                                       nameOverrides: window?.customNames ?? [:])
@@ -558,11 +557,45 @@ final class AppModel {
                 accountTarget.autoSubfolders = true
                 accountTarget.accountUsername = account
                 accountTarget.accountFolder = existing
+                accountTarget.accountFolderExisted = true
                 accountTarget.typeSubfolders = byType
                 batches.append((group, accountTarget, existing, account))
                 placed.formUnion(group.map(\.id))
             }
+            // Saved posts go into Saved posts beside an account folder, never loose inside it (D-88, audit 5, A5-m2).
+            let savedPosts = toSave.filter { item in
+                guard let engine = item.source.engine, engine.isInstagram else { return false }
+                return ["saved", "collection"].contains(engine.subcategory)
+            }
+            if !savedPosts.isEmpty {
+                let around = await Task.detached(priority: .userInitiated) {
+                    AccountFolders.detect(folder, stopAt: rootURL)?.folder
+                }.value ?? self.accountFolder(containing: folder).map { URL(fileURLWithPath: $0.path, isDirectory: true) }
+                if let around {
+                    var beside = target
+                    beside.folder = around.deletingLastPathComponent()
+                    beside.autoSubfolders = true
+                    batches.append((savedPosts, beside, nil, nil))
+                    placed.formUnion(savedPosts.map(\.id))
+                }
+            }
             batches.append((toSave.filter { !placed.contains($0.id) }, target, nil, nil))
+            var skipped = 0
+            for index in batches.indices {
+                let batchTarget = batches[index].target
+                let found = Set(batches[index].items.filter { item in
+                    present[item.id].map { SavePipeline.wouldFind($0, item: item, target: batchTarget, settings: settings) } ?? false
+                }.map(\.id))
+                skipped += found.count
+                batches[index].items.removeAll { found.contains($0.id) }
+            }
+            if skipped > 0 {
+                job.duplicates += skipped
+                job.notes.append("\(skipped) item\(skipped == 1 ? " was" : "s were") already in this folder, so "
+                    + "\(skipped == 1 ? "it was" : "they were") not downloaded again.")
+            }
+            let downloading = batches.flatMap(\.items).map(\.id).filter { alreadySaved[$0] != nil }
+            if !downloading.isEmpty { window?.markQueued(downloading) }
             var outcomes: [String: SaveOutcome] = [:]
             for batch in batches where !batch.items.isEmpty {
                 let done = await pipeline.save(batch.items, target: batch.target, settings: settings, context: context,

@@ -115,7 +115,7 @@ struct MainWindow: View {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 2) {
                     TopBarButton(title: "Undo", symbol: "arrow.uturn.backward") { model.organise.undoLast() }
-                        .disabled(!model.organise.history.contains { !$0.undone })
+                        .disabled(!model.organise.canUndoLast)
                         .help("Undo the last change (⌘Z)")
                     activityButton
                 }
@@ -128,7 +128,7 @@ struct MainWindow: View {
                         if model.showDownloads {
                             model.setShowing(.downloads, false)
                         } else {
-                            model.showDownloads(model.pageKind.instagramUsername.map { "@\($0)" })
+                            model.showDownloads(model.instagramPageAddress)
                         }
                     }
                     .help("Download this page: an Instagram account, a video or a whole gallery (⌥⌘4)")

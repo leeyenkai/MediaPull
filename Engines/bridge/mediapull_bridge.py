@@ -498,6 +498,22 @@ def patch_instagram():
 
     instagram.InstagramPostsExtractor.posts = posts
 
+    # Every listing of an account looks its name up first: the account is reported then, before any of its files, so the
+    # app can refuse a name another person has taken since a folder was made (audit 5, A5-M1). Only a Profile information
+    # pull reported it before, and after the media.
+    original_user = instagram.InstagramAPI.user
+    reported = set()
+
+    def user(self, handle, check_private=True):
+        result = original_user(self, handle, check_private)
+        fields = account_fields(result if isinstance(result, dict) else {})
+        if fields["user_id"] and fields["user_id"] not in reported:
+            reported.add(fields["user_id"])
+            EMITTER.emit("account", **fields)
+        return result
+
+    instagram.InstagramAPI.user = user
+
 
 def classify_instagram_error(exc):
     if STATE["checkpoint"] is not None:

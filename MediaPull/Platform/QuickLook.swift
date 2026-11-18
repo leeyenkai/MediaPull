@@ -7,8 +7,30 @@ final class QuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegat
     static let shared = QuickLook()
     private var urls: [URL] = []
     private var loading: Task<Void, Never>?
+    /// Bumped by every request, so a slow download for an earlier one never replaces a later preview (audit 5, B5-m6).
+    private var generation = 0
 
     func show(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        loading?.cancel()
+        loading = nil
+        generation += 1
+        present(urls)
+    }
+
+    func show(loader: @escaping () async -> [URL]) {
+        loading?.cancel()
+        generation += 1
+        let current = generation
+        loading = Task { [weak self] in
+            let files = await loader()
+            guard let self, !Task.isCancelled, self.generation == current else { return }
+            self.loading = nil
+            if files.isEmpty { NSSound.beep() } else { self.present(files) }
+        }
+    }
+
+    private func present(_ urls: [URL]) {
         guard !urls.isEmpty, let panel = QLPreviewPanel.shared() else { return }
         self.urls = urls
         panel.dataSource = self
@@ -16,15 +38,6 @@ final class QuickLook: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegat
         panel.reloadData()
         panel.currentPreviewItemIndex = 0
         if !panel.isVisible { panel.makeKeyAndOrderFront(nil) }
-    }
-
-    func show(loader: @escaping () async -> [URL]) {
-        loading?.cancel()
-        loading = Task { [weak self] in
-            let files = await loader()
-            guard !Task.isCancelled else { return }
-            if files.isEmpty { NSSound.beep() } else { self?.show(files) }
-        }
     }
 
     nonisolated func numberOfPreviewItems(in _: QLPreviewPanel!) -> Int {

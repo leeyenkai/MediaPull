@@ -68,7 +68,7 @@ public enum AccountFolders {
     enum FolderKind { case typeFolders, ownFiles }
 
     /// The Hashtags or Saved posts folder `folder` is, or is inside (below `root` when there is one).
-    static func collectionFolder(containing folder: URL, root: URL?) -> URL? {
+    public static func collectionFolder(containing folder: URL, root: URL?) -> URL? {
         let names = [SaveTarget.tagsFolder, SaveTarget.savedFolder].map { $0.lowercased() }
         var current = folder.standardizedFileURL
         let top = root?.standardizedFileURL.path
@@ -342,6 +342,8 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
 public actor AccountFolderStore {
     let folder: URL
     private var records: [UUID: AccountFolderRecord] = [:]
+    /// Paths of folders MediaPull renamed or moved this session, so a job queued with the old path still finds its folder.
+    private var formerPaths: [String: UUID] = [:]
     private var loaded = false
 
     public init(folder: URL) {
@@ -386,6 +388,7 @@ public actor AccountFolderStore {
                 let more = (other.places ?? []).filter { !keptIDs.contains($0.id) }
                 if !more.isEmpty { kept.places = (kept.places ?? []) + more }
                 if kept.lastResult == nil { kept.lastResult = other.lastResult }
+                if kept.userID == nil { kept.userID = other.userID }
                 forget(other.id)
             }
             records[kept.id] = kept
@@ -437,17 +440,22 @@ public actor AccountFolderStore {
         return URL(fileURLWithPath: record.path, isDirectory: true)
     }
 
+    /// Where the folder a job was given is now. A folder MediaPull renamed or moved since is found by its former path
+    /// (audit 5, C5-M4); one in the Trash counts as gone.
     public func currentFolder(for url: URL) -> URL? {
         load()
         let key = Self.key(url.path)
-        let ids = records.values.filter { Self.key($0.path) == key }.map(\.id)
+        var ids = records.values.filter { Self.key($0.path) == key }.map(\.id)
+        if let id = formerPaths[key] { ids.append(id) }
         followMoves()
         for id in ids {
-            if let record = records[id], FileManager.default.fileExists(atPath: record.path) {
+            if let record = records[id], FileManager.default.fileExists(atPath: record.path),
+               !FileFlags.isInTrash(URL(fileURLWithPath: record.path))
+            {
                 return URL(fileURLWithPath: record.path, isDirectory: true)
             }
         }
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        return FileManager.default.fileExists(atPath: url.path) && !FileFlags.isInTrash(url) ? url : nil
     }
 
     private func forget(_ id: UUID) {
@@ -545,8 +553,14 @@ public actor AccountFolderStore {
     public func moveFolders(_ moves: [(from: String, to: String)]) {
         load()
         for (id, var record) in records {
-            for (from, to) in moves where record.path == from || record.path.hasPrefix(from + "/") {
-                record.path = to + record.path.dropFirst(from.count)
+            // Compared by key: the journal and the record may spell one path differently ("/private", letter case, Unicode).
+            for (from, to) in moves {
+                let path = Self.key(record.path), old = Self.key(from)
+                guard path == old || path.hasPrefix(old + "/") else { continue }
+                formerPaths[path] = id
+                let depth = URL(fileURLWithPath: path).pathComponents.count - URL(fileURLWithPath: old).pathComponents.count
+                let below = URL(fileURLWithPath: record.path).pathComponents.suffix(depth)
+                record.path = below.reduce(URL(fileURLWithPath: to, isDirectory: true)) { $0.appendingPathComponent($1) }.path
                 record.bookmark = try? URL(fileURLWithPath: record.path).bookmarkData(options: [], includingResourceValuesForKeys: nil,
                                                                                         relativeTo: nil)
                 records[id] = record

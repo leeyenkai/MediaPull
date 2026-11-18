@@ -151,9 +151,13 @@ final class SelfTestRunner {
             try? await Task.sleep(for: .seconds(1))
             snapshot(to: out.appendingPathComponent("downloads-list.png"))
             note("downloads list: " + model.downloads.batch.map { "\($0.text) = \($0.label)" }.joined(separator: "; "))
-            // Every line recognised for what it is: @accounts and #hashtags as Instagram, nothing left checking (C3-m12).
+            // Every line recognised for what it is: @accounts and #hashtags as Instagram, nothing left checking (C3-m12), and a
+            // saved-posts link as the person's saved posts, never an account (audit 5, C5-m9).
             let right = model.downloads.batch.allSatisfy { entry in
-                if entry.kind == .checking { return false }
+                if entry.kind == .checking || entry.label.hasSuffix("@") { return false }
+                if entry.text.contains("instagram.com/"), entry.text.contains("/saved") {
+                    return entry.label == "Your saved Instagram posts"
+                }
                 if entry.text.hasPrefix("@") || entry.text.hasPrefix("#") {
                     if case .instagram = entry.kind { return true }
                     return false
@@ -802,24 +806,72 @@ final class SelfTestRunner {
             copy["meta"] = meta
             return copy
         }
+        // 16 posts, the 15th failing: deeper than the early stop (12 known in a row), so only a full walk reaches it.
+        func account(_ name: String, id: String, count: Int) -> [String: Any] {
+            var value = replay
+            value["account"] = ["username": name, "user_id": id, "post_count": count, "is_private": false]
+            value["items"] = (0 ..< count).map { index -> [String: Any] in
+                let source = fixtures.appendingPathComponent("\(name)\(index).jpg")
+                try? Self.jpeg(20 + index).write(to: source)
+                var fields = meta(index % 5)
+                let post = "32\(String(format: "%015d", index))", media = "33\(String(format: "%015d", index))"
+                fields["username"] = name
+                fields["post_id"] = post
+                fields["media_id"] = media
+                fields["post_shortcode"] = InstagramIDs.shortcode(fromID: post) ?? "x"
+                fields["shortcode"] = InstagramIDs.shortcode(fromID: media) ?? "x"
+                fields["date"] = "2025-01-\(String(format: "%02d", 28 - index)) 10:00:00"
+                return ["key": "ig:\(name)\(index)", "source": source.path, "meta": fields]
+            }
+            return value
+        }
+        let savedStopAfter = app.preferences.stopAfterKnown
+        app.preferences.stopAfterKnown = 12
+        defer { app.preferences.stopAfterKnown = savedStopAfter }
+        let danaFive = dana
+        dana = account("dana", id: "44", count: 16)
         var failingFile = dana
-        failingFile["fail_files"] = [2]
+        failingFile["fail_files"] = [15]
         writeReplay(failingFile)
         var danaDraft = app.engines.draft(username: "dana")
         danaDraft.content = [.posts]
+        danaDraft.incremental = true
         let danaJob = app.engines.startPull(danaDraft, scanOnly: false, window: model)
         await waitUntil(timeout: 120) { danaJob?.state.isFinished ?? true }
-        let failedCounted = danaJob?.failed == 1 && danaJob?.saved == 4
+        let failedCounted = danaJob?.failed == 1 && danaJob?.saved == 15
+        note("update: dana saved \(danaJob?.saved ?? -1), duplicates \(danaJob?.duplicates ?? -1), failed \(danaJob?.failed ?? -1)")
         writeReplay(dana)
         danaJob?.retry?()
         try? await Task.sleep(for: .milliseconds(300))
         await waitUntil(timeout: 120) { danaJob?.state.isFinished ?? true }
-        let retried = failedCounted && danaJob?.saved == 5 && danaJob?.failed == 0
-        note("update: a failed file counted \(failedCounted), Retry Failed fetched it \(retried)")
+        let retried = failedCounted && danaJob?.saved == 16 && danaJob?.failed == 0
+        note("update: a failed file counted \(failedCounted), Retry Failed fetched it from deep in the listing \(retried)")
+        // Retry Failed cut off near the top, then Resumed: the full walk goes on, not the original update (audit 5, C5-M2).
+        let fay = account("fay", id: "46", count: 16)
+        var fayFailing = fay
+        fayFailing["fail_files"] = [15]
+        writeReplay(fayFailing)
+        var fayDraft = app.engines.draft(username: "fay")
+        fayDraft.content = [.posts]
+        fayDraft.incremental = true
+        let fayJob = app.engines.startPull(fayDraft, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { fayJob?.state.isFinished ?? true }
+        var fayCut = fay
+        fayCut["stop_after"] = 2
+        writeReplay(fayCut)
+        fayJob?.retry?()
+        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil(timeout: 120) { fayJob?.state.isFinished ?? true }
+        writeReplay(fay)
+        fayJob?.resume?()
+        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil(timeout: 120) { fayJob?.state.isFinished ?? true }
+        let resumedRetry = fayJob?.saved == 16 && fayJob?.failed == 0
+        note("update: Resume of a cut-off Retry Failed reached the failed file \(resumedRetry) (saved \(fayJob?.saved ?? -1))")
         // A job's own Resume continues from where it stopped, not from the top (C4-m8).
-        var erin = dana
+        var erin = danaFive
         erin["account"] = ["username": "erin", "user_id": "45", "post_count": 5, "is_private": false]
-        erin["items"] = (dana["items"] as? [[String: Any]] ?? []).map { item -> [String: Any] in
+        erin["items"] = (danaFive["items"] as? [[String: Any]] ?? []).map { item -> [String: Any] in
             var copy = item
             copy["key"] = (item["key"] as? String ?? "").replacingOccurrences(of: "dana", with: "erin")
             var meta = item["meta"] as? [String: Any] ?? [:]
@@ -862,9 +914,32 @@ final class SelfTestRunner {
         note("update: queued pull went to \(queuedJob?.destination?.lastPathComponent ?? "nowhere") "
             + "(\(queuedJob?.state.label ?? "no job")), old path made again \(recreated)")
         try? fm.moveItem(at: renamedFolder, to: folder)
-        note("update: name taken by someone else refused \(refusedOther), folder renamed while queued followed \(followed)")
+        // The same when MediaPull renamed it (the record moves at once, the queued draft keeps the old path; audit 5, C5-M4).
+        var byRecord = queued
+        byRecord.accountFolderID = record.id
+        try? fm.moveItem(at: folder, to: renamedFolder)
+        await app.accountFolders.moveFolders([(from: folder.path, to: renamedFolder.path)])
+        let queuedAgain = app.engines.startPull(byRecord, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { queuedAgain?.state.isFinished ?? true }
+        let followedOwn = !fm.fileExists(atPath: folder.path)
+            && queuedAgain?.destination?.standardizedFileURL == renamedFolder.standardizedFileURL
+            && !(queuedAgain?.state.label.contains("no longer there") ?? true)
+        try? fm.moveItem(at: renamedFolder, to: folder)
+        await app.accountFolders.moveFolders([(from: renamedFolder.path, to: folder.path)])
+        // A folder moved to the Trash while queued stops the pull and is never made again (A4-M5).
+        var trashedAt: NSURL?
+        try? fm.trashItem(at: folder, resultingItemURL: &trashedAt)
+        let trashedJob = app.engines.startPull(byRecord, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { trashedJob?.state.isFinished ?? true }
+        let stoppedForTrash = !fm.fileExists(atPath: folder.path) && trashedJob?.saved == 0
+            && (trashedJob?.state.label.contains("no longer there") ?? false)
+        if let trashedAt = trashedAt as URL? { try? fm.moveItem(at: trashedAt, to: folder) }
+        note("update: renamed in MediaPull: \(queuedAgain?.destination?.lastPathComponent ?? "nowhere") "
+            + "(\(queuedAgain?.state.label ?? "no job"))")
+        note("update: name taken by someone else refused \(refusedOther), folder renamed while queued followed \(followed), "
+            + "renamed in MediaPull followed \(followedOwn), trashed stopped \(stoppedForTrash)")
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
-            && retried && resumedOwn && refusedOther && followed
+            && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass
@@ -881,7 +956,7 @@ final class SelfTestRunner {
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 48, bitsPerSample: 8, samplesPerPixel: 3,
                                    hasAlpha: false,
                                    isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        let colour = NSColor(hue: CGFloat(index) / 10, saturation: 0.8, brightness: 0.9, alpha: 1)
+        let colour = NSColor(hue: CGFloat(index % 10) / 10, saturation: 0.8, brightness: 0.9 - CGFloat(index / 10) * 0.07, alpha: 1)
         for x in 0 ..< 64 {
             for y in 0 ..< 48 {
                 rep.setColor(x < 32 ? colour : colour.blended(withFraction: CGFloat(y) / 48, of: .black) ?? colour, atX: x, y: y)

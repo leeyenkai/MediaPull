@@ -121,8 +121,11 @@ struct InstagramForm: View {
         let account = draft.username
         let name = FileNaming.safeTopFolder(draft.folderName.isEmpty ? account : draft.folderName)
         let root = app.root(containing: saveFolder)?.url
+        // The folder the pull itself will use: a remembered one first, then one found by what it holds (audit 5, C5-m5).
+        let recorded = await app.engines.recordedFolder(of: account, around: saveFolder)
         let note = await Task.detached(priority: .utility) { () -> String in
-            let target = AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: root)
+            let target = recorded.map { (existing: Optional($0), parent: $0.deletingLastPathComponent()) }
+                ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: root)
             guard let existing = target.existing else {
                 // The name the pull will really use: numbered when a folder of that name holds something else.
                 let folder = AccountFolders.newFolder(named: name, in: target.parent)

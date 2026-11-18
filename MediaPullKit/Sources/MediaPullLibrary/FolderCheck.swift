@@ -52,20 +52,23 @@ public enum FolderCheck {
                 media.append(url)
             }
         }
-        let placeholders = Set(report.notDownloaded.map(\.path))
-        let mediaPaths = Set(media.map(\.path))
+        // Names are compared as the volume compares them: "Beach.jpg" renamed in the Finder still has "beach.jpg.json" as its
+        // metadata file on a case-insensitive volume, and reads find it there (audit 5, C5-m7).
+        let key = pathKey(for: folder)
+        let placeholders = Set(report.notDownloaded.map { key($0.path) })
+        let mediaPaths = Set(media.map { key($0.path) })
         for sidecar in metadata {
-            let mediaPath = String(sidecar.path.dropLast(".json".count))
+            let mediaPath = key(String(sidecar.path.dropLast(".json".count)))
             if !mediaPaths.contains(mediaPath), !placeholders.contains(mediaPath) { report.orphanedMetadata.append(sidecar) }
         }
         // Files saved without metadata on purpose: formats that never get one (D-56), and a video's thumbnail, named after it.
         let videoStems = Set(media.filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .video }
-            .map { $0.deletingPathExtension().path })
+            .map { key($0.deletingPathExtension().path) })
         func expectsMetadata(_ file: URL) -> Bool {
             guard let format = MediaFormat.fromExtension(file.pathExtension), SavePipeline.archiveFormats.contains(format) else {
                 return false
             }
-            return !(format.kind == .image && videoStems.contains(file.deletingPathExtension().path))
+            return !(format.kind == .image && videoStems.contains(key(file.deletingPathExtension().path)))
         }
         let total = media.count
         for (done, file) in media.enumerated() {
@@ -77,7 +80,7 @@ public enum FolderCheck {
             }
             // Reading a metadata file kept only in iCloud would download it; checking downloads nothing (audit 4, B4-m5).
             let sidecar = Sidecar.sidecarURL(for: file)
-            if placeholders.contains(sidecar.path) { continue }
+            if placeholders.contains(key(sidecar.path)) { continue }
             if isDataless(sidecar) {
                 report.notDownloaded.append(sidecar)
                 continue
@@ -97,6 +100,16 @@ public enum FolderCheck {
             report[keyPath: key].sort { $0.path < $1.path }
         }
         return report
+    }
+
+    /// How the volume holding `folder` compares names: Unicode form aside always, letter case aside unless it is a
+    /// case-sensitive volume.
+    static func pathKey(for folder: URL) -> (String) -> String {
+        let caseSensitive = (try? folder.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?
+            .volumeSupportsCaseSensitiveNames ?? false
+        return caseSensitive
+            ? { $0.precomposedStringWithCanonicalMapping }
+            : { $0.precomposedStringWithCanonicalMapping.lowercased() }
     }
 }
 

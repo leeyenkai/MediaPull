@@ -119,6 +119,33 @@ extension WindowModel {
         }
     }
 
+    /// The change ⌘Z undoes in this window: the top of its file-change stack, whichever section made it.
+    var lastFileChange: UUID? { undoOrder.last }
+
+    /// The toolbar's Undo: exactly the change ⌘Z would undo, so ⇧⌘Z redoes it (audit 5, B5-m3). `known` is the History's
+    /// list. False when this window has no file change left to undo.
+    @discardableResult
+    func undoLastFileChange(known: [JournalEntry]) -> Bool {
+        while let id = lastFileChange {
+            guard let entry = known.first(where: { $0.id == id }) else {
+                // Not in the History yet (it refreshes just after a change): the journal has it.
+                Task {
+                    if let entry = await app.journal.entry(id), !entry.undone { undoChange(entry) }
+                }
+                return true
+            }
+            if entry.undone {
+                // Undone elsewhere since: it leaves the stack, and the change below it is next.
+                forgetUndo(id)
+                undoOrder.removeAll { $0 == id }
+                continue
+            }
+            undoChange(entry)
+            return true
+        }
+        return false
+    }
+
     /// Takes a change off this window's undo and redo stacks.
     func forgetUndo(_ id: UUID) {
         guard let target = undoTargets.removeValue(forKey: id) else { return }
