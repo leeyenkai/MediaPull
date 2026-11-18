@@ -773,6 +773,14 @@ final class SelfTestRunner {
         check(inside && added == 3 && intoEmpty?.saved == 3 && fm.fileExists(atPath: alice2.appendingPathComponent("posts").path),
               "Instagram into an empty folder: a full copy of 3 in its posts folder, inside \(inside)")
 
+        // Automatic keeps going to the account's own folder: never to a copy or another account's folder Save As made (D-108).
+        before = snapshot()
+        let automatic = app.engines.startPull(draft, scanOnly: false, window: model, saveFolder: base)
+        await waitFor(automatic)
+        (inside, _) = onlyInside(alice, since: before)
+        check(inside && automatic?.destination?.standardizedFileURL.path == alice.standardizedFileURL.path,
+              "an Automatic pull afterwards goes to alice's own folder (\(automatic?.destination?.lastPathComponent ?? "none"))")
+
         // Videos: two of channel X.
         var videos: [[String: Any]] = []
         for index in 1 ... 2 {

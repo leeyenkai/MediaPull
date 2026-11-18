@@ -499,7 +499,8 @@ final class AppModel {
         return accountFolderList.filter {
             let own = AccountFolderStore.key($0.path)
             return path == own || path.hasPrefix(own + "/")
-        }.max { $0.path.count < $1.path.count }
+        // A folder's own account before an account Save As put there (D-108).
+        }.max { ($0.path.count, $0.savedAs == true ? 0 : 1) < ($1.path.count, $1.savedAs == true ? 0 : 1) }
     }
 
     /// The remembered account folders inside `folder` (not the folder itself).
@@ -589,9 +590,10 @@ final class AppModel {
                 let around = await self.engines.accountsBase(folder, except: account)
                 // A remembered folder counts too: a Plain one has no metadata to find it by (audit 4, C4-M2).
                 let recorded = await self.engines.recordedFolder(of: account, around: around)
+                let excluded = await self.engines.savedAsFolders(of: account)
                 let found = await Task.detached(priority: .userInitiated) { () -> (URL, Bool?)? in
                     guard let existing = recorded
-                        ?? AccountFolders.resolveTarget(account: account, saveFolder: around, root: rootURL).existing
+                        ?? AccountFolders.resolveTarget(account: account, saveFolder: around, root: rootURL, excluding: excluded).existing
                     else { return nil }
                     return (existing, AccountFolders.sortsByType(existing))
                 }.value

@@ -334,8 +334,10 @@ final class EngineService {
                         let libraryRoot = self.app.root(containing: root.url)?.url
                         // A folder found by what it holds counts too, as when the pull starts (audit 15, C15-m5).
                         let recorded = await self.recordedFolder(of: username, around: base)
+                        let excluded = await self.savedAsFolders(of: username)
                         let found = await Task.detached(priority: .utility) {
-                            recorded ?? AccountFolders.resolveTarget(account: username, saveFolder: base, root: libraryRoot).existing
+                            recorded ?? AccountFolders.resolveTarget(account: username, saveFolder: base, root: libraryRoot,
+                                                                     excluding: excluded).existing
                         }.value
                         if job.state == .queued { job.destination = found ?? base.appendingPathComponent(name, isDirectory: true) }
                     }
@@ -773,6 +775,8 @@ final class EngineService {
                 record.userID = owner
             }
             await app.accountFolders.addKeys([key], to: record.id)
+            // A tray owner's folder that Save As made inside the chosen folder is never picked by an Automatic download (D-108).
+            if exact, madePostFolders.contains(user) { await app.accountFolders.markSavedAs(record.id) }
             // The folder is followed from now on, even one this pull made (audit 6, A6-m2).
             postPlaces[user]?.record = record
         }
@@ -1194,11 +1198,12 @@ final class EngineService {
             chosen = await recordedFolder(of: account, around: saveFolder)
         }
         let known = chosen
+        let excluded = await savedAsFolders(of: account)
         // Reading the folder (names, and a sample of metadata files) happens off the main actor.
         let (folder, index, byType, existing) = await Task.detached(priority: .userInitiated) {
             () -> (URL, AccountFolders.Index, Bool?, Bool) in
             let resolved = known.map { (existing: Optional($0), parent: $0.deletingLastPathComponent()) }
-                ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: libraryRoot)
+                ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: libraryRoot, excluding: excluded)
             guard let existing = resolved.existing else {
                 // A new folder never goes into one of that name that already holds something else (another account's).
                 return (AccountFolders.newFolder(named: name, in: resolved.parent), AccountFolders.Index(), nil, false)
@@ -1226,15 +1231,26 @@ final class EngineService {
             trayOwner ? ExactFolder.ownerFolder(account, in: chosen) : (chosen, true)
         }.value
         guard exists else { return AccountPlace(folder: folder, index: AccountFolders.Index(), record: nil, sortsByType: nil) }
-        let (index, byType) = await Task.detached(priority: .userInitiated) {
-            (AccountFolders.index(folder), AccountFolders.sortsByType(folder))
+        let (index, byType, holder) = await Task.detached(priority: .userInitiated) {
+            (AccountFolders.index(folder), AccountFolders.sortsByType(folder), AccountFolders.dominantAccount(in: folder))
         }.value
+        let key = AccountFolderStore.key(folder.path)
+        let known = await app.accountFolders.all().contains { $0.account == account.lowercased() && AccountFolderStore.key($0.path) == key }
         var record = await app.accountFolders.record(account: account, folder: folder)
+        // A folder that becomes the account's only through Save As (empty, or another account's) is never picked by an
+        // Automatic download; one that already held the account stays its folder (D-108).
+        if !known, holder != account.lowercased() { await app.accountFolders.markSavedAs(record.id) }
         if !index.identities.isSubset(of: record.keys) {
             await app.accountFolders.addKeys(index.identities, to: record.id)
             record = await app.accountFolders.record(account: account, folder: folder)
         }
         return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
+    }
+
+    /// Folders made by Save As for `account`, which an Automatic download never finds by searching (D-108).
+    func savedAsFolders(of account: String) async -> Set<String> {
+        Set(await app.accountFolders.all().filter { $0.account == account.lowercased() && $0.savedAs == true }
+            .map { AccountFolderStore.key($0.path) })
     }
 
     /// The remembered folder of `account` that `saveFolder` is, is inside, or holds. Records count as well as what folders
@@ -1262,7 +1278,8 @@ final class EngineService {
             let own = AccountFolderStore.key($0.path)
             return key == own || key.hasPrefix(own + "/")
         }.max { $0.path.count < $1.path.count }
-        let inside = mine.filter { AccountFolderStore.key($0.path).hasPrefix(key + "/") }
+        // Folders made by Save As are found only from inside them, never by searching below (D-108).
+        let inside = mine.filter { AccountFolderStore.key($0.path).hasPrefix(key + "/") && $0.savedAs != true }
             .max { ($0.lastUpdate ?? .distantPast, -$0.path.count) < ($1.lastUpdate ?? .distantPast, -$1.path.count) }
         return (containing ?? inside).map { URL(fileURLWithPath: $0.path, isDirectory: true) }
     }
