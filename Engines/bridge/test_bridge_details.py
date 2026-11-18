@@ -444,11 +444,38 @@ def test_only_videos_that_can_never_download_are_skipped():
     assert bridge.problem_code("ERROR: HTTP Error 500") == "download_failed"
 
 
-def test_a_retry_keeps_the_limit():
-    """Audit 13 (A13-M2): a Retry asks yt-dlp only for what is left of "At most"."""
-    request = {"extras": {"playlist": True, "max_downloads": 10, "skip_ids": [str(n) for n in range(8)]}}
+def test_a_retry_asks_for_exactly_the_failed_videos():
+    """Audit 14 (A14-M1, C14-M2): a Retry names the videos that failed, so it never reaches one past "At most" and never
+    stops before trying each of them; a failure's video comes from the message or the video looked at last."""
+    request = {"extras": {"playlist": True, "max_downloads": 3, "skip_ids": ["a", "d", "e"], "only_ids": ["b", "c"]}}
     options = bridge.stream_options(request, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)
-    assert options["max_downloads"] == 2, options["max_downloads"]
+    assert "max_downloads" not in options, options.get("max_downloads")
+    check = options["match_filter"]
+    assert check({"id": "a"}) == "Already saved."
+    assert check({"id": "f"}) == "Not asked for."
+    assert check({"id": "b"}) is None and check({"id": "c"}) is None
+    first = {"extras": {"playlist": True, "max_downloads": 3}}
+    assert bridge.stream_options(first, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)["max_downloads"] == 3
+    assert bridge.failed_video("ERROR: [youtube] abc123: Sign in to confirm your age") == "abc123"
+    bridge.STATE["current_id"] = "xyz"
+    assert bridge.failed_video("ERROR: unable to download video data: HTTP Error 403: Forbidden") == "xyz"
+
+
+def test_a_single_video_that_can_never_download_offers_no_retry():
+    """Audit 13 (C13-m4), audit 14 (A14-m1): the final code says whether anything could ever be downloaded."""
+    capture = Capture()
+    bridge.EMITTER = capture
+    saved = dict(bridge.STATE)
+    try:
+        bridge.STATE["errors"] = []
+        bridge.STATE["problems"] = []
+        bridge.StreamLogger(False).error("ERROR: [youtube] abc: Private video. Sign in if you've been granted access")
+        assert bridge.STATE["problems"] == ["unavailable"]
+        bridge.StreamLogger(False).error("ERROR: [youtube] abc: HTTP Error 500")
+        assert bridge.STATE["problems"] == ["unavailable", "download_failed"]
+    finally:
+        bridge.STATE.clear()
+        bridge.STATE.update(saved)
 
 
 def test_a_retry_skips_saved_videos():

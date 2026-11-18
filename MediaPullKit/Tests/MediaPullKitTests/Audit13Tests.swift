@@ -89,16 +89,4 @@ final class Audit13Tests: XCTestCase {
         XCTAssertEqual(again.done, 1, "\(again.skipped)")
         XCTAssertFalse(exists("D/x.jpg"))
     }
-
-    /// C13-M1: saving an item into a second folder never moves what an earlier version remembered of it in the first.
-    func testEarlierMemoryStaysWithItsFolder() async throws {
-        let store = try AppStore.make(inMemory: true)
-        await store.recordArchive(key: "ig:x", account: "alice", path: url("lib/alice/x.jpg").path, sha256: "")
-        try await Task.sleep(for: .milliseconds(20))
-        await store.setEarlierMemoryBefore(Date())
-        await store.recordArchive(key: "ig:x", account: "alice", path: url("lib/alice copy/x.jpg").path, sha256: "")
-        let began = await store.earlierMemoryBefore
-        let taken = await store.takeInstagramKeys(account: "alice", under: url("lib/alice").path, savedBefore: began)
-        XCTAssertEqual(taken, ["ig:x"])
-    }
 }

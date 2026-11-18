@@ -315,10 +315,19 @@ final class EngineService {
             if let tag = draft.hashtag {
                 job.destination = root.url.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true).appendingPathComponent(tag)
             } else if draft.postURL == nil, !draft.username.isEmpty {
-                // The account's own folder, found when the pull starts (D-78).
-                job.destination = draft.accountFolder
-                    ?? root.url.appendingPathComponent(FileNaming.safeTopFolder(draft.folderName.nonEmpty ?? draft.username),
-                                                       isDirectory: true)
+                // The account's own folder, found when the pull starts (D-78); meanwhile where it will be looked for, beside
+                // another account's folder rather than inside it (D-97, audit 14, C14-m5).
+                let name = FileNaming.safeTopFolder(draft.folderName.nonEmpty ?? draft.username)
+                job.destination = draft.accountFolder ?? root.url.appendingPathComponent(name, isDirectory: true)
+                if draft.accountFolder == nil {
+                    let username = draft.username
+                    Task { [weak self, weak job] in
+                        guard let self, let job else { return }
+                        let base = await self.accountsBase(root.url, except: username)
+                        let existing = await self.recordedFolder(of: username, around: base)
+                        if job.state == .queued { job.destination = existing ?? base.appendingPathComponent(name, isDirectory: true) }
+                    }
+                }
             } else {
                 job.destination = root.url
             }
@@ -548,6 +557,10 @@ final class EngineService {
             run.clearFailures = false
             job.failed = 0
             job.failures = []
+            // A Retry walks again: what it finds and skips is counted afresh, not on top (audit 14, C14-m2).
+            job.found = 0
+            job.skipped = 0
+            job.notes = []
         }
         // Hashtags, saved posts and the stories tray go beside the accounts, never inside an account's folder (D-52, audit 4,
         // C4-m10).
@@ -1130,20 +1143,11 @@ final class EngineService {
         return (containing ?? inside).map { URL(fileURLWithPath: $0.path, isDirectory: true) }
     }
 
-    /// A folder whose record has never been updated takes over what earlier versions remembered of it: the items saved
-    /// there, deleted since or not, and where an interrupted pull stopped (audit 3, C3-M1, C3-m14). Taken entries leave the
-    /// shared table, so a second call finds nothing; scanned saves call it too (audit 4, C4-m1).
+    /// A folder whose record has never been updated takes over where an earlier version's interrupted pull of the account
+    /// stopped (C3-m14, A11-M1). Earlier versions knew an item only while its file was there, so a folder they made starts
+    /// from the files it holds, as they did; items deleted from it are remembered from its first 1.8 pull on (D-98).
     func adoptEarlierMemory(of record: AccountFolderRecord, account: String) async {
         guard record.lastUpdate == nil, (record.places ?? []).isEmpty else { return }
-        // Only what an earlier version remembered: items saved since account folder records began belong to the record of
-        // the folder they were saved into, never to a new folder made at its path later (audit 10, A10-M2). A folder's
-        // creation date is not used: a move or copy to another disk resets it (audit 11, A11-M2). The place where an earlier
-        // version's pull stopped (only earlier versions stored one) is taken over as before (C3-m14, A11-M1).
-        // Under every path the folder had: records follow a rename or move in the Finder, which the remembered items do not
-        // (audit 13, A13-M3, C12-M2).
-        let keys = await app.store?.takeInstagramKeys(account: account, under: record.allPaths,
-                                                      savedBefore: app.preferences.accountFoldersBegan) ?? []
-        if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: record.id) }
         let info = await app.store?.account(account)
         if let cursor = info?.resumeCursor, !cursor.isEmpty {
             await app.accountFolders.setPlace(ResumePlace(cursor: cursor, untilEnd: true), in: record.id)
@@ -1285,9 +1289,15 @@ final class EngineService {
                 }
                 job.failed = 0
                 job.failures = []
-                // What is not saved is looked at again, so what it skipped is counted afresh (audit 13, A13-m3, C13-m3).
+                // What is not saved is looked at again, so what it skipped is counted afresh (audit 13, A13-m3, C13-m3); notes
+                // about videos that stay saved (a subtitle not placed) stay (audit 14, A14-m2).
                 job.skipped = 0
-                job.notes = []
+                job.notes.removeAll { savedIDs.skipNotes.contains($0) }
+                savedIDs.skipNotes = []
+                // Exactly the videos that failed, when each failure named its video: never one past "At most", none missed
+                // (audit 14, A14-M1, C14-M2).
+                let only = savedIDs.failedIDs
+                savedIDs.failedIDs = []
                 // Where the folder is now, in its library's layout (A8-m6).
                 let root = self.app.destination(for: now)
                 if now.standardizedFileURL.path != folder.url.standardizedFileURL.path {
@@ -1295,6 +1305,8 @@ final class EngineService {
                 }
                 var extras = extras
                 extras.skipIDs = Array(savedIDs.ids)
+                if !only.isEmpty, !savedIDs.failureWithoutID { extras.onlyIDs = Array(only) }
+                savedIDs.failureWithoutID = false
                 await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site,
                                     saved: savedIDs)
             }
@@ -1369,13 +1381,17 @@ final class EngineService {
                 case let .error(code, message, _, false) where code == "unavailable":
                     // Never downloadable (private, removed, not out yet, live): skipped with the reason, not a failure.
                     job.skipped += 1
-                    if job.notes.count < 30 { job.notes.append(message) }
+                    if job.notes.count < 30 {
+                        job.notes.append(message)
+                        savedIDs.skipNotes.insert(message)
+                    }
                 case let .error(code, message, key, fatal):
                     if code == "download_failed", !fatal {
                         // A video of a playlist that could not be downloaded is counted, so Retry Failed is offered
                         // (audit 11, A11-M3).
                         job.failed += 1
                         job.failures.append((key ?? message, message))
+                        if let key { savedIDs.failedIDs.insert(key) } else { savedIDs.failureWithoutID = true }
                     } else if fatal || failure == nil {
                         failure = message
                         // Nothing in it could ever be downloaded: no Retry is offered (audit 13, C13-m4).
@@ -1859,6 +1875,11 @@ private final class PullRun {
 @MainActor
 private final class VideoRun {
     var ids = Set<String>()
+    /// The videos that failed in the last run, for Retry Failed; false when one failure named no video.
+    var failedIDs = Set<String>()
+    var failureWithoutID = false
+    /// Notes about skipped videos, counted afresh by a Retry.
+    var skipNotes = Set<String>()
 }
 
 extension EngineService {

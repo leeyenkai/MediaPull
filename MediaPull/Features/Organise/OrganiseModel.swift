@@ -805,8 +805,11 @@ final class OrganiseModel {
             if usedTemporaryNames, !entry.finished || !entry.failures.isEmpty, !entry.steps.isEmpty {
                 let report = await app.undoChange(entry.id)
                 guard let self else { return }
-                // Only what the undo really did is reported (audit 4, B4-m10).
-                if let report, report.skipped.isEmpty {
+                // Only what the undo really did, and whether it was recorded (audit 4, B4-m10; audit 14, B14-m5).
+                if let report, report.done == 0 {
+                    self.message = "\(plan.title) stopped part way and could not be taken back. Undo it in History to try again."
+                    self.window?.registerUndo(entry)
+                } else if let report, report.skipped.isEmpty {
                     self.message = "\(plan.title) stopped part way, so it was taken back: every file has its old name."
                 } else if let report {
                     self.message = "\(plan.title) stopped part way and was taken back, except \(report.skipped.count): "
@@ -815,6 +818,7 @@ final class OrganiseModel {
                     self.message = "\(plan.title) stopped part way and could not be taken back. Undo it in History to try again."
                     self.window?.registerUndo(entry)
                 }
+                if report?.unsaved == true, let message = self.message { self.message = message + " " + OperationJournal.unsavedNote }
                 self.working = nil
                 await self.refreshHistory()
                 return
@@ -854,9 +858,10 @@ final class OrganiseModel {
 
     /// The History's Undo, and the toolbar's: through the window, so ⇧⌘Z can redo it.
     func redo(_ entry: JournalEntry) {
-        // Off the ⇧⌘Z stack first, so the change is never done twice.
-        window?.forgetUndo(entry.id)
-        window?.redoChange(entry)
+        guard let window, window.redoing.insert(entry.id).inserted else { return }
+        // Off every window's ⇧⌘Z stack first, so the change is never done twice (audit 14, B14-m3).
+        for other in app.windows { other.forgetUndo(entry.id) }
+        window.redoChange(entry)
     }
 
     func undo(_ entry: JournalEntry) {

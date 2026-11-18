@@ -309,6 +309,9 @@ public struct BridgeRequest: Encodable, Sendable {
         public var description = false
         /// Videos of a playlist already saved by this job: a Retry downloads only the rest (audit 12, A12-M3).
         public var skipIDs: [String] = []
+        /// A playlist's Retry Failed asks for exactly the videos that failed, so it never reaches videos past "At most" or
+        /// misses one of them (audit 14, C14-M2).
+        public var onlyIDs: [String] = []
 
         public init() {}
 
@@ -321,6 +324,7 @@ public struct BridgeRequest: Encodable, Sendable {
             case rateLimit = "rate_limit"
             case autoSubtitles = "auto_subtitles"
             case skipIDs = "skip_ids"
+            case onlyIDs = "only_ids"
         }
     }
 

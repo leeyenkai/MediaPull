@@ -93,54 +93,7 @@ final class AppModel {
         Task { await bootstrap() }
     }
 
-    /// Account folders earlier versions saved into get a record, so their memory follows them through a rename or move in
-    /// the Finder before their first Update (audit 13, A13-M3, C12-M2). A folder is the nearest one named after its
-    /// account (or a numbered copy, "alice 2") above the files remembered.
-    private func recordEarlierFolders(store: AppStore) async {
-        guard let began = preferences.accountFoldersBegan else { return }
-        let parents = await store.earlierMemoryFolders(before: began)
-        guard !parents.isEmpty else { return }
-        let known = Set(accountFolderList.flatMap(\.allPaths).map(AccountFolderStore.key))
-        let folders = await Task.detached(priority: .utility) { () -> [(String, URL)] in
-            var found: [String: (String, URL)] = [:]
-            for (account, paths) in parents {
-                for path in paths {
-                    var url = URL(fileURLWithPath: path, isDirectory: true)
-                    while url.path != "/" {
-                        let name = url.lastPathComponent.lowercased()
-                        if name == account || name.hasPrefix(account + " ") { break }
-                        url.deleteLastPathComponent()
-                    }
-                    let key = AccountFolderStore.key(url.path)
-                    // lint:allow main-io inside a detached task
-                    guard url.path != "/", !known.contains(key), FileManager.default.fileExists(atPath: url.path) else { continue }
-                    found[key] = (account, url)
-                }
-            }
-            return Array(found.values)
-        }.value
-        for (account, folder) in folders {
-            _ = await accountFolders.record(account: account, folder: folder)
-        }
-        if !folders.isEmpty { await refreshAccountFolders() }
-    }
-
     private func bootstrap() async {
-        // The first run with account folder records: what was saved before it is what earlier versions remembered. A Mac
-        // that already has records (from an earlier 1.8 build) began when its oldest record was made (audit 12, C12-m3).
-        if preferences.accountFoldersBegan == nil {
-            let records = SelfTestRunner.isActive ? nil : AccountFolderStore.defaultFolder
-            // The records folder's own date: each record file is rewritten whole, which gives it a new date (audit 13,
-            // C13-m1); the folder was made with the first record and is never rewritten.
-            let oldest = await Task.detached(priority: .userInitiated) { () -> Date? in
-                guard let records else { return nil }
-                // lint:allow main-io inside a detached task
-                let files = (try? FileManager.default.contentsOfDirectory(at: records, includingPropertiesForKeys: nil)) ?? []
-                guard files.contains(where: { $0.pathExtension == "json" }) else { return nil }
-                return try? records.resourceValues(forKeys: [.creationDateKey]).creationDate
-            }.value
-            preferences.accountFoldersBegan = oldest ?? Date()
-        }
         // First, before anything else at launch: tabs hold their first page until the rules are in place (R-508).
         do {
             ruleList = try await WebViewSetup.uploadBlockingRules()
@@ -165,22 +118,16 @@ final class AppModel {
         enginePaths?.prepareFolders()
         do {
             let store = try AppStore.make(inMemory: SelfTestRunner.isActive)
-            await store.setEarlierMemoryBefore(preferences.accountFoldersBegan)
             self.store = store
             jobs.store = store
             await reloadRoots()
             await refreshAccountFolders()
-            await recordEarlierFolders(store: store)
             // Lifecycle (SPEC 6.3): forget saved-item records whose file is gone, and accounts nothing refers to.
             let keep = Set(accountFolderList.map(\.account))
-            // Only folders updated at least once have taken over what earlier versions remembered (adoptEarlierMemory),
-            // under every path they had (audit 13, A13-m5).
-            let recorded = accountFolderList.filter { $0.lastUpdate != nil }.flatMap(\.allPaths)
             let journal = journal
-            let began = preferences.accountFoldersBegan
             Task.detached(priority: .background) {
                 let restorable = await journal.restorablePaths()
-                await store.prune(keepAccounts: keep, recordedFolders: recorded, restorable: restorable, earlierMemoryBefore: began)
+                await store.prune(keepAccounts: keep, restorable: restorable)
             }
             if roots.isEmpty, preferences.onboardingDone, !SelfTestRunner.isActive {
                 await addDefaultRoot()

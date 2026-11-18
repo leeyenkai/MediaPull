@@ -142,6 +142,7 @@ public actor OperationJournal {
     /// be undone instead of failing quietly.
     @discardableResult
     func save(_ entry: JournalEntry) -> Bool {
+        saveRemade()
         guard let data = try? Self.encoder.encode(entry) else { return false }
         do {
             try data.write(to: url(for: entry.id), options: .atomic)
@@ -310,17 +311,56 @@ public actor OperationJournal {
     /// find it (audit 11, B11-M2).
     func note(_ path: String, at current: String? = nil, in entry: inout JournalEntry) {
         guard let identity = AccountFolderRecord.number(of: URL(fileURLWithPath: current ?? path)) else { return }
-        var identities = entry.identities ?? [:]
-        identities[path] = identity
-        entry.identities = identities
+        // In place: copying the table for every step made large changes slow in proportion to their square (audit 14,
+        // B14-m6).
+        if entry.identities == nil { entry.identities = [:] }
+        entry.identities![path] = identity
     }
 
     /// A folder or copy made again (by Redo) at `path`: its new identity stands for the one it replaces.
     func noteRemade(_ path: String, in entry: inout JournalEntry) {
         let old = entry.identities?[path]
         note(path, in: &entry)
-        if let old, let new = entry.identities?[path], old != new { remade[old] = new }
+        if let old, let new = entry.identities?[path], old != new {
+            loadRemade()
+            remade[old] = new
+            remadeChanged = true
+        }
     }
+
+    /// The map outlives the session: History's Redo can run after a relaunch (audit 14, B14-M1). Kept small: the oldest
+    /// half goes once it is large, by insertion order.
+    private func loadRemade() {
+        guard !remadeLoaded else { return }
+        remadeLoaded = true
+        if let data = try? Data(contentsOf: folder.appendingPathComponent("remade.plist")),
+           let pairs = try? PropertyListDecoder().decode([[String]].self, from: data)
+        {
+            for pair in pairs where pair.count == 2 {
+                remade[pair[0]] = pair[1]
+                remadeOrder.append(pair[0])
+            }
+        }
+    }
+
+    private func saveRemade() {
+        guard remadeChanged else { return }
+        remadeChanged = false
+        for key in remade.keys where !remadeOrder.contains(key) { remadeOrder.append(key) }
+        if remadeOrder.count > 20000 {
+            for key in remadeOrder.prefix(10000) { remade[key] = nil }
+            remadeOrder.removeFirst(10000)
+        }
+        let pairs = remadeOrder.compactMap { key in remade[key].map { [key, $0] } }
+        if let data = try? PropertyListEncoder().encode(pairs) {
+            // lint:allow silent-write only Redo across a relaunch relies on it
+            try? data.write(to: folder.appendingPathComponent("remade.plist"), options: .atomic)
+        }
+    }
+
+    private var remadeLoaded = false
+    private var remadeChanged = false
+    private var remadeOrder: [String] = []
 
     /// Identities of folders and copies made again by Redo, by the identity they replace (this session: Redo lives in it).
     private var remade: [String: String] = [:]
@@ -342,6 +382,7 @@ public actor OperationJournal {
     /// volumes without a UUID) is taken as it is.
     func isSame(_ path: String, in entry: JournalEntry) -> Bool {
         guard fm.fileExists(atPath: path) else { return false }
+        loadRemade()
         guard var noted = entry.identities?[path], let now = AccountFolderRecord.number(of: URL(fileURLWithPath: path)) else {
             return true
         }
@@ -473,6 +514,13 @@ public actor OperationJournal {
             moves: []
         ) }
         var report = UndoReport(restored: 0, skipped: [], moves: [])
+        // A change that changed nothing (its files went away before it ran) has nothing to undo: it is simply undone
+        // (audit 14, B14-m2).
+        guard !entry.steps.isEmpty else {
+            entry.undone = true
+            if !save(entry) { report.unsaved = true }
+            return report
+        }
         var left: [[JournalStep]] = []
         var undoneUnits: [[JournalStep]] = []
         fallbacks = [:]
@@ -494,7 +542,8 @@ public actor OperationJournal {
             if !save(unchanged) { report.unsaved = true }
             return report
         }
-        entry.undoneSteps = undoneUnits.reversed().flatMap { $0 }
+        // A second part of a change undone later joins what Redo does again, never replaces it (audit 14, B14-m1).
+        entry.undoneSteps = undoneUnits.reversed().flatMap { $0 } + (entry.undoneSteps ?? [])
         // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
         // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
         entry.steps = left.reversed().flatMap { $0 }

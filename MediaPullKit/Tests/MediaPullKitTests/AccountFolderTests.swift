@@ -395,22 +395,6 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(kept.keys, ["ig:1"])
     }
 
-    /// Audit round 3 (C3-M1): what 1.7 remembered of a folder (files saved there, deleted since or not) is kept until the
-    /// folder's record takes it over, so a first Update after upgrading never brings deleted files back.
-    func testRecordsTakeOverWhatEarlierVersionsRemembered() async throws {
-        let store = try AppStore.make(inMemory: true)
-        let kept = file("old/alice/posts/a.jpg")
-        await store.recordArchive(key: "ig:1", account: "alice", path: kept.path, sha256: "")
-        await store.recordArchive(key: "ig:2", account: "alice", path: root.appendingPathComponent("old/alice/posts/deleted.jpg").path,
-                                  sha256: "")
-        await store.recordArchive(key: "ig:3", account: "alice", path: root.appendingPathComponent("elsewhere/x.jpg").path, sha256: "")
-        await store.prune(keepAccounts: [])
-        let taken = await store.takeInstagramKeys(account: "Alice", under: root.appendingPathComponent("old/alice").path)
-        XCTAssertEqual(taken, ["ig:1", "ig:2"], "the deleted file is remembered too, and the prune kept it")
-        let again = await store.takeInstagramKeys(account: "alice", under: root.appendingPathComponent("old/alice").path)
-        XCTAssertEqual(again, ["ig:1"], "a handed-over entry of a deleted file is gone; the saved file's stays")
-    }
-
     func testStoreRemembersKeysAndCursorPerFolder() async {
         let store = AccountFolderStore(folder: root.appendingPathComponent("records"))
         let folder = root.appendingPathComponent("alice")
@@ -468,21 +452,18 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(withID.userID, "42")
     }
 
-    /// Audit round 4 (C4-m2, B4-m12): Instagram entries under a folder that has taken them over are pruned with their
-    /// files; entries of files Undo can still bring back from the Trash are kept.
-    func testPruneKeepsRestorableFilesAndForgetsRecordedOnes() async throws {
+    /// Audit round 4 (B4-m12), D-98: entries of files that are gone are pruned, Instagram ones too (a folder's record keeps
+    /// what it holds); entries of files Undo can still bring back from the Trash are kept.
+    func testPruneKeepsRestorableFilesAndForgetsTheRest() async throws {
         let store = try AppStore.make(inMemory: true)
-        let recorded = root.appendingPathComponent("lib/alice").path
-        await store.recordArchive(key: "ig:1", account: "alice", path: recorded + "/posts/gone.jpg", sha256: "")
-        await store.recordArchive(key: "ig:2", account: "bob", path: root.appendingPathComponent("lib/bob/posts/gone.jpg").path,
+        await store.recordArchive(key: "ig:1", account: "alice", path: root.appendingPathComponent("lib/alice/posts/gone.jpg").path,
                                   sha256: "")
         let trashed = root.appendingPathComponent("lib/web/a.jpg").path
         await store.recordArchive(key: "web:1", account: "web", path: trashed, sha256: "")
-        await store.prune(keepAccounts: [], recordedFolders: [recorded], restorable: [trashed])
-        let alice = await store.takeInstagramKeys(account: "alice", under: recorded)
-        XCTAssertTrue(alice.isEmpty, "the folder's record keeps these; the shared table lets them go")
-        let bob = await store.takeInstagramKeys(account: "bob", under: root.appendingPathComponent("lib/bob").path)
-        XCTAssertEqual(bob, ["ig:2"], "a folder with no record yet still has them waiting")
+        await store.prune(keepAccounts: [], restorable: [trashed])
+        _ = file("lib/alice/posts/gone.jpg")
+        let gone = await store.archivedPaths(for: ["ig:1"])
+        XCTAssertNil(gone["ig:1"], "pruned while its file was gone")
         // Undo puts the file back: it is still known as saved.
         _ = file("lib/web/a.jpg")
         let found = await store.archivedPaths(for: ["web:1"])

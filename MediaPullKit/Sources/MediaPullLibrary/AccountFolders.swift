@@ -336,12 +336,6 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     /// A reference that follows the folder itself through renames, moves and into the Trash, never to another folder
     /// made at its path (audit 9, A9-M1, A9-M2). Nil for older records, which follow their bookmark.
     public var reference: String?
-    /// Paths the folder had before a rename or move in the Finder, which MediaPull's own records of saved items (earlier
-    /// versions' memory) do not follow; that memory is found under them (audit 13, A13-M3, C12-M2).
-    public var earlierPaths: [String]?
-
-    /// The folder's path now and every path it had.
-    public var allPaths: [String] { [path] + (earlierPaths ?? []) }
 
     /// Whether an update or Find Missing stopped part way and can be continued.
     public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
@@ -459,7 +453,6 @@ public actor AccountFolderStore {
             guard path != record.path, FileManager.default.fileExists(atPath: path) else { continue }
             // A job queued with the old path still finds it (audit 6, C6-M2), unless it went to the Trash.
             if !FileFlags.isInTrash(url) { formerPaths[Self.key(record.path)] = id }
-            if !(record.earlierPaths ?? []).contains(record.path) { record.earlierPaths = (record.earlierPaths ?? []) + [record.path] }
             record.path = path
             record.folderNumber = AccountFolderRecord.number(of: url)
             record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)

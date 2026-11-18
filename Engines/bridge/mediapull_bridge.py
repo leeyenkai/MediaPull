@@ -1194,13 +1194,25 @@ def refuse_live_streams(info, incomplete=False):
     return None
 
 
-def skip_saved(inner, saved):
-    """A Retry of a playlist downloads only the videos not saved yet (audit 12, A12-M3)."""
+def skip_saved(inner, saved, only=None):
+    """A Retry of a playlist downloads only the videos not saved yet (audit 12, A12-M3), or, when it knows them, exactly
+    the videos that failed (audit 14, C14-M2). The video looked at last names a failure whose message has no id."""
     def check(info, incomplete=False):
-        if saved and str(info.get("id") or "") in saved:
+        video = str(info.get("id") or "")
+        if saved and video in saved:
             return "Already saved."
+        if only and video not in only:
+            return "Not asked for."
+        if video and not incomplete:
+            STATE["current_id"] = video
         return inner(info, incomplete=incomplete)
     return check
+
+
+def failed_video(text):
+    """The id of the video an error is about: yt-dlp writes "[site] id: reason", else the video looked at last."""
+    match = re.search(r"\[[^\]]+\] ([^\s:]+): ", text)
+    return match.group(1) if match else STATE.get("current_id")
 
 
 # A video that can never be downloaded is skipped; anything that may work later is a failure Retry Failed offers. A rate
@@ -1244,7 +1256,7 @@ class StreamLogger:
         STATE.setdefault("problems", []).append(code)
         EMITTER.emit("log", level="error", logger="yt-dlp", message=text)
         if self.playlist:
-            EMITTER.emit("error", code=code, message=text[:300], fatal=False)
+            EMITTER.emit("error", code=code, message=text[:300], key=failed_video(text), fatal=False)
 
 
 def stream_options(request, staging, logger, progress):
@@ -1280,15 +1292,13 @@ def stream_options(request, staging, logger, progress):
         # The bundled ffmpeg has no network protocols (R-507): yt-dlp's own downloaders fetch every stream.
         "hls_prefer_native": True,
         "external_downloader": {},
-        "match_filter": skip_saved(refuse_live_streams, set(extras.get("skip_ids") or [])),
+        "match_filter": skip_saved(refuse_live_streams, set(extras.get("skip_ids") or []), set(extras.get("only_ids") or [])),
     }
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
-    if extras.get("max_downloads"):
-        # Videos skipped as already saved do not count towards yt-dlp's limit, so a Retry asks only for what is left of
-        # it (audit 13, A13-M2, C13-m2).
-        left = int(extras["max_downloads"]) - len(extras.get("skip_ids") or [])
-        options["max_downloads"] = max(1, left)
+    if extras.get("max_downloads") and not extras.get("only_ids"):
+        # A Retry that names its videos needs no limit: they were within "At most" (audit 14, C14-M2).
+        options["max_downloads"] = int(extras["max_downloads"])
     if extras.get("date_after") or extras.get("date_before"):
         options["daterange"] = yt_dlp.utils.DateRange(extras.get("date_after"), extras.get("date_before"))
     if extras.get("rate_limit"):
@@ -1366,6 +1376,11 @@ def op_stream(request):
             ydl.extract_info(request["url"], download=True)
     except yt_dlp.utils.MaxDownloadsReached:
         pass
+    except yt_dlp.utils.DownloadError:
+        # A single video's problem was logged (and classed) before yt-dlp raised it: it ends below as unavailable or failed,
+        # never as an internal error (audit 14, A14-m1).
+        if not STATE["errors"]:
+            raise
     if emitted["count"]:
         finish("partial" if playlist and STATE["errors"] else "completed", {"files": emitted["count"]})
     else:

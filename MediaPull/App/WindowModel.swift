@@ -55,6 +55,10 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// The undo targets of this window's file changes, and their order on the ⌘Z stack (FileChanges.swift).
     @ObservationIgnored var undoTargets: [UUID: FileChangeUndoTarget] = [:]
     @ObservationIgnored var undoOrder: [UUID] = []
+    /// A change ⌘Z or ⇧⌘Z could not act on, being put back on the stack it came from (audit 14, C14-M3).
+    @ObservationIgnored var reinstating: UUID?
+    /// Changes being redone from History, so a second click does nothing (audit 14, B14-m3).
+    @ObservationIgnored var redoing: Set<UUID> = []
     var items: [MediaItem] = []
     @ObservationIgnored var itemsByID: [String: MediaItem] = [:]
     var visible: [MediaItem] = []

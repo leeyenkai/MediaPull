@@ -120,38 +120,6 @@ final class Audit12Tests: XCTestCase {
         restorable = await journal.restorablePaths()
         XCTAssertTrue(restorable.isEmpty)
     }
-
-    /// C12-M2, A13-M3: a 1.7 folder renamed in the Finder before its first Update takes over what was remembered at its
-    /// old path, through its record; what was remembered of another folder of the account that is gone is never taken.
-    func testEarlierMemoryOfAFolderRenamedInTheFinder() async throws {
-        let store = try AppStore.make(inMemory: true)
-        let old = url("lib/alice")
-        try fm.createDirectory(at: old, withIntermediateDirectories: true)
-        await store.recordArchive(key: "ig:gone", account: "alice", path: old.appendingPathComponent("gone.jpg").path, sha256: "")
-        await store.recordArchive(key: "ig:copy", account: "alice", path: url("lib/alice 2/copy.jpg").path, sha256: "")
-        let began = Date().addingTimeInterval(1)
-        let records = AccountFolderStore(folder: url("records"))
-        _ = await records.record(account: "alice", folder: old)
-        try fm.moveItem(at: old, to: url("lib/Alice S"))
-        let all = await records.all()
-        let record = try XCTUnwrap(all.first { $0.account == "alice" })
-        XCTAssertEqual(AccountFolderStore.key(record.path), AccountFolderStore.key(url("lib/Alice S").path))
-        let taken = await store.takeInstagramKeys(account: "alice", under: record.allPaths, savedBefore: began)
-        XCTAssertEqual(taken, ["ig:gone"])
-    }
-
-    /// C12-m4: earlier versions' memory waits to be taken over; memory saved since records began goes with its file.
-    func testPruneKeepsOnlyEarlierMemoryWaiting() async throws {
-        let store = try AppStore.make(inMemory: true)
-        let folder = url("lib/bob")
-        await store.recordArchive(key: "ig:old", account: "bob", path: folder.appendingPathComponent("old.jpg").path, sha256: "")
-        let began = Date()
-        try await Task.sleep(for: .milliseconds(20))
-        await store.recordArchive(key: "ig:new", account: "bob", path: folder.appendingPathComponent("new.jpg").path, sha256: "")
-        await store.prune(keepAccounts: ["bob"], earlierMemoryBefore: began)
-        let left = await store.takeInstagramKeys(account: "bob", under: folder.path)
-        XCTAssertEqual(left, ["ig:old"])
-    }
 }
 
 extension OperationJournal {

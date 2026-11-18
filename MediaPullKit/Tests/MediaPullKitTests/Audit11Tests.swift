@@ -93,17 +93,4 @@ final class Audit11Tests: XCTestCase {
         XCTAssertEqual(report.done, 1)
         XCTAssertTrue(exists("Dest/X/a.jpg"))
     }
-
-    /// A11-M2: only what earlier versions remembered is taken over, by when records began, not by a folder's date.
-    func testOnlyEarlierMemoryIsTakenOver() async throws {
-        let store = try AppStore.make(inMemory: true)
-        let folder = url("lib/alice")
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-        await store.recordArchive(key: "ig:old", account: "alice", path: folder.appendingPathComponent("old.jpg").path, sha256: "")
-        let began = Date()
-        try await Task.sleep(for: .milliseconds(20))
-        await store.recordArchive(key: "ig:new", account: "alice", path: folder.appendingPathComponent("new.jpg").path, sha256: "")
-        let taken = await store.takeInstagramKeys(account: "alice", under: folder.path, savedBefore: began)
-        XCTAssertEqual(taken, ["ig:old"])
-    }
 }
