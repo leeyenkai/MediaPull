@@ -377,7 +377,8 @@ final class EngineService {
             }
             // Nothing asked for at all would walk every post (C16-M2): the first run's choice stands then.
             if walk.content.isEmpty { walk.content = running.draft.content }
-            if walk.postURL == nil, walk.hashtag == nil { walk.incremental = false }
+            // A Retry walks the whole account or tag, so no failure deep in the listing is left behind (A4-M4, audit 18, A18-m2).
+            if walk.postURL == nil { walk.incremental = false }
             running.draft = walk
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
                 guard let job else { return }
@@ -603,8 +604,10 @@ final class EngineService {
             if let place {
                 let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
                 known = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
-            } else if draft.hashtag != nil, draft.incremental || resuming {
-                known = await app.store?.knownKeys(account: account) ?? []
+            } else if draft.hashtag != nil, draft.incremental || resuming || run.retrying {
+                // What the library holds now, and on a Retry what this job saved, so a file deleted since is not fetched
+                // again (D-103, audit 18, A18-M1).
+                known = (await app.store?.knownKeys(account: account) ?? []).union(run.retrying ? run.counted : [])
             }
             let knownFile = staging.appendingPathComponent("known.json")
             do {
@@ -620,6 +623,18 @@ final class EngineService {
             let earlyStop = draft.incremental && !draft.findMissing && !(draft.continueFrom?.untilEnd ?? false)
                 && !(resuming && place == nil)
             request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
+        }
+        // A Retry skips what its own job saved, whatever it pulls (a post, the tray, saved posts), so a file deleted since
+        // is not fetched again (D-103, audit 18, A18-M1, C18-M1).
+        if run.retrying, !run.counted.isEmpty {
+            let retryFile = staging.appendingPathComponent("retry.json")
+            do {
+                try JSONEncoder().encode(Array(run.counted)).write(to: retryFile)
+                request.retryIDs = retryFile.path
+            } catch {
+                job.notes.append("Saved items could not be listed for the engine (\(error.localizedDescription)), "
+                    + "so every item is checked.")
+            }
         }
         // A continuation whose place is gone (continued or replaced meanwhile) has nothing left to do.
         // It starts where the place is now, which another walk may have moved on since this one was queued (audit 4, A4-m2).
@@ -1687,9 +1702,11 @@ final class EngineService {
     /// `range` limits which items ("1-50"); `onlyNew` skips what an earlier download of the same address saved.
     @discardableResult
     func startGalleryDownload(url: URL, site: SiteInfo, include: [String], switches: [String: Bool], range: String?, from: Date?, to: Date?,
-                              onlyNew: Bool, root: SaveDestination, window: WindowModel?) -> Job?
+                              onlyNew: Bool, root: SaveDestination, window: WindowModel?, alsoKnown: Set<String> = []) -> Job?
     {
         let category = site.category
+        // What this download saved, so its Retry never fetches a file again that the person deleted since (D-103).
+        let handled = KeySet(alsoKnown)
         let siteName = app.sites.name(SiteInfoKey(category: site.category, baseCategory: site.baseCategory))
         let ownKey = SiteKeys.forSite(site.category, baseCategory: site.baseCategory) != nil
         guard let bridge else { return nil }
@@ -1714,7 +1731,8 @@ final class EngineService {
                 job?.failed = 0
                 job?.failures = []
                 _ = self.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: range, from: from,
-                                              to: to, onlyNew: true, root: self.app.destination(for: now), window: window)
+                                              to: to, onlyNew: true, root: self.app.destination(for: now), window: window,
+                                              alsoKnown: handled.keys)
             }
         }
         job.task = Task { [weak self, weak window] in
@@ -1751,7 +1769,7 @@ final class EngineService {
             if let from { request.dateFrom = ISO8601DateFormatter().string(from: from) }
             if let to { request.dateTo = ISO8601DateFormatter().string(from: to) }
             if onlyNew {
-                let known = await self.app.store?.knownKeys(account: account) ?? []
+                let known = (await self.app.store?.knownKeys(account: account) ?? []).union(handled.keys)
                 let knownFile = staging.appendingPathComponent("known.json")
                 do {
                     try JSONEncoder().encode(Array(known)).write(to: knownFile)
@@ -1817,15 +1835,18 @@ final class EngineService {
                         switch outcome {
                         case let .saved(saved):
                             job.saved += 1
+                            handled.keys.insert(file.key)
                             savedFromStaging[file.path.path] = saved
                             await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
                         case let .duplicate(saved):
                             job.duplicates += 1
+                            handled.keys.insert(file.key)
                             savedFromStaging[file.path.path] = saved
                             await self.app.store?.recordArchive(key: file.key, account: account, path: saved.path, sha256: "")
                         case let .skipped(reason):
+                            // Skipped is not failed (D-101, audit 18, A18-m1).
                             job.skipped += 1
-                            job.failures.append((file.key, reason))
+                            if job.notes.count < 30 { job.notes.append(reason) }
                         case let .failed(reason):
                             job.failed += 1
                             job.failures.append((file.key, reason))
@@ -1923,6 +1944,13 @@ private final class PullRun {
         draft.accountFolderID = id
         draft.accountFolder = folder
     }
+}
+
+/// Keys a download has handled, kept across its Retry.
+@MainActor
+private final class KeySet {
+    var keys: Set<String>
+    init(_ keys: Set<String>) { self.keys = keys }
 }
 
 /// The videos of a playlist job saved so far, kept across its Retry.

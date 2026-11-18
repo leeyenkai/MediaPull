@@ -196,7 +196,9 @@ final class JobCenter {
     }
 
     func clearFinished() {
-        jobs.removeAll { $0.state.isFinished }
+        // A file change whose work still runs (a take-back after Cancel) stays listed, so Quit waits for it (audit 18,
+        // B18-m1).
+        jobs.removeAll { $0.state.isFinished && !($0.kind == .organise && $0.task != nil && !$0.taskEnded) }
     }
 
     nonisolated static func post(title: String, body: String) {

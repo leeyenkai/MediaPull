@@ -347,6 +347,8 @@ public struct BridgeRequest: Encodable, Sendable {
     public var cookies: String?
     public var staging: String?
     public var knownIDs: String?
+    /// A Retry's own saved keys (D-103).
+    public var retryIDs: String?
     public var stopAfterKnown: Int?
     public var dateFrom: String?
     public var dateTo: String?
@@ -376,6 +378,7 @@ public struct BridgeRequest: Encodable, Sendable {
         case v, op, url, urls, username, include, category, cookies, staging, pacing, video, extras, range, cursor, filter,
              referer, key, wheel, target, paths
         case knownIDs = "known_ids"
+        case retryIDs = "retry_ids"
         case stopAfterKnown = "stop_after_known"
         case dateFrom = "date_from"
         case dateTo = "date_to"

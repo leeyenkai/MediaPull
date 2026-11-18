@@ -656,7 +656,8 @@ public actor OperationJournal {
         let before = entry.steps.count
         let units = Self.units(steps)
         var visited = 0
-        var checkpoint = Date()
+        // The first item is saved at once, so a crash right away still leaves a change that is found at launch (C18-m2).
+        var checkpoint = Date.distantPast
         let isFile = { (step: JournalStep) -> Bool in if case .makeFolder = step { false } else { true } }
         var hidden: Set<String>?
         for unit in units {

@@ -798,7 +798,8 @@ final class OrganiseModel {
                 job,
                 entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be moved")) : .cancelled
             )
-            if !listed, entry.failures.isEmpty { app.jobs.jobs.removeAll { $0 === job } }
+            // A small run leaves Activity once done; one that is taken back stays until then, so Quit waits for it (B18-m1).
+            if !listed, entry.failures.isEmpty, entry.finished { app.jobs.jobs.removeAll { $0 === job } }
             // A rename through temporary names that stopped between its two steps would leave files under hidden names:
             // it is taken back at once (audit 3, B3-m7, C3-m9).
             let usedTemporaryNames = plan.moves.contains { $0.destination.lastPathComponent.hasPrefix(".mediapull-rename-") }

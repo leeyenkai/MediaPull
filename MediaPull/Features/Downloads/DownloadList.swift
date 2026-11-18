@@ -191,7 +191,8 @@ struct DownloadList: View {
             }
             let runnable = downloads.batch.filter(\.canRun).count
             HStack {
-                Text("Each one uses the options last chosen for its kind of download, one after another.")
+                // Said as it is: videos always take the best MP4 (R-1111d, audit 18, C18-m6).
+                Text("One after another: Instagram and galleries with the options last chosen, videos as the best MP4.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

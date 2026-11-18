@@ -22,6 +22,8 @@ final class VideoEditorModel: UnsavedEditing {
     var isWorking = false
     var isLoading = true
     private(set) var sourceFile: URL?
+    /// The file opened, so Save never acts on another file that took its name since (an Undo, a rename; audit 18, B18-M2).
+    private var openedIdentity: String?
 
     init(request: EditorRequest, window: WindowModel?) {
         self.request = request
@@ -44,6 +46,7 @@ final class VideoEditorModel: UnsavedEditing {
         switch request.subject {
         case let .file(url):
             sourceFile = url
+            openedIdentity = AccountFolderRecord.number(of: url)
             originalName = url.deletingPathExtension().lastPathComponent
             fileExtension = url.pathExtension
         case let .item(id):
@@ -155,6 +158,10 @@ final class VideoEditorModel: UnsavedEditing {
     /// Writes the selected part next to the original (a copy) or in its place (the original goes to the Trash).
     func saveTrim(replacing: Bool) async {
         guard let sourceFile, let selection else { return }
+        if case let .file(url) = request.subject, openedIdentity != nil, AccountFolderRecord.number(of: url) != openedIdentity {
+            fail("“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was saved.")
+            return
+        }
         isWorking = true
         defer { isWorking = false }
         do {

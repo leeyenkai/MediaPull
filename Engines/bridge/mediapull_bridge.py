@@ -761,7 +761,10 @@ def load_known(request):
 def make_jobs(request):
     from gallery_dl import extractor as gdl_extractor, job
 
-    known = load_known(request)
+    # What a Retry's own job saved is known to every listing it walks, collections too, so a file deleted since is not
+    # fetched again (D-103, audit 18, A18-M1, C18-M1).
+    retry = load_known({"known_ids": request.get("retry_ids")})
+    known = load_known(request) | retry
     limit = int(request.get("stop_after_known") or 0)
     KnownTracker.date_from = _parse_date(request.get("date_from"))
     KnownTracker.date_to = _parse_date(request.get("date_to"))
@@ -808,7 +811,7 @@ def make_jobs(request):
             job.DownloadJob.__init__(self, url, parent)
             # Saved posts and others' stories are not the account's: its folder's known items and early stop do not
             # apply to them.
-            self.tracker = KnownTracker(set(), None) if STATE.get("collection") else KnownTracker(known, limit)
+            self.tracker = KnownTracker(retry, None) if STATE.get("collection") else KnownTracker(known, limit)
 
         def dispatch(self, extractor):
             # A listing that broke off (an error, not the early stop) is told apart from files that failed one by one: only

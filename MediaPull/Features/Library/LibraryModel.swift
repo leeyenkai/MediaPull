@@ -892,7 +892,8 @@ final class LibraryModel: MediaGridOwner {
             try manager.moveItem(at: staged, to: target) // lint:allow main-io called off the main actor
             return target
         } catch {
-            try? manager.removeItem(at: staged) // lint:allow silent-write the edit is still in its cache only if this fails
+            // The edit goes back where it was, so Save can be tried again (audit 18, C18-m4).
+            try? manager.moveItem(at: staged, to: edited) // lint:allow silent-write the staged edit stays beside the folder otherwise
             throw error
         }
     }

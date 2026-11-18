@@ -57,10 +57,16 @@ extension AppModel {
             let job = Job(kind: .organise, title: "Taking back “\(entry.title)”")
             jobs.add(job)
             job.state = .running
-            let task = Task { _ = await self.undoChange(id) }
-            job.task = task
-            await task.value
-            jobs.finish(job, .completed, notify: false)
+            let undo = Task { await self.undoChange(id) }
+            job.task = Task { _ = await undo.value }
+            // Said as it went: files still under hidden names are not "done" (audit 18, C18-m1).
+            let report = await undo.value
+            if let report, report.done > 0, !report.stopped {
+                jobs.finish(job, .completed, notify: false)
+            } else {
+                jobs.finish(job, .failed(report?.skipped.first ?? "Some files are still under temporary names. Undo it in History."),
+                            notify: false)
+            }
         }
     }
 
@@ -208,7 +214,10 @@ extension WindowModel {
             }
             report = await app.undoChange(entry.id, progress: Self.progress(of: job))
             guard let report else {
-                showFileMessage("“\(entry.title)” was already undone.")
+                // Undone elsewhere, or no longer kept in the undo history (audit 18, B18-m6): either way, off ⌘Z's stack.
+                forgetUndo(entry.id)
+                let kept = await app.journal.entry(entry.id) != nil
+                showFileMessage(kept ? "“\(entry.title)” was already undone." : "“\(entry.title)” is no longer in the undo history.")
                 return
             }
             // Nothing undone is said as such (audit 10, C10-m3, B10-m3). The change is still done, so ⇧⌘Z has nothing to

@@ -350,7 +350,7 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
         keys = []
     }
 
-    static func number(of folder: URL) -> String? {
+    public static func number(of folder: URL) -> String? {
         var info = stat()
         guard stat(folder.path, &info) == 0,
               let volume = try? folder.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString

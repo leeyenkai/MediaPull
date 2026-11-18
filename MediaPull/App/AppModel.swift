@@ -137,8 +137,9 @@ final class AppModel {
         }
         analysis.start(inMemory: SelfTestRunner.isActive)
         Task {
-            await journal.prune(olderThan: preferences.undoHistoryDays)
+            // Stranded changes first: an old one is taken back before the prune forgets it (audit 18, A18-m3).
             await takeBackStranded()
+            await journal.prune(olderThan: preferences.undoHistoryDays)
         }
         await refreshEngineVersions()
         // A self-test never asks the network for engine updates nor changes when the installed app last asked (audit 6, C6-m4).
@@ -713,8 +714,9 @@ final class AppModel {
                         case .saved: job.saved += 1
                         case .duplicate: job.duplicates += 1
                         case let .skipped(reason):
+                            // Skipped is not failed (D-101, audit 18, A18-m1).
                             job.skipped += 1
-                            job.failures.append((id, reason))
+                            if job.notes.count < 30 { job.notes.append(reason) }
                         case let .failed(reason):
                             job.failed += 1
                             job.failures.append((id, reason))

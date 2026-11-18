@@ -84,6 +84,8 @@ final class EditorModel: UnsavedEditing {
     /// The rotations and flips made, in order, so a JPEG that was only turned is saved without re-encoding.
     private var reorientation = ImageEditing.Reorientation()
     private var sourceFile: URL?
+    /// The file opened, so Save never acts on another file that took its name since (an Undo, a rename; audit 18, B18-M2).
+    private var openedIdentity: String?
     private var format: MediaFormat = .jpeg
 
     init(request: EditorRequest, window: WindowModel?) {
@@ -122,6 +124,7 @@ final class EditorModel: UnsavedEditing {
         switch request.subject {
         case let .file(url):
             sourceFile = url
+            openedIdentity = AccountFolderRecord.number(of: url)
             originalName = url.deletingPathExtension().lastPathComponent
             fileExtension = url.pathExtension
         case let .item(id):
@@ -277,6 +280,10 @@ final class EditorModel: UnsavedEditing {
     /// Library file: replace it (the original goes to the Trash) or save a copy next to it.
     func saveFile(asCopy: Bool) async -> URL? {
         guard case let .file(url) = request.subject, !isSaving else { return nil }
+        guard openedIdentity == nil || AccountFolderRecord.number(of: url) == openedIdentity else {
+            message = "“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was saved."
+            return nil
+        }
         isSaving = true
         defer { isSaving = false }
         let folder = url.deletingLastPathComponent()

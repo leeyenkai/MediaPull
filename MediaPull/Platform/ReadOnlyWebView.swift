@@ -15,9 +15,21 @@ final class ReadOnlyWebView: WKWebView {
     }()
 
     /// The page's typing has an undo list of its own: the window's is for file changes, so ⌘Z never erases typing in a page
-    /// the person is not in (SPEC 21, audit 17, B17-M3).
+    /// the person is not in (SPEC 21, audit 17, B17-M3). While the page has focus, Undo and Redo are its own: nothing else in
+    /// it answers them, and the window would undo a file change instead (audit 18, B18-M1).
     private let pageUndo = UndoManager()
     override var undoManager: UndoManager? { pageUndo }
+
+    @objc func undo(_: Any?) { pageUndo.undo() }
+    @objc func redo(_: Any?) { pageUndo.redo() }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(undo(_:)): pageUndo.canUndo
+        case #selector(redo(_:)): pageUndo.canRedo
+        default: super.validateUserInterfaceItem(item)
+        }
+    }
 
     private func carriesFiles(_ info: NSDraggingInfo) -> Bool {
         let types = Set(info.draggingPasteboard.types ?? [])
