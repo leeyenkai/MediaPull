@@ -31,6 +31,17 @@ public struct Sidecar: Encodable, Equatable, Sendable {
     public var extractor: String?
     public var mediapullVersion: String?
     public var higherResolutionAvailable: String?
+    /// D-111: informational keys for the profile views; omitted when empty, `pinned` and `highlight_cover` only when true.
+    public var locationName: String?
+    public var locationID: String?
+    public var pinned = false
+    public var highlightCover = false
+    public var title: String?
+    public var playlistTitle: String?
+    public var playlistID: String?
+    public var playlistIndex: Int?
+    public var channelID: String?
+    public var community: String?
 
     public init(category: String, subcategory: String, username: String, postID: String) {
         self.category = category
@@ -54,6 +65,14 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         case productType = "product_type"
         case mediapullVersion = "mediapull_version"
         case higherResolutionAvailable = "higher_res_available"
+        case locationName = "location_name"
+        case locationID = "location_id"
+        case pinned, title, community
+        case highlightCover = "highlight_cover"
+        case playlistTitle = "playlist_title"
+        case playlistID = "playlist_id"
+        case playlistIndex = "playlist_index"
+        case channelID = "channel_id"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -86,6 +105,16 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         try container.encodeIfPresent(extractor, forKey: .extractor)
         try container.encodeIfPresent(mediapullVersion, forKey: .mediapullVersion)
         try container.encodeIfPresent(higherResolutionAvailable, forKey: .higherResolutionAvailable)
+        try container.encodeIfPresent(locationName?.nonEmpty, forKey: .locationName)
+        if locationName?.nonEmpty != nil { try container.encodeIfPresent(locationID?.nonEmpty, forKey: .locationID) }
+        if pinned { try container.encode(true, forKey: .pinned) }
+        if highlightCover { try container.encode(true, forKey: .highlightCover) }
+        try container.encodeIfPresent(title?.nonEmpty, forKey: .title)
+        try container.encodeIfPresent(playlistTitle?.nonEmpty, forKey: .playlistTitle)
+        try container.encodeIfPresent(playlistID?.nonEmpty, forKey: .playlistID)
+        try container.encodeIfPresent(playlistIndex, forKey: .playlistIndex)
+        try container.encodeIfPresent(channelID?.nonEmpty, forKey: .channelID)
+        try container.encodeIfPresent(community?.nonEmpty, forKey: .community)
     }
 
     public func encoded() throws -> Data {

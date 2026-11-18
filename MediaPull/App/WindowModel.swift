@@ -771,7 +771,19 @@ final class WindowModel: Identifiable, MediaGridOwner {
     // MARK: Views (R-1708)
 
     func viewMode(for pane: PaneID) -> PaneViewMode {
-        app.preferences.paneViewModes.mode(for: pane)
+        let mode = app.preferences.paneViewModes.mode(for: pane)
+        // Profile only where the folder is one the views can show; elsewhere the pane shows icons (R-4001).
+        return mode == .profile && !availableViewModes(for: pane).contains(.profile) ? .icon : mode
+    }
+
+    /// The views a pane offers now: Profile only while its folder is one the profile views can show (D-113).
+    func availableViewModes(for pane: PaneID) -> [PaneViewMode] {
+        let organisePane: OrganisePane? = switch pane {
+        case .organiseSource: organise.source
+        case .organiseTarget: organise.target
+        default: nil
+        }
+        return PaneViewMode.allowed(for: pane).filter { $0 != .profile || organisePane?.profileSource != nil }
     }
 
     func setViewMode(_ mode: PaneViewMode, for pane: PaneID) {

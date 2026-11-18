@@ -103,6 +103,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   and `sips -s format png <out>/AppIcon.icns --out preview.png`.
 - Duplicate detection must stay deterministic (checksums, pHash, dHash, colour grid); no learned models (D-50). Learned models are for analysis only (D-57).
 - Analysis results, face data and Organise journals live in Application Support, never in library folders (R-601, D-60). Face embeddings need the opt-in; face boxes do not (R-3901).
+- Profile views (D-113, `Features/Profile`, `ProfileDetector`/`ProfileBuilder`) read saved files only: never load a picture, link
+  or page from the network there; their keys are `.onKeyPress` on a focused overlay, never window shortcuts.
 - Organise operations go through `FolderOperations` plans and `OperationJournal`, so every change is undoable and sidecars move with their media.
 - Every other move, copy or trash of the person's files goes through `FileOps` (D-107): off the main actor, metadata file with its
   media, exclusive renames, never over an orphaned metadata file. Editor Replace is `OperationJournal.replace`. The lint's

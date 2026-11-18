@@ -8,7 +8,7 @@ struct ViewModePicker: View {
 
     var body: some View {
         Picker("View", selection: Binding(get: { model.viewMode(for: pane) }, set: { model.setViewMode($0, for: pane) })) {
-            ForEach(PaneViewMode.allowed(for: pane), id: \.self) { mode in
+            ForEach(model.availableViewModes(for: pane), id: \.self) { mode in
                 Image(systemName: mode.symbol)
                     .help("View \(mode.label)")
                     .tag(mode)

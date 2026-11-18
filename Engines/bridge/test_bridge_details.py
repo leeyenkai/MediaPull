@@ -569,6 +569,57 @@ def test_a_retry_skips_saved_videos():
     assert check({"id": "xyz"}) is None
 
 
+
+def test_posts_keep_their_text_place_and_community():
+    """D-111: the post's own text, Instagram's place, a subreddit or board, a highlight's cover."""
+    tweet = bridge.item_meta("x", {"category": "twitter", "content": "What a day", "description": "alt text", "tweet_id": 5})
+    assert tweet["post_text"] == "What a day" and tweet["description"] == "alt text", tweet
+    sky = bridge.item_meta("x", {"category": "bluesky", "text": "Hello", "author": {"handle": "b.bsky.social", "displayName": "Bee"}})
+    assert sky["post_text"] == "Hello" and sky["author"] == "b.bsky.social" and sky["fullname"] == "Bee", sky
+    post = bridge.item_meta("x", {"category": "reddit", "selftext": "Parts below", "subreddit": "battlestations", "title": "Build"})
+    assert post["post_text"] == "Parts below" and post["community"] == "battlestations" and post["title"] == "Build", post
+    pin = bridge.item_meta("x", {"category": "pinterest", "board": {"name": "Kitchen", "id": 1}})
+    assert pin["community"] == "Kitchen", pin
+    ig = bridge.item_meta("x", {"category": "instagram", "location_name": "Santa Monica Pier", "location_id": 212988663,
+                                "text": "not the caption", "description": "Sunset"})
+    assert ig["location_name"] == "Santa Monica Pier" and ig["location_id"] == "212988663", ig
+    assert "post_text" not in ig, "Instagram's caption is its description"
+    assert "location_id" not in bridge.item_meta("x", {"category": "instagram", "location_id": 9, "location_name": ""})
+    cover = bridge.item_meta("x", {"category": "instagram", "media_id": "17_cover", "highlight_title": "Trips"})
+    assert cover["highlight_cover"] is True
+    assert "highlight_cover" not in bridge.item_meta("x", {"category": "instagram", "media_id": "18"})
+    assert len(bridge.item_meta("x", {"category": "twitter", "content": "a" * 9000})["post_text"]) == 5000
+
+
+def test_highlights_come_with_their_covers():
+    """D-112: gallery-dl's covers option is on whenever highlights are asked for, and only then."""
+    with tempfile.TemporaryDirectory() as staging:
+        bridge.configure_gallery_dl({"url": "https://www.instagram.com/someone/", "include": ["posts", "highlights"]}, staging)
+        from gallery_dl import config
+        assert config.get(("extractor", "instagram"), "covers") is True
+        bridge.configure_gallery_dl({"url": "https://www.instagram.com/someone/", "include": ["posts"]}, staging)
+        assert config.get(("extractor", "instagram"), "covers") is False
+
+
+def test_the_account_event_carries_the_profile_header():
+    """D-112: what a profile header shows, from the account lookup every pull already makes."""
+    fields = bridge.account_fields({"username": "acct", "full_name": "A", "id": 7, "biography": "b" * 3000, "count_media": 12,
+                                    "follower_count": 3400, "following_count": 210, "external_url": "https://a.example",
+                                    "is_verified": True, "category_name": "Artist"})
+    assert fields["post_count"] == 12 and fields["follower_count"] == 3400 and fields["following_count"] == 210, fields
+    assert fields["external_url"] == "https://a.example" and fields["is_verified"] is True and fields["category_name"] == "Artist"
+    assert len(fields["biography"]) == 2000
+    bare = bridge.account_fields({"username": "acct", "follower_count": True, "external_url": {"x": 1}})
+    assert bare["follower_count"] is None and bare["external_url"] is None and bare["is_verified"] is None, bare
+
+
+def test_videos_say_which_playlist_they_came_from():
+    """D-111: the playlist and channel of a saved video, and its whole description up to 5,000 characters."""
+    meta = bridge.video_meta({"id": "v", "title": "T", "description": "d" * 6000, "playlist_title": "Trips", "playlist_id": 42,
+                              "playlist_index": 3, "channel_id": "UC1"})
+    assert meta["playlist_title"] == "Trips" and meta["playlist_id"] == "42" and meta["playlist_index"] == 3, meta
+    assert meta["channel_id"] == "UC1" and len(meta["description"]) == 5000
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

@@ -6,8 +6,12 @@ import XCTest
 final class ViewModeTests: XCTestCase {
     func testAllowedViewsPerPane() {
         XCTAssertEqual(PaneViewMode.allowed(for: .library), [.icon, .list, .column])
-        XCTAssertEqual(PaneViewMode.allowed(for: .organiseSource), [.icon, .list, .column])
-        XCTAssertEqual(PaneViewMode.allowed(for: .organiseTarget), [.icon, .list, .column])
+        // Profile only in Organise, and only where the folder qualifies (WindowModel.availableViewModes, D-113).
+        XCTAssertEqual(PaneViewMode.allowed(for: .organiseSource), [.icon, .list, .column, .profile])
+        XCTAssertEqual(PaneViewMode.allowed(for: .organiseTarget), [.icon, .list, .column, .profile])
+        var modes = PaneViewModes()
+        modes.set(.profile, for: .library)
+        XCTAssertEqual(modes.mode(for: .library), .icon, "the Library has no profile view")
         XCTAssertEqual(PaneViewMode.allowed(for: .extracted), [.icon, .list])
         XCTAssertEqual(PaneViewMode.allowed(for: .preview), [.icon])
     }

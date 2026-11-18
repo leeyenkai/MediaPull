@@ -96,7 +96,7 @@ change as the code.
 | R-1103 | amended | `EngineCookies`, `CookieFile.write`, `BridgeEngineFetcher.fetch` | `testCookieFileRoundTrip`, `test_browser_user_agent_goes_with_cookies` | D-24: engines keep their own User-Agent for Instagram; cookies exported, written back and deleted |
 | R-1104 | built | `AddressInput.parse`, `AddressInput.bareUsername`, `InstagramIDs`, `DownloadsModel.use` | `testClassification` | A bare name in the Downloads pane is an account; a story link with an id gets that story, without one the account's stories; a highlight link gets the highlight (1.8) |
 | R-1105 | built | `InstagramForm`, `PullDraft`, `AccountCard`, `PacingPreset.estimate`, `AccountFolders.resolveTarget` | `--selftest-pullsheet`, `testEstimateCountsPagesAtTheAverageDelay`, `testTargetIsTheExistingFolderAndNeverNested` | D-78: the destination line names the existing account folder or the new one; D-79: no Mode row (Find Missing replaces Verify); estimate since 1.8 |
-| R-1105a | built | `InstagramContent`, `ArchivePlanner.folder`, `EngineService.startPull`, `AddressInput.isSavedCollection` | `testDefaultsAndGroups`, `testFoldersForEachKindOfContent`, `test_lists_hold_names_and_are_written_as_csv`, `testClassification`, `test_instagram_hashtag_listings_are_allowed_and_nothing_else` | Content choices map to gallery-dl subcategories and folders (D-52, D-54) |
+| R-1105a | amended | `InstagramContent`, `ArchivePlanner.folder`, `EngineService.startPull`, `AddressInput.isSavedCollection` | `testDefaultsAndGroups`, `testFoldersForEachKindOfContent`, `test_lists_hold_names_and_are_written_as_csv`, `testClassification`, `test_instagram_hashtag_listings_are_allowed_and_nothing_else` | Content choices map to gallery-dl subcategories and folders (D-52, D-54); D-112: highlight covers, profile kept with the record (`AccountFolderStore.setProfile`, `test_highlights_come_with_their_covers`, `testRecordsKeepTheProfileAndOldRecordsStillRead`) |
 | R-1105b | built | `InstagramDateWindow.bounds`, `KnownTracker.outside_dates` | `testDateWindows`, `test_undated_items_are_kept_and_never_end_a_listing` | Date window applied in the bridge (D-38) |
 | R-1106 | person | `EngineService.startPull`, `SavePipeline.saveStaged` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites` | Staged files go through the save pipeline; a signed-in Instagram pull needs a person |
 | R-1107 | person | `EngineService.startPull`, `SavePipeline.acquire`, `BridgeEngineFetcher.fetch` | `--selftest-site` | Scan then save with re-resolve on 403 or 410; Instagram scans need a signed-in person |
@@ -134,7 +134,7 @@ change as the code.
 | R-1504 | built | `ArchivePlanner.fileName`, `FileNaming.isForbiddenArchiveName` | `testArchiveNamesNeverMatchForbiddenPattern`, `testCleanedNamesAreCheckedAndNeverHidden` | Checked on the cleaned name since 1.8 |
 | R-1505 | built | `FileNaming.safeTopFolder`, `ArchivePlanner.folder` | `testReservedFoldersAndLengths`, `testReservedNamesGetAnUnderscore` | Reserved first-level names get a leading underscore |
 | R-1506 | person | `AppModel.locationWarning`, `LibraryPane` | `--selftest-analyse` | The iCloud and network warning needs a folder in iCloud to see |
-| R-1507 | built | `Sidecar`, `ArchivePlanner.sidecar` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites`, `testInstagramSidecarMatchesContract` | Closed struct; no location, engagement or identity keys (D-12) |
+| R-1507 | amended | `Sidecar`, `ArchivePlanner.sidecar` | `testArchiveSaveWritesSidecarDedupesAndNeverOverwrites`, `testInstagramSidecarMatchesContract`, `testInstagramPostsKeepTheirPlacePinAndCover` | Closed struct; no engagement or identity keys (D-12); Instagram's place name and id kept (D-111) |
 | R-1508 | built | `DateFormats.utc`, `DateFormats.sidecarString` | `testMetadataDatesUseAFixedCalendar`, `testDatesIgnoreUserCalendar` | POSIX locale, Gregorian calendar and UTC set explicitly, tested (1.8) |
 | R-1509 | built | `ArchivePlanner.sidecar` | `testNumAndCountComeTogether` | Web sidecars carry no num or count (D-10) |
 | R-1510 | built | `FileNaming.sanitize` | `testCleanedNamesAreCheckedAndNeverHidden`, `testReservedFoldersAndLengths` | Joiners kept (D-74); trimming repeats until stable so no hidden names (1.8) |
@@ -189,7 +189,7 @@ change as the code.
 | R-3501 | amended | `op_video_info`, `VideoForm`, `VideoPage.isLikely` | `--selftest-video-download`, `testVideoPagesAndDates` | D-69: the sheet became the Downloads pane video form |
 | R-3502 | built | `VideoDownloadFormat`, `VideoForm` | `testResolutionsPerFormat`, `testSelectorsSizesAndConversion` | Five formats, real heights, 4K and 2K and high fps marked, DRM hidden, size estimate |
 | R-3505 | built | `stream_options`, `VideoForm` | `test_stream_options_map_extras` | Playlist range, count, dates, subtitles, thumbnail, description, speed limit |
-| R-3503 | built | `EngineService.saveVideo` | `--selftest-video-download` | site/uploader folders, upload date names, MP4 sidecar; WebM and M4A without one (D-56) |
+| R-3503 | built | `EngineService.saveVideo` | `--selftest-video-download`, `test_videos_say_which_playlist_they_came_from` | site/uploader folders, upload date names, MP4 sidecar; WebM and M4A without one (D-56); the real description, title and playlist kept (D-111) |
 | R-3504 | amended | `YOUTUBE_PATHS` | `test_youtube_video_reads_are_allowed_and_nothing_else`, `test_youtube_channel_pages_are_read` | D-72 adds /youtubei/v1/browse beside player and next |
 | R-3601 | built | `Analyzer.analyse`, `Thumbnailer.videoFrame` | `--selftest-analyse` | Videos are analysed a tenth of the way in (1.8) |
 | R-3602 | built | `Analyzer`, `scripts/models.lock` | `--selftest-analyse` | Bundled pinned models on Neural Engine and CPU; duplicates stay model-free |
@@ -219,6 +219,12 @@ change as the code.
 | R-3905 | built | `NameSuggestion.suggest`, `NameSuggestion.looksLikeName` | `testNameSuggestion` | Suggested only; applied after one click on Use Name |
 | R-3906 | amended | `FolderOperations.sort`, `OrganiseModel.autoSort` | `testSortClonesGroupPhotosAndUsesUnsorted` | D-77: photos without a recognised person stay where they are |
 | R-3907 | built | `FaceOptIn.limits` | `--selftest-analyse` | Full limits text (1.8) |
+| R-4001 | built | `ProfileDetector.detect`, `PaneViewMode.profile`, `WindowModel.availableViewModes`, `OrganisePane.detectProfile` | `testAFolderOfAccountsAndOtherSites`, `testMixedAndPlainFoldersAreNotProfiles`, `--selftest-profile` | Offered only for folders the views can show (D-113) |
+| R-4002 | built | `ProfileBuilder.build`, `ProfileThumb`, `ProfileFormat.copy` | `testTheLimitIsSaid`, `--selftest-profile` | Nothing fetched (no sockets opened in the self-test); the look needs a person |
+| R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
+| R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
+| R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |
+| R-4006 | built | `FeedTimelineView`, `BoardView`, `ProfileBuilder.feed` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Timeline and board layouts |
 
 ## Settings and shortcuts (sections 20 and 21)
 

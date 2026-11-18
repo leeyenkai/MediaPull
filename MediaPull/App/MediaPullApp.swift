@@ -240,7 +240,7 @@ struct AppCommands: Commands {
                 ))
                 .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 // Never a hidden pane's view (audit 15, B15-m8).
-                .disabled(window.map { !$0.isShowing($0.viewModeTarget) || !PaneViewMode.allowed(for: $0.viewModeTarget).contains(mode) }
+                .disabled(window.map { !$0.isShowing($0.viewModeTarget) || !$0.availableViewModes(for: $0.viewModeTarget).contains(mode) }
                     ?? true)
             }
             Divider()
