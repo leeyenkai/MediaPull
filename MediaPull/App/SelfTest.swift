@@ -903,13 +903,45 @@ final class SelfTestRunner {
         (inside, added) = onlyInside(batch, since: before)
         let allNew = snapshot().subtracting(before)
         let aliceAdded = allNew.filter { $0.hasPrefix("saveas/batch/my alice/") && !$0.hasSuffix(".json") }.count
-        let tagAdded = allNew.filter { $0.hasPrefix("saveas/batch/sunset/") && !$0.hasSuffix(".json") }.count
+        let tagAdded = allNew.filter { $0.hasPrefix("saveas/batch/#sunset/") && !$0.hasSuffix(".json") }.count
         let carolAdded = allNew.filter { $0.hasPrefix("saveas/batch/carol (testsite)/") && !$0.hasSuffix(".json") }.count
         let videosAdded = allNew.filter { $0.hasPrefix("saveas/batch/X (youtube.com)/") && !$0.hasSuffix(".json") }.count
         check(inside && aliceAdded == 2 && tagAdded == 3 && carolAdded == 4 && videosAdded == 2
             && model.downloads.batch.allSatisfy { $0.progress == .done },
               "Download All As…: alice's 2 missing into her folder, #sunset 3, carol 4 and channel X 2 into folders of their own, "
                   + "inside \(inside) (\(model.downloads.batch.map { "\($0.progress)" }))")
+        // Nor any download archive entry: a later Automatic download of the gallery knows nothing of the copies (B24-M4).
+        let archived = await app.store?.knownKeys(account: "gallery:testsite:\(galleryURL.absoluteString.lowercased())") ?? []
+        check(archived.isEmpty, "Save As wrote no download archive entries (\(archived.count))")
+        // A Resume after a check never stops early at what the job saved itself (A25-M1): 14 Reels, held after 13.
+        var reels: [[String: Any]] = []
+        for index in 1 ... 14 {
+            let source = fixtures.appendingPathComponent("reel\(index).jpg")
+            try? Self.jpeg(100 + index).write(to: source)
+            reels.append(["key": "ig:39\(index)", "source": source.path,
+                          "meta": ["category": "instagram", "subcategory": "reels", "username": "alice", "post_id": "40\(index)",
+                                   "media_id": "39\(index)", "num": 1, "count": 1, "product_type": "clips",
+                                   "date": String(format: "2024-01-%02d 10:00:00", index), "owner_id": "42"]])
+        }
+        var heldReplay = igReplay
+        heldReplay["items"] = reels
+        heldReplay["cursor_posts_only"] = true
+        heldReplay["checkpoint_after"] = 13
+        writeReplay(heldReplay)
+        var reelDraft = app.engines.draft(username: "alice")
+        reelDraft.content = [.posts, .reels]
+        reelDraft.incremental = true
+        let resumed = folder("alice reels")
+        let stopped = app.engines.startPull(reelDraft, scanOnly: false, window: model, saveFolder: resumed, exactly: true)
+        await waitUntil(timeout: 120) { if case .blocked = stopped?.state { true } else { stopped?.state.isFinished ?? true } }
+        heldReplay["checkpoint_after"] = nil
+        writeReplay(heldReplay)
+        app.engines.gate = .ready
+        stopped?.resume?()
+        try? await Task.sleep(for: .seconds(1))
+        await waitFor(stopped)
+        let reelFiles = snapshot().filter { $0.hasPrefix("saveas/alice reels/") && !$0.hasSuffix(".json") }.count
+        check(reelFiles == 14, "a resumed Save As reaches every Reel, past the 13 it saved itself (\(reelFiles) of 14)")
         // Save As keeps no memory: no account folder record, no remembered item for any folder it saved into.
         let records = await app.accountFolders.all().map { URL(fileURLWithPath: $0.path).lastPathComponent }
         check(records.isEmpty, "Save As made no account folder records (\(records))")

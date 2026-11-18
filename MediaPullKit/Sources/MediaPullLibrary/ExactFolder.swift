@@ -8,10 +8,13 @@ public enum ExactFolder {
     public struct Held: Sendable, Equatable {
         public var keys: Set<String> = []
         public var videoIDs: Set<String> = []
+        /// Audio saved from video sites (`subcategory` audio), apart from videos (B25-m3).
+        public var audioIDs: Set<String> = []
 
-        public init(keys: Set<String> = [], videoIDs: Set<String> = []) {
+        public init(keys: Set<String> = [], videoIDs: Set<String> = [], audioIDs: Set<String> = []) {
             self.keys = keys
             self.videoIDs = videoIDs
+            self.audioIDs = audioIDs
         }
     }
 
@@ -47,13 +50,20 @@ public enum ExactFolder {
         }
         if let media = text("media_id") { held.keys.insert("\(category):\(media)") }
         if let post = text("post_id") {
-            // As the engine keys an item: with its number in the post when it has one other than 0 (D-75).
-            if let num = text("num"), num != "0" {
-                held.keys.insert("\(category):\(post):\(num)")
-            } else {
-                held.keys.insert("\(category):\(post)")
+            // As the engine keys an item: with its number in the post when it has one other than 0, by the post alone when it
+            // is numbered 0 (D-75). A metadata file without a number cannot say which (the number is left out when a site gives
+            // no count), so it is not taken as held: it is downloaded again and dropped as a copy (D-108 rule 3, B24-M1,
+            // B25-M1).
+            switch text("num") {
+            case "0"?: held.keys.insert("\(category):\(post)")
+            case let num?: held.keys.insert("\(category):\(post):\(num)")
+            case nil: break
             }
-            if ["video", "audio"].contains(metadata["subcategory"] as? String ?? "") { held.videoIDs.insert(post) }
+            switch metadata["subcategory"] as? String {
+            case "video"?: held.videoIDs.insert(post)
+            case "audio"?: held.audioIDs.insert(post)
+            default: break
+            }
         }
         return held
     }
@@ -74,7 +84,13 @@ public enum ExactFolder {
         guard fm.fileExists(atPath: named.path) else { return named }
         // A file of that name: a numbered folder beside it.
         guard OperationJournal.isFolder(named) else { return AccountFolders.newFolder(named: name, in: parent) }
-        if let account = account?.lowercased(), let other = AccountFolders.dominantAccount(in: named), other != account {
+        let holder = AccountFolders.dominantAccount(in: named)
+        if let account = account?.lowercased() {
+            // An account's entry takes a folder of that name only when it holds nothing, or the account's own media; never a
+            // hashtag's or another account's (A25-M4).
+            if holder != account, AccountFolders.holdsMedia(named) { return AccountFolders.newFolder(named: name, in: parent) }
+        } else if holder != nil {
+            // Anything else (a hashtag, a post) never goes into an account's folder (A25-M4).
             return AccountFolders.newFolder(named: name, in: parent)
         }
         return named
@@ -92,5 +108,6 @@ extension ExactFolder.Held {
     mutating func formUnion(_ other: ExactFolder.Held) {
         keys.formUnion(other.keys)
         videoIDs.formUnion(other.videoIDs)
+        audioIDs.formUnion(other.audioIDs)
     }
 }

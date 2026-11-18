@@ -168,7 +168,8 @@ extension DownloadsModel {
             if draft.postURL == nil, draft.hashtag == nil { await app.engines.applyStoredOptions(to: &draft) }
             // The stories tray makes a folder per owner itself; everything else gets one named after what it is.
             let isTray = draft.username.isEmpty && draft.hashtag == nil && draft.postURL == nil && !draft.content.contains(.saved)
-            let name = draft.hashtag ?? draft.username.nonEmpty ?? draft.postURL?.lastPathComponent.nonEmpty
+            // A hashtag's folder is named with its # so it never meets the account of that name (A25-M4).
+            let name = draft.hashtag.map { "#\($0)" } ?? draft.username.nonEmpty ?? draft.postURL?.lastPathComponent.nonEmpty
                 ?? (draft.content.contains(.saved) ? SaveTarget.savedFolder : "Stories")
             let root: SaveDestination
             switch isTray || !exact ? .success(parent) : await entryRoot(name, account: draft.username.nonEmpty) {

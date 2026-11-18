@@ -414,7 +414,8 @@ final class EngineService {
         }
         // A one-click update uses the remembered choices without changing them (D-80).
         // A story link or a single post chose its content from the address: that is not the account's choice either.
-        if !scanOnly, draft.hashtag == nil, !draft.username.isEmpty, draft.accountFolder == nil, !draft.contentFromAddress,
+        // Save As keeps no memory, the account's remembered choices included (D-108, A25-M3).
+        if !scanOnly, !exact, draft.hashtag == nil, !draft.username.isEmpty, draft.accountFolder == nil, !draft.contentFromAddress,
            draft.postURL == nil
         {
             Task {
@@ -626,7 +627,12 @@ final class EngineService {
         }
         if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil || exact {
             var known: Set<String> = []
-            if let place {
+            if exact, let place, place.record == nil {
+                // Save As into a folder MediaPull does not remember: what it held when the job began, read once, so a
+                // Resume or Retry never stops early at what the job saved itself (D-108 rule 5, A25-M1).
+                if run.libraryBefore == nil { run.libraryBefore = place.index.identities }
+                known = run.libraryBefore ?? []
+            } else if let place {
                 let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
                 known = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
             } else if exact, let folder = root?.url {
@@ -751,7 +757,8 @@ final class EngineService {
                                         layout: app.root(containing: place.folder)?.layout ?? root.layout, autoSubfolders: true,
                                         accountUsername: account)
                 target.accountFolder = place.folder
-                target.accountFolderExisted = place.record != nil
+                // A Save As folder was there when the job began: never made again at its old path (A25-M2).
+                target.accountFolderExisted = place.record != nil || exact
                 target.typeSubfolders = place.sortsByType
                 return target
             }
@@ -785,7 +792,8 @@ final class EngineService {
         // folder nobody has made yet is where it was planned (audit 5, A5-M3).
         func whereNow(_ found: AccountPlace) async -> URL? {
             if FileManager.default.fileExists(atPath: found.folder.path), !FileFlags.isInTrash(found.folder) { return found.folder }
-            guard let record = found.record else { return found.folder }
+            // A Save As folder MediaPull does not remember is never made again where it was (A25-M2).
+            guard let record = found.record else { return exact ? nil : found.folder }
             return await app.accountFolders.currentFolder(of: record.id)
         }
         func rememberPost(_ key: String, account user: String, owner: String?) async {
@@ -1138,22 +1146,24 @@ final class EngineService {
             job.state = .blocked(gateMessage ?? "Instagram needs your attention.")
             return
         }
+        // Save As writes the account's pull history only for a folder MediaPull remembers (D-108, A25-m1).
+        let keepsHistory = !exact || place?.record != nil
         if let fatal, job.saved + job.duplicates + job.found == 0 {
             app.jobs.finish(job, .failed(fatal))
-            await app.store?.updateAccount(account, lastResult: fatal)
+            if keepsHistory { await app.store?.updateAccount(account, lastResult: fatal) }
             return
         }
         // Only a pull that reached the end may forget its place: an incremental pull stops at the
         // first run of known posts, so a gap left by a failed page would never be filled.
         if let fatal, !finishedCleanly || job.failed > 0 {
-            if !scanOnly, draft.postURL == nil, isAccount {
+            if !scanOnly, draft.postURL == nil, isAccount, keepsHistory {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: fatal)
             }
             app.jobs.finish(job, .failed("Stopped part way: \(fatal) Pull again to continue from where it stopped."))
             return
         }
         if let fatal { job.notes.append(fatal) }
-        if !scanOnly, draft.postURL == nil, isAccount {
+        if !scanOnly, draft.postURL == nil, isAccount, keepsHistory {
             if finishedCleanly {
                 await app.store?.updateAccount(account, newestSavedDate: newest, resumeCursor: place == nil ? .some(nil) : nil,
                                                lastResult: job.summary, pulledNow: true)
@@ -1258,7 +1268,12 @@ final class EngineService {
             (AccountFolders.index(folder), AccountFolders.sortsByType(folder))
         }.value
         let key = AccountFolderStore.key(folder.path)
-        let record = await app.accountFolders.all().first { $0.account == account.lowercased() && AccountFolderStore.key($0.path) == key }
+        var record = await app.accountFolders.all().first { $0.account == account.lowercased() && AccountFolderStore.key($0.path) == key }
+        // As an Update: what the remembered folder holds now is remembered, so a file deleted later stays deleted (A25-m2).
+        if let found = record, !index.identities.isSubset(of: found.keys) {
+            await app.accountFolders.addKeys(index.identities, to: found.id)
+            record = await app.accountFolders.record(account: account, folder: folder)
+        }
         return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
     }
 
@@ -1458,7 +1473,12 @@ final class EngineService {
                 var skip = savedIDs.ids
                 if exact {
                     // Save As: videos the chosen folder already holds are skipped (D-108).
-                    skip.formUnion(await Task.detached(priority: .userInitiated) { ExactFolder.held(in: now).videoIDs }.value)
+                    // Only files of the same kind: a held MP4 does not stand for an M4A of the same video (B25-m3).
+                    let audio = format.isAudioOnly
+                    skip.formUnion(await Task.detached(priority: .userInitiated) {
+                        let held = ExactFolder.held(in: now)
+                        return audio ? held.audioIDs : held.videoIDs
+                    }.value)
                 }
                 extras.skipIDs = Array(skip)
                 await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site,
@@ -1585,7 +1605,8 @@ final class EngineService {
         let savedNow = job.saved + job.duplicates - savedBefore
         if root.exact, savedNow == 0, failure == nil, job.failed == 0, !extras.skipIDs.isEmpty {
             // Save As into a folder that already holds every video asked for: nothing to add (D-108).
-            job.notes.append("The chosen folder already holds \(extras.playlist ? "these videos" : "this video").")
+            let what = extras.playlist ? "the videos listed" : "this video"
+            job.notes.append("Nothing new was downloaded: the chosen folder already holds \(what), or none matched.")
             app.jobs.finish(job, .completed)
             return
         }

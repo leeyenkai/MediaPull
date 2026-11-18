@@ -78,9 +78,17 @@ def main():
     # "fail_after_listing": the posts listing ends, then the pull fails (as a failed Reel download would).
     fail_after_listing = replay.get("fail_after_listing")
     emit("log", level="info", logger="stand-in", message=f"start {start}")
+    # "cursor_posts_only": as the real engine, a cursor places only the posts listing; other parts are listed from the top.
+    posts_only = replay.get("cursor_posts_only")
+    # "checkpoint_after": Instagram asks for a check after that many files, and the pull is held.
+    checkpoint_after = replay.get("checkpoint_after")
     for number, item in enumerate(items, 1):
-        if number <= start:
+        if number <= start and (not posts_only or item["meta"].get("subcategory") == "posts"):
             continue
+        if checkpoint_after is not None and counts["downloaded"] >= checkpoint_after:
+            emit("checkpoint", kind="challenge", url="https://www.instagram.com/challenge/", message="A check is needed.")
+            emit("done", status="failed", counts=counts)
+            return 0
         if stop_known and known_in_a_row >= stop_known:
             break
         if stop_after is not None and number > stop_after:

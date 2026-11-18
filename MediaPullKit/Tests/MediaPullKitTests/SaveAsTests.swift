@@ -26,14 +26,17 @@ final class SaveAsTests: XCTestCase {
     }
 
     func testKeysComeFromTheFoldersOwnMetadataOnly() throws {
-        try file("chosen/a.jpg", metadata: ["category": "testsite", "post_id": "p1", "num": 2])
+        // Metadata as the app writes it: a number only with a count.
+        try file("chosen/a.jpg", metadata: ["category": "testsite", "post_id": "p1", "num": 2, "count": 3])
         try file("chosen/sub/b.jpg", metadata: ["category": "testsite", "media_id": "m9"])
         try file("chosen/c.mp4", metadata: ["category": "youtube", "subcategory": "video", "post_id": "v1"])
+        try file("chosen/c.m4a", metadata: ["category": "youtube", "subcategory": "audio", "post_id": "v2"])
         try file("chosen/d.jpg", metadata: ["category": "instagram", "media_id": "1", "post_id": "2", "num": 1])
         try file("other/e.jpg", metadata: ["category": "testsite", "post_id": "p2", "num": 1])
         let held = ExactFolder.held(in: root.appendingPathComponent("chosen"))
-        XCTAssertEqual(held.keys, ["testsite:p1:2", "testsite:m9", "youtube:v1"])
+        XCTAssertEqual(held.keys, ["testsite:p1:2", "testsite:m9"], "a file without a number is never taken as held")
         XCTAssertEqual(held.videoIDs, ["v1"])
+        XCTAssertEqual(held.audioIDs, ["v2"], "a held MP4 does not stand for audio of the same video (B25-m3)")
         XCTAssertFalse(held.keys.contains("testsite:p2"), "another folder never counts")
         XCTAssertFalse(held.keys.contains { $0.hasPrefix("instagram") }, "Instagram items are known by the folder index")
         // Numbers in metadata files count as well as strings; a file numbered 0 is keyed by its post alone, as the engine keys
@@ -41,6 +44,9 @@ final class SaveAsTests: XCTestCase {
         XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": 5, "num": 1]).keys, ["s:5:1"])
         XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": "w", "num": 0, "count": 3]).keys, ["s:w"])
         XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": "w", "num": 2, "count": 3]).keys, ["s:w:2"])
+        // A site that numbers files without a count: the metadata file has no number, so it cannot stand for the post's file
+        // numbered 0 (pixivFANBOX covers, B25-M1).
+        XCTAssertEqual(ExactFolder.keys(of: ["category": "fanbox", "post_id": "9001"]).keys, [])
     }
 
     func testDownloadAllEntriesStayInsideTheChosenFolder() throws {
@@ -54,6 +60,14 @@ final class SaveAsTests: XCTestCase {
         // A folder of that name holding another account's media is not taken: a numbered one beside it instead.
         try fm.removeItem(at: parent.appendingPathComponent("my alice"))
         XCTAssertEqual(ExactFolder.entryFolder(named: "alice", account: "alice", in: parent).lastPathComponent, "alice 2")
+        // A hashtag never goes into the account of that name, nor an account into a hashtag's folder (A25-M4).
+        try file("parent/nike/posts/n.jpg", metadata: ["category": "instagram", "username": "nike", "post_id": "1", "num": 1])
+        XCTAssertEqual(ExactFolder.entryFolder(named: "#nike", account: nil, in: parent).lastPathComponent, "#nike")
+        XCTAssertEqual(ExactFolder.entryFolder(named: "nike", account: nil, in: parent).lastPathComponent, "nike 2")
+        // An account's entry never takes a folder of its name holding others' media (a hashtag from an earlier version).
+        try file("parent/run/a.jpg", metadata: ["category": "instagram", "username": "x", "post_id": "2", "num": 1])
+        try file("parent/run/b.jpg", metadata: ["category": "instagram", "username": "y", "post_id": "3", "num": 1])
+        XCTAssertEqual(ExactFolder.entryFolder(named: "run", account: "run", in: parent).lastPathComponent, "run 2")
         // A file of that name: a numbered folder beside it, never a failure (B24-m7).
         try Data("x".utf8).write(to: parent.appendingPathComponent("dave"))
         XCTAssertEqual(ExactFolder.entryFolder(named: "dave", account: nil, in: parent).lastPathComponent, "dave 2")
