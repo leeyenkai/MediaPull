@@ -689,11 +689,15 @@ class KnownTracker:
     date_to = None
     chronological = {"posts", "reels", "post", "user", "tagged"}
 
-    def __init__(self, known, limit):
+    def __init__(self, known, limit, own=frozenset()):
         self.known = known
+        # A Retry's or Resume's own items: skipped, but never counted towards the early stop, which is about what the
+        # library held before the job (D-103, audit 20, A20-M1).
+        self.own = own
         self.limit = limit
         self.post = None
         self.post_known = True
+        self.post_own = False
         self.post_pinned = False
         self.run = 0
         self.stopped = False
@@ -706,13 +710,18 @@ class KnownTracker:
             self._close_post()
             self.post = post
             self.post_known = True
+            self.post_own = False
             self.post_pinned = bool(kwdict.get("pinned"))
         # A file is known by its media id, or (Instagram posts) by its post and number, the form a folder's metadata
         # files give when MediaPull did not record the media id (D-79).
         alternative = positional_key(kwdict)
-        is_known = key in self.known or (alternative is not None and alternative in self.known)
+        held = key in self.known or (alternative is not None and alternative in self.known)
+        mine = not held and (key in self.own or (alternative is not None and alternative in self.own))
+        is_known = held or mine
         if not is_known:
             self.post_known = False
+        if mine:
+            self.post_own = True
         if self.limit and self.run >= self.limit:
             # The listing ends at posts the folder has: everything older was walked before.
             self.stopped = True
@@ -739,16 +748,29 @@ class KnownTracker:
     def _close_post(self):
         if self.post is None:
             return
+        if self.post_known and self.post_own:
+            return
         if self.post_known and not self.post_pinned:
             self.run += 1
         elif not self.post_known:
             self.run = 0
 
 
-def tracker_for(collection, known, retry, limit):
+def known_sets(request):
+    """What a pull knows: the folder's items, the job's own items (Retry, Resume), and the owners' items (the tray)."""
+    return (load_known(request), load_known({"known_ids": request.get("retry_ids")}),
+            load_known({"known_ids": request.get("owners_known_ids")}))
+
+
+def tracker_for(collection, known, retry, limit, owners=frozenset()):
     """Saved posts and others' stories are not the account's: its folder's known items and early stop do not apply, but a
-    Retry's own saved items do (D-103)."""
-    return KnownTracker(retry, None) if collection else KnownTracker(known | retry, limit)
+    Retry's own saved items do (D-103), and the tray knows what its owners' folders remember (D-104). A job's own items
+    never count towards the early stop (audit 20, A20-M1)."""
+    if collection == "stories-tray":
+        return KnownTracker(owners, None, retry)
+    if collection:
+        return KnownTracker(retry, None)
+    return KnownTracker(known, limit, retry)
 
 
 def load_known(request):
@@ -769,8 +791,7 @@ def make_jobs(request):
 
     # What a Retry's own job saved is known to every listing it walks, collections too, so a file deleted since is not
     # fetched again (D-103, audit 18, A18-M1, C18-M1).
-    retry = load_known({"known_ids": request.get("retry_ids")})
-    known = load_known(request) | retry
+    known, retry, owners = known_sets(request)
     limit = int(request.get("stop_after_known") or 0)
     KnownTracker.date_from = _parse_date(request.get("date_from"))
     KnownTracker.date_to = _parse_date(request.get("date_to"))
@@ -817,7 +838,7 @@ def make_jobs(request):
             job.DownloadJob.__init__(self, url, parent)
             # Saved posts and others' stories are not the account's: its folder's known items and early stop do not
             # apply to them.
-            self.tracker = tracker_for(STATE.get("collection"), known, retry, limit)
+            self.tracker = tracker_for(STATE.get("collection"), known, retry, limit, owners)
 
         def dispatch(self, extractor):
             # A listing that broke off (an error, not the early stop) is told apart from files that failed one by one: only

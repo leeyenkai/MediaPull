@@ -881,8 +881,15 @@ final class LibraryModel: MediaGridOwner {
     /// Puts an edited file in its folder, then sends the original to the Trash: first beside it under a hidden name (a
     /// full copy when the edit is on another disk, so the original is never trashed for a copy that fails or is cut short),
     /// then the original to the Trash, then the edit to its name, a rename on one disk (audit 17, B17-m1, B17-M2).
-    nonisolated static func placeEdit(_ edited: URL, as wanted: URL, replacing original: URL?) throws -> URL {
+    nonisolated static func placeEdit(_ edited: URL, as wanted: URL, replacing original: URL?, identity: String? = nil) throws -> URL {
         let manager = FileManager.default
+        // Checked again just before the original goes: a long trim or encode gives an Undo time to put another file there
+        // (audit 20, B20-m2).
+        if let original, let identity, AccountFolderRecord.number(of: original) != identity {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey:
+                "“\(original.lastPathComponent)” is another file now (it was renamed or moved since it was opened), "
+                    + "so nothing was changed."])
+        }
         let staged = wanted.deletingLastPathComponent()
             .appendingPathComponent(".mediapull-edit-\(UUID().uuidString).\(wanted.pathExtension)")
         try manager.moveItem(at: edited, to: staged) // lint:allow main-io called off the main actor

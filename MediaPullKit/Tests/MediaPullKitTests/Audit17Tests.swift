@@ -1,6 +1,7 @@
 import Foundation
 @testable import MediaPullCore
 @testable import MediaPullLibrary
+import MediaPullEngines
 import XCTest
 
 /// What a video job says at its end, from the seventeenth audit.
@@ -89,5 +90,20 @@ extension Audit19Tests {
         XCTAssertFalse(fm.fileExists(atPath: target.appendingPathComponent("Trip/Trip").path))
         _ = await journal.undo(entry.id)
         XCTAssertTrue(fm.fileExists(atPath: target.appendingPathComponent("Trip/own.jpg").path))
+    }
+}
+
+/// The request keys of what a pull knows, from the twentieth audit.
+final class Audit20Tests: XCTestCase {
+    /// C20-m2: the app sends what a job saved and what the owners' folders remember under the keys the bridge reads.
+    func testKnownListsGoUnderTheBridgesKeys() throws {
+        var request = BridgeRequest(op: "pull")
+        request.knownIDs = "/k"
+        request.retryIDs = "/r"
+        request.ownersKnownIDs = "/o"
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(json["known_ids"] as? String, "/k")
+        XCTAssertEqual(json["retry_ids"] as? String, "/r")
+        XCTAssertEqual(json["owners_known_ids"] as? String, "/o")
     }
 }

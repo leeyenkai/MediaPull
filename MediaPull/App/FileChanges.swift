@@ -64,6 +64,9 @@ extension AppModel {
             let report = await undo.value
             if let report, report.done > 0, !report.stopped {
                 jobs.finish(job, .completed, notify: false)
+            } else if report == nil {
+                // Undone some other way meanwhile (History): nothing is left under temporary names (audit 20, B20-m3).
+                jobs.finish(job, .completed, notify: false)
             } else {
                 jobs.finish(job, .failed(report?.skipped.first ?? "Some files are still under temporary names. Undo it in History."),
                             notify: false)
@@ -263,7 +266,8 @@ extension WindowModel {
                         // Undone elsewhere, or no longer kept: off the stack, so the next click reaches the change below
                         // (audit 19, B19-m3).
                         forgetUndo(id)
-                        showFileMessage("That change is no longer in the undo history.")
+                        let kept = await app.journal.entry(id) != nil
+                        showFileMessage(kept ? "That change was already undone." : "That change is no longer in the undo history.")
                     }
                 }
                 return true

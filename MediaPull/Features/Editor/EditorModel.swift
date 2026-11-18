@@ -328,9 +328,10 @@ final class EditorModel: UnsavedEditing {
             let edited = try await writeEdited()
             let stem = asCopy ? (hasNameChange ? cleanName : "\(cleanName) edited") : cleanName
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: format.fileExtension))
+            let identity = openedIdentity
             let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
                 // The original goes to the Trash (D-34), and the edit takes a free name next to it.
-                try LibraryModel.placeEdit(edited, as: wanted, replacing: asCopy ? nil : url)
+                try LibraryModel.placeEdit(edited, as: wanted, replacing: asCopy ? nil : url, identity: identity)
             }.value
             if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
             await moveSidecar(from: url, to: target, copy: asCopy, edited: target)

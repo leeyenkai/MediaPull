@@ -360,7 +360,7 @@ struct GalleryForm: View {
                     .labelsHidden()
             }
             // What the library holds now is skipped (D-103, audit 19, A19-m2).
-            Toggle("Skip what the library already holds", isOn: $downloads.onlyNew)
+            Toggle("Skip what was downloaded from this address before", isOn: $downloads.onlyNew)
             if choices.count > 1 {
                 Toggle(
                     "Sort into folders by type (\(choices.prefix(2).map(SiteCatalogue.choiceLabel).joined(separator: ", "))…)",

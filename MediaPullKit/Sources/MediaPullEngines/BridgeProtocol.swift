@@ -349,6 +349,8 @@ public struct BridgeRequest: Encodable, Sendable {
     public var knownIDs: String?
     /// A Retry's own saved keys (D-103).
     public var retryIDs: String?
+    /// What the account folders remember, for the stories tray (D-104).
+    public var ownersKnownIDs: String?
     public var stopAfterKnown: Int?
     public var dateFrom: String?
     public var dateTo: String?
@@ -379,6 +381,7 @@ public struct BridgeRequest: Encodable, Sendable {
              referer, key, wheel, target, paths
         case knownIDs = "known_ids"
         case retryIDs = "retry_ids"
+        case ownersKnownIDs = "owners_known_ids"
         case stopAfterKnown = "stop_after_known"
         case dateFrom = "date_from"
         case dateTo = "date_to"

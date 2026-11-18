@@ -104,6 +104,11 @@ final class VideoEditorModel: UnsavedEditing {
     /// Saves the frame being shown as a lossless PNG at the video's full resolution.
     func saveFrame() async {
         guard let sourceFile, let stage else { return }
+        // A still of the video on screen, never of another that took its name (audit 20, A20-m3).
+        if case let .file(url) = request.subject, openedIdentity != nil, AccountFolderRecord.number(of: url) != openedIdentity {
+            fail(Self.changedMessage(url))
+            return
+        }
         let time = stage.currentTime
         isWorking = true
         defer { isWorking = false }
@@ -183,8 +188,9 @@ final class VideoEditorModel: UnsavedEditing {
                 let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: url.pathExtension))
                 // The original goes to the Trash when replaced; moving from the cache to a library on another volume is a
                 // full copy: not on the main actor.
+                let identity = openedIdentity
                 let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
-                    try LibraryModel.placeEdit(trimmed, as: wanted, replacing: replacing ? url : nil)
+                    try LibraryModel.placeEdit(trimmed, as: wanted, replacing: replacing ? url : nil, identity: identity)
                 }.value
                 if replacing { app.noteMoved([(from: url.path, to: target.path)]) }
                 if let problem = Self.writeSidecar(from: url, to: target, changes: [

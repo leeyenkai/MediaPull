@@ -606,9 +606,10 @@ final class EngineService {
                 let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
                 known = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
             } else if draft.hashtag != nil, draft.incremental || resuming || run.retrying {
-                // What the library holds now, and on a Retry what this job saved, so a file deleted since is not fetched
-                // again (D-103, audit 18, A18-M1).
-                known = (await app.store?.knownKeys(account: account) ?? []).union(run.retrying ? run.counted : [])
+                // What the library held when the job began: its own items go as retry_ids, which never end the walk early,
+                // so a Retry or Resume walks past what it just saved (D-103, audit 20, A20-M1, A20-m2).
+                if run.libraryBefore == nil { run.libraryBefore = await app.store?.knownKeys(account: account) ?? [] }
+                known = run.libraryBefore ?? []
             }
             let knownFile = staging.appendingPathComponent("known.json")
             do {
@@ -621,8 +622,9 @@ final class EngineService {
             }
             // An update ends early at the folder's known posts, and so does the continuation of an update's place; Find
             // Missing, full walks and places that run to the oldest post walk on.
+            // A tag keeps its early stop on Resume too: it has no folder memory (audit 20, A20-M1, C20-M1).
             let earlyStop = draft.incremental && !draft.findMissing && !(draft.continueFrom?.untilEnd ?? false)
-                && !(resuming && place == nil)
+                && !(resuming && place == nil && draft.hashtag == nil)
             request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
         }
         // A Retry skips what its own job saved, whatever it pulls (a post, the tray, saved posts), so a file deleted since
@@ -635,6 +637,21 @@ final class EngineService {
             } catch {
                 job.notes.append("Saved items could not be listed for the engine (\(error.localizedDescription)), "
                     + "so every item is checked.")
+            }
+        }
+        // The stories tray knows what its owners' folders remember, so a story deleted from one is not fetched again (D-104,
+        // audit 20, C20-M2).
+        if !scanOnly, draft.content.contains(.storiesTray) || (!isAccount && draft.postURL == nil && draft.hashtag == nil) {
+            let owners = await app.accountFolders.all().reduce(into: Set<String>()) { $0.formUnion($1.keys) }
+            let ownersFile = staging.appendingPathComponent("owners.json")
+            if !owners.isEmpty {
+                do {
+                    try JSONEncoder().encode(Array(owners)).write(to: ownersFile)
+                    request.ownersKnownIDs = ownersFile.path
+                } catch {
+                    job.notes.append("Saved stories could not be listed for the engine (\(error.localizedDescription)), "
+                        + "so every story is checked.")
+                }
             }
         }
         // A continuation whose place is gone (continued or replaced meanwhile) has nothing left to do.
@@ -951,10 +968,9 @@ final class EngineService {
                         job.failures.append((kind, "The \(what) could not be saved: \(error.localizedDescription)"))
                     }
                 case let .skip(key, _):
-                    if !run.retrying { job.skipped += 1 }
                     // What the job passed as already held is its own too: a Retry or Resume does not fetch it again after a
-                    // deletion (D-103, audit 19, A19-M1).
-                    run.counted.insert(key)
+                    // deletion (D-103, audit 19, A19-M1). Counted once, whatever walks pass it again (audit 20, A20-m1).
+                    if run.counted.insert(key).inserted { job.skipped += 1 }
                 case let .wait(seconds, reason):
                     job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
                 case let .progress(received, total, _):
@@ -1941,6 +1957,8 @@ private final class PullRun {
     /// does not count them again (audit 17, A17-m2, A17-m3).
     var found = Set<String>()
     var counted = Set<String>()
+    /// What the library held for a tag when the job began: the early stop counts only these (audit 20, A20-M1).
+    var libraryBefore: Set<String>?
 
     init(draft: PullDraft) { self.draft = draft }
 

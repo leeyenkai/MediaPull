@@ -320,6 +320,48 @@ def test_a_retry_knows_what_its_job_saved_in_every_listing():
     assert account.observe(post, bridge.item_key(post, "u")) is True
 
 
+def test_a_jobs_own_items_never_end_a_listing_early():
+    """Audit 20 (A20-M1, A20-m2): a Retry's or Resume's own items are skipped but do not count towards the early stop, so
+    a tag's Retry walks past the posts its job just saved and stops only at posts the library held before."""
+    from gallery_dl import exception
+    own = {"ig:%d" % n for n in range(1, 21)}
+    held = {"ig:%d" % n for n in range(30, 50)}
+    tracker = bridge.tracker_for(None, held, own, 3)
+    reached = []
+    try:
+        for n in range(1, 50):
+            item = {"category": "instagram", "subcategory": "posts", "post_id": str(n), "num": 1, "media_id": str(n)}
+            tracker.observe(item, bridge.item_key(item, "u"))
+            reached.append(n)
+    except exception.StopExtraction:
+        pass
+    assert 25 in reached, reached
+    assert reached[-1] < 40, reached
+
+
+def test_a_pull_reads_its_three_known_lists():
+    """Audit 20 (C20-m2): the request keys the app sends are the ones the bridge reads."""
+    import json
+    import tempfile
+    paths = []
+    for keys in (["ig:1"], ["ig:2"], ["ig:3"]):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump(keys, handle)
+            paths.append(handle.name)
+    request = {"known_ids": paths[0], "retry_ids": paths[1], "owners_known_ids": paths[2]}
+    assert bridge.known_sets(request) == ({"ig:1"}, {"ig:2"}, {"ig:3"})
+    for path in paths:
+        os.remove(path)
+
+
+def test_the_tray_knows_what_its_owners_folders_remember():
+    """D-104 (audit 20, C20-M2): a tray pull skips stories its owners' folders remember, deleted since or not."""
+    story = {"category": "instagram", "subcategory": "stories", "post_id": "9", "num": 1, "media_id": "99"}
+    tray = bridge.tracker_for("stories-tray", set(), set(), 12, {"ig:99"})
+    assert tray.observe(story, bridge.item_key(story, "u")) is True
+    assert bridge.tracker_for("saved", set(), set(), 12, {"ig:99"}).observe(story, bridge.item_key(story, "u")) is False
+
+
 def test_files_from_the_stories_tray_and_saved_posts_say_so():
     """Audit round 1 (A1): gallery-dl lists others' stories and saved posts through child extractors."""
     bridge.STATE["collection"] = bridge.collection_of("https://www.instagram.com/stories/me/")
