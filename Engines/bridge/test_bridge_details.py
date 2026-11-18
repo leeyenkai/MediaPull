@@ -589,6 +589,9 @@ def test_posts_keep_their_text_place_and_community():
     assert cover["highlight_cover"] is True
     assert "highlight_cover" not in bridge.item_meta("x", {"category": "instagram", "media_id": "18"})
     assert len(bridge.item_meta("x", {"category": "twitter", "content": "a" * 9000})["post_text"]) == 5000
+    # Other sites' `content` or `text` is not a post's text (a page body, an image's words).
+    for site in ("tumblr", "pixiv", "danbooru"):
+        assert "post_text" not in bridge.item_meta("x", {"category": site, "content": "<p>body</p>", "text": "words"}), site
 
 
 def test_highlights_come_with_their_covers():

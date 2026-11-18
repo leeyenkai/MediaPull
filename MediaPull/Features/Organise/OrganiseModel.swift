@@ -125,6 +125,8 @@ final class OrganisePane: MediaGridOwner {
             if folder != oldValue {
                 selection = []
                 reload()
+                // The last folder's profile never shows for this one while it is worked out.
+                profileSource = nil
                 detectProfile()
             }
         }
@@ -136,17 +138,21 @@ final class OrganisePane: MediaGridOwner {
     var profileRevision = 0
     @ObservationIgnored private var profileTask: Task<Void, Never>?
 
-    func detectProfile() {
+    /// `changed`: the folder's files changed (a burst of file events is taken once), so an open Profile view reads them again.
+    func detectProfile(changed: Bool = false) {
         profileTask?.cancel()
         guard let folder else {
             profileSource = nil
             return
         }
         profileTask = Task { [weak self] in
-            let found = await Task.detached(priority: .utility) { ProfileDetector.detect(folder) }.value
+            if changed { try? await Task.sleep(for: .milliseconds(400)) }
+            guard !Task.isCancelled else { return }
+            let work = Task.detached(priority: .utility) { ProfileDetector.detect(folder) }
+            let found = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
             guard let self, !Task.isCancelled, self.folder == folder else { return }
             if found != self.profileSource { self.profileSource = found }
-            self.profileRevision += 1
+            if changed { self.profileRevision += 1 }
         }
     }
 
@@ -654,7 +660,7 @@ final class OrganiseModel {
             if affected {
                 pane.reload()
                 pane.invalidateTree()
-                pane.detectProfile()
+                pane.detectProfile(changed: true)
             }
         }
         if events.contains(where: siblingCache.shows) { refreshSiblings() }
@@ -1015,6 +1021,11 @@ final class OrganiseModel {
         if source.listingLimited {
             message = "This folder holds more than \(MediaListing.limit.formatted()) files, more than one sort can see. "
                 + "Sort its subfolders one at a time."
+            return
+        }
+        // The Profile view hides the search, filters and selection a sort works on, so it would sort what is not seen.
+        if window?.viewMode(for: .organiseSource) == .profile, source.profileSource != nil {
+            message = "Sorts work in Icons, List or Columns. Switch the Source to one of them first."
             return
         }
         // Only what the pane shows: with a search or filters that match nothing, nothing is sorted (never the whole folder).

@@ -68,7 +68,7 @@ check_only_in '^import (Vision|CoreML)' 'MediaPullKit/Sources/MediaPullAnalysis/
 # Analysis runs offline (D-59): no online geocoding, map search, model downloads or Vision asset downloads.
 check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|MKGeocod|MKMapItem|MKDirections|MKLookAround|downloadAssets|MLModelCollection|import CoreLocation' 'NONE' 'Online analysis'
 # The one map (D-110): drawn in one file, only after the person allows maps.
-check_only_in '^import MapKit' 'MediaPull/Platform/LocationMap.swift' 'MapKit'
+check_only_in '^(@[A-Za-z]+ +)*((public|internal|package|private|fileprivate) +)?import +((struct|class|enum|protocol|func|var|let|typealias) +)?MapKit\b' 'MediaPull/Platform/LocationMap.swift' 'MapKit'
 if grep -rn "runOpenPanelWith" MediaPull MediaPullKit/Sources --include=*.swift; then
   echo "error: the browser pane must not implement a file open panel"
   FAILED=1
@@ -149,6 +149,12 @@ else
   else
     echo "error: the app was not built, so the self-test did not run"
     FAILED=1
+  fi
+  # A file's recorded details, offline, with maps left off (D-110, R-1009b).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-details 2>&1 \
+      | grep -E "details: (PASS|FAIL)" | tee /dev/stderr | grep -q "details: PASS" || FAILED=1
   fi
   # Profile views read saved folders only, offline (D-113).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"

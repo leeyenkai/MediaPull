@@ -599,10 +599,16 @@ public actor OperationJournal {
         // A change that changed nothing (its files went away before it ran) has nothing to undo: it is simply undone
         // (audit 14, B14-m2).
         guard !entry.steps.isEmpty else {
-            if park { parkEdits(&entry) }
+            if park { report.skipped += parkEdits(&entry) }
             entry.undone = true
             report.done = 1
             if !save(entry) { report.unsaved = true }
+            return report
+        }
+        // An editor Replace is undone only when its original can come back: otherwise the edit stays where it is, never
+        // sent to the Trash with nothing in its place (R1-M1).
+        if park, entry.edits != nil, let refusal = replaceUndoRefusal(entry) {
+            report.skipped.append(refusal)
             return report
         }
         var left: [[JournalStep]] = []
@@ -658,7 +664,7 @@ public actor OperationJournal {
             if !save(unchanged) { report.unsaved = true }
             return report
         }
-        if park { parkEdits(&entry) }
+        if park { report.skipped += parkEdits(&entry) }
         // A second part of a change undone later joins what Redo does again, never replaces it (audit 14, B14-m1).
         entry.undoneSteps = undoneUnits.reversed().flatMap { $0 } + (entry.undoneSteps ?? [])
         // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
@@ -735,7 +741,7 @@ public actor OperationJournal {
             report.done = 0
             // An edit brought back from the Trash for this goes back to it, never left under its hidden name.
             var kept = unchanged
-            parkEdits(&kept)
+            report.skipped += parkEdits(&kept)
             if !save(kept) { report.unsaved = true }
             return report
         }
@@ -1067,6 +1073,8 @@ public actor OperationJournal {
             if failsAfterTrash { throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "Stopped for a test."]) }
             let target = FileOps.freeName(for: wanted, replacing: original)
             try moveItemExclusive(hidden, to: target, entry: &entry)
+            // Saved after each step, so a crash between them leaves a record Undo can take back whole (R1-m1).
+            save(entry)
             if metadata != nil { try moveItemExclusive(hiddenMetadata, to: Sidecar.sidecarURL(for: target), entry: &entry) }
             entry.finished = true
             save(entry)
@@ -1091,16 +1099,87 @@ public actor OperationJournal {
         note(from.deletingLastPathComponent().path, in: &entry)
     }
 
-    /// After Undo of a Replace: what is back under the hidden names goes to the Trash, remembered for Redo.
-    func parkEdits(_ entry: inout JournalEntry) {
-        for path in entry.edits ?? [] where fm.fileExists(atPath: path) {
+    /// After Undo of a Replace: what is back under the hidden names goes to the Trash under a name the person can see
+    /// (`<name> (edited).<ext>`, R1-m6), remembered for Redo. Returns what could not be done.
+    @discardableResult
+    func parkEdits(_ entry: inout JournalEntry) -> [String] {
+        var problems: [String] = []
+        let present = (entry.edits ?? []).filter { fm.fileExists(atPath: $0) }
+        guard !present.isEmpty else { return problems }
+        // The name the edit had in the library, from the step that placed it.
+        // The name the edit had in the library (or the original's, when it was never placed), never a hidden name.
+        let placed = entry.steps.lazy.compactMap { step -> String? in
+            switch step {
+            case let .move(from, to, _, _) where Self.isTemporary(from) && !from.hasSuffix(".json"): to
+            case let .trash(original, _) where !original.hasSuffix(".json"): original
+            default: nil
+            }
+        }.first
+        let fallback = URL(fileURLWithPath: present[0]).deletingLastPathComponent()
+            .appendingPathComponent("Edit.\(URL(fileURLWithPath: present.first { !$0.hasSuffix(".json") } ?? present[0]).pathExtension)")
+        let shown = placed.map { URL(fileURLWithPath: $0) } ?? fallback
+        let wanted = shown.deletingLastPathComponent()
+            .appendingPathComponent("\(shown.deletingPathExtension().lastPathComponent) (edited).\(shown.pathExtension)")
+        let visible = FileOps.freeName(for: wanted)
+        for path in present.sorted(by: { !$0.hasSuffix(".json") && $1.hasSuffix(".json") }) {
+            let hidden = URL(fileURLWithPath: path)
+            let name = path.hasSuffix(".json") ? Sidecar.sidecarURL(for: visible) : visible
             var trashed: NSURL?
-            guard (try? fm.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: &trashed)) != nil,
-                  let inTrash = (trashed as URL?)?.path else { continue }
+            do {
+                try FileOps.renameExclusive(hidden, to: name)
+                try fm.trashItem(at: name, resultingItemURL: &trashed)
+            } catch {
+                // Still beside the original under its hidden name: taken up again at the next launch.
+                if fm.fileExists(atPath: name.path) {
+                    try? FileOps.renameExclusive(name, to: hidden) // lint:allow silent-write reported below
+                }
+                problems.append("The edited version of “\(shown.lastPathComponent)” could not be moved to the Trash: "
+                    + error.localizedDescription)
+                continue
+            }
+            guard let inTrash = (trashed as URL?)?.path else { continue }
             if entry.parked == nil { entry.parked = [:] }
             entry.parked![path] = inTrash
             note(inTrash, in: &entry)
         }
+        return problems
+    }
+
+    /// Whether Undo of a Replace could put the original back; the reason not, when it could not (R1-M1).
+    func replaceUndoRefusal(_ entry: JournalEntry) -> String? {
+        let trash = entry.steps.lazy.compactMap { step -> (original: String, trashed: String)? in
+            if case let .trash(original, trashed) = step, !original.hasSuffix(".json") { return (original, trashed) }
+            return nil
+        }.first
+        guard let trash else { return nil }
+        let name = URL(fileURLWithPath: trash.original).lastPathComponent
+        guard !trash.trashed.isEmpty, fm.fileExists(atPath: trash.trashed), isSame(trash.trashed, in: entry) else {
+            return "“\(name)” is no longer in the Trash, so the edit was left in place."
+        }
+        let home = URL(fileURLWithPath: trash.original).deletingLastPathComponent()
+        guard Self.isFolder(home), isSame(home.path, in: entry) else {
+            return "The folder of “\(name)” is no longer there, so the edit was left in place."
+        }
+        // The original's name is free once the edit leaves it, unless another file has it.
+        let placed = entry.steps.lazy.compactMap { step -> String? in
+            if case let .move(from, to, _, _) = step, Self.isTemporary(from), !from.hasSuffix(".json") { return to }
+            return nil
+        }.first
+        if fm.fileExists(atPath: trash.original), placed.map({ !Self.sameFile($0, trash.original) }) ?? true {
+            return "Another file is called “\(name)” now, so the edit was left in place."
+        }
+        return nil
+    }
+
+    /// At launch: an undone Replace whose edit is still under its hidden name (a failure part way, a Trash that refused it)
+    /// sends it to the Trash, so it is never left hidden in a folder (R1-m2).
+    public func parkLeftoverEdits() -> [String] {
+        var problems: [String] = []
+        for var entry in entries() where entry.undone && (entry.edits ?? []).contains(where: { fm.fileExists(atPath: $0) }) {
+            problems += parkEdits(&entry)
+            save(entry)
+        }
+        return problems
     }
 
     /// Before Redo of a Replace: the edit comes back from the Trash to its hidden name. False (and nothing done) when it is

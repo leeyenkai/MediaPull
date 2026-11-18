@@ -64,6 +64,13 @@ extension AppModel {
     /// Changes that left items under temporary names (a crash part way) are taken back at launch, so no photo stays hidden
     /// (audit 17, B17-M1, C17-M2). Each is a job, so Quit waits for it.
     func takeBackStranded() async {
+        // Edits left hidden by an undone Replace go to the Trash first (R1-m2).
+        let leftovers = await journal.parkLeftoverEdits()
+        if !leftovers.isEmpty {
+            let job = Job(kind: .organise, title: "Moving edited versions to the Trash")
+            jobs.add(job)
+            jobs.finish(job, .failed(leftovers.joined(separator: " ")), notify: false)
+        }
         for id in await journal.stranded() {
             guard let entry = await journal.entry(id) else { continue }
             let job = Job(kind: .organise, title: "Taking back “\(entry.title)”")

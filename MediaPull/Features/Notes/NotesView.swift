@@ -25,6 +25,8 @@ struct NotesView: View {
             }
         }
         .onAppear { if selection == nil { selection = store.notes.notes.first?.id } }
+        .onChange(of: selection) { _, chosen in store.dropEmpty(except: chosen) }
+        .onDisappear { store.dropEmpty(except: nil) }
         .confirmationDialog("Delete this note?", isPresented: $confirmingDelete) {
             Button("Delete Note", role: .destructive) {
                 guard let id = selection else { return }

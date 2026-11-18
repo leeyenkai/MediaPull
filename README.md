@@ -15,6 +15,10 @@
 - **Search your photos** by what they show, the text in them, places and people. Everything runs on your Mac.
 - **Organise any folder** by date, event, subject or person, in place or into a new folder. Undo with ⌘Z.
 - **View folders as icons, a list or columns**, as in the Finder (⌘1, ⌘2, ⌘3). Each pane keeps its own view.
+- **See saved accounts as they looked.** In Organise, a saved Instagram account, YouTube channel, X, Bluesky or Reddit feed or Pinterest board opens as a profile, a channel, a timeline or a board (⌘4), from the saved files only. Captions, places, playlists and highlight covers are kept with new downloads.
+- **Save As.** Any download can go exactly into a folder you choose. Only what that folder lacks is added, and nothing goes anywhere else.
+- **Photo details.** The Preview pane shows the camera, lens, exposure, when and where a photo was taken, and the nearest place. A map is optional: it loads images from Apple, so it stays off until you click Show Map.
+- **Notes.** A scratchpad in the top bar for addresses and reminders, kept in the app.
 
 | Organise | Downloads |
 |---|---|

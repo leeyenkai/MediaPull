@@ -13,6 +13,8 @@ final class NotesStore {
     @ObservationIgnored private var loaded = false
     @ObservationIgnored private var edited = false
     @ObservationIgnored private var unsaved = false
+    /// Counts changes, so a save that finishes late never marks newer typing as saved (R1-m7).
+    @ObservationIgnored private var generation = 0
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     /// The file is there but could not be read (permissions, a disk error): nothing is written over it.
     @ObservationIgnored private var blocked = false
@@ -65,7 +67,18 @@ final class NotesStore {
 
     private func changed() {
         edited = true
+        generation += 1
         scheduleSave()
+    }
+
+    /// Notes left empty go when another note is chosen or the popover closes, so New Note never piles up blank notes.
+    func dropEmpty(except keep: UUID?) {
+        let empty = notes.notes.filter { $0.id != keep && $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !empty.isEmpty else { return }
+        for note in empty {
+            notes.delete(note.id)
+        }
+        changed()
     }
 
     // MARK: Saving
@@ -74,14 +87,15 @@ final class NotesStore {
         guard let folder, loaded, !blocked else { return }
         unsaved = true
         saveTask?.cancel()
-        let notes = notes
+        let notes = notes, saving = generation
         saveTask = Task.detached(priority: .utility) { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             let problem = Self.write(notes, to: folder)
             await MainActor.run {
                 self?.problem = problem
-                if problem == nil { self?.unsaved = false }
+                // Only when nothing changed meanwhile: newer typing is still to be saved, at the next save or at quit.
+                if problem == nil, self?.generation == saving { self?.unsaved = false }
             }
         }
     }

@@ -1058,9 +1058,12 @@ final class SelfTestRunner {
         let missing = wanted.filter { !rows.contains($0) }
         try? await Task.sleep(for: .seconds(1.5))
         snapshot(to: out.appendingPathComponent("details-no-map.png"))
-        app.preferences.showMaps = true
-        try? await Task.sleep(for: .seconds(4))
-        snapshot(to: out.appendingPathComponent("details-map.png"))
+        // The map loads images from Apple, so only when asked for (check.sh runs this offline).
+        if CommandLine.arguments.contains("--selftest-map") {
+            app.preferences.showMaps = true
+            try? await Task.sleep(for: .seconds(4))
+            snapshot(to: out.appendingPathComponent("details-map.png"))
+        }
         let near = recorded.locationRows.first { $0.0 == "Near" }?.1 ?? "none"
         note("details: \(missing.isEmpty ? "PASS" : "FAIL missing \(missing)") rows \(rows), near \(near)")
     }

@@ -846,13 +846,6 @@ final class EngineService {
                     // accounts a listing looks up are not this folder's.
                     let isThisAccount = info.username.lowercased() == account.lowercased()
                     if let id = info.userID?.nonEmpty { seenIDs[info.username.lowercased()] = id }
-                    // What the profile said, kept with the folder's record at the end (D-112).
-                    if isAccount, isThisAccount {
-                        seenProfile = AccountProfile(fullName: info.fullName, biography: info.biography, postCount: info.postCount,
-                                                     followerCount: info.followerCount, followingCount: info.followingCount,
-                                                     externalURL: info.externalURL, isVerified: info.isVerified,
-                                                     category: info.categoryName)
-                    }
                     if isAccount, isThisAccount, place != nil, let id = info.userID?.nonEmpty {
                         if let folderRecord = place?.record {
                             let expected = await folderAccountID(folderRecord, account: account)
@@ -871,6 +864,12 @@ final class EngineService {
                     }
                     if isAccount, isThisAccount {
                         await app.store?.updateAccount(account, userID: info.userID, fullName: info.fullName)
+                        // What the profile said, kept with the folder's record at the end (D-112), only once the id check
+                        // above has passed: another person's profile never reaches this folder's record.
+                        seenProfile = AccountProfile(fullName: info.fullName, biography: info.biography, postCount: info.postCount,
+                                                     followerCount: info.followerCount, followingCount: info.followingCount,
+                                                     externalURL: info.externalURL, isVerified: info.isVerified,
+                                                     category: info.categoryName)
                     }
                     // Only this account's card: tray owners looked up on the way are not it (audit 6, A6-m1).
                     if isThisAccount { accounts[account] = info }
@@ -1141,7 +1140,7 @@ final class EngineService {
         app.libraryRevision += 1
         // What this pull saved into the folder is remembered there, so an item deleted on purpose stays deleted on the
         // next Update (D-79). A new folder gets its record once it exists.
-        if let seenProfile, let record = await folderRecord() { await app.accountFolders.setProfile(seenProfile, in: record.id) }
+        if !refused, let seenProfile, let record = await folderRecord() { await app.accountFolders.setProfile(seenProfile, in: record.id) }
         if let record = await folderRecord() {
             await app.accountFolders.addKeys(unrecordedKeys, to: record.id)
             // Only a pull whose posts listing was walked counts as an update; any other leaves the date of the last one (a

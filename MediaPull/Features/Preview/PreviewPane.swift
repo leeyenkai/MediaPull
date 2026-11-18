@@ -348,11 +348,15 @@ struct FileDetails: View {
         }
         .task(id: file) {
             let url = file
+            // Never another file's details: cleared first, and each result kept only while this file is still shown (R1-m11).
+            recorded = nil
             let result = await Task.detached(priority: .utility) { FileFacts.read(url) }.value
+            guard !Task.isCancelled, url == file else { return }
             rows = result.rows
             caption = result.caption
-            recorded = nil
-            recorded = await RecordedDetails.read(url)
+            let read = await RecordedDetails.read(url)
+            guard !Task.isCancelled, url == file else { return }
+            recorded = read
         }
     }
 
@@ -429,8 +433,10 @@ struct RecordedDetails: Sendable {
         if let flash = details.flashFired { camera.append(("Flash", flash ? "Fired" : "Off")) }
         var taken: [(String, String)] = []
         if let date = details.taken {
-            taken.append(("Taken", date.formatted(date: .abbreviated, time: .standard)
-                + (details.takenOffset.map { " (UTC\($0))" } ?? "")))
+            // In the time zone the file records, so a photo taken at 18:30 in Tokyo says 18:30 wherever the Mac is (R1-m10).
+            var style = Date.FormatStyle(date: .abbreviated, time: .standard)
+            if let zone = details.takenOffset.flatMap(Self.timeZone) { style.timeZone = zone }
+            taken.append(("Taken", date.formatted(style) + (details.takenOffset.map { " (UTC\($0))" } ?? "")))
         }
         if let software = details.software { taken.append(("Software", software)) }
         if let profile = details.colorProfile { taken.append(("Colour", profile)) }
@@ -447,10 +453,19 @@ struct RecordedDetails: Sendable {
         var location: [(String, String)] = []
         if let lat = details.latitude, let lon = details.longitude {
             location.append(("Coordinates", Self.coordinates(lat, lon)))
-            if let altitude = details.altitude { location.append(("Altitude", "\(Int(altitude.rounded())) m")) }
+            if let altitude = details.altitude {
+                location.append(("Altitude", altitude.formatted(.number.precision(.fractionLength(0))) + " m"))
+            }
             location.append(("Near", place ?? "No place within 50 km in the bundled place data"))
         }
         locationRows = location
+    }
+
+    /// "+09:00" or "-05:30" as a time zone.
+    static func timeZone(_ offset: String) -> TimeZone? {
+        let parts = offset.dropFirst().split(separator: ":").compactMap { Int($0) }
+        guard let sign = offset.first, "+-".contains(sign), parts.count == 2, parts[0] <= 14, parts[1] < 60 else { return nil }
+        return TimeZone(secondsFromGMT: (sign == "-" ? -1 : 1) * (parts[0] * 3600 + parts[1] * 60))
     }
 
     static func coordinates(_ lat: Double, _ lon: Double) -> String {
@@ -460,7 +475,8 @@ struct RecordedDetails: Sendable {
     /// 1/120 s for fast exposures, seconds for slow ones.
     static func shutter(_ seconds: Double) -> String {
         guard seconds < 1 else { return seconds.formatted(.number.precision(.fractionLength(0 ... 1))) + " s" }
-        return "1/\(Int((1 / seconds).rounded())) s"
+        // Formatted, never converted to Int, so an odd value cannot trap (R1-m12).
+        return "1/" + (1 / max(seconds, 1e-9)).formatted(.number.precision(.fractionLength(0)).grouping(.never)) + " s"
     }
 }
 

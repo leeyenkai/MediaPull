@@ -871,13 +871,22 @@ final class LibraryModel: MediaGridOwner {
     /// metadata file, off the main actor (D-107).
     nonisolated static func placeConverted(_ result: ConversionResult, from original: URL, as wanted: URL) async throws -> FileOps.Placed {
         let converted = result.converted, output = result.url
-        let metadata = try? await Task.detached(priority: .userInitiated) { () throws -> Data? in
-            let checksum = try FileHasher.sha256(of: converted ? output : original)
-            return try FileOps.metadata(of: original, applying: .init(values: ["sha256": .string(checksum)], isCopy: true))
+        // Hashed only when there is a metadata file to carry the checksum, and a problem is said, never dropped (R1-m4).
+        let metadata = await Task.detached(priority: .userInitiated) { () -> Result<Data?, Error> in
+            guard MediaFiles.companion(of: original) != nil else { return .success(nil) }
+            do {
+                let checksum = try FileHasher.sha256(of: converted ? output : original)
+                return .success(try FileOps.metadata(of: original, applying: .init(values: ["sha256": .string(checksum)], isCopy: true)))
+            } catch {
+                return .failure(error)
+            }
         }.value
-        let companion: FileOps.Companion = metadata.flatMap { $0 }.map(FileOps.Companion.data) ?? .none
-        return converted ? try await FileOps.place(output, as: wanted, with: companion)
+        let data = try? metadata.get()
+        let companion: FileOps.Companion = data.flatMap { $0 }.map(FileOps.Companion.data) ?? .none
+        var placed = converted ? try await FileOps.place(output, as: wanted, with: companion)
             : try await FileOps.place(original, as: wanted, with: companion, keepSource: true)
+        if case let .failure(error) = metadata, placed.metadataProblem == nil { placed.metadataProblem = error.localizedDescription }
+        return placed
     }
 
     /// Handles anything dropped on a folder: extracted items are saved, files are copied or moved.

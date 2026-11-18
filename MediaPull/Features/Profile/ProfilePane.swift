@@ -8,11 +8,14 @@ import SwiftUI
 struct ProfilePane: View {
     let source: ProfileSource
     let revision: Int
+    /// Organise is on screen; a story player stops when it is not.
+    let visible: Bool
     @State private var selected: String?
     @State private var build: ProfileBuild?
     @State private var header: AccountProfile?
     @State private var loading = false
     @State private var overlay: ProfileOverlay?
+    @State private var builtRef: String?
     private var app: AppModel { .shared }
 
     private var ref: ProfileRef? {
@@ -37,7 +40,13 @@ struct ProfilePane: View {
                 ProfileOverlayView(overlay: overlay) { self.overlay = nil }
             }
         }
-        .task(id: "\(ref?.id ?? "")|\(revision)") { await load() }
+        .task(id: LoadKey(ref: ref?.id, revision: revision)) { await load() }
+        .onChange(of: visible) { _, shown in if !shown { overlay = nil } }
+    }
+
+    private struct LoadKey: Equatable {
+        var ref: String?
+        var revision: Int
     }
 
     private func load() async {
@@ -47,8 +56,10 @@ struct ProfilePane: View {
         let kind = source.kind
         let built = await Task.detached(priority: .userInitiated) { ProfileBuilder.build(ref, kind: kind) }.value
         guard !Task.isCancelled, ref.id == self.ref?.id else { return }
+        // A change to the folder's files rebuilds it but keeps an open post or story, unless the source changed.
+        if builtRef != ref.id { overlay = nil }
+        builtRef = ref.id
         build = built
-        overlay = nil
         if kind == .profile {
             let key = AccountFolderStore.key(ref.folder.path)
             header = await app.accountFolders.all()
@@ -194,7 +205,9 @@ struct CellMarks: View {
 
 enum ProfileFormat {
     static func length(_ seconds: Double) -> String {
-        Duration.seconds(seconds).formatted(.time(pattern: seconds >= 3600 ? .hourMinuteSecond : .minuteSecond))
+        // A damaged metadata file can hold anything; Duration traps on values it cannot hold.
+        let seconds = seconds.isFinite ? min(max(seconds, 0), 360_000) : 0
+        return Duration.seconds(seconds).formatted(.time(pattern: seconds >= 3600 ? .hourMinuteSecond : .minuteSecond))
     }
 
     static func date(_ date: Date?) -> String {

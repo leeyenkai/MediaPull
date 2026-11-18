@@ -10,7 +10,8 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.8 implemented (account folder updates, conformance ledger, invariant lints and audit protocol, on top of 1.7: on-device analysis, Library search and filters, the Organise section, people, Icon, List and Column views). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull and update).
+Status: version 1.8 implemented (account folder updates, conformance ledger, invariant lints and audit protocol; then FileOps,
+Save As, notes, file details with a map, post details kept and Profile views, D-107 to D-113; on top of 1.7: on-device analysis, Library search and filters, the Organise section, people, Icon, List and Column views). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull and update).
 
 ## Stack
 
@@ -38,9 +39,10 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     Features/                     Browser (pane, TabStrip, BrowsingPanel), Extracted, Preview (pane, details, inline editor host), Library, Instagram (EngineService, PullSheet),
                                   Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView),
                                   Analysis (AnalysisService, MediaListing, QueryBar, ViewModePicker, PaneMediaView, FolderChildren), Organise (OrganiseModel, OrganiseView: Source, Organise, Target panes),
-                                  People, Downloads (DownloadsPane: Instagram, video and gallery forms)
+                                  People, Downloads (DownloadsPane: Instagram, video and gallery forms), Notes (NotesView),
+                                  Profile (ProfilePane, ProfileLayouts, ProfileOverlays: Profile, Channel, Timeline, Board)
     Platform/                     AppKit: ReadOnlyWebView, MediaGridView (NSCollectionView), MediaListView (NSOutlineView),
-                                  MediaColumnsView (NSBrowser), PaneSplit (nested split views per arrangement),
+                                  MediaColumnsView (NSBrowser), PaneSplit (nested split views per arrangement), LocationMap (MapKit),
                                   MediaPreviewViews (player, animated image), VideoStage (editor player, trim bar), DragSupport, QuickLook, SVGRasterizer
     Resources/                    Assets.xcassets (accent colour) and AppIcon.icon (Liquid Glass icon: icon.json + SVG layers)
   MediaPullKit/                   local Swift package (macOS 26, iOS 26)
@@ -73,13 +75,16 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `--selftest-galleries <file>` (downloads the first 3 items from each address in the file through the whole app),
   `--selftest-update` (offline: a stand-in bridge replays an account update into an existing folder), `--selftest-downloads-list <a|b|c>`,
   `--selftest-analyse <folder>` (copies the folder into the test library, analyses it with faces on, checks no sockets open, searches,
-  filters, sorts it in Organise and undoes the sort, comparing checksums)
+  filters, sorts it in Organise and undoes the sort, comparing checksums), `--selftest-save-as` (offline: Save As of Instagram,
+  video and gallery downloads, never redirected), `--selftest-details` (a photo's camera, date and place, maps off; add
+  `--selftest-map` to load the map), `--selftest-profile` (offline: Profile, Channel, Timeline and Board views)
   (theme and layout are restored afterwards).
 
 ## Rules
 
 - **Read-only contract (SPEC section 5) is non-negotiable.** MediaPull never uploads files from the Mac (the library or anything else) and never performs write actions on any account. The browser pane is the exception for what pages themselves send (sign-in forms, searches), never files. All Swift network traffic goes through `NetworkGate` (GET and HEAD only). Engine traffic goes through the bridge's egress guard. The browser pane has no file upload path. Every change that touches networking keeps the egress tests passing.
-- **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser` and the browser pane (`Features/Browser`, `Platform/ReadOnlyWebView`), `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`, AppKit only in the app target (views built on it in `Platform/`). `scripts/check.sh` enforces these. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
+- **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser` and the browser pane (`Features/Browser`, `Platform/ReadOnlyWebView`), `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`, AppKit only in the app target (views built on it in `Platform/`),
+  MapKit only in `Platform/LocationMap.swift` and only to draw a map, after the person allows maps (D-110). `scripts/check.sh` enforces these. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
 - **No third-party Swift packages.** Third-party code is limited to the pinned bundled engines and their runtime. Adding anything else needs explicit approval and a spec decision.
 - **Never name or reference other applications** in code, comments, docs, UI copy, identifiers or test fixtures. The Archive layout is described only as a gallery-dl-compatible metadata archive (SPEC section 15).
 - **Archive layout is a contract.** Do not change sidecar keys, date format, naming rules, the forbidden name pattern (R-1504) or reserved folder names (R-1505) without a decision entry and updated golden tests.

@@ -82,12 +82,15 @@ public enum MediaDetailsReader {
         if let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any],
            let lat = (gps[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue,
            let lon = (gps[kCGImagePropertyGPSLongitude] as? NSNumber)?.doubleValue,
-           lat.isFinite, lon.isFinite, abs(lat) <= 90, abs(lon) <= 180, lat != 0 || lon != 0
+           lat.isFinite, lon.isFinite, abs(lat) < 90, abs(lon) <= 180, lat != 0 || lon != 0
         {
-            details.latitude = (gps[kCGImagePropertyGPSLatitudeRef] as? String) == "S" ? -lat : lat
-            details.longitude = (gps[kCGImagePropertyGPSLongitudeRef] as? String) == "W" ? -lon : lon
-            if let altitude = (gps[kCGImagePropertyGPSAltitude] as? NSNumber)?.doubleValue, altitude.isFinite {
-                details.altitude = (gps[kCGImagePropertyGPSAltitudeRef] as? NSNumber)?.intValue == 1 ? -altitude : altitude
+            // The magnitude, signed by its reference in either case (R1-m13); a pole exactly is not a place a map can show.
+            let south = (gps[kCGImagePropertyGPSLatitudeRef] as? String)?.uppercased() == "S"
+            let west = (gps[kCGImagePropertyGPSLongitudeRef] as? String)?.uppercased() == "W"
+            details.latitude = south ? -abs(lat) : (lat < 0 ? lat : abs(lat))
+            details.longitude = west ? -abs(lon) : (lon < 0 ? lon : abs(lon))
+            if let altitude = (gps[kCGImagePropertyGPSAltitude] as? NSNumber)?.doubleValue, altitude.isFinite, abs(altitude) < 1e6 {
+                details.altitude = (gps[kCGImagePropertyGPSAltitudeRef] as? NSNumber)?.intValue == 1 ? -abs(altitude) : altitude
             }
         }
         details.colorProfile = text(props[kCGImagePropertyProfileName])
@@ -103,7 +106,9 @@ public enum MediaDetailsReader {
         details.taken = facts.captureDate
         details.cameraMake = facts.cameraMake
         details.cameraModel = facts.cameraModel
-        if let lat = facts.latitude, let lon = facts.longitude, abs(lat) <= 90, abs(lon) <= 180 {
+        if let lat = facts.latitude, let lon = facts.longitude, lat.isFinite, lon.isFinite, abs(lat) < 90, abs(lon) <= 180,
+           lat != 0 || lon != 0
+        {
             details.latitude = lat
             details.longitude = lon
         }

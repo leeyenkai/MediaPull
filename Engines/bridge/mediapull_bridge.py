@@ -558,7 +558,8 @@ META_KEYS = ("category", "subcategory", "username", "fullname", "post_shortcode"
 
 # The post's own text on sites that keep it apart from a file's description (D-111): X `content`, Bluesky `text`, Reddit
 # `selftext`. Kept as `post_text`, at most 5,000 characters.
-POST_TEXT_KEYS = ("content", "text", "selftext")
+# Only on those sites: elsewhere the same names hold other things (a page's body, an image's text).
+POST_TEXT_KEYS = {"twitter": ("content",), "bluesky": ("text",), "reddit": ("selftext",)}
 
 
 def collection_of(url):
@@ -616,7 +617,7 @@ def item_meta(url, kwdict):
     if kwdict.get("pinned"):
         meta["pinned"] = True
     # D-111: the post's own text, its community (a subreddit, a Pinterest board) and a highlight's cover.
-    for key in POST_TEXT_KEYS if kwdict.get("category") != "instagram" else ():
+    for key in POST_TEXT_KEYS.get(kwdict.get("category"), ()):
         value = kwdict.get(key)
         if isinstance(value, str) and value.strip():
             meta["post_text"] = value[:5000]

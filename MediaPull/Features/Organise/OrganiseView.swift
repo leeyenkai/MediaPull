@@ -62,7 +62,7 @@ struct OrganiseFolderPane: View {
             Divider()
             if pane.root != nil, mode == .profile, let source = pane.profileSource {
                 // The folder as its site showed it, from its saved files (D-113).
-                ProfilePane(source: source, revision: pane.profileRevision)
+                ProfilePane(source: source, revision: pane.profileRevision, visible: organise.window?.section == .organise)
             } else if let root = pane.root {
                 VStack(spacing: 0) {
                     // A compact tree: the media grid gets the room. Column view is its own tree (R-1710).

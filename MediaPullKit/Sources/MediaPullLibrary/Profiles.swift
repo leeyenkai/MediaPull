@@ -53,6 +53,7 @@ public enum ProfileDetector {
         if let one = single(folder) { return ProfileSource(kind: one.kind, sources: [one.ref]) }
         var found: [(kind: ProfileKind, ref: ProfileRef)] = []
         for child in subfolders(folder).prefix(200) {
+            if Task.isCancelled { return nil }
             if let one = single(child) {
                 found.append(one)
             } else {
@@ -78,24 +79,29 @@ public enum ProfileDetector {
         }
         let sample = metadataSample(folder)
         guard !sample.isEmpty else { return nil }
-        var votes: [String: Int] = [:]
-        var kinds: [String: ProfileKind] = [:]
+        struct Vote: Hashable, Comparable {
+            var site: String
+            var name: String
+            var kind: ProfileKind
+            static func < (a: Vote, b: Vote) -> Bool { (a.site, a.name, a.kind.rawValue) < (b.site, b.name, b.kind.rawValue) }
+        }
+        // A user's files share the user and a subreddit's or board's files share the community, so each is counted on
+        // its own: a user who posts in many communities is still found (R-4001).
+        var votes: [Vote: Int] = [:]
         for meta in sample {
-            guard let site = meta["category"] as? String, site != "instagram" else { continue }
+            guard let site = (meta["category"] as? String)?.nonEmpty, site != "instagram" else { continue }
             let kind: ProfileKind? = ["video", "audio"].contains(meta["subcategory"] as? String ?? "") ? .channel
                 : timelineSites.contains(site) ? .timeline : boardSites.contains(site) ? .board : nil
             guard let kind else { continue }
-            let name = (kind == .channel ? nil : (meta["community"] as? String)?.nonEmpty) ?? (meta["username"] as? String)?.nonEmpty
-            guard let name else { continue }
-            let key = "\(site)\u{1F}\(name)"
-            votes[key, default: 0] += 1
-            kinds[key] = kind
+            let names = [kind == .channel ? nil : (meta["community"] as? String)?.nonEmpty, (meta["username"] as? String)?.nonEmpty]
+            for name in Set(names.compactMap(\.self)) {
+                votes[Vote(site: site, name: name, kind: kind), default: 0] += 1
+            }
         }
-        // A user's files name the user; a subreddit's or board's files name the community.
-        guard let best = votes.max(by: { ($0.value, $0.key) < ($1.value, $1.key) }), best.value * 5 >= sample.count * 4,
-              let kind = kinds[best.key] else { return nil }
-        let parts = best.key.split(separator: "\u{1F}", maxSplits: 1).map(String.init)
-        return (kind, ProfileRef(folder: folder, name: parts[1], site: parts[0]))
+        guard let best = votes.max(by: { ($0.value, $0.key) < ($1.value, $1.key) }), best.value * 5 >= sample.count * 4 else {
+            return nil
+        }
+        return (best.key.kind, ProfileRef(folder: folder, name: best.key.name, site: best.key.site))
     }
 
     static func subfolders(_ folder: URL) -> [URL] {
@@ -111,7 +117,7 @@ public enum ProfileDetector {
         let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
                                                     options: [.skipsHiddenFiles, .skipsPackageDescendants])
         var looked = 0
-        while let url = walker?.nextObject() as? URL, sample.count < 80, looked < 400 {
+        while let url = walker?.nextObject() as? URL, sample.count < 80, looked < 400, !Task.isCancelled {
             let ext = url.pathExtension.lowercased()
             guard ext != "json", MediaFormat.fromExtension(ext) != nil else { continue }
             looked += 1
@@ -276,6 +282,7 @@ public enum ProfileBuilder {
         let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil,
                                                     options: [.skipsHiddenFiles, .skipsPackageDescendants])
         while let url = walker?.nextObject() as? URL {
+            if Task.isCancelled { break }
             let ext = url.pathExtension.lowercased()
             guard ext != "json", let format = MediaFormat.fromExtension(ext), format.kind == .image || format.kind == .video else {
                 continue
@@ -285,7 +292,8 @@ public enum ProfileBuilder {
                 break
             }
             let parts = url.standardizedFileURL.pathComponents
-            let folders = Array(parts.dropFirst(base).dropLast()).map { $0.lowercased() }
+            // As named, so a highlight titled from its folder keeps its case; compared lowercased.
+            let folders = Array(parts.dropFirst(base).dropLast())
             files.append(File(url: url, meta: metadata(of: url) ?? [:], folders: folders, isVideo: format.kind == .video))
         }
         return (files, limited)
@@ -297,7 +305,10 @@ public enum ProfileBuilder {
         var order: [String] = []
         var byPost: [String: [File]] = [:]
         for file in files {
-            let id = "\(kind(file).rawValue):" + (file.string("post_id") ?? file.string("post_shortcode") ?? file.url.path)
+            // Without a post id (some sites' files), one author's files of one moment and text are one post.
+            let loose = [file.string("author") ?? file.string("username"), file.string("date"), file.string("description")]
+            let together = loose[1] != nil ? loose.map { $0 ?? "" }.joined(separator: "\n") : nil
+            let id = "\(kind(file).rawValue):" + (file.string("post_id") ?? file.string("post_shortcode") ?? together ?? file.url.path)
             if byPost[id] == nil { order.append(id) }
             byPost[id, default: []].append(file)
         }
@@ -330,7 +341,7 @@ public enum ProfileBuilder {
 
     static func instagramKind(_ file: File) -> ProfilePost.Kind {
         let sub = file.string("subcategory") ?? ""
-        let folders = Set(file.folders)
+        let folders = Set(file.folders.map { $0.lowercased() })
         switch sub {
         case "avatar": return .avatar
         case "stories", "stories-tray": return .story
@@ -354,7 +365,7 @@ public enum ProfileBuilder {
 
     static func instagram(_ ref: ProfileRef, files allFiles: [File]) -> InstagramProfile {
         // Account details are lists and the profile, not media; a file of another account in its folder is that account's.
-        let files = allFiles.filter { !$0.folders.contains(SaveTarget.accountDetailsFolder.lowercased()) }
+        let files = allFiles.filter { !$0.folders.contains { $0.lowercased() == SaveTarget.accountDetailsFolder.lowercased() } }
         let account = ref.name.lowercased()
         var byKind: [ProfilePost.Kind: [File]] = [:]
         for file in files {
@@ -362,12 +373,14 @@ public enum ProfileBuilder {
         }
         func posts(_ kind: ProfilePost.Kind) -> [ProfilePost] { group(byKind[kind] ?? [], kind: { _ in kind }) }
         let mainPosts = posts(.post).sorted { a, b in a.pinned != b.pinned ? a.pinned : newestFirst(a, b) }
-        let avatars = (byKind[.avatar] ?? []).sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.map(\.media)
+        let avatars = (byKind[.avatar] ?? []).sorted {
+            ($0.date ?? .distantPast, $0.url.lastPathComponent) > ($1.date ?? .distantPast, $1.url.lastPathComponent)
+        }.map(\.media)
         // Highlights by title (or id when untitled), the cover the file marked as one, else the first item.
         var highlightOrder: [String] = []
         var highlightFiles: [String: [File]] = [:]
         for file in byKind[.highlight] ?? [] {
-            let title = file.string("highlight_title") ?? file.folders.last.map { $0 == "highlights" ? "" : $0 }?.nonEmpty
+            let title = file.string("highlight_title") ?? file.folders.last.map { $0.lowercased() == "highlights" ? "" : $0 }?.nonEmpty
                 ?? file.string("post_id") ?? "Highlight"
             if highlightFiles[title] == nil { highlightOrder.append(title) }
             highlightFiles[title, default: []].append(file)

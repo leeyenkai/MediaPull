@@ -9,6 +9,9 @@ import MediaPullCore
 public enum FileOps {
     /// What makes a metadata file stand for one item (D-79): a copy, a trim or a frame drops them (D-105).
     public static let identityKeys = ["media_id", "post_id", "num", "count", "shortcode", "post_shortcode"]
+    /// What gives an item its place in a profile (D-111): a copy is not the pinned post, the highlight's cover or a playlist's
+    /// entry (R3-m4).
+    public static let roleKeys = ["pinned", "highlight_cover", "playlist_index"]
 
     // MARK: Names
 
@@ -100,7 +103,7 @@ public enum FileOps {
         guard var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return change.isCopy ? nil : data
         }
-        for key in change.dropping + (change.isCopy ? identityKeys : []) {
+        for key in change.dropping + (change.isCopy ? identityKeys + roleKeys : []) {
             object[key] = nil
         }
         for (key, value) in change.values {
@@ -116,6 +119,12 @@ public enum FileOps {
     public static func renameExclusive(_ source: URL, to target: URL) throws {
         if renamex_np(source.path, target.path, UInt32(RENAME_EXCL)) == 0 { return }
         let code = errno
+        // A volume without exclusive renames (exFAT, some network shares): a plain move, which never replaces a file either.
+        if code == ENOTSUP || code == EINVAL {
+            guard !FileManager.default.fileExists(atPath: target.path) else { throw error(EEXIST, target) }
+            try FileManager.default.moveItem(at: source, to: target)
+            return
+        }
         guard code == EXDEV else { throw error(code, target) }
         let fm = FileManager.default
         let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
@@ -190,12 +199,31 @@ public enum FileOps {
                     break
                 }
                 let code = errno
+                if code == ENOTSUP || code == EINVAL || code == EXDEV {
+                    // No exclusive rename here (exFAT, some network shares), or the staging folder is on another volume: a
+                    // plain move, which never replaces a file either.
+                    do {
+                        try fm.moveItem(at: staged, to: candidate)
+                        placed = candidate
+                        break
+                    } catch CocoaError.fileWriteFileExists {
+                        continue
+                    }
+                }
                 guard code == EEXIST else { throw error(code, candidate) }
             }
             guard placed != nil else { throw error(EEXIST, wanted) }
         } catch {
-            // The source comes back, so the save can be tried again.
-            if !keepSource { try? fm.moveItem(at: staged, to: file) } // lint:allow silent-write the error below is what is reported
+            // The source comes back, so the save can be tried again; if it cannot, it is kept beside the destination under a
+            // name of its own rather than removed with the staging folder (R1-m3).
+            guard !keepSource else { throw error }
+            if (try? fm.moveItem(at: staged, to: file)) == nil { // lint:allow silent-write the fallback below keeps it
+                let rescue = freeName(for: folder.appendingPathComponent("Recovered \(wanted.lastPathComponent)"))
+                if (try? fm.moveItem(at: staged, to: rescue)) != nil { // lint:allow silent-write reported in the error
+                    let message = "\(error.localizedDescription) The file was kept as “\(rescue.lastPathComponent)”."
+                    throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: message])
+                }
+            }
             throw error
         }
         let target = placed ?? wanted

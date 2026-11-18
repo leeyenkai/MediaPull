@@ -156,6 +156,40 @@ final class ProfileTests: XCTestCase {
         XCTAssertNil(ProfileDetector.detect(root.appendingPathComponent("web")))
     }
 
+    func testAUserWhoPostsInManyCommunitiesIsTheirOwnFeed() throws {
+        for (index, community) in ["pics", "cats", "food", "art", "cars"].enumerated() {
+            try file("u/\(index).jpg", ["category": "reddit", "subcategory": "user", "username": "dana", "community": community,
+                                         "post_id": "p\(index)", "date": "2024-01-0\(index + 1) 10:00:00"])
+        }
+        let source = try XCTUnwrap(ProfileDetector.detect(root.appendingPathComponent("u")))
+        XCTAssertEqual(source.kind, .timeline)
+        XCTAssertEqual(source.sources.map(\.name), ["dana"])
+        // A site name that is empty never makes a source.
+        try file("blank/1.jpg", ["category": "", "subcategory": "user", "username": "x", "post_id": "1"])
+        XCTAssertNil(ProfileDetector.single(root.appendingPathComponent("blank")))
+    }
+
+    func testFilesWithoutAPostIDAreGroupedByAuthorMomentAndText() throws {
+        let meta: [String: Any] = ["category": "twitter", "subcategory": "tweet", "username": "ed", "date": "2024-01-01 10:00:00",
+                                   "description": "Two pictures"]
+        try file("x/1.jpg", meta.merging(["num": 1]) { $1 })
+        try file("x/2.jpg", meta.merging(["num": 2]) { $1 })
+        try file("x/3.jpg", meta.merging(["date": "2024-01-02 10:00:00", "description": "Another"]) { $1 })
+        let source = try XCTUnwrap(ProfileDetector.detect(root.appendingPathComponent("x")))
+        guard case let .feed(feed) = ProfileBuilder.build(source.sources[0], kind: .timeline).content else {
+            return XCTFail("unexpected content")
+        }
+        XCTAssertEqual(feed.posts.map(\.media.count), [1, 2])
+    }
+
+    func testAHighlightTitledByItsFolderKeepsItsCase() throws {
+        try file("alice/highlights/New York/1.jpg", ig("highlights", post: "h1", date: "2024-01-03 09:00:00"))
+        try file("alice/posts/a.jpg", ig("posts", post: "p1", date: "2024-01-01 10:00:00"))
+        let ref = ProfileRef(folder: root.appendingPathComponent("alice"), name: "alice", site: "instagram")
+        guard case let .profile(profile) = ProfileBuilder.build(ref, kind: .profile).content else { return XCTFail("unexpected content") }
+        XCTAssertEqual(profile.highlights.map(\.title), ["New York"])
+    }
+
     func testTheLimitIsSaid() throws {
         let folder = try aliceFolder()
         let ref = ProfileRef(folder: folder, name: "alice", site: "instagram")

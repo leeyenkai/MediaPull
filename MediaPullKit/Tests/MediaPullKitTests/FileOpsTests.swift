@@ -142,15 +142,17 @@ final class FileOpsTests: XCTestCase {
     func testCopiesDropTheIdentityKeys() async throws {
         let original = try file("c.jpg", "picture", metadata: [
             "username": "c", "media_id": "9", "post_id": "8", "num": 2, "count": 3, "shortcode": "S", "post_shortcode": "P",
+            "pinned": true, "highlight_cover": true, "playlist_index": 4, "location_name": "Lisbon",
         ])
         let copy = try await FileOps.copy(original, as: root.appendingPathComponent("c copy.jpg"))
         XCTAssertEqual(copy.url.lastPathComponent, "c copy.jpg")
         XCTAssertEqual(text(copy.url), "picture")
         let metadata = try XCTUnwrap(json(copy.url))
         XCTAssertEqual(metadata["username"] as? String, "c")
-        for key in FileOps.identityKeys {
+        for key in FileOps.identityKeys + FileOps.roleKeys {
             XCTAssertNil(metadata[key], key)
         }
+        XCTAssertEqual(metadata["location_name"] as? String, "Lisbon", "what describes the item stays (R3-m4)")
         XCTAssertEqual(json(original)?["media_id"] as? String, "9", "the original is untouched")
     }
 
@@ -165,6 +167,9 @@ final class FileOpsTests: XCTestCase {
 
         let undone = await journal.undo(entry.id)
         XCTAssertEqual(undone.restored, 1)
+        // The edit is in the Trash under a name the person can see (R1-m6).
+        let parked = await journal.entry(entry.id)?.parked?.values.map { URL(fileURLWithPath: $0).lastPathComponent } ?? []
+        XCTAssertTrue(parked.contains { $0.hasPrefix("d (edited)") && $0.hasSuffix(".jpg") }, "\(parked)")
         XCTAssertEqual(text(original), "original")
         XCTAssertNil(json(original)?["edited"])
         XCTAssertEqual(try hidden(), [])
@@ -199,5 +204,38 @@ final class FileOpsTests: XCTestCase {
         XCTAssertEqual(text(original), "original")
         let after = await journal.stranded()
         XCTAssertTrue(after.isEmpty)
+    }
+
+    /// Undo of a Replace whose original can no longer come back (the Trash emptied) leaves the edit where it is, never sends
+    /// it to the Trash with nothing in its place (R1-M1).
+    func testUndoOfAReplaceKeepsTheEditWhenTheOriginalIsGone() async throws {
+        let original = try file("f.jpg", "original", metadata: ["username": "f"])
+        let journal = journal()
+        let entry = try await replace(original, named: "f.jpg", with: "edited", using: journal)
+        for case let .trash(_, trashed) in entry.steps {
+            try? fm.removeItem(atPath: trashed)
+        }
+        let report = await journal.undo(entry.id)
+        XCTAssertEqual(report.done, 0)
+        XCTAssertTrue(report.skipped.first?.contains("no longer in the Trash") == true, "\(report.skipped)")
+        XCTAssertEqual(text(original), "edited", "the edit stays")
+        XCTAssertEqual(try names(), ["f.jpg", "f.jpg.json"])
+        let after = await journal.entry(entry.id)
+        XCTAssertEqual(after?.undone, false)
+    }
+
+    /// An undone Replace whose edit is still hidden (a Trash that refused it) is sent to the Trash at launch (R1-m2).
+    func testALeftoverHiddenEditIsTrashedAtLaunch() async throws {
+        let hidden = try file(".mediapull-edit-y.jpg", "edit")
+        let journal = journal()
+        var entry = JournalEntry(id: UUID(), title: "Replace", root: root.path, date: Date(), steps: [], failures: [],
+                                 undone: true, finished: true)
+        entry.edits = [hidden.path]
+        await journal.save(entry)
+        let problems = await journal.parkLeftoverEdits()
+        XCTAssertTrue(problems.isEmpty, "\(problems)")
+        XCTAssertFalse(fm.fileExists(atPath: hidden.path))
+        let parked = await journal.entry(entry.id)?.parked?.values.map { URL(fileURLWithPath: $0).lastPathComponent } ?? []
+        XCTAssertTrue(parked.allSatisfy { !$0.hasPrefix(".") }, "never a hidden name in the Trash: \(parked)")
     }
 }
