@@ -122,7 +122,13 @@ final class AppModel {
             await refreshAccountFolders()
             // Lifecycle (SPEC 6.3): forget saved-item records whose file is gone, and accounts nothing refers to.
             let keep = Set(accountFolderList.map(\.account))
-            Task.detached(priority: .background) { await store.prune(keepAccounts: keep) }
+            // Only folders updated at least once have taken over what earlier versions remembered (adoptEarlierMemory).
+            let recorded = accountFolderList.filter { $0.lastUpdate != nil }.map(\.path)
+            let journal = journal
+            Task.detached(priority: .background) {
+                let restorable = await journal.restorablePaths()
+                await store.prune(keepAccounts: keep, recordedFolders: recorded, restorable: restorable)
+            }
             if roots.isEmpty, preferences.onboardingDone, !SelfTestRunner.isActive {
                 await addDefaultRoot()
             }
@@ -452,6 +458,9 @@ final class AppModel {
 
     func refreshAccountFolders() async {
         accountFolderList = await accountFolders.all()
+        // Each Library pane shows the account of its folder as it is now: renamed in the Finder, or made by a first pull
+        // (audit 4, C4-m9).
+        for window in windows { window.library.findAccount() }
     }
 
     /// The remembered account folder `folder` is, or is inside.
@@ -482,7 +491,20 @@ final class AppModel {
         if !SelfTestRunner.isActive {
             preferences.recentSaveFolders = Array(([folder.path] + preferences.recentSaveFolders.filter { $0 != folder.path }).prefix(10))
         }
-        window?.markQueued(items.map(\.id))
+        // Items this window already saved into this folder are not downloaded again only to find they are copies (audit 4,
+        // S4-m2); whether their file is still there is checked off the main actor when the job starts.
+        let inside = AccountFolderStore.key(folder.path) + "/"
+        var savedHere: [String: URL] = [:]
+        for item in items {
+            switch window?.states[item.id] {
+            case let .saved(url)?, let .duplicate(url)?:
+                if AccountFolderStore.key(url.path).hasPrefix(inside) { savedHere[item.id] = url }
+            default:
+                break
+            }
+        }
+        window?.markQueued(items.map(\.id).filter { savedHere[$0] == nil })
+        let alreadySaved = savedHere
         job.retry = { [weak self, weak window, weak job] in
             guard let self, let job else { return }
             let failedIDs = Set(job.failures.map(\.id))
@@ -497,14 +519,23 @@ final class AppModel {
         job.task = Task { [weak self, weak window] in
             guard let self else { return }
             job.state = .running
-            let inline = await window?.blobData(for: items) ?? [:]
+            let present = await Task.detached(priority: .userInitiated) {
+                Set(alreadySaved.filter { FileManager.default.fileExists(atPath: $0.value.path) }.keys)
+            }.value
+            if !present.isEmpty {
+                job.duplicates += present.count
+                job.notes.append("\(present.count) item\(present.count == 1 ? " was" : "s were") already in this folder, so "
+                    + "\(present.count == 1 ? "it was" : "they were") not downloaded again.")
+            }
+            let toSave = items.filter { !present.contains($0.id) }
+            let inline = await window?.blobData(for: toSave) ?? [:]
             let context = SaveContext(cookies: await self.cookieJar(), userAgent: self.userAgent, inlineData: inline,
                                       nameOverrides: window?.customNames ?? [:])
             // Instagram items go into their account's folder when the save folder is, holds or is inside one (D-78), as a
             // pull would place them, and are remembered there (D-79).
             let rootURL = self.root(containing: folder)?.url
             // Saved posts go to Saved posts, not to their owner's folder, and are not that folder's to remember (audit 3, C3-M5).
-            let instagram = items.filter { item in
+            let instagram = toSave.filter { item in
                 guard let engine = item.source.engine, engine.isInstagram, engine.username != nil else { return false }
                 return !["saved", "collection"].contains(engine.subcategory)
             }
@@ -513,8 +544,11 @@ final class AppModel {
             var batches: [(items: [MediaItem], target: SaveTarget, folder: URL?, account: String?)] = []
             var placed = Set<String>()
             for (account, group) in byAccount {
+                // A remembered folder counts too: a Plain one has no metadata to find it by (audit 4, C4-M2).
+                let recorded = await self.engines.recordedFolder(of: account, around: folder)
                 let found = await Task.detached(priority: .userInitiated) { () -> (URL, Bool?)? in
-                    guard let existing = AccountFolders.resolveTarget(account: account, saveFolder: folder, root: rootURL).existing
+                    guard let existing = recorded
+                        ?? AccountFolders.resolveTarget(account: account, saveFolder: folder, root: rootURL).existing
                     else { return nil }
                     return (existing, AccountFolders.sortsByType(existing))
                 }.value
@@ -528,7 +562,7 @@ final class AppModel {
                 batches.append((group, accountTarget, existing, account))
                 placed.formUnion(group.map(\.id))
             }
-            batches.append((items.filter { !placed.contains($0.id) }, target, nil, nil))
+            batches.append((toSave.filter { !placed.contains($0.id) }, target, nil, nil))
             var outcomes: [String: SaveOutcome] = [:]
             for batch in batches where !batch.items.isEmpty {
                 let done = await pipeline.save(batch.items, target: batch.target, settings: settings, context: context,
@@ -560,6 +594,8 @@ final class AppModel {
                     let keys = Set(batch.items.filter { done[$0.id]?.url != nil }.compactMap { $0.source.engine?.key })
                     if !keys.isEmpty {
                         let record = await self.accountFolders.record(account: account, folder: accountFolder)
+                        // What an earlier version remembered of the folder comes first (audit 4, C4-m1).
+                        await self.engines.adoptEarlierMemory(of: record, account: account)
                         await self.accountFolders.addKeys(keys, to: record.id)
                     }
                 }
@@ -579,7 +615,7 @@ final class AppModel {
             let failedCount = outcomes.values.filter { if case .failed = $0 { return true } else { return false } }.count
             if Task.isCancelled {
                 self.jobs.finish(job, .cancelled)
-            } else if failedCount == items.count, failedCount > 0 {
+            } else if failedCount == toSave.count, failedCount > 0 {
                 self.jobs.finish(job, .failed(job.failures.first?.message ?? "Nothing could be saved."))
             } else {
                 self.jobs.finish(job, .completed)
@@ -617,12 +653,8 @@ final class AppModel {
                     let ext = result.format.fileExtension, converted = result.url
                     // The work folder is in Caches, so the move is a copy when the output is on another disk: off the main actor.
                     let output = try await Task.detached(priority: .userInitiated) { () throws -> URL in
-                        var output = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: ext))
-                        var counter = 2
-                        while FileManager.default.fileExists(atPath: output.path) {
-                            output = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem) \(counter)", ext: ext))
-                            counter += 1
-                        }
+                        // A name whose orphaned metadata file is still there is taken too (audit 4, B4-m11).
+                        let output = LibraryModel.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: ext)))
                         try FileManager.default.moveItem(at: converted, to: output) // lint:allow main-io in a detached task
                         return output
                     }.value

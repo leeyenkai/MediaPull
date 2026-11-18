@@ -175,6 +175,16 @@ class GuardTests:
             check("POST", "https://www.instagram.com/api/graphql", data={"fb_api_req_friendly_name": "AQuery"},
                   headers={"Content-Type": "multipart/form-data; boundary=x"})
 
+    def test_instagram_hashtag_listings_are_allowed_and_nothing_else(self):
+        """Audit 4 (A4-M2): gallery-dl lists a hashtag with a form POST to /api/v1/tags/<tag>/sections/."""
+        listing = {"include_persistent": "0", "max_id": None, "page": None, "surface": "grid", "tab": "recent"}
+        check("POST", "https://www.instagram.com/api/v1/tags/cats/sections/", data=listing)
+        for data in ({**listing, "comment_text": "hi"}, {**listing, "username": "a", "enc_password": "b"}):
+            with self.assertRaises(PolicyViolation):
+                check("POST", "https://www.instagram.com/api/v1/tags/cats/sections/", data=data)
+        with self.assertRaises(PolicyViolation):
+            check("POST", "https://www.instagram.com/api/v1/tags/cats/follow/", data={})
+
     def test_youtube_video_reads_are_allowed_and_nothing_else(self):
         body = '{"context": {"client": {"clientName": "WEB"}}, "videoId": "aqz-KE-bpKQ"}'
         check("POST", "https://www.youtube.com/youtubei/v1/player?prettyPrint=false", data=body)

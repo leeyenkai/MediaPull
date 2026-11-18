@@ -67,7 +67,7 @@ struct MediaList: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate {
         weak var owner: (any MediaListOwner)?
         weak var outline: MediaOutlineView?
         private var roots: [Node] = []
@@ -216,6 +216,55 @@ struct MediaList: NSViewRepresentable {
             return (outline.item(atRow: row) as? Node).flatMap { $0.isGroup ? nil : $0.id }
         }
 
+        // MARK: Renaming a folder in place (R-1707)
+
+        private var renamingID: String?
+        private var renameCancelled = false
+
+        /// Return on one selected folder row: its name becomes editable where it is. True when the row is being renamed.
+        func beginRename() -> Bool {
+            guard let outline, let owner, owner.listRenamesFolders, outline.selectedRowIndexes.count == 1,
+                  let row = outline.selectedRowIndexes.first, let node = outline.item(atRow: row) as? Node, node.kind == .folder
+            else { return false }
+            let column = outline.column(withIdentifier: NSUserInterfaceItemIdentifier(ListColumn.name.rawValue))
+            guard column >= 0, let cell = outline.view(atColumn: column, row: row, makeIfNecessary: true) as? NSTableCellView,
+                  let field = cell.textField
+            else { return false }
+            renamingID = node.id
+            renameCancelled = false
+            field.isEditable = true
+            field.delegate = self
+            outline.window?.makeFirstResponder(field)
+            field.currentEditor()?.selectAll(nil)
+            return true
+        }
+
+        func control(_ control: NSControl, textView _: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.cancelOperation(_:)), renamingID != nil else { return false }
+            renameCancelled = true
+            control.abortEditing()
+            finishRename(control as? NSTextField)
+            return true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            finishRename(notification.object as? NSTextField)
+        }
+
+        private func finishRename(_ field: NSTextField?) {
+            guard let id = renamingID, let field else { return }
+            renamingID = nil
+            field.isEditable = false
+            field.delegate = nil
+            let name = field.stringValue
+            if renameCancelled {
+                field.stringValue = owner?.listText(id, .name) ?? name
+            } else {
+                owner?.listRenameFolder(id, to: name)
+            }
+            outline?.window?.makeFirstResponder(outline)
+        }
+
         // MARK: Data source
 
         private func children(of item: Any?) -> [Node] {
@@ -336,6 +385,11 @@ final class MediaOutlineView: NSOutlineView {
     weak var coordinator: MediaList.Coordinator?
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),
+           coordinator?.beginRename() == true
+        {
+            return
+        }
         let selected = coordinator?.selectedIDs() ?? []
         if GridKeyRouter.handle(event, owner: coordinator?.owner, first: coordinator?.firstSelectedID(), selected: selected) { return }
         super.keyDown(with: event)

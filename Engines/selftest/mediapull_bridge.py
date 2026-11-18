@@ -35,6 +35,12 @@ def main():
         with open(request["known_ids"], encoding="utf-8") as handle:
             known = set(json.load(handle))
     emit("account", **replay["account"])
+    # As the real bridge: only the content asked for is listed, and only a walk of the posts listing reports its end.
+    include = set(request.get("include") or [])
+    walks_posts = not include or "posts" in include
+    # "fail_files": item numbers whose file fails to download; the walk goes on and the pull ends "partial".
+    fail_files = set(replay.get("fail_files") or [])
+    failed_files = 0
     counts = {"found": 0, "downloaded": 0, "skipped": 0, "failed": 0}
     # "stop_after": the pull is cut off after that many items, as when MediaPull quits part way.
     stop_after = replay.get("stop_after")
@@ -58,6 +64,8 @@ def main():
             emit("done", status="failed", counts=counts)
             return 0
         meta = item["meta"]
+        if include and meta.get("subcategory") not in include:
+            continue
         keys = {item["key"]}
         if meta.get("subcategory") in POSITIONAL and meta.get("post_id") and meta.get("num"):
             keys.add(f"igp:{meta['post_id']}:{meta['num']}")
@@ -69,18 +77,24 @@ def main():
             emit("cursor", subcategory="posts", value=f"after-{number}")
             continue
         known_in_a_row = 0
+        if number in fail_files:
+            failed_files += 1
+            emit("error", code="download_failed", message="Failed to download a file", key=item["key"], fatal=False)
+            emit("cursor", subcategory="posts", value=f"after-{number}")
+            continue
         target = os.path.join(request["staging"], os.path.basename(item["source"]))
         shutil.copyfile(item["source"], target)
         counts["downloaded"] += 1
         emit("file", key=item["key"], path=target, bytes=os.path.getsize(target), subcategory=meta.get("subcategory"), meta=meta)
         emit("cursor", subcategory="posts", value=f"after-{number}")
     # The listing ended: at its last item, or at the folder's known posts (D-87).
-    emit("listing", subcategory="posts", complete=True, cursor=None)
+    if walks_posts:
+        emit("listing", subcategory="posts", complete=True, cursor=None)
     if fail_after_listing:
         emit("error", code="network", message="A Reel could not be downloaded.", fatal=True)
         emit("done", status="failed", counts=counts)
         return 0
-    emit("done", status="completed", counts=counts)
+    emit("done", status="partial" if failed_files else "completed", counts=counts)
     return 0
 
 

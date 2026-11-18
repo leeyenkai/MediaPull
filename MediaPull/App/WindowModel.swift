@@ -52,6 +52,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
     }
     @ObservationIgnored let ingestor = ExtractionIngestor()
     @ObservationIgnored weak var hostWindow: NSWindow?
+    /// The undo targets of this window's file changes, and their order on the ⌘Z stack (FileChanges.swift).
+    @ObservationIgnored var undoTargets: [UUID: FileChangeUndoTarget] = [:]
+    @ObservationIgnored var undoOrder: [UUID] = []
     var items: [MediaItem] = []
     @ObservationIgnored var itemsByID: [String: MediaItem] = [:]
     var visible: [MediaItem] = []

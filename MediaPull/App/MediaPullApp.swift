@@ -70,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 app.libraryRevision += 1
                 app.analysis.updateWatch()
             }
+            await app.refreshAccountFolders()
         }
     }
 
@@ -135,7 +136,10 @@ struct AppCommands: Commands {
             }
                 .keyboardShortcut("w")
                 .disabled(window == nil)
-            Button("Reopen Closed Tab") { window?.reopenClosedTab() }
+            Button("Reopen Closed Tab") {
+                window?.section = .collect
+                window?.reopenClosedTab()
+            }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(!(window?.canReopenClosedTab ?? false))
             Divider()
@@ -237,10 +241,10 @@ struct AppCommands: Commands {
                 .disabled(!browsing)
             Button("Larger Thumbnails") { if let window { window.cellSize = min(WindowModel.zoomRange.upperBound, window.cellSize + 40) } }
                 .keyboardShortcut("+", modifiers: [.command, .option])
-                .disabled(!extractedIcons)
+                .disabled(!browsing || !extractedIcons)
             Button("Smaller Thumbnails") { if let window { window.cellSize = max(WindowModel.zoomRange.lowerBound, window.cellSize - 40) } }
                 .keyboardShortcut("-", modifiers: [.command, .option])
-                .disabled(!extractedIcons)
+                .disabled(!browsing || !extractedIcons)
             Divider()
             Button("Find") { window?.find() }
                 .keyboardShortcut("f")
@@ -300,7 +304,10 @@ struct AppCommands: Commands {
                     if folder.bookmarks.isEmpty { Text("No bookmarks") }
                     if !folder.bookmarks.isEmpty {
                         Divider()
-                        Button("Open All in Tabs") { folder.bookmarks.forEach { window?.newTab($0.url, select: false) } }
+                        Button("Open All in Tabs") {
+                            window?.section = .collect
+                            folder.bookmarks.forEach { window?.newTab($0.url, select: false) }
+                        }
                     }
                 }
             }

@@ -29,6 +29,9 @@ public struct OrganisePlan: Sendable {
     public var unsorted = 0
     public var renamed = 0
     public var unchanged = 0
+    /// Folders that must still be there when the plan runs: a merge into a folder trashed or renamed since its preview
+    /// stops rather than making the folder again (audit 4, B4-M1).
+    public var requiredFolders: [URL] = []
 
     public init(title: String, root: URL) {
         self.title = title
@@ -64,6 +67,42 @@ public struct OrganisePlan: Sendable {
         return moves.filter { $0.kind == .clone }.allSatisfy { move in
             (try? move.source.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier as? NSObject) == volume
         }
+    }
+
+    /// Whether the plan moves, renames or trashes one of `folders` or a folder that holds one. Library folders change only
+    /// through the Library's own commands, so their saves, records and analysis follow; copies leave the source as it was
+    /// and are allowed (audit 4, B4-M2).
+    public func changes(anyOf folders: [URL]) -> Bool {
+        let keys = folders.map(Self.key)
+        func touches(_ url: URL) -> Bool {
+            let key = Self.key(url)
+            return keys.contains { $0 == key || $0.hasPrefix(key + "/") }
+        }
+        return itemsToTrash.contains(where: touches) || foldersToTrash.contains(where: touches)
+            || moves.contains { $0.kind != .clone && touches($0.source) }
+    }
+
+    /// Paths compared as a Mac volume does: letter case and Unicode form aside.
+    static func key(_ url: URL) -> String {
+        url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased()
+    }
+
+    /// Where each moved item ends up, keyed by its standardized path, following renames through temporary names.
+    public var finalDestinations: [String: URL] {
+        // Played in order: each place remembers which original item is there now.
+        var origin: [String: String] = [:]
+        var places: [String: URL] = [:]
+        for move in moves where move.kind == .move {
+            let from = move.source.standardizedFileURL.path, to = move.destination.standardizedFileURL.path
+            origin[to] = origin.removeValue(forKey: from) ?? from
+            places.removeValue(forKey: from)
+            places[to] = move.destination
+        }
+        var result: [String: URL] = [:]
+        for (place, item) in origin {
+            if let url = places[place] { result[item] = url }
+        }
+        return result
     }
 
     public var cloneBytes: Int64 {
@@ -131,6 +170,29 @@ public enum FolderOperations {
 
     static func isDirectory(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    /// A folder that is not a package: packages (a photo library, an app) are single items, never opened up and merged.
+    static func isPlainFolder(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        return values?.isDirectory == true && values?.isPackage != true
+    }
+
+    /// The items of a selection that are not inside another selected folder: a folder moved, copied or trashed takes
+    /// what is inside it along, so those items are not planned again (audit 4, B4-m13).
+    public static func outermost(_ items: [URL]) -> [URL] {
+        let paths = Set(items.map { $0.standardizedFileURL.path })
+        var seen = Set<String>()
+        return items.filter { item in
+            let path = item.standardizedFileURL.path
+            guard seen.insert(path).inserted else { return false }
+            var parent = (path as NSString).deletingLastPathComponent
+            while parent != "/", !parent.isEmpty {
+                if paths.contains(parent) { return false }
+                parent = (parent as NSString).deletingLastPathComponent
+            }
+            return true
+        }
     }
 
     static func children(_ folder: URL) -> [URL] {
@@ -224,11 +286,12 @@ public enum FolderOperations {
     public static func merge(_ source: URL, into target: URL) -> OrganisePlan {
         var plan = OrganisePlan(title: "Merge \(source.lastPathComponent) into \(target.lastPathComponent)", root: target)
         guard !contains(source, target), !contains(target, source) else { return plan }
+        plan.requiredFolders = [source, target]
         var taken = Set<String>()
         func merge(_ from: URL, _ to: URL) {
             for child in children(from) {
                 let existing = to.appendingPathComponent(child.lastPathComponent)
-                if isDirectory(child), isDirectory(existing) {
+                if isPlainFolder(child), isPlainFolder(existing) {
                     merge(child, existing)
                     plan.foldersToTrash.append(child)
                 } else {
@@ -253,6 +316,7 @@ public enum FolderOperations {
     }
 
     public static func move(_ items: [URL], to folder: URL) -> OrganisePlan {
+        let items = outermost(items)
         var plan = OrganisePlan(title: items.count == 1 ? "Move \(items[0].lastPathComponent)" : "Move \(items.count) Items", root: folder)
         var taken = Set<String>()
         let target = folder.standardizedFileURL
@@ -268,6 +332,7 @@ public enum FolderOperations {
 
     /// Copies (APFS clones where possible) into `folder`, leaving the originals where they are.
     public static func copy(_ items: [URL], to folder: URL) -> OrganisePlan {
+        let items = outermost(items)
         var plan = OrganisePlan(title: items.count == 1 ? "Copy \(items[0].lastPathComponent)" : "Copy \(items.count) Items", root: folder)
         var taken = Set<String>()
         for item in items where !contains(item, folder) {
@@ -279,6 +344,7 @@ public enum FolderOperations {
     }
 
     public static func trash(_ items: [URL]) -> OrganisePlan {
+        let items = outermost(items)
         var plan = OrganisePlan(
             title: items.count == 1 ? "Move \(items[0].lastPathComponent) to Trash" : "Move \(items.count) Items to Trash",
             root: items.first?.deletingLastPathComponent() ?? URL(fileURLWithPath: "/")
@@ -376,6 +442,15 @@ public enum FolderOperations {
             plan.moves = renames.map { PlannedMove(source: $0.source, destination: $0.destination) }
         }
         return plan
+    }
+
+    /// The first `limit` files' names after `batchRename`, as it will really name them (collision numbers included);
+    /// nil for a file that keeps its name (audit 4, B4-m14).
+    public static func batchRenamePreview(_ files: [URL], pattern: String, limit: Int = 4) -> [(old: String, new: String?)] {
+        let finals = batchRename(files, pattern: pattern).finalDestinations
+        return files.prefix(limit).map { file in
+            (file.lastPathComponent, finals[file.standardizedFileURL.path]?.lastPathComponent)
+        }
     }
 
     public static func batchName(_ pattern: String, stem: String, index: Int, count: Int, date: Date?) -> String {

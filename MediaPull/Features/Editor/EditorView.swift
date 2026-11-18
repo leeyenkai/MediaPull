@@ -16,6 +16,8 @@ struct EditorView: View {
         onClose()
     }
 
+    private var collectShown: Bool { model.window?.section == .collect }
+
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
@@ -44,10 +46,11 @@ struct EditorView: View {
             .frame(minHeight: 160, maxHeight: .infinity)
             if model.isImage, model.working != nil {
                 HStack(spacing: 10) {
+                    // The editor stays mounted behind Organise: its shortcuts work only while Collect is shown.
                     Button { model.rotate(clockwise: false) } label: { Label("Rotate Left", systemImage: "rotate.left") }
-                        .keyboardShortcut("[", modifiers: [.command, .option])
+                        .keyboardShortcut("[", modifiers: [.command, .option], enabled: collectShown)
                     Button { model.rotate(clockwise: true) } label: { Label("Rotate Right", systemImage: "rotate.right") }
-                        .keyboardShortcut("]", modifiers: [.command, .option])
+                        .keyboardShortcut("]", modifiers: [.command, .option], enabled: collectShown)
                     Button { model.flip() } label: {
                         Label("Flip", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right")
                     }

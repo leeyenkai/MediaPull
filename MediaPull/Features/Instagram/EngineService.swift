@@ -67,6 +67,8 @@ struct PullDraft: Identifiable, Equatable {
     /// The content was chosen by the address (a story link pulls stories), so the account's remembered choices do not
     /// replace it.
     var contentFromAddress = false
+    /// A saved-posts link (all saved posts or one collection) pulled as it is (audit 4, C4-M3).
+    var collectionURL: URL?
 }
 
 /// The folder a download goes into, with the layout of the library folder holding it (D-70); any folder on the Mac works.
@@ -326,7 +328,9 @@ final class EngineService {
                 await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: true)
             }
         }
-        // Retry Failed walks again from where the job began, so files that failed on any page are fetched again.
+        // Retry Failed walks the whole listing again with no early stop, skipping what the folder has, so a file that failed
+        // on any page is fetched again however deep it was (audit 4, A4-M4). As a full walk it covers every place left in
+        // the folder, so those become its own (D-87).
         job.retry = { [weak self, weak job, weak window] in
             guard let self, let job else { return }
             job.state = .queued
@@ -334,9 +338,13 @@ final class EngineService {
             job.failures = []
             job.finishedAt = nil
             job.lastCursor = nil
+            job.placeID = UUID()
+            var walk = draft
+            walk.continueFrom = nil
+            if walk.postURL == nil, walk.hashtag == nil { walk.incremental = false }
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
                 guard let job else { return }
-                await self?.runPull(job: job, draft: draft, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
+                await self?.runPull(job: job, draft: walk, root: root, scanOnly: scanOnly, window: window, bridge: bridge, resuming: false)
             }
         }
         enqueueInstagram(job: job) { [weak self, weak job, weak window] in
@@ -455,7 +463,9 @@ final class EngineService {
                     urls.append(profileURL.absoluteString + detail.engineName + "/")
                 }
             }
-            if draft.content.contains(.saved) { urls.append("https://www.instagram.com/\(isAccount ? account : "me")/saved/") }
+            if draft.content.contains(.saved) {
+                urls.append(draft.collectionURL?.absoluteString ?? "https://www.instagram.com/\(isAccount ? account : "me")/saved/")
+            }
             if draft.content.contains(.storiesTray) { urls.append("https://www.instagram.com/stories/me/") }
             request.urls = urls
             request.url = urls.first ?? profileURL.absoluteString
@@ -476,17 +486,28 @@ final class EngineService {
         let continuing = draft.continueFrom != nil
         var place: AccountPlace?
         if isAccount, draft.postURL == nil, !scanOnly, let root {
-            place = await resolvePlace(account: account, draft: draft, root: root)
-            job.destination = place?.folder
+            guard let found = await resolvePlace(account: account, draft: draft, root: root) else {
+                app.jobs.finish(job, .failed("The folder of @\(account) is no longer there. It may have been moved to the Trash."))
+                await app.refreshAccountFolders()
+                return
+            }
+            place = found
+            job.destination = found.folder
         }
-        // Hashtags go beside the accounts, never inside an account's folder (D-52).
+        // Hashtags, saved posts and the stories tray go beside the accounts, never inside an account's folder (D-52, audit 4,
+        // C4-m10).
         var hashtagBase = root?.url
-        if draft.hashtag != nil, !scanOnly, let base = root?.url {
+        let collectionPull = draft.hashtag != nil || (!isAccount && draft.postURL == nil)
+        if collectionPull, !scanOnly, let base = root?.url {
             let libraryRoot = app.root(containing: base)?.url
-            let match = await Task.detached(priority: .userInitiated) { AccountFolders.detect(base, stopAt: libraryRoot) }.value
-            if let match {
-                hashtagBase = match.folder.deletingLastPathComponent()
-                job.destination = hashtagBase?.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true)
+            let detected = await Task.detached(priority: .userInitiated) { AccountFolders.detect(base, stopAt: libraryRoot) }.value
+            if let around = detected?.folder ?? app.accountFolder(containing: base).map({ URL(fileURLWithPath: $0.path) }) {
+                hashtagBase = around.deletingLastPathComponent()
+                if draft.hashtag != nil {
+                    job.destination = hashtagBase?.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true)
+                } else {
+                    job.destination = hashtagBase
+                }
             }
         }
         if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
@@ -513,17 +534,20 @@ final class EngineService {
             request.stopAfterKnown = earlyStop ? app.preferences.stopAfterKnown : nil
         }
         // A continuation whose place is gone (continued or replaced meanwhile) has nothing left to do.
+        // It starts where the place is now, which another walk may have moved on since this one was queued (audit 4, A4-m2).
+        var current: ResumePlace?
         if let from = draft.continueFrom {
-            guard let record = place?.record, await app.accountFolders.place(from.id, in: record.id) != nil else {
+            guard let record = place?.record, let now = await app.accountFolders.place(from.id, in: record.id) else {
                 job.notes.append("Nothing was left to continue.")
                 app.jobs.finish(job, .completed)
                 return
             }
+            current = now
         }
         if draft.postURL == nil, !scanOnly {
             if resuming, let own = job.lastCursor {
                 request.cursor = own
-            } else if let from = draft.continueFrom {
+            } else if let from = current ?? draft.continueFrom {
                 request.cursor = from.cursor
             } else if resuming, place == nil {
                 request.cursor = stored?.resumeCursor
@@ -549,7 +573,7 @@ final class EngineService {
                 target.typeSubfolders = place.sortsByType
                 return target
             }
-            return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true)
+            return SaveTarget(folder: collectionPull ? hashtagBase ?? root.url : root.url, layout: root.layout, autoSubfolders: true)
         }
         var unrecordedKeys = Set<String>()
         // A new folder gets its record as soon as it exists, so an interruption keeps its place and what it saved (R-1904).
@@ -582,16 +606,31 @@ final class EngineService {
         let pipeline = app.pipeline()
         var index = 0
         var fatal: String?
+        // The pull was stopped on purpose (its folder gone, the name now someone else's): no "pull again" advice.
+        var refused = false
         var blocked = false
         var finishedCleanly = false
         var newest: Date?
         let sourceURL = draft.postURL ?? profileURL
 
         do {
-            for try await event in bridge.run(request, workingDirectory: staging) {
+            events: for try await event in bridge.run(request, workingDirectory: staging) {
                 if Task.isCancelled || job.state == .cancelled { break }
                 switch event {
                 case let .account(info):
+                    // A name another person has taken since this folder was made is not pulled into it (SPEC 23, audit 4,
+                    // C4-M4). The folder knows its account's id; a folder from before that compares with the stored one.
+                    if isAccount, let folderRecord = place?.record, let id = info.userID?.nonEmpty {
+                        let expected = folderRecord.userID ?? (folderRecord.keys.isEmpty ? nil : stored?.userID.nonEmpty)
+                        if let expected, expected != id {
+                            let name = URL(fileURLWithPath: folderRecord.path).lastPathComponent
+                            fatal = "@\(account) is now a different Instagram account, so nothing was saved into “\(name)”. "
+                                + "If the person changed their name, pull the new name."
+                            refused = true
+                            break events
+                        }
+                        await app.accountFolders.update(folderRecord.id, userID: id)
+                    }
                     if isAccount { await app.store?.updateAccount(account, userID: info.userID, fullName: info.fullName) }
                     accounts[account] = info
                 case let .item(item):
@@ -599,6 +638,21 @@ final class EngineService {
                     if job.state != .running { job.state = .running }
                     window?.ingestEngine([item.ingestInput(sourceURL: sourceURL)])
                 case let .file(file):
+                    // The account's folder may be renamed, moved or trashed while the pull runs: it is followed, never made
+                    // again at its old path (audit 4, A4-M5).
+                    if let current = place, target?.accountFolder == current.folder,
+                       !FileManager.default.fileExists(atPath: current.folder.path), let record = await folderRecord() {
+                        guard let moved = await app.accountFolders.currentFolder(of: record.id) else {
+                            fatal = "“\(current.folder.lastPathComponent)” was moved to the Trash or deleted while downloading, "
+                                + "so the rest was not saved."
+                            refused = true
+                            break events
+                        }
+                        place?.folder = moved
+                        target?.folder = moved.deletingLastPathComponent()
+                        target?.accountFolder = moved
+                        job.destination = moved
+                    }
                     guard var target else { continue }
                     guard file.isInside(staging) else {
                         job.failed += 1
@@ -621,9 +675,11 @@ final class EngineService {
                         let found: AccountPlace
                         if let known = postPlaces[user] {
                             found = known
-                        } else {
-                            found = await resolvePlace(account: user, draft: draft, root: root, name: user)
+                        } else if let resolved = await resolvePlace(account: user, draft: draft, root: root, name: user) {
+                            found = resolved
                             postPlaces[user] = found
+                        } else {
+                            continue
                         }
                         target.accountUsername = user
                         target.accountFolder = found.folder
@@ -650,6 +706,8 @@ final class EngineService {
                     case let .saved(url):
                         job.saved += 1
                         savedFromStaging[file.path.path] = url
+                        // A new folder gets its record with its first file, so a rename from then on is followed.
+                        if place != nil, place?.record == nil { _ = await folderRecord() }
                         await remember(file.key, subcategory: context.subcategory)
                         if draft.postURL != nil || context.subcategory == "stories-tray", let user = context.username?.lowercased() {
                             await rememberPost(file.key, account: user)
@@ -724,12 +782,21 @@ final class EngineService {
                     blocked = true
                     handleCheckpoint(kind: kind, url: url, message: message)
                     job.checkpointURL = url
-                case let .error(code, message, _, isFatal):
-                    if isFatal { fatal = describe(code: code, message: message) } else if job.notes.count < 30 { job.notes.append(message) }
+                case let .error(code, message, key, isFatal):
+                    if isFatal {
+                        fatal = describe(code: code, message: message)
+                    } else if code == "download_failed" {
+                        // A file that failed is a failure Retry Failed can fetch again, not a note (audit 4, A4-M3).
+                        job.failed += 1
+                        job.failures.append((key ?? "", "The file could not be downloaded."))
+                    } else if job.notes.count < 30 {
+                        job.notes.append(message)
+                    }
                 case let .policyViolation(method, host, _, reason):
                     fatal = "MediaPull blocked a \(method) request to \(host): \(reason)"
                 case let .done(status, errors):
-                    finishedCleanly = status == "completed"
+                    // "partial": the walk ran to its end and only single files failed; they are counted above.
+                    finishedCleanly = status == "completed" || status == "partial"
                     if status == "failed", fatal == nil {
                         fatal = errors.last.map { describe(code: "", message: $0) } ?? "The download engine stopped."
                     }
@@ -756,6 +823,10 @@ final class EngineService {
         }
         if Task.isCancelled || job.state == .cancelled {
             app.jobs.finish(job, .cancelled)
+            return
+        }
+        if refused, let fatal {
+            app.jobs.finish(job, .failed(fatal))
             return
         }
         if blocked {
@@ -820,16 +891,26 @@ final class EngineService {
     }
 
     /// `name` names a new folder: the pulled account's own choice by default; another account met in the pull (a tray
-    /// story's owner, a post's) gets its own name (audit 3, A3-M1).
-    private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination, name ownName: String? = nil) async -> AccountPlace {
+    /// story's owner, a post's) gets its own name (audit 3, A3-M1). Nil when the folder chosen for the pull is gone (moved
+    /// to the Trash, deleted): it is never made again (audit 4, A4-M5).
+    private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination, name ownName: String? = nil) async
+        -> AccountPlace? {
         let libraryRoot = app.root(containing: root.url)?.url
-        let chosen = ownName == nil ? draft.accountFolder : nil
         let saveFolder = root.url
         let name = ownName ?? draft.folderName.nonEmpty ?? account
+        // A folder chosen when the pull was queued is followed to where it is now (renamed or moved since).
+        var chosen: URL?
+        if ownName == nil, let picked = draft.accountFolder {
+            guard let now = await app.accountFolders.currentFolder(for: picked) else { return nil }
+            chosen = now
+        } else {
+            chosen = await recordedFolder(of: account, around: saveFolder)
+        }
+        let known = chosen
         // Reading the folder (names, and a sample of metadata files) happens off the main actor.
         let (folder, index, byType, existing) = await Task.detached(priority: .userInitiated) {
             () -> (URL, AccountFolders.Index, Bool?, Bool) in
-            let resolved = chosen.map { (existing: Optional($0), parent: $0.deletingLastPathComponent()) }
+            let resolved = known.map { (existing: Optional($0), parent: $0.deletingLastPathComponent()) }
                 ?? AccountFolders.resolveTarget(account: account, saveFolder: saveFolder, root: libraryRoot)
             guard let existing = resolved.existing else {
                 // A new folder never goes into one of that name that already holds something else (another account's).
@@ -838,18 +919,38 @@ final class EngineService {
             return (existing, AccountFolders.index(existing), AccountFolders.sortsByType(existing), true)
         }.value
         var record = existing ? await app.accountFolders.record(account: account, folder: folder) : nil
-        // A folder that had no record yet (made by 1.7, or before its first update) takes over what was remembered of it:
-        // the items saved there, deleted since or not, and where an interrupted pull stopped (audit 3, C3-M1, C3-m14).
-        if let new = record, new.keys.isEmpty, new.lastUpdate == nil, new.places == nil {
-            let keys = await app.store?.takeInstagramKeys(account: account, under: folder.path) ?? []
-            if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: new.id) }
-            if let cursor = await app.store?.account(account)?.resumeCursor, !cursor.isEmpty {
-                await app.accountFolders.setPlace(ResumePlace(cursor: cursor, untilEnd: true), in: new.id)
-                await app.store?.updateAccount(account, resumeCursor: .some(nil))
-            }
+        if let new = record {
+            await adoptEarlierMemory(of: new, account: account)
             record = await app.accountFolders.record(account: account, folder: folder)
         }
         return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
+    }
+
+    /// The remembered folder of `account` that `saveFolder` is, is inside, or holds. Records count as well as what folders
+    /// hold, since a Plain folder has no metadata files to read (audit 4, C4-M2).
+    func recordedFolder(of account: String, around saveFolder: URL) async -> URL? {
+        let mine = await app.accountFolders.all().filter { $0.account == account.lowercased() }
+        let key = AccountFolderStore.key(saveFolder.path)
+        let containing = mine.filter {
+            let own = AccountFolderStore.key($0.path)
+            return key == own || key.hasPrefix(own + "/")
+        }.max { $0.path.count < $1.path.count }
+        let inside = mine.filter { AccountFolderStore.key($0.path).hasPrefix(key + "/") }
+            .max { ($0.lastUpdate ?? .distantPast, -$0.path.count) < ($1.lastUpdate ?? .distantPast, -$1.path.count) }
+        return (containing ?? inside).map { URL(fileURLWithPath: $0.path, isDirectory: true) }
+    }
+
+    /// A folder whose record has never been updated takes over what earlier versions remembered of it: the items saved
+    /// there, deleted since or not, and where an interrupted pull stopped (audit 3, C3-M1, C3-m14). Taken entries leave the
+    /// shared table, so a second call finds nothing; scanned saves call it too (audit 4, C4-m1).
+    func adoptEarlierMemory(of record: AccountFolderRecord, account: String) async {
+        guard record.lastUpdate == nil, (record.places ?? []).isEmpty else { return }
+        let keys = await app.store?.takeInstagramKeys(account: account, under: record.path) ?? []
+        if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: record.id) }
+        if let cursor = await app.store?.account(account)?.resumeCursor, !cursor.isEmpty {
+            await app.accountFolders.setPlace(ResumePlace(cursor: cursor, untilEnd: true), in: record.id)
+            await app.store?.updateAccount(account, resumeCursor: .some(nil))
+        }
     }
 
     /// Activity's Resume: continues each place where an update or Find Missing stopped part way, without walking from the

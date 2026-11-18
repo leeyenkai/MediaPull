@@ -54,6 +54,7 @@ struct MainWindow: View {
                 .allowsHitTesting(model.section == .organise)
                 .accessibilityHidden(model.section != .organise)
                 .onChange(of: app.fileChangeRevision) { _, _ in model.organise.fileChanged() }
+                .onChange(of: app.libraryRevision) { _, _ in model.organise.libraryChanged() }
                 .onAppear {
                     organiseShown = true
                     model.organise.prepare()

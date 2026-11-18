@@ -21,7 +21,10 @@ public enum FolderCheck {
         public var isClean: Bool { orphanedMetadata.isEmpty && withoutMetadata.isEmpty && changed.isEmpty && notDownloaded.isEmpty }
     }
 
-    public static func run(_ folder: URL, archive: Bool, progress: @Sendable (Int, Int) -> Void = { _, _ in }) -> Report {
+    /// `isDataless` tells which files are only in iCloud; tests pass their own, since the flag cannot be set by hand.
+    public static func run(_ folder: URL, archive: Bool, isDataless: (URL) -> Bool = FileFlags.isDataless,
+                           progress: @Sendable (Int, Int) -> Void = { _, _ in }) -> Report
+    {
         var report = Report(folder: folder)
         let fm = FileManager.default
         var media: [URL] = []
@@ -68,12 +71,18 @@ public enum FolderCheck {
         for (done, file) in media.enumerated() {
             if Task.isCancelled { return report }
             if done % 20 == 0 { progress(done, total) }
-            if FileFlags.isDataless(file) {
+            if isDataless(file) {
                 report.notDownloaded.append(file)
                 continue
             }
-            report.checked += 1
+            // Reading a metadata file kept only in iCloud would download it; checking downloads nothing (audit 4, B4-m5).
             let sidecar = Sidecar.sidecarURL(for: file)
+            if placeholders.contains(sidecar.path) { continue }
+            if isDataless(sidecar) {
+                report.notDownloaded.append(sidecar)
+                continue
+            }
+            report.checked += 1
             guard let data = try? Data(contentsOf: sidecar) else {
                 if archive, expectsMetadata(file) { report.withoutMetadata.append(file) }
                 continue
@@ -98,8 +107,9 @@ public struct FolderStats: Sendable, Equatable {
 
     public static func measure(_ folder: URL) -> FolderStats {
         var stats = FolderStats()
+        // A package (a photo library) is one item, not a folder of the person's media (audit 4, B4-m6).
         let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-                                                    options: [.skipsHiddenFiles])
+                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
         while let url = walker?.nextObject() as? URL {
             let ext = url.pathExtension.lowercased()
             guard ext != "json", MediaFormat.fromExtension(ext) != nil,

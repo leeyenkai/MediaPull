@@ -86,7 +86,8 @@ def _json_default(value):
 
 EMITTER = None
 STATE = {"checkpoint": None, "errors": [], "private": False, "not_found": False, "outdated": False,
-         "violations": 0, "cursors": {}, "instagram": False, "collection": None}
+         "violations": 0, "cursors": {}, "instagram": False, "collection": None, "download_failed": 0,
+         "extraction_failed": False}
 # Helper processes the engines start (ffmpeg), so a cancelled job stops them too.
 CHILDREN = weakref.WeakSet()
 
@@ -483,12 +484,19 @@ def patch_instagram():
         result = original_cursor(self, cursor)
         if cursor:
             EMITTER.emit("cursor", subcategory=self.subcategory, value=str(cursor))
-        else:
-            # gallery-dl clears the cursor when the listing has no more pages: it reached the end.
-            self._mediapull_listing_end = True
         return result
 
     instagram.InstagramExtractor._update_cursor = update_cursor
+
+    # The listing reached its end when the posts generator runs out. Its paginators differ (the GraphQL one ends without
+    # clearing the cursor, audit 4, A4-M1), so the end is read from the generator, not from the cursor.
+    original_posts = instagram.InstagramPostsExtractor.posts
+
+    def posts(self):
+        yield from original_posts(self)
+        self._mediapull_listing_end = True
+
+    instagram.InstagramPostsExtractor.posts = posts
 
 
 def classify_instagram_error(exc):
@@ -786,6 +794,20 @@ def make_jobs(request):
             # apply to them.
             self.tracker = KnownTracker(set(), None) if STATE.get("collection") else KnownTracker(known, limit)
 
+        def dispatch(self, extractor):
+            # A listing that broke off (an error, not the early stop) is told apart from files that failed one by one: only
+            # the second leaves the pull "partial", walked to its end with some files to fetch again (audit 4, A4-M3).
+            from gallery_dl import exception
+            try:
+                return job.DownloadJob.dispatch(self, extractor)
+            except exception.StopExtraction:
+                raise
+            except (exception.TerminateExtraction, exception.RestartExtraction):
+                raise
+            except BaseException:
+                STATE["extraction_failed"] = True
+                raise
+
         def initialize(self, kwdict=None):
             job.DownloadJob.initialize(self, kwdict)
             import collections
@@ -835,6 +857,7 @@ def make_jobs(request):
 
         def _file_failed(self, pathfmt):
             kwdict = pathfmt.kwdict or {}
+            STATE["download_failed"] += 1
             EMITTER.emit("error", code="download_failed", message="Failed to download a file",
                          key=item_key(kwdict, kwdict.get("_url") or ""), fatal=False)
 
@@ -939,6 +962,16 @@ def account_fields(kwdict):
     }
 
 
+def pull_status(status):
+    """"partial" when the listing ran to its end and only single files failed (gallery-dl's status 4 means both a failed
+    file and an HTTP error of the listing, so the listing's own failure is tracked apart)."""
+    if status == 0:
+        return "completed"
+    if status & ~4 == 0 and STATE["download_failed"] and not STATE["extraction_failed"] and not STATE["violations"]:
+        return "partial"
+    return "failed"
+
+
 def finish(status, counts=None):
     checkpoint = STATE["checkpoint"]
     if checkpoint:
@@ -983,7 +1016,7 @@ def run_gallery_job(request, kind):
             break
     if kind != "scan":
         write_details(staging)
-    finish("completed" if status == 0 else "failed", {"status": status})
+    finish(pull_status(status), {"status": status})
 
 
 def op_account(request):

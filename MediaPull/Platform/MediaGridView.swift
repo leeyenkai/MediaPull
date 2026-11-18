@@ -96,9 +96,14 @@ protocol MediaListOwner: MediaGridOwner {
     /// Changes whenever the contents of opened folders were dropped (a reload, a new sort or filter): the view then
     /// rebuilds its rows and reads the opened folders again.
     var listGeneration: Int { get }
+    /// Whether Return renames a folder row in place, as in the folder tree (R-1707), rather than opening it.
+    var listRenamesFolders: Bool { get }
+    func listRenameFolder(_ id: String, to name: String)
 }
 
 extension MediaListOwner {
+    var listRenamesFolders: Bool { false }
+    func listRenameFolder(_: String, to _: String) {}
     var listTopFolders: [String] { [] }
     func listIsFolder(_: String) -> Bool { false }
     func listChildren(_: String) -> [String]? { [] }

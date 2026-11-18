@@ -246,6 +246,12 @@ final class AddressTests: XCTestCase {
         if case .instagramHighlight = AddressInput.parse("https://www.instagram.com/s/aGlnaGxpZ2h0OjE3?story_media_id=1") {} else {
             XCTFail("a shared highlight link is a highlight, not the account \"s\"")
         }
+        // Audit 4 (C4-M3): saved posts and collections are the person's own, never the account named in the link.
+        for link in ["https://www.instagram.com/alice/saved/", "https://www.instagram.com/alice/saved/trip/17891234/"] {
+            XCTAssertTrue(AddressInput.isSavedCollection(URL(string: link)!), link)
+        }
+        XCTAssertFalse(AddressInput.isSavedCollection(URL(string: "https://www.instagram.com/alice/")!))
+        XCTAssertFalse(AddressInput.isSavedCollection(URL(string: "https://www.instagram.com/saved/")!))
         let story = URL(string: "https://www.instagram.com/stories/nasa/3512345678901234567/")!
         XCTAssertEqual(AddressInput.parse(story.absoluteString).instagramUsername, "nasa")
         if case let .instagramStories(_, url) = AddressInput.parse(story.absoluteString) {

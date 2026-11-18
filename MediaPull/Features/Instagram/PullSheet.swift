@@ -178,11 +178,9 @@ struct FlowToggles<Item: Hashable>: View {
     let set: (Item, Bool) -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) { chips }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 6, alignment: .leading)],
-                      alignment: .leading, spacing: 6) { chips }
-        }
+        // Each chip keeps its own width and moves to the next line when the line is full; equal grid columns cut a long
+        // label off at the pane's edge (audit 4, S4-m1).
+        WrappingStack(spacing: 6) { chips }
     }
 
     private var chips: some View {
@@ -191,6 +189,56 @@ struct FlowToggles<Item: Hashable>: View {
             ChipToggle(title: item[keyPath: label], isOn: Binding(get: { isOn(item) }, set: { set(item, $0) }))
                 .help(help(item) ?? "")
         }
+    }
+}
+
+/// Lays its views out left to right, starting a new line when the next one does not fit. A view wider than the line gets
+/// the whole line to itself, at the line's width.
+struct WrappingStack: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
+        let rows = rows(width: proposal.width ?? .infinity, subviews: subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: proposal.width.map { min($0, width) } ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
+        var y = bounds.minY
+        for row in rows(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for (index, size) in row.items {
+                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row {
+        var items: [(Int, CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func rows(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            var size = subviews[index].sizeThatFits(.unspecified)
+            if size.width > width { size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil)) }
+            let needed = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            if needed > width, !row.items.isEmpty {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+            row.items.append((index, size))
+        }
+        if !row.items.isEmpty { rows.append(row) }
+        return rows
     }
 }
 

@@ -533,7 +533,7 @@ struct PreviewThumb: View {
     }
 }
 
-private extension View {
+extension View {
     /// A keyboard shortcut that exists only while `enabled`, so a hidden section's buttons never receive key presses.
     @ViewBuilder
     func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers, enabled: Bool) -> some View {
@@ -556,13 +556,14 @@ struct BatchRenameRow: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    TextField("Pattern", text: Binding(get: { draft.pattern }, set: { organise.batchRename?.pattern = $0 }))
+                    TextField("Pattern", text: Binding(get: { draft.pattern }, set: { organise.setBatchPattern($0) }))
                         .textFieldStyle(.roundedBorder)
                     Text("{name} is the current name, {n} a number in order, {date} the day the file was last changed.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    ForEach(organise.batchPreview(draft), id: \.old) { row in
-                        Text("\(row.old)  →  \(row.new)").font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                    ForEach(draft.preview, id: \.old) { row in
+                        Text("\(row.old)  →  \(row.new ?? "(unchanged)")")
+                            .font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
                     }
                 }
                 HStack {

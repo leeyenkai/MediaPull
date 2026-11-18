@@ -482,6 +482,22 @@ public actor AnalysisStore {
         try? modelContext.save()
     }
 
+    /// Forgets a person none of whose photos are left: a named person is otherwise kept, so the People list offers this
+    /// (audit 4, B4-m9). A person who still has faces is kept; returns whether the person was removed.
+    @discardableResult
+    public func forget(person id: UUID) -> Bool {
+        let faces = (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? []
+        guard !faces.contains(where: { $0.personID == id }) else { return false }
+        let predicate = #Predicate<PersonModel> { $0.id == id }
+        guard let person = try? modelContext.fetch(FetchDescriptor(predicate: predicate)).first else { return false }
+        modelContext.delete(person)
+        for face in faces where face.rejected.contains(id) {
+            face.rejected.removeAll { $0 == id }
+        }
+        try? modelContext.save()
+        return true
+    }
+
     public func dismissSuggestion(person id: UUID, name: String) {
         let predicate = #Predicate<PersonModel> { $0.id == id }
         guard let person = try? modelContext.fetch(FetchDescriptor(predicate: predicate)).first else { return }

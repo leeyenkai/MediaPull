@@ -63,6 +63,12 @@ public enum AddressInput: Equatable, Sendable {
         return .web(clean)
     }
 
+    /// `instagram.com/<user>/saved/` or one of its collections: the signed-in person's saved posts, not the account.
+    public static func isSavedCollection(_ url: URL) -> Bool {
+        let parts = url.path.split(separator: "/").map { $0.lowercased() }
+        return parts.count >= 2 && parts[1] == "saved"
+    }
+
     public var url: URL? {
         switch self {
         case let .web(url): url

@@ -91,7 +91,7 @@ final class Job: Identifiable {
     /// Where an Instagram listing had got to in this job, so Resume continues this job's own pass (R-1112).
     var lastCursor: String?
     /// The id of the place this job's walk leaves in its account folder if it stops part way (D-87); the same across Resume.
-    let placeID = UUID()
+    var placeID = UUID()
     var resume: (() -> Void)?
 
     init(kind: JobKind, title: String) {

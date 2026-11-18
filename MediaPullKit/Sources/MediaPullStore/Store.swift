@@ -391,14 +391,20 @@ public actor AppStore {
 
     /// Lifecycle (SPEC 6.3): archive entries whose file is gone (on a mounted disk) and accounts nothing refers to that were
     /// last pulled over a year ago. `keepAccounts` are accounts with a remembered folder.
-    public func prune(keepAccounts: Set<String>, now: Date = Date()) {
+    /// `recordedFolders` are account folders with a record, which remembers their Instagram items itself; `restorable` are
+    /// files in the Trash that Undo can still put back.
+    public func prune(keepAccounts: Set<String>, recordedFolders: [String] = [], restorable: Set<String> = [], now: Date = Date()) {
         let fm = FileManager.default
         let entries = (try? modelContext.fetch(FetchDescriptor<ArchiveEntryModel>())) ?? []
+        let recorded = recordedFolders.map { $0.precomposedStringWithCanonicalMapping.lowercased() + "/" }
         var referenced = Set<String>()
         for entry in entries {
             // Instagram entries are what 1.7 remembered of files saved and deleted since: they wait until a folder's record
-            // takes them over (takeInstagramKeys), so an Update never brings those files back (audit 3, C3-M1).
-            if entry.key.hasPrefix("ig:") || fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path) {
+            // takes them over (takeInstagramKeys), so an Update never brings those files back (audit 3, C3-M1). Under a
+            // folder with a record they are that record's to keep (audit 4, C4-m2).
+            let path = entry.path.precomposedStringWithCanonicalMapping.lowercased()
+            let waiting = entry.key.hasPrefix("ig:") && !recorded.contains { path.hasPrefix($0) }
+            if waiting || fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path) || restorable.contains(entry.path) {
                 referenced.insert(entry.account)
             } else {
                 modelContext.delete(entry)

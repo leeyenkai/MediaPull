@@ -323,6 +323,9 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     public var places: [ResumePlace]?
     public var lastUpdate: Date?
     public var lastResult: String?
+    /// The Instagram user id of the account this folder holds: a name taken over by someone else is never pulled into it
+    /// (SPEC 23, audit 4, C4-M4).
+    public var userID: String?
 
     /// Whether an update or Find Missing stopped part way and can be continued.
     public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
@@ -378,7 +381,11 @@ public actor AccountFolderStore {
             var kept = sorted[0]
             for other in sorted.dropFirst() {
                 kept.keys.formUnion(other.keys)
-                kept.cursor = kept.cursor ?? other.cursor
+                // Where either stopped part way stays (audit 4, A4-m3).
+                let keptIDs = Set((kept.places ?? []).map(\.id))
+                let more = (other.places ?? []).filter { !keptIDs.contains($0.id) }
+                if !more.isEmpty { kept.places = (kept.places ?? []) + more }
+                if kept.lastResult == nil { kept.lastResult = other.lastResult }
                 forget(other.id)
             }
             records[kept.id] = kept
@@ -410,10 +417,26 @@ public actor AccountFolderStore {
 
     /// Paths compared as the Mac's usual volumes compare them: without regard to letter case or Unicode form.
     public static func key(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased()
+        // Standardizing drops "/private" only while the path exists, so a folder moved away would get another key; the
+        // prefix is dropped either way.
+        var path = URL(fileURLWithPath: path).standardizedFileURL.path
+        for prefix in ["/private/var/", "/private/tmp/", "/private/etc/"] where path.hasPrefix(prefix) {
+            path = String(path.dropFirst("/private".count))
+        }
+        return path.precomposedStringWithCanonicalMapping.lowercased()
     }
 
     /// Where a remembered folder is now (after Finder moves while running), or nil when it is gone.
+    /// Where the folder of record `id` is now (followed through Finder and MediaPull moves); nil when it is gone or in the
+    /// Trash. A running pull checks this, so it never recreates a folder renamed or trashed meanwhile (audit 4, A4-M5).
+    public func currentFolder(of id: UUID) -> URL? {
+        load()
+        followMoves()
+        guard let record = records[id], FileManager.default.fileExists(atPath: record.path),
+              !FileFlags.isInTrash(URL(fileURLWithPath: record.path)) else { return nil }
+        return URL(fileURLWithPath: record.path, isDirectory: true)
+    }
+
     public func currentFolder(for url: URL) -> URL? {
         load()
         let key = Self.key(url.path)
@@ -447,8 +470,12 @@ public actor AccountFolderStore {
         if var existing = records.values.first(where: { Self.key($0.path) == key && $0.account == account.lowercased() }) {
             // The folder's spelling as it is now.
             let path = url.standardizedFileURL.path
-            if existing.path != path {
+            // The bookmark is made again from the folder in hand: one made for an earlier folder at this path (now in the
+            // Trash) still resolves here by path, but would follow the old folder after a rename (audit 4, C4-m6).
+            let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            if existing.path != path || (bookmark != nil && bookmark != existing.bookmark) {
                 existing.path = path
+                if let bookmark { existing.bookmark = bookmark }
                 records[existing.id] = existing
                 save(existing)
             }
@@ -505,10 +532,11 @@ public actor AccountFolderStore {
         return records[id]?.places?.first { $0.id == placeID }
     }
 
-    public func update(_ id: UUID, lastUpdate: Date? = nil, lastResult: String? = nil) {
+    public func update(_ id: UUID, lastUpdate: Date? = nil, lastResult: String? = nil, userID: String? = nil) {
         guard var record = records[id] else { return }
         if let lastUpdate { record.lastUpdate = lastUpdate }
         if let lastResult { record.lastResult = lastResult }
+        if let userID, !userID.isEmpty { record.userID = userID }
         records[id] = record
         save(record)
     }

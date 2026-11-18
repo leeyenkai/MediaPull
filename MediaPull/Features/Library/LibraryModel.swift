@@ -149,6 +149,8 @@ final class LibraryModel: MediaGridOwner {
     /// it shows (R-1704), and the listing follows its subfolders when they are included.
     private func foldersChanged(_ paths: [String]) {
         let paths = paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        // A folder above the selected one renamed or trashed in the Finder sends no event to the folder's own watch.
+        followSelectedFolder()
         if paths.contains(where: treeCache.shows) { invalidateTree() }
         guard includeSubfolders, let folder = selectedFolder?.standardizedFileURL.path else { return }
         if paths.contains(where: { $0.hasPrefix(folder + "/") }) { scheduleChangeReload() }
@@ -543,6 +545,7 @@ final class LibraryModel: MediaGridOwner {
     }
 
     private func watch() {
+        watchedDescriptor = -1
         watcher?.cancel()
         watcher = nil
         guard let folder = selectedFolder else { return }
@@ -551,12 +554,19 @@ final class LibraryModel: MediaGridOwner {
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
                                                                eventMask: [.write, .rename, .delete], queue: .main)
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.scheduleChangeReload() }
+            MainActor.assumeIsolated {
+                self?.followSelectedFolder()
+                self?.scheduleChangeReload()
+            }
         }
         source.setCancelHandler { close(descriptor) }
         source.resume()
         watcher = source
+        watchedDescriptor = descriptor
     }
+
+    /// The selected folder's open descriptor while it is watched (closed by the watcher's cancel handler), else -1.
+    @ObservationIgnored private var watchedDescriptor: Int32 = -1
 
     func refreshTree() {
         invalidateTree()
@@ -621,6 +631,34 @@ final class LibraryModel: MediaGridOwner {
         }
     }
 
+    /// Folders MediaPull moved to the Trash (from any window or section): the save folder inside one goes to the folder
+    /// above, as `trash` does for the Library's own (audit 4, B4-m2).
+    func foldersTrashed(_ paths: [String]) {
+        let gone = paths.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let other = otherFolder, gone.contains(where: { Self.isInside(other, $0) }) { otherFolder = nil }
+        if let folder = selectedFolder, let top = gone.first(where: { Self.isInside(folder, $0) }) {
+            let parent = top.deletingLastPathComponent()
+            selectedFolder = shows(parent) ? parent : app.defaultRoot?.url
+        }
+    }
+
+    /// The selected folder was renamed, moved or put in the Trash in the Finder (its watch says so): the pane, and with it
+    /// Save, follows it, or goes to the folder above when it is in the Trash (audit 4, B4-m2). The open descriptor knows
+    /// where the folder is now. A library folder itself renamed is followed when MediaPull becomes active (R-1702).
+    private func followSelectedFolder() {
+        guard let old = selectedFolder?.standardizedFileURL, watchedDescriptor >= 0 else { return }
+        var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(watchedDescriptor, F_GETPATH, &buffer) != -1 else { return }
+        let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
+        let now = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        guard now.path != old.path else { return }
+        if FileFlags.isInTrash(now) {
+            foldersTrashed([old.path])
+        } else if shows(now) || otherFolder?.standardizedFileURL == old {
+            rootMoved(from: old, to: now)
+        }
+    }
+
     /// A library folder was renamed or moved in the Finder: the selection follows it.
     func rootMoved(from old: URL, to new: URL) {
         selectedFolder = selectedFolder.map { Self.moved($0, from: old, to: new) }
@@ -631,35 +669,50 @@ final class LibraryModel: MediaGridOwner {
     /// Moves files (with their sidecars) or folders to the Trash, as one change ⌘Z puts back. Nothing is deleted outright.
     func trash(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        // A library folder itself is removed from the library, never moved to the Trash from here (any view).
-        let roots = Set(app.roots.map { $0.url.standardizedFileURL.path })
-        if urls.contains(where: { roots.contains($0.standardizedFileURL.path) }) {
-            message = "A library folder is not moved to the Trash here. Use Remove from Library in its menu."
-            return
-        }
+        // A library folder, or a folder holding one, is removed from the library, never moved to the Trash from here.
+        let plan = FolderOperations.trash(urls)
+        guard !refusesLibraryFolderChange(plan) else { return }
         // The save folder or one of its parents goes to the Trash: save into the folder above instead.
         if let folder = selectedFolder, let gone = urls.first(where: { Self.isInside(folder, $0) }) {
             selectedFolder = gone.deletingLastPathComponent()
         }
         if let other = otherFolder, urls.contains(where: { Self.isInside(other, $0) }) { otherFolder = nil }
-        perform(FolderOperations.trash(urls))
+        perform(plan)
+    }
+
+    /// A library folder, or a folder that holds one, is never moved, renamed or trashed as a file: its saves, records and
+    /// analysis would lose it. The same rule as in Organise (audit 4, B4-M2); copies are fine.
+    private func refusesLibraryFolderChange(_ plan: OrganisePlan) -> Bool {
+        guard plan.changes(anyOf: app.roots.map(\.url)) else { return false }
+        message = "A library folder, or a folder that holds one, is not moved, renamed or moved to the Trash here. "
+            + "Use Rename in List or Remove from Library in its menu."
+        return true
     }
 
     /// Runs a file change through the journal (undoable with ⌘Z, R-3806) and shows its problems, if any.
     /// It runs as a job, so Quit waits for it to stop between files (R-3807); copies and long changes show in Activity.
     func perform(_ plan: OrganisePlan, then finished: ((JournalEntry) -> Void)? = nil) {
-        guard !plan.isEmpty else { return }
+        guard !plan.isEmpty, !refusesLibraryFolderChange(plan) else { return }
         let app = app
         let job = Job(kind: .organise, title: plan.title)
+        job.total = plan.moves.count + plan.itemsToTrash.count + plan.foldersToCreate.count + plan.foldersToTrash.count
         job.state = .running
-        if plan.cloneCount > 0 || plan.moves.count + plan.itemsToTrash.count > 20 { app.jobs.add(job) }
+        let listed = plan.showsInActivity
+        app.jobs.add(job)
         job.task = Task { [weak self] in
-            let entry = await app.applyChange(plan)
+            let entry = await app.applyChange(plan) { done, total in
+                Task { @MainActor in
+                    job.fraction = Double(done) / Double(max(total, 1))
+                    job.summaryOverride = "\(done) of \(total) steps"
+                }
+            }
+            job.summaryOverride = entry.fileCount > 0 ? "\(entry.fileCount) file\(entry.fileCount == 1 ? "" : "s")" : nil
             app.jobs.finish(job, entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be changed"))
                 : .cancelled)
+            if !listed, entry.failures.isEmpty { app.jobs.jobs.removeAll { $0 === job } }
             guard let self else { return }
             self.message = entry.failures.isEmpty ? nil : entry.failures.prefix(3).joined(separator: "\n")
-            self.window?.registerUndo(entry)
+            if !entry.steps.isEmpty { self.window?.registerUndo(entry) }
             finished?(entry)
             self.invalidateTree()
             self.reload()
@@ -1018,6 +1071,13 @@ extension LibraryModel: MediaListOwner {
     func listChildren(_ folderID: String) -> [String]? {
         listFolders.onLoaded = { [weak self] id in self?.onListChildrenLoaded?(id) }
         return listFolders.contents(of: folderID, query: query)
+    }
+
+    /// Return renames a folder row, as in the tree (R-1707, audit 4, B4-m1).
+    var listRenamesFolders: Bool { true }
+
+    func listRenameFolder(_ id: String, to name: String) {
+        commitRename(URL(fileURLWithPath: id, isDirectory: true), to: name)
     }
 }
 

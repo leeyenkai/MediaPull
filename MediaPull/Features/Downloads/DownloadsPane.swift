@@ -121,6 +121,14 @@ final class DownloadsModel {
             draft.content = [.stories]
             draft.contentFromAddress = true
             return .instagram(draft)
+        case let .instagramProfile(_, url) where AddressInput.isSavedCollection(url):
+            // Saved posts and collections are the person's own (signed in), saved into Saved posts (D-52), never the
+            // account named in the link (audit 4, C4-M3).
+            var draft = app.engines.draft(username: "")
+            draft.content = [.saved]
+            draft.collectionURL = url
+            draft.contentFromAddress = true
+            return .instagram(draft)
         case .instagramProfile, .handle:
             return .instagram(app.engines.draft(username: input.instagramUsername ?? ""))
         case let .web(url):

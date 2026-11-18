@@ -42,7 +42,8 @@ struct PeopleView: View {
             } else {
                 VSplitView {
                     List(selection: $selected) {
-                        ForEach(app.analysis.people.filter { $0.faceCount > 0 }) { person in
+                        // A named person whose photos are all gone stays listed, so the name can be forgotten (audit 4, B4-m9).
+                        ForEach(app.analysis.people.filter { $0.faceCount > 0 || $0.name != nil }) { person in
                             PersonRow(person: person, suggestion: app.analysis.suggestions[person.id]).tag(person.id)
                         }
                     }
@@ -73,7 +74,18 @@ struct PeopleView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let id = selected, let person = app.analysis.people.first(where: { $0.id == id }) {
+        if let id = selected, let person = app.analysis.people.first(where: { $0.id == id }), person.faceCount == 0 {
+            VStack(spacing: 10) {
+                Text("No photos of \(person.displayName) are left.").foregroundStyle(.secondary)
+                Button("Forget \(person.displayName)") {
+                    Task {
+                        await app.analysis.forget(id)
+                        selected = nil
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let id = selected, let person = app.analysis.people.first(where: { $0.id == id }) {
             VStack(alignment: .leading, spacing: 10) {
                 if let suggestion = app.analysis.suggestions[id] {
                     HStack {

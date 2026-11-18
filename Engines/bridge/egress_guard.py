@@ -20,6 +20,7 @@ import re
 from urllib.parse import parse_qs, urlsplit
 
 MAX_POST_BODY = 16 * 1024
+IG_TAG_SECTION_FIELDS = {"include_persistent", "max_id", "page", "surface", "tab"}
 DENIED_WORDS = re.compile(
     r"(Mutation|Like|Follow|Comment|Seen|Upload|Create|Delete|Edit|Save|Mark|Share|Send|Report|Block|"
     r"Mute|Vote|Subscribe|Unfollow|Remove|Update|Accept|Approve|Reply)",
@@ -38,6 +39,8 @@ BODY_TYPES_DENIED = ("multipart/", "application/octet-stream", "image/", "video/
 # anything that changes an account (favourites, watching, likes, rating settings, quota resets) are not listed.
 _RULE34_SEARCH = r"/api/v2/post/search/(root|playlist/[^/]+)"
 READ_POSTS = (
+    # Instagram lists a hashtag's posts with a form POST (audit 4, A4-M2); only the listing's own fields are sent.
+    (("instagram.com",), r"/api/v1/tags/[^/]+/sections", "ig_tag_sections"),
     (("artstation.com",), r"/api/v2/(search/projects\.json|csrf_protection/token\.json)", None),
     (("api-neo.500px.com",), r"/graphql", "graphql"),
     (("api.audiochan.com",), r"/audios/[^/]+/(play-intent|stream-url)", None),
@@ -306,6 +309,9 @@ def _check_body(rule, method, url, data, headers, parts):
     elif rule == "interstitial":
         if not fields or set(fields) - INTERSTITIAL_FIELDS or (fields.get("op") and _first(fields["op"]) != "view"):
             raise PolicyViolation(method, url, "only the continue-to-image form is sent")
+    elif rule == "ig_tag_sections":
+        if set(fields) - IG_TAG_SECTION_FIELDS:
+            raise PolicyViolation(method, url, "only the hashtag listing is read")
     elif rule == "vk_show":
         if _first(fields.get("act")) != "show":
             raise PolicyViolation(method, url, "only photo listings are read")

@@ -96,6 +96,9 @@ struct FolderTree: View {
             }
         }
         .listStyle(.sidebar)
+        // Return renames and ⌘⌫ moves to the Trash, as in the grid (R-1707). Key presses reach the tree only while it has
+        // the keyboard, never while typing in the web page; Collect must be shown, since it stays mounted behind Organise.
+        .onKeyPress(keys: [.return, .delete], phases: .down) { press in treeKey(press) }
         .onAppear {
             if library.selectedFolder == nil { library.selectedFolder = app.defaultRoot?.url }
         }
@@ -105,6 +108,28 @@ struct FolderTree: View {
                 library.selectedFolder = app.defaultRoot?.url
             }
         }
+    }
+}
+
+extension FolderTree {
+    private func treeKey(_ press: KeyPress) -> KeyPress.Result {
+        guard model.section == .collect, library.renaming == nil, let folder = library.selectedFolder else { return .ignored }
+        let key = folder.standardizedFileURL
+        let isRoot = app.roots.contains { $0.url.standardizedFileURL == key }
+        let isOther = !isRoot && library.otherFolder?.standardizedFileURL == key
+        if press.key == .return, press.modifiers.isEmpty {
+            // A library folder's Return renames its name in the list; the folder outside the library has no name to change.
+            guard !isOther else { return .ignored }
+            library.rename(folder)
+            return .handled
+        }
+        if press.key == .delete, press.modifiers == .command {
+            // The folder outside the library is not the person's to trash from here: Stop Showing removes it.
+            guard !isOther else { return .ignored }
+            library.trash([folder])
+            return .handled
+        }
+        return .ignored
     }
 }
 

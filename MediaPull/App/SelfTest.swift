@@ -701,8 +701,9 @@ final class SelfTestRunner {
         let jobsBefore = pulls()
         _ = await run("Update after a stop", findMissing: false)
         await waitUntil(timeout: 120) { !app.jobs.jobs.contains { $0.kind == .pull && !$0.state.isFinished } }
-        // The continuation starts at the stored place: only the 2 items after the third are listed.
-        let continuation = app.jobs.jobs.filter { $0.kind == .pull }.last { $0.title.contains("@alice") && $0.skipped == 2 }
+        // The continuation starts at the stored place: of the 2 items after the third, only the post is listed (the other
+        // is a story, and a continuation walks posts only).
+        let continuation = app.jobs.jobs.filter { $0.kind == .pull }.last { $0.title.contains("@alice") && $0.skipped == 1 }
         let continued = pulls() - jobsBefore == 2 && continuation != nil
         let cleared = await app.accountFolders.all().first { $0.id == record.id }?.stoppedPartWay == false
         note("update: after a stop, \(pulls() - jobsBefore) jobs ran (top, then the rest); place cleared \(cleared)")
@@ -737,22 +738,24 @@ final class SelfTestRunner {
             await app.accountFolders.all().first { $0.account == account }?.places ?? []
         }
         let bobFolder = URL(fileURLWithPath: bobRecord?.path ?? "/", isDirectory: true)
-        // A pull that does not walk the posts listing (stories only) leaves bob's place alone (A3-M3).
+        // A pull that does not walk the posts listing (stories only) leaves bob's place alone (A3-M3). The stand-in lists
+        // only the content asked for, as the bridge does, and the pull runs to its end (audit 4, C4-m7).
+        cut["stop_after"] = nil
+        writeReplay(cut)
         var storiesOnly = app.engines.draft(username: "bob")
         storiesOnly.content = [.stories]
         storiesOnly.contentFromAddress = true
         storiesOnly.accountFolder = bobFolder
         let storiesJob = app.engines.startPull(storiesOnly, scanOnly: false, window: model)
         await waitUntil(timeout: 60) { storiesJob?.state.isFinished ?? true }
-        let placeKept = await places("bob").first?.cursor == "after-2"
-        // Activity's Resume continues from the place, not from the top (A3-M5): only items 3 to 5 are listed.
-        cut["stop_after"] = nil
-        writeReplay(cut)
+        let placeKept = await places("bob").first?.cursor == "after-2" && storiesJob?.saved == 1
+        // Activity's Resume continues from the place, not from the top (A3-M5): only the posts among items 3 to 5 are listed
+        // (the story among them is not a post).
         let jobsBeforeResume = Set(app.jobs.jobs.map(\.id))
         await app.engines.resumePlaces(account: "bob", folder: bobFolder, window: model)
         await waitForPulls()
         let resumed = app.jobs.jobs.first { $0.kind == .pull && !jobsBeforeResume.contains($0.id) }
-        let resumedFromPlace = resumed?.saved == 3 && resumed?.skipped == 0
+        let resumedFromPlace = resumed?.saved == 2 && resumed?.skipped == 0
         note("update: Resume of bob: \(resumed?.title ?? "none") saved \(resumed?.saved ?? -1), duplicates \(resumed?.duplicates ?? -1), "
             + "skipped \(resumed?.skipped ?? -1), failed \(resumed?.failed ?? -1)")
         let bobDone = await places("bob").isEmpty
@@ -787,7 +790,81 @@ final class SelfTestRunner {
             + "stale continuation idle \(staleIdle), no place after a late failure \(noPlaceAfterLateFailure), "
             + "interrupted update left \(updatePlace.map { "\($0.cursor) untilEnd \($0.untilEnd)" } ?? "none") "
             + "and was continued \(aliceDone)")
+        // Audit 4: a file that fails is a failure Retry Failed fetches again (A4-M3, A4-M4).
+        var dana = replay
+        dana["account"] = ["username": "dana", "user_id": "44", "post_count": 5, "is_private": false]
+        dana["items"] = items.map { item -> [String: Any] in
+            var copy = item
+            copy["key"] = "ig:dana\(item["key"] as? String ?? "")"
+            var meta = item["meta"] as? [String: Any] ?? [:]
+            meta["username"] = "dana"
+            meta["subcategory"] = "posts"
+            copy["meta"] = meta
+            return copy
+        }
+        var failingFile = dana
+        failingFile["fail_files"] = [2]
+        writeReplay(failingFile)
+        var danaDraft = app.engines.draft(username: "dana")
+        danaDraft.content = [.posts]
+        let danaJob = app.engines.startPull(danaDraft, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { danaJob?.state.isFinished ?? true }
+        let failedCounted = danaJob?.failed == 1 && danaJob?.saved == 4
+        writeReplay(dana)
+        danaJob?.retry?()
+        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil(timeout: 120) { danaJob?.state.isFinished ?? true }
+        let retried = failedCounted && danaJob?.saved == 5 && danaJob?.failed == 0
+        note("update: a failed file counted \(failedCounted), Retry Failed fetched it \(retried)")
+        // A job's own Resume continues from where it stopped, not from the top (C4-m8).
+        var erin = dana
+        erin["account"] = ["username": "erin", "user_id": "45", "post_count": 5, "is_private": false]
+        erin["items"] = (dana["items"] as? [[String: Any]] ?? []).map { item -> [String: Any] in
+            var copy = item
+            copy["key"] = (item["key"] as? String ?? "").replacingOccurrences(of: "dana", with: "erin")
+            var meta = item["meta"] as? [String: Any] ?? [:]
+            meta["username"] = "erin"
+            copy["meta"] = meta
+            return copy
+        }
+        var erinCut = erin
+        erinCut["stop_after"] = 2
+        writeReplay(erinCut)
+        var erinDraft = app.engines.draft(username: "erin")
+        erinDraft.content = [.posts]
+        let erinJob = app.engines.startPull(erinDraft, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { erinJob?.state.isFinished ?? true }
+        let erinCursor = erinJob?.lastCursor
+        writeReplay(erin)
+        erinJob?.resume?()
+        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil(timeout: 120) { erinJob?.state.isFinished ?? true }
+        let resumedOwn = erinCursor == "after-2" && erinJob?.saved == 5 && erinJob?.skipped == 0
+        note("update: a job's Resume continued from \(erinCursor ?? "none"): saved \(erinJob?.saved ?? -1), "
+            + "skipped \(erinJob?.skipped ?? -1)")
+        // A name taken by another person is never pulled into the folder (C4-M4).
+        var taken = replay
+        taken["account"] = ["username": "alice", "user_id": "99", "post_count": 5, "is_private": false]
+        writeReplay(taken)
+        let other = await run("Update of a name now someone else's", findMissing: false)
+        let refusedOther = other?.saved == 0 && (other?.state.label.contains("different Instagram account") ?? false)
+        writeReplay(replay)
+        // A folder renamed while its pull was queued is followed, never made again at its old path (A4-M5, C4-M1).
+        let renamedFolder = library.appendingPathComponent("alice renamed", isDirectory: true)
+        try? fm.moveItem(at: folder, to: renamedFolder)
+        var queued = app.engines.draft(username: "alice")
+        queued.accountFolder = folder
+        queued.content = [.posts]
+        let queuedJob = app.engines.startPull(queued, scanOnly: false, window: model)
+        await waitUntil(timeout: 120) { queuedJob?.state.isFinished ?? true }
+        let recreated = fm.fileExists(atPath: folder.path)
+        let followed = !recreated && queuedJob?.destination?.standardizedFileURL == renamedFolder.standardizedFileURL
+        note("update: queued pull went to \(queuedJob?.destination?.lastPathComponent ?? "nowhere") "
+            + "(\(queuedJob?.state.label ?? "no job")), old path made again \(recreated)")
+        try? fm.moveItem(at: renamedFolder, to: folder)
+        note("update: name taken by someone else refused \(refusedOther), folder renamed while queued followed \(followed)")
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
+            && retried && resumedOwn && refusedOther && followed
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass

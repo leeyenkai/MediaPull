@@ -330,6 +330,66 @@ def test_the_known_run_marks_the_listing_as_walked():
     assert tracker.stopped
 
 
+def test_the_posts_listing_ends_after_a_full_walk():
+    """Audit 4 (A4-M1): gallery-dl's GraphQL paginator ends without clearing its cursor; the end is read from the posts
+    generator running out, with the real paginator. A walk that stops part way does not end the listing."""
+    import json as _json
+    from gallery_dl.extractor import instagram
+
+    bridge.EMITTER = Capture()
+    bridge.patch_instagram()
+
+    def walk(pages, stop_after=None):
+        extr = instagram.InstagramPostsExtractor.from_url("https://www.instagram.com/alice/posts/")
+        extr._cursor = None
+        extr.csrf_token = "x"
+        queue = list(pages)
+
+        class Response:
+            def __init__(self, text):
+                self.text = text
+
+        extr.request = lambda url, **kw: Response(_json.dumps({"data": {"conn": queue.pop(0)}}))
+        api = instagram.InstagramAPI.__new__(instagram.InstagramAPI)
+        api.extractor = extr
+        api.exc = None
+        api._prepare_graphql = lambda *a: ({}, {"doc_id": "1", "variables": "{}"})
+
+        class Feed:
+            def user_feed(self, _item):
+                return api._pagination_graphql("PolarisProfilePostsTabContentQuery_connection", {"after": None}, "conn")
+
+        extr.api = Feed()
+        for number, _post in enumerate(extr.posts(), 1):
+            if stop_after and number >= stop_after:
+                break
+        return getattr(extr, "_mediapull_listing_end", False)
+
+    pages = [
+        {"edges": [{"node": {"id": i}} for i in range(12)], "page_info": {"has_next_page": True, "end_cursor": "C1"}},
+        {"edges": [{"node": {"id": i}} for i in range(12, 20)], "page_info": {"has_next_page": False, "end_cursor": None}},
+    ]
+    assert walk(pages) is True
+    assert walk(pages, stop_after=5) is False
+
+
+def test_single_failed_files_leave_the_pull_partial():
+    """Audit 4 (A4-M3): files that failed one by one are fetched again by Retry Failed; a listing that broke off is not."""
+    saved = dict(bridge.STATE)
+    try:
+        bridge.STATE.update(download_failed=2, extraction_failed=False, violations=0)
+        assert bridge.pull_status(0) == "completed"
+        assert bridge.pull_status(4) == "partial"
+        assert bridge.pull_status(4 | 1) == "failed"
+        bridge.STATE["extraction_failed"] = True
+        assert bridge.pull_status(4) == "failed"
+        bridge.STATE.update(download_failed=0, extraction_failed=False)
+        assert bridge.pull_status(4) == "failed", "an HTTP error of the listing alone is a failure"
+    finally:
+        bridge.STATE.clear()
+        bridge.STATE.update(saved)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

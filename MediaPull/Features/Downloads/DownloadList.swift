@@ -25,12 +25,19 @@ struct BatchEntry: Identifiable, Equatable {
         switch kind {
         case .checking: "Checking…"
         case let .instagram(draft):
-            draft.hashtag.map { "Instagram #\($0)" } ?? (draft.postURL != nil ? "Instagram post" : "Instagram @\(draft.username)")
+            Self.label(of: draft)
         case .video: "Video"
         case let .gallery(_, site):
             "Gallery on \(AppModel.shared.sites.name(SiteInfoKey(category: site.category, baseCategory: site.baseCategory)))"
         case .unrecognised: "Not recognised: skipped"
         }
+    }
+
+    private static func label(of draft: PullDraft) -> String {
+        if let tag = draft.hashtag { return "Instagram #\(tag)" }
+        if draft.postURL != nil { return "Instagram post" }
+        if !draft.username.isEmpty { return "Instagram @\(draft.username)" }
+        return draft.content.contains(.saved) ? "Your saved Instagram posts" : "Stories from accounts you follow"
     }
 
     var canRun: Bool {

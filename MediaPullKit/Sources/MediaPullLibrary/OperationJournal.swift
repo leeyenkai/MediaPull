@@ -87,6 +87,18 @@ public actor OperationJournal {
             .sorted { $0.date > $1.date }
     }
 
+    /// Files MediaPull moved to the Trash that Undo can still put back (the item is still in the Trash): records about them
+    /// wait until then (audit 4, B4-m12).
+    public func restorablePaths() -> Set<String> {
+        var paths = Set<String>()
+        for entry in entries() where !entry.undone {
+            for case let .trash(original, trashed) in entry.steps where fm.fileExists(atPath: trashed) {
+                paths.insert(original)
+            }
+        }
+        return paths
+    }
+
     /// Forgets journals older than `days` (the files they describe are untouched).
     public func prune(olderThan days: Int) {
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
@@ -135,6 +147,12 @@ public actor OperationJournal {
     public func run(_ plan: OrganisePlan, progress: @Sendable (Int, Int) -> Void = { _, _ in }) -> JournalEntry {
         var entry = JournalEntry(id: UUID(), title: plan.title, root: plan.root.path, date: Date(), steps: [], failures: [],
                                  undone: false, finished: false)
+        // A folder the plan relies on that went away since its preview is never made again (audit 4, B4-M1).
+        if let missing = plan.requiredFolders.first(where: { !fm.fileExists(atPath: $0.path) }) {
+            entry.failures = ["“\(missing.lastPathComponent)” is no longer there, so nothing was changed."]
+            entry.finished = true
+            return entry
+        }
         let total = plan.foldersToCreate.count + plan.moves.count + plan.itemsToTrash.count + plan.foldersToTrash.count
         var done = 0
         var lastSave = Date()

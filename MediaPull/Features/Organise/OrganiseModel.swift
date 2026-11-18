@@ -374,8 +374,13 @@ struct BatchRenameDraft: Equatable {
     var pattern = "{name}"
     /// Archive folders keep MediaPull's names, which their metadata depends on (R-1504).
     var archive: Bool
-    /// Modification dates of the first files, for the preview of {date}.
-    var dates: [URL: Date] = [:]
+    /// The first files' new names as the rename will give them (nil: unchanged), worked out off the main actor.
+    var preview: [BatchRenamePreviewRow] = []
+}
+
+struct BatchRenamePreviewRow: Equatable {
+    var old: String
+    var new: String?
 }
 
 extension OrganisePane: MediaListOwner {
@@ -437,27 +442,32 @@ final class OrganiseModel {
         }
         tab = .sort
         window?.setShowing(.organiseWork, true)
-        // The preview shows {date} as it will be: the first few files' dates, read off the main actor.
-        let first = Array(files.prefix(4))
-        Task { [weak self] in
-            let dates = await Task.detached(priority: .userInitiated) {
-                Dictionary(first.compactMap { url in
-                    (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate.map { (url, $0) }
-                }, uniquingKeysWith: { a, _ in a })
-            }.value
-            guard let self, self.batchRename?.files == files else { return }
-            self.batchRename?.dates = dates
-        }
+        updateBatchPreview()
     }
 
-    /// The first few new names, worked out from the pattern alone (dates are left to the real run).
-    func batchPreview(_ draft: BatchRenameDraft) -> [(old: String, new: String)] {
-        draft.files.prefix(4).enumerated().map { index, file in
-            let stem = FolderOperations.batchName(draft.pattern, stem: file.deletingPathExtension().lastPathComponent, index: index,
-                                                  count: draft.files.count, date: draft.dates[file])
-            let name = FileNaming.sanitize(stem, maxBytes: 230)
-            let ext = file.pathExtension.isEmpty ? "" : "." + file.pathExtension
-            return (file.lastPathComponent, name.isEmpty ? "(unchanged)" : name + ext)
+    func setBatchPattern(_ pattern: String) {
+        guard batchRename?.pattern != pattern else { return }
+        batchRename?.pattern = pattern
+        updateBatchPreview()
+    }
+
+    @ObservationIgnored private var batchPreviewTask: Task<Void, Never>?
+
+    /// The preview is planned as the rename itself is, so it shows the numbers names that are taken get (audit 4, B4-m14).
+    /// It reads the folder, so it runs off the main actor, a moment after typing stops.
+    private func updateBatchPreview() {
+        batchPreviewTask?.cancel()
+        guard let draft = batchRename else { return }
+        batchPreviewTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            let rows = await Task.detached(priority: .userInitiated) {
+                FolderOperations.batchRenamePreview(draft.files, pattern: draft.pattern)
+                    .map { BatchRenamePreviewRow(old: $0.old, new: $0.new) }
+            }.value
+            guard !Task.isCancelled, let self, self.batchRename?.files == draft.files, self.batchRename?.pattern == draft.pattern
+            else { return }
+            self.batchRename?.preview = rows
         }
     }
 
@@ -519,6 +529,8 @@ final class OrganiseModel {
     /// A closed window's Organise section stops listening for folder changes.
     isolated deinit {
         messageTask?.cancel()
+        siblingRefresh?.cancel()
+        batchPreviewTask?.cancel()
         AppModel.shared.analysis.onFolderChange[listenerID] = nil
         // Once this window is gone, its folders stop being watched (after the window's own reference has cleared).
         Task { @MainActor in OrganiseModel.updateAnalysisFolders() }
@@ -588,17 +600,58 @@ final class OrganiseModel {
     }
 
     private func foldersChanged(_ paths: [String]) {
+        let events = paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
         for pane in [source, target] {
-            guard let folder = pane.folder?.path else { continue }
+            // Any folder the tree shows, as in the Library (audit 4, B4-m3).
+            if events.contains(where: pane.treeCache.shows) { pane.invalidateTree() }
+            guard let folder = pane.folder?.standardizedFileURL.path else { continue }
             // A change inside the shown folder, or to a folder above it (renamed or moved to the Trash in the Finder).
-            let affected = paths.contains { path in
-                let event = path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
-                return event == folder || event.hasPrefix(folder + "/") || folder.hasPrefix(event == "/" ? event : event + "/")
+            let affected = events.contains { event in
+                event == folder || event.hasPrefix(folder + "/") || folder.hasPrefix(event == "/" ? event : event + "/")
             }
             if affected {
                 pane.reload()
                 pane.invalidateTree()
             }
+        }
+        if events.contains(where: siblingCache.shows) { refreshSiblings() }
+    }
+
+    /// MediaPull moved or renamed folders (any window or section): each pane's folder and top folder follow them, so the
+    /// target stays the folder it was (audit 4, B4-m2).
+    func foldersMoved(_ moves: [(from: String, to: String)]) {
+        var changed = false
+        for pane in [source, target] {
+            var root = pane.root, folder = pane.folder
+            for move in moves {
+                let from = URL(fileURLWithPath: move.from, isDirectory: true), to = URL(fileURLWithPath: move.to, isDirectory: true)
+                root = root.map { LibraryModel.moved($0, from: from, to: to) }
+                folder = folder.map { LibraryModel.moved($0, from: from, to: to) }
+            }
+            guard root != pane.root || folder != pane.folder else { continue }
+            pane.root = root
+            pane.folder = folder
+            changed = true
+        }
+        if changed { updateAnalysisFolders() }
+    }
+
+    /// Folders MediaPull moved to the Trash: a pane showing one goes to the folder above, and a pane whose top folder went
+    /// is emptied (the target then means in place again).
+    func foldersTrashed(_ paths: [String]) {
+        let gone = paths.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        var changed = false
+        for pane in [source, target] {
+            if let root = pane.root, gone.contains(where: { LibraryModel.isInside(root, $0) }) {
+                pane.root = nil
+                changed = true
+            } else if let folder = pane.folder, let top = gone.first(where: { LibraryModel.isInside(folder, $0) }) {
+                pane.folder = top.deletingLastPathComponent()
+            }
+        }
+        if changed {
+            pending = nil
+            updateAnalysisFolders()
         }
     }
 
@@ -607,7 +660,17 @@ final class OrganiseModel {
             pane.invalidateTree()
             pane.reload()
         }
+        refreshSiblings()
         app.libraryRevision += 1
+    }
+
+    /// Library folders were added, renamed or changed elsewhere (a save, a pull, the Library pane): the trees read their
+    /// folders again. The listings follow their own folders' changes.
+    func libraryChanged() {
+        for pane in [source, target] {
+            pane.invalidateTree()
+        }
+        refreshSiblings()
     }
 
     // MARK: Running changes
@@ -618,14 +681,7 @@ final class OrganiseModel {
         // records and analysis follow (audit 2, B2-M5).
         // A folder that is a library folder or holds one counts: trashing, emptying or moving it changes the library folder
         // too. Copies change nothing and are allowed (audit 3, B3-M4, B3-m1).
-        let roots = app.roots.map { AccountFolderStore.key($0.path) }
-        func touchesRoot(_ url: URL) -> Bool {
-            let key = AccountFolderStore.key(url.path)
-            return roots.contains { $0 == key || $0.hasPrefix(key + "/") }
-        }
-        if plan.itemsToTrash.contains(where: touchesRoot) || plan.foldersToTrash.contains(where: touchesRoot)
-            || plan.moves.contains(where: { $0.kind != .clone && touchesRoot($0.source) })
-        {
+        if plan.changes(anyOf: app.roots.map(\.url)) {
             message = "A library folder is not changed from Organise. Rename or remove it in the Library."
             return
         }
@@ -653,7 +709,9 @@ final class OrganiseModel {
         let job = Job(kind: .organise, title: plan.title)
         job.total = plan.moves.count + plan.itemsToTrash.count + plan.foldersToCreate.count + plan.foldersToTrash.count
         job.state = .running
-        if job.total > 20 { app.jobs.add(job) }
+        // Every change is a job, so Quit waits for it to stop between files (R-3807); small ones leave Activity once done.
+        let listed = plan.showsInActivity
+        app.jobs.add(job)
         working = plan.title
         job.task = Task { [weak self] in
             // The files move whether or not the window is still open: the records follow them and the job ends.
@@ -670,13 +728,24 @@ final class OrganiseModel {
                 job,
                 entry.finished ? (entry.failures.isEmpty ? .completed : .failed("Some files could not be moved")) : .cancelled
             )
+            if !listed, entry.failures.isEmpty { app.jobs.jobs.removeAll { $0 === job } }
             // A rename through temporary names that stopped between its two steps would leave files under hidden names:
             // it is taken back at once (audit 3, B3-m7, C3-m9).
             let usedTemporaryNames = plan.moves.contains { $0.destination.lastPathComponent.hasPrefix(".mediapull-rename-") }
-            if usedTemporaryNames, !entry.finished || !entry.failures.isEmpty {
-                _ = await app.undoChange(entry.id)
+            if usedTemporaryNames, !entry.finished || !entry.failures.isEmpty, !entry.steps.isEmpty {
+                let report = await app.undoChange(entry.id)
                 guard let self else { return }
-                self.message = "\(plan.title) stopped part way, so it was taken back: every file has its old name."
+                // Only what the undo really did is reported (audit 4, B4-m10).
+                if let report, report.skipped.isEmpty {
+                    self.message = "\(plan.title) stopped part way, so it was taken back: every file has its old name."
+                } else if let report {
+                    self.message = "\(plan.title) stopped part way and was taken back, except \(report.skipped.count): "
+                        + report.skipped.prefix(2).joined(separator: "; ")
+                } else {
+                    self.message = "\(plan.title) stopped part way and could not be taken back. Undo it in History to try again."
+                    self.window?.registerUndo(entry)
+                    self.lastEntryID = entry.id
+                }
                 self.working = nil
                 await self.refreshHistory()
                 return
@@ -685,7 +754,8 @@ final class OrganiseModel {
             self.message = entry.failures.isEmpty
                 ? "\(plan.title): done. ⌘Z undoes it."
                 : entry.failures.prefix(3).joined(separator: "\n")
-            self.window?.registerUndo(entry)
+            // A plan that changed nothing (its folder went away since the preview) leaves nothing to undo.
+            if !entry.steps.isEmpty { self.window?.registerUndo(entry) }
             self.lastEntryID = entry.id
             await self.refreshHistory()
             self.working = nil
@@ -782,6 +852,21 @@ final class OrganiseModel {
     }
 
     @ObservationIgnored private let siblingCache = FolderTreeCache()
+    @ObservationIgnored private var siblingRefresh: Task<Void, Never>?
+
+    /// Folders were renamed, made or trashed: Merge Into reads its folders again, so it never offers one that is gone
+    /// (audit 4, B4-M1).
+    private func refreshSiblings() {
+        siblingRefresh?.cancel()
+        siblingRefresh = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, let self else { return }
+            await self.siblingCache.refresh()
+            guard !Task.isCancelled else { return }
+            self.source.treeRevision += 1
+            self.target.treeRevision += 1
+        }
+    }
 
     // MARK: Automatic sorts
 

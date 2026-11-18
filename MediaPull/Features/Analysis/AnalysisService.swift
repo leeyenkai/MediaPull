@@ -644,6 +644,12 @@ final class AnalysisService {
         await refreshPeople()
     }
 
+    /// A named person with no photos left is removed from the People list (audit 4, B4-m9).
+    func forget(_ person: UUID) async {
+        await store?.forget(person: person)
+        await refreshPeople()
+    }
+
     func dismissSuggestion(_ person: UUID) async {
         guard let name = suggestions[person] else { return }
         await store?.dismissSuggestion(person: person, name: name)

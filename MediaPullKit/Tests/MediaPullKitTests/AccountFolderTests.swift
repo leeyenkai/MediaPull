@@ -419,4 +419,78 @@ final class AccountFolderTests: XCTestCase {
         XCTAssertEqual(again.keys, ["ig:1", "ig:2"])
         XCTAssertEqual(again.places?.first?.cursor, "abc")
     }
+
+    /// Audit round 4 (A4-m3, A4-M5, C4-m6, C4-M4): duplicate records keep both places; a running pull finds its folder by
+    /// record wherever it went, and gets nil once it is in the Trash; a record reused at a path takes that folder's bookmark;
+    /// the folder keeps its account's user id.
+    func testRoundFourRecordCases() async throws {
+        let records = root.appendingPathComponent("records")
+        let folder = root.appendingPathComponent("alice")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var first = AccountFolderRecord(account: "alice", folder: folder)
+        first.places = [ResumePlace(cursor: "a", untilEnd: false)]
+        first.lastUpdate = Date()
+        var second = AccountFolderRecord(account: "alice", folder: folder)
+        second.places = [ResumePlace(cursor: "b", untilEnd: true)]
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        for record in [first, second] {
+            try JSONEncoder().encode(record).write(to: records.appendingPathComponent("\(record.id.uuidString).json"))
+        }
+        let store = AccountFolderStore(folder: records)
+        let merged = await store.record(account: "alice", folder: folder)
+        XCTAssertEqual(Set((merged.places ?? []).map(\.cursor)), ["a", "b"], "merging two records of one folder keeps both places")
+
+        let renamed = root.appendingPathComponent("alice 2024")
+        try FileManager.default.moveItem(at: folder, to: renamed)
+        let followed = await store.currentFolder(of: merged.id)
+        XCTAssertEqual(followed?.lastPathComponent, "alice 2024", "a running pull follows its folder through a Finder rename")
+        let trash = root.appendingPathComponent(".Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: renamed, to: trash.appendingPathComponent("alice 2024"))
+        let gone = await store.currentFolder(of: merged.id)
+        XCTAssertNil(gone, "a folder moved to the Trash is gone for a running pull, never made again")
+
+        // A new folder at the trashed folder's old path reuses the record, which now leads to the new folder.
+        try FileManager.default.createDirectory(at: renamed, withIntermediateDirectories: true)
+        let reused = await store.record(account: "alice", folder: renamed)
+        let moved = root.appendingPathComponent("alice new")
+        try FileManager.default.moveItem(at: renamed, to: moved)
+        let now = await store.currentFolder(of: reused.id)
+        XCTAssertEqual(now?.lastPathComponent, "alice new", "the reused record follows the new folder, not the one in the Trash")
+
+        await store.update(reused.id, userID: "42")
+        let withID = await store.record(account: "alice", folder: moved)
+        XCTAssertEqual(withID.userID, "42")
+    }
+
+    /// Audit round 4 (C4-m2, B4-m12): Instagram entries under a folder that has taken them over are pruned with their
+    /// files; entries of files Undo can still bring back from the Trash are kept.
+    func testPruneKeepsRestorableFilesAndForgetsRecordedOnes() async throws {
+        let store = try AppStore.make(inMemory: true)
+        let recorded = root.appendingPathComponent("lib/alice").path
+        await store.recordArchive(key: "ig:1", account: "alice", path: recorded + "/posts/gone.jpg", sha256: "")
+        await store.recordArchive(key: "ig:2", account: "bob", path: root.appendingPathComponent("lib/bob/posts/gone.jpg").path,
+                                  sha256: "")
+        let trashed = root.appendingPathComponent("lib/web/a.jpg").path
+        await store.recordArchive(key: "web:1", account: "web", path: trashed, sha256: "")
+        await store.prune(keepAccounts: [], recordedFolders: [recorded], restorable: [trashed])
+        let alice = await store.takeInstagramKeys(account: "alice", under: recorded)
+        XCTAssertTrue(alice.isEmpty, "the folder's record keeps these; the shared table lets them go")
+        let bob = await store.takeInstagramKeys(account: "bob", under: root.appendingPathComponent("lib/bob").path)
+        XCTAssertEqual(bob, ["ig:2"], "a folder with no record yet still has them waiting")
+        // Undo puts the file back: it is still known as saved.
+        _ = file("lib/web/a.jpg")
+        let found = await store.archivedPaths(for: ["web:1"])
+        XCTAssertEqual(found["web:1"], trashed, "the entry of a file Undo can bring back survives the prune")
+    }
+
+    /// Found while closing audit 4: the key of a folder must not change when it moves away (standardizing drops "/private"
+    /// only for paths that exist), or a pull queued before a rename cannot find its folder's record.
+    func testFolderKeysDoNotDependOnTheFolderExisting() {
+        let base = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        XCTAssertTrue(base.hasPrefix("/var/"), base)
+        for path in [base, base + "/MediaPull-gone-\(UUID().uuidString)"] {
+            XCTAssertEqual(AccountFolderStore.key("/private" + path), AccountFolderStore.key(path), path)
+        }
+    }
 }
