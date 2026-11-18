@@ -32,7 +32,8 @@ code that does not do what they say.
 
 The freeze is lifted for new features decided after round 23, each written into the spec first. Save As in the Downloads
 pane (D-108) is audited under the rules above until two rounds in a row find no major; its rounds look only at D-108 and
-at code it touches, and do not re-report D-93 to D-107.
+at code it touches, and do not re-report D-93 to D-107. That audit ended at round 28, after rounds 27 and 28 found
+nothing above minor (`docs/audits/2026-11-18-24.md` to `-28.md`).
 
 ## Cause categories (from the 1.8 review, plan section C)
 
