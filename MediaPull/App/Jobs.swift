@@ -94,6 +94,8 @@ final class Job: Identifiable {
     @ObservationIgnored var queueToken: UUID?
     /// A pull that walks the whole account (Find Missing, Retry Failed), told apart from an Update of the same folder.
     var walksAll = false
+    /// A one-click Update or Find Missing of a folder (not a form pull or a continuation).
+    var isUpdate = false
     /// Where an Instagram listing had got to in this job, so Resume continues this job's own pass (R-1112).
     var lastCursor: String?
     /// The id of the place this job's walk leaves in its account folder if it stops part way (D-87); the same across Resume.

@@ -94,8 +94,19 @@ final class AppModel {
     }
 
     private func bootstrap() async {
-        // The first run with account folder records: what was saved before it is what earlier versions remembered.
-        if preferences.accountFoldersBegan == nil { preferences.accountFoldersBegan = Date() }
+        // The first run with account folder records: what was saved before it is what earlier versions remembered. A Mac
+        // that already has records (from an earlier 1.8 build) began when its oldest record was made (audit 12, C12-m3).
+        if preferences.accountFoldersBegan == nil {
+            let records = SelfTestRunner.isActive ? nil : AccountFolderStore.defaultFolder
+            let oldest = await Task.detached(priority: .userInitiated) { () -> Date? in
+                guard let records else { return nil }
+                // lint:allow main-io inside a detached task
+                let files = (try? FileManager.default.contentsOfDirectory(at: records, includingPropertiesForKeys: [.creationDateKey]))
+                    ?? []
+                return files.compactMap { try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate }.min()
+            }.value
+            preferences.accountFoldersBegan = oldest ?? Date()
+        }
         // First, before anything else at launch: tabs hold their first page until the rules are in place (R-508).
         do {
             ruleList = try await WebViewSetup.uploadBlockingRules()
@@ -129,9 +140,10 @@ final class AppModel {
             // Only folders updated at least once have taken over what earlier versions remembered (adoptEarlierMemory).
             let recorded = accountFolderList.filter { $0.lastUpdate != nil }.map(\.path)
             let journal = journal
+            let began = preferences.accountFoldersBegan
             Task.detached(priority: .background) {
                 let restorable = await journal.restorablePaths()
-                await store.prune(keepAccounts: keep, recordedFolders: recorded, restorable: restorable)
+                await store.prune(keepAccounts: keep, recordedFolders: recorded, restorable: restorable, earlierMemoryBefore: began)
             }
             if roots.isEmpty, preferences.onboardingDone, !SelfTestRunner.isActive {
                 await addDefaultRoot()
@@ -574,16 +586,31 @@ final class AppModel {
                                        by: { $0.source.engine?.username?.lowercased() ?? "" })
             var batches: [(items: [MediaItem], target: SaveTarget, folder: URL?, account: String?)] = []
             var placed = Set<String>()
+            // Items of an account with no folder, saved while another account's folder is the save folder: a new folder
+            // beside that one, never loose inside it (D-78, audit 12, A12-M2).
+            var beside: [(items: [MediaItem], target: SaveTarget)] = []
             for (account, group) in byAccount {
+                // Looked for beside the save folder when it is another account's folder (A12-M2).
+                let around = await self.engines.accountsBase(folder, except: account)
                 // A remembered folder counts too: a Plain one has no metadata to find it by (audit 4, C4-M2).
-                let recorded = await self.engines.recordedFolder(of: account, around: folder)
+                let recorded = await self.engines.recordedFolder(of: account, around: around)
                 let found = await Task.detached(priority: .userInitiated) { () -> (URL, Bool?)? in
                     guard let existing = recorded
-                        ?? AccountFolders.resolveTarget(account: account, saveFolder: folder, root: rootURL).existing
+                        ?? AccountFolders.resolveTarget(account: account, saveFolder: around, root: rootURL).existing
                     else { return nil }
                     return (existing, AccountFolders.sortsByType(existing))
                 }.value
-                guard let (existing, byType) = found else { continue }
+                guard let (existing, byType) = found else {
+                    if AccountFolderStore.key(around.path) != AccountFolderStore.key(folder.path) {
+                        var besideTarget = target
+                        besideTarget.folder = around
+                        besideTarget.autoSubfolders = true
+                        if let layout = self.root(containing: around)?.layout { besideTarget.layout = layout }
+                        beside.append((group, besideTarget))
+                        placed.formUnion(group.map(\.id))
+                    }
+                    continue
+                }
                 // Items of whoever has the name now never go into the folder of the account that had it (D-88, audit 6,
                 // A6-M2): the folder's account id against each item's owner.
                 // A folder with no id yet (from before 1.8) learns it at its first update (D-92).
@@ -639,14 +666,17 @@ final class AppModel {
                     placed.formUnion(savedPosts.map(\.id))
                 }
             }
+            for group in beside { batches.append((group.items, group.target, nil, nil)) }
             batches.append((toSave.filter { !placed.contains($0.id) }, target, nil, nil))
             // Instagram items with no folder of their account get one made by this save (in a library folder): it records
             // their owner's id, as a pull's new folder does, so later items of whoever has the name are checked against
             // it (audit 9, A9-M3).
             let placedNow = placed
+            let candidates = toSave.filter { !placedNow.contains($0.id) }.map { ($0, target) }
+                + beside.flatMap { group in group.items.map { ($0, group.target) } }
             let newAccountFolders: [String: (folder: URL, owner: String)] = await Task.detached(priority: .userInitiated) {
                 var made: [String: (folder: URL, owner: String)] = [:]
-                for item in toSave where !placedNow.contains(item.id) {
+                for (item, target) in candidates {
                     guard let engine = item.source.engine, engine.isInstagram, let name = engine.username?.lowercased(),
                           let owner = engine.ownerID, made[name] == nil,
                           !["saved", "collection"].contains(engine.subcategory) else { continue }
@@ -722,6 +752,12 @@ final class AppModel {
             for (account, made) in newAccountFolders where FileManager.default.fileExists(atPath: made.folder.path) {
                 let record = await self.accountFolders.record(account: account, folder: made.folder)
                 if record.userID == nil { await self.accountFolders.update(record.id, userID: made.owner) }
+                // And what it holds, so an item deleted from it never comes back at its first Update (D-79, audit 12,
+                // A12-M1).
+                let keys = Set(toSave.filter { item in
+                    item.source.engine?.username?.lowercased() == account && outcomes[item.id]?.url != nil
+                }.compactMap { $0.source.engine?.key })
+                if !keys.isEmpty { await self.accountFolders.addKeys(keys, to: record.id) }
             }
             // Items a cancelled job never reached are no longer waiting.
             window?.clearQueued(items.map(\.id).filter { outcomes[$0] == nil })

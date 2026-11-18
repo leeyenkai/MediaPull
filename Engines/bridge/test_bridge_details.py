@@ -412,6 +412,32 @@ def test_the_account_is_reported_when_its_name_is_looked_up():
     assert accounts[0]["user_id"] == "4242" and accounts[0]["username"] == "alice", accounts
 
 
+def test_playlist_videos_that_fail_are_counted():
+    """Audit 11 (A11-M3), audit 12 (A12-M3): in a playlist a video that fails is a failed file, one that can never be
+    downloaded is skipped, and outside a playlist errors stay log lines (the download itself fails)."""
+    capture = Capture()
+    bridge.EMITTER = capture
+    saved = list(bridge.STATE.get("errors") or [])
+    try:
+        bridge.STATE["errors"] = []
+        logger = bridge.StreamLogger(True)
+        logger.error("ERROR: [site] abc: HTTP Error 500")
+        logger.error("ERROR: [site] def: Private video. Sign in if you've been granted access")
+        bridge.StreamLogger(False).error("ERROR: something")
+    finally:
+        bridge.STATE["errors"] = saved
+    errors = [fields for kind, fields in capture.events if kind == "error"]
+    assert [e["code"] for e in errors] == ["download_failed", "unavailable"], errors
+    assert all(e["fatal"] is False for e in errors)
+
+
+def test_a_retry_skips_saved_videos():
+    """Audit 12 (A12-M3): a playlist's Retry Failed downloads only the videos not saved yet."""
+    check = bridge.skip_saved(bridge.refuse_live_streams, {"abc"})
+    assert check({"id": "abc"}) == "Already saved."
+    assert check({"id": "xyz"}) is None
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

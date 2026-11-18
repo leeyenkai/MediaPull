@@ -452,7 +452,8 @@ final class EngineService {
                 followed = folder.deletingLastPathComponent()
             }
             guard let followed else {
-                app.jobs.finish(job, .failed(FollowedFolder.goneMessage(chosen.url)))
+                // A Retry or Resume posts no "finished" notice for a folder that went away (audit 12, A12-m3).
+                app.jobs.finish(job, .failed(FollowedFolder.goneMessage(chosen.url)), notify: false)
                 return
             }
             if followed.standardizedFileURL.path != chosen.url.standardizedFileURL.path {
@@ -533,7 +534,8 @@ final class EngineService {
         var place: AccountPlace?
         if isAccount, draft.postURL == nil, !scanOnly, let root {
             guard let found = await resolvePlace(account: account, draft: draft, root: root) else {
-                app.jobs.finish(job, .failed("The folder of @\(account) is no longer there. It may have been moved to the Trash."))
+                app.jobs.finish(job, .failed("The folder of @\(account) is no longer there. It may have been moved to the Trash."),
+                                notify: false)
                 await app.refreshAccountFolders()
                 return
             }
@@ -1063,7 +1065,9 @@ final class EngineService {
     private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination, name ownName: String? = nil) async
         -> AccountPlace? {
         let libraryRoot = app.root(containing: root.url)?.url
-        let saveFolder = root.url
+        // Another account met in a pull (a post's, a tray story's) is looked for beside the account folder the save folder
+        // is, not inside it (A12-M2).
+        let saveFolder = ownName != nil ? await accountsBase(root.url, except: account) : root.url
         let name = ownName ?? draft.folderName.nonEmpty ?? account
         // A folder chosen when the pull was queued is followed to where it is now (renamed or moved since).
         var chosen: URL?
@@ -1098,6 +1102,22 @@ final class EngineService {
 
     /// The remembered folder of `account` that `saveFolder` is, is inside, or holds. Records count as well as what folders
     /// hold, since a Plain folder has no metadata files to read (audit 4, C4-M2).
+    /// Where other accounts' folders are found and made: the save folder, or, when it is (or is inside) another account's
+    /// folder, the folder that one sits in, never outside the library (D-78, audit 12, A12-M2).
+    func accountsBase(_ saveFolder: URL, except account: String) async -> URL {
+        let root = app.root(containing: saveFolder)?.url
+        var around: URL?
+        if let record = app.accountFolder(containing: saveFolder), record.account != account.lowercased() {
+            around = URL(fileURLWithPath: record.path, isDirectory: true)
+        } else {
+            let detected = await Task.detached(priority: .userInitiated) { AccountFolders.detect(saveFolder, stopAt: root) }.value
+            if let detected, detected.account != account.lowercased() { around = detected.folder }
+        }
+        guard let around else { return saveFolder }
+        let isLibrary = root.map { AccountFolderStore.key($0.path) == AccountFolderStore.key(around.path) } ?? false
+        return isLibrary ? around : around.deletingLastPathComponent()
+    }
+
     func recordedFolder(of account: String, around saveFolder: URL) async -> URL? {
         let mine = await app.accountFolders.all().filter { $0.account == account.lowercased() }
         let key = AccountFolderStore.key(saveFolder.path)
@@ -1119,8 +1139,11 @@ final class EngineService {
         // the folder they were saved into, never to a new folder made at its path later (audit 10, A10-M2). A folder's
         // creation date is not used: a move or copy to another disk resets it (audit 11, A11-M2). The place where an earlier
         // version's pull stopped (only earlier versions stored one) is taken over as before (C3-m14, A11-M1).
+        // An account with only this folder also takes what was remembered under a path that no longer exists: the folder
+        // renamed or moved in the Finder before its first Update (audit 12, C12-M2).
+        let only = await app.accountFolders.all().filter { $0.account == account.lowercased() }.count <= 1
         let keys = await app.store?.takeInstagramKeys(account: account, under: record.path,
-                                                      savedBefore: app.preferences.accountFoldersBegan) ?? []
+                                                      savedBefore: app.preferences.accountFoldersBegan, orphansToo: only) ?? []
         if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: record.id) }
         let info = await app.store?.account(account)
         if let cursor = info?.resumeCursor, !cursor.isEmpty {
@@ -1156,7 +1179,7 @@ final class EngineService {
         let key = AccountFolderStore.key(folder.path)
         // Find Missing is not the same work as an Update: it queues after one (audit 11, C11-m6).
         if let running = app.jobs.jobs.first(where: {
-            $0.kind == .pull && $0.state.canCancel && $0.walksAll == findMissing
+            $0.kind == .pull && $0.state.canCancel && $0.isUpdate && $0.walksAll == findMissing
                 && $0.destination.map { AccountFolderStore.key($0.path) == key } == true
         }) {
             return running
@@ -1177,6 +1200,8 @@ final class EngineService {
         // where it stopped right after (runPull).
         let job = startPull(draft, scanOnly: false, window: window)
         job?.walksAll = findMissing
+        // Only another Update or Find Missing of the folder stands in for this one, not a stories-only pull (A12-m4).
+        job?.isUpdate = true
         return job
     }
 
@@ -1245,8 +1270,9 @@ final class EngineService {
             .appendingPathComponent(FileNaming.sanitize(channel, maxBytes: 80), isDirectory: true)
         app.jobs.add(job)
         let url = pageURL ?? info.webpageURL
-        // Retry saves where the folder is then (audit 7, A7-m3).
+        // Retry saves where the folder is then (audit 7, A7-m3), and downloads only the videos not saved yet (A12-M3).
         let folder = FollowedFolder(root.url)
+        let savedIDs = VideoRun()
         let run = { [weak self, weak job] in
             guard let self, let job else { return }
             job.task = Task { [weak self, weak job] in
@@ -1265,7 +1291,10 @@ final class EngineService {
                 if now.standardizedFileURL.path != folder.url.standardizedFileURL.path {
                     job.destination = job.destination.map { LibraryModel.followed($0, from: folder.url.path, to: now.path) }
                 }
-                await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site)
+                var extras = extras
+                extras.skipIDs = Array(savedIDs.ids)
+                await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site,
+                                    saved: savedIDs)
             }
         }
         run()
@@ -1277,7 +1306,7 @@ final class EngineService {
     }
 
     private func runVideo(job: Job, url: URL, info: VideoInfo, format: VideoDownloadFormat, height: Int?, extras: BridgeRequest.Extras,
-                          root: SaveDestination, site: String) async
+                          root: SaveDestination, site: String, saved savedIDs: VideoRun) async
     {
         guard let bridge, let stagingRoot = app.enginePaths?.staging else {
             app.jobs.finish(job, .failed("The download engine is not available."))
@@ -1320,6 +1349,7 @@ final class EngineService {
                                                      site: site, job: job)
                     {
                         saved[found.key] = url
+                        if let id = found.meta["id"]?.string { savedIDs.ids.insert(id) }
                         for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] {
                             if let problem = await placeAttachment(path, kind: kind, beside: url) { job.notes.append(problem) }
                         }
@@ -1333,6 +1363,10 @@ final class EngineService {
                     } else {
                         waiting[key, default: []].append((path, kind))
                     }
+                case let .error(code, message, _, false) where code == "unavailable":
+                    // Never downloadable (private, members only, removed): skipped with the reason, not a failure.
+                    job.skipped += 1
+                    if job.notes.count < 30 { job.notes.append(message) }
                 case let .error(code, message, key, fatal):
                     if code == "download_failed", !fatal {
                         // A video of a playlist that could not be downloaded is counted, so Retry Failed is offered
@@ -1357,7 +1391,13 @@ final class EngineService {
             return
         }
         if job.saved + job.duplicates == 0 {
-            app.jobs.finish(job, .failed(failure ?? "The video could not be downloaded."))
+            // Said plainly, and offered to Retry Failed like any failed file (audit 12, A12-m5).
+            let reason = Self.plainEngineError(failure ?? "The video could not be downloaded.")
+            if job.failed == 0 {
+                job.failed = 1
+                job.failures = [(url.absoluteString, reason)]
+            }
+            app.jobs.finish(job, .failed(reason))
         } else {
             if let failure, job.failed > 0 || extras.playlist { job.notes.append(failure) }
             app.jobs.finish(job, .completed)
@@ -1802,5 +1842,22 @@ private final class PullRun {
         guard draft.postURL == nil, draft.hashtag == nil else { return }
         draft.accountFolderID = id
         draft.accountFolder = folder
+    }
+}
+
+/// The videos of a playlist job saved so far, kept across its Retry.
+@MainActor
+private final class VideoRun {
+    var ids = Set<String>()
+}
+
+extension EngineService {
+    /// An engine error without its internal class name and "ERROR:" prefix.
+    static func plainEngineError(_ message: String) -> String {
+        var text = message
+        if let colon = text.range(of: ": "), text[..<colon.lowerBound].allSatisfy({ $0.isLetter }),
+           text[..<colon.lowerBound].hasSuffix("Error") { text = String(text[colon.upperBound...]) }
+        if text.hasPrefix("ERROR: ") { text = String(text.dropFirst(7)) }
+        return text
     }
 }

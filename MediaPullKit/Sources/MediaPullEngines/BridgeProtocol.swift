@@ -307,6 +307,8 @@ public struct BridgeRequest: Encodable, Sendable {
         public var autoSubtitles = false
         public var thumbnail = false
         public var description = false
+        /// Videos of a playlist already saved by this job: a Retry downloads only the rest (audit 12, A12-M3).
+        public var skipIDs: [String] = []
 
         public init() {}
 
@@ -318,6 +320,7 @@ public struct BridgeRequest: Encodable, Sendable {
             case dateBefore = "date_before"
             case rateLimit = "rate_limit"
             case autoSubtitles = "auto_subtitles"
+            case skipIDs = "skip_ids"
         }
     }
 

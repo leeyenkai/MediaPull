@@ -1190,6 +1190,45 @@ def refuse_live_streams(info, incomplete=False):
     return None
 
 
+def skip_saved(inner, saved):
+    """A Retry of a playlist downloads only the videos not saved yet (audit 12, A12-M3)."""
+    def check(info, incomplete=False):
+        if saved and str(info.get("id") or "") in saved:
+            return "Already saved."
+        return inner(info, incomplete=incomplete)
+    return check
+
+
+UNAVAILABLE = ("private video", "members-only", "members only", "this video is not available", "video unavailable",
+               "premieres in", "has been removed", "is not available in your country", "sign in to confirm your age")
+
+
+class StreamLogger:
+    """yt-dlp's logger for downloads. In a playlist yt-dlp goes on past a video it cannot download: that video is a
+    failure the app counts and offers to retry, never only a log line (audit 11, A11-M3), and one that can never be
+    downloaded (private, members only, removed, not yet out) is skipped instead (audit 12, A12-M3)."""
+
+    def __init__(self, playlist):
+        self.playlist = playlist
+
+    def debug(self, message):
+        pass
+
+    def info(self, message):
+        pass
+
+    def warning(self, message):
+        EMITTER.emit("log", level="warning", logger="yt-dlp", message=_clean(message))
+
+    def error(self, message):
+        text = _clean(message)
+        STATE["errors"].append(text)
+        EMITTER.emit("log", level="error", logger="yt-dlp", message=text)
+        if self.playlist:
+            code = "unavailable" if any(word in text.lower() for word in UNAVAILABLE) else "download_failed"
+            EMITTER.emit("error", code=code, message=text[:300], fatal=False)
+
+
 def stream_options(request, staging, logger, progress):
     """yt-dlp options for a download: the chosen format plus the person's extra choices (SPEC R-3505)."""
     import yt_dlp
@@ -1223,7 +1262,7 @@ def stream_options(request, staging, logger, progress):
         # The bundled ffmpeg has no network protocols (R-507): yt-dlp's own downloaders fetch every stream.
         "hls_prefer_native": True,
         "external_downloader": {},
-        "match_filter": refuse_live_streams,
+        "match_filter": skip_saved(refuse_live_streams, set(extras.get("skip_ids") or [])),
     }
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
@@ -1279,24 +1318,6 @@ def op_stream(request):
     STAGING["root"] = staging
     playlist = bool((request.get("extras") or {}).get("playlist"))
 
-    class Logger:
-        def debug(self, message):
-            pass
-
-        def info(self, message):
-            pass
-
-        def warning(self, message):
-            EMITTER.emit("log", level="warning", logger="yt-dlp", message=_clean(message))
-
-        def error(self, message):
-            STATE["errors"].append(_clean(message))
-            EMITTER.emit("log", level="error", logger="yt-dlp", message=_clean(message))
-            # In a playlist yt-dlp goes on past a video it cannot download: that video is a failure the app counts and
-            # offers to retry, never only a log line (audit 11, A11-M3).
-            if playlist:
-                EMITTER.emit("error", code="download_failed", message=_clean(message)[:300], fatal=False)
-
     last = {"t": 0.0}
 
     def progress(info):
@@ -1317,7 +1338,7 @@ def op_stream(request):
                 emitted["count"] += 1
             return [], info
 
-    options = stream_options(request, staging, Logger(), progress)
+    options = stream_options(request, staging, StreamLogger(playlist), progress)
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.add_post_processor(Emit(), when="after_move")

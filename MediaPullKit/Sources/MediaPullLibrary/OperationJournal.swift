@@ -47,7 +47,9 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
         // An undone change still names the files it moved (audit 7, B7-m7).
         (undone ? undoneSteps ?? steps : steps).filter {
             switch $0 {
-            case let .move(from, _, _, _), let .clone(from, _, _): !from.hasSuffix(".json")
+            // A rename through a temporary name is one file, not two (audit 12, B12-m2).
+            case let .move(from, to, _, _): !from.hasSuffix(".json") && !OperationJournal.isTemporary(to)
+            case let .clone(from, _, _): !from.hasSuffix(".json")
             default: false
             }
         }.count
@@ -108,7 +110,8 @@ public actor OperationJournal {
     public func restorablePaths() -> Set<String> {
         var paths = Set<String>()
         for entry in entries() where !entry.undone {
-            for case let .trash(original, trashed) in entry.steps where fm.fileExists(atPath: trashed) {
+            // Only the item the change trashed, not another item put in the Trash later under its name (audit 12, B12-m5).
+            for case let .trash(original, trashed) in entry.steps where fm.fileExists(atPath: trashed) && isSame(trashed, in: entry) {
                 paths.insert(original)
             }
         }
@@ -313,8 +316,15 @@ public actor OperationJournal {
     func noteRemade(_ path: String, in entry: inout JournalEntry) {
         let old = entry.identities?[path]
         note(path, in: &entry)
-        if let old, let new = entry.identities?[path], old != new { remade[old] = new }
+        if let old, let new = entry.identities?[path], old != new {
+            remade[old] = new
+            // What a folder copied again holds is new too (audit 12, B12-M1).
+            if Self.isFolder(URL(fileURLWithPath: path)) { remadeFolders.insert(path) }
+        }
     }
+
+    /// Folders copied again by Redo this session: the files in them are the ones later changes moved or renamed.
+    private var remadeFolders = Set<String>()
 
     /// Identities of folders and copies made again by Redo, by the identity they replace (this session: Redo lives in it).
     private var remade: [String: String] = [:]
@@ -343,7 +353,7 @@ public actor OperationJournal {
         while noted != now, let next = remade[noted], seen.insert(noted).inserted {
             noted = next
         }
-        return noted == now
+        return noted == now || remadeFolders.contains { path.hasPrefix($0 + "/") }
     }
 
     /// Creates a destination folder that is not there (deleted after the preview) and journals each folder it makes, so
@@ -359,6 +369,13 @@ public actor OperationJournal {
             }
             missing.append(current)
             current = current.deletingLastPathComponent()
+        }
+        // Built only inside the folder the change made them in, never inside another folder that took its name (audit 12,
+        // B12-m1).
+        if !missing.isEmpty, !isSame(current.path, in: entry) {
+            throw CocoaError(.fileNoSuchFile, userInfo: [
+                NSLocalizedDescriptionKey: "“\(current.lastPathComponent)” is another folder now, so this was not changed.",
+            ])
         }
         if !missing.isEmpty { note(current.path, in: &entry) }
         for created in missing.reversed() {
@@ -472,7 +489,7 @@ public actor OperationJournal {
         // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
         entry.steps = left.reversed().flatMap { $0 }
         entry.undone = left.isEmpty
-        save(entry)
+        if !save(entry) { report.skipped.append(Self.unsavedNote) }
         return report
     }
 
@@ -498,11 +515,19 @@ public actor OperationJournal {
                 redo(step, allowed: allowed, entry: &entry, report: &report)
             }
         }
-        entry.undone = false
-        entry.undoneSteps = nil
-        save(entry)
+        // Nothing done again: the change stays undone, so Redo can be tried once what was in the way is gone (audit 12,
+        // B12-m4).
+        if report.done > 0 {
+            entry.undone = false
+            entry.undoneSteps = nil
+        }
+        if !save(entry) { report.skipped.append(Self.unsavedNote) }
         return report
     }
+
+    /// Said when a journal could not be written after Undo or Redo (a full disk), so a later Undo is not trusted blindly
+    /// (audit 12, B12-m7).
+    static let unsavedNote = "MediaPull could not record this, so it may not be possible to undo or redo it again."
 
     @discardableResult
     func redo(_ step: JournalStep, allowed: Set<String>, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
@@ -523,9 +548,10 @@ public actor OperationJournal {
                 return true
             case let .move(from, to, _, _):
                 guard isSame(from, in: entry) else {
-                    report.skipped.append(fm.fileExists(atPath: from)
-                        ? "\(Self.shownName(from, otherwise: to)) was changed since, so it was left as it is"
-                        : "\(Self.shownName(from, otherwise: to)) is no longer at \(Self.shownName(from, otherwise: to))")
+                    // A temporary name is never shown; nor is a name the item was only going to get (B12-m3).
+                    let name = Self.isTemporary(from) ? "A renamed file" : Self.shownName(from)
+                    report.skipped.append(fm.fileExists(atPath: from) ? "\(name) was changed since, so it was left as it is"
+                        : "\(name) is no longer where it was, so it was left")
                     return false
                 }
                 let folder = URL(fileURLWithPath: to).deletingLastPathComponent()
@@ -556,7 +582,7 @@ public actor OperationJournal {
                         + "its name is taken")
                 }
                 try moveItem(URL(fileURLWithPath: from), to: target, entry: &entry)
-                if !to.hasSuffix(".json") { report.restored += 1 }
+                if !to.hasSuffix(".json"), !Self.isTemporary(target.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((from, target.path))
                 return true
@@ -691,7 +717,7 @@ public actor OperationJournal {
             }
             do {
                 try fm.moveItem(at: dest, to: back)
-                if !to.hasSuffix(".json") { report.restored += 1 }
+                if !to.hasSuffix(".json"), !Self.isTemporary(back.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((to, back.path))
                 // For Redo: what is back at its old place (or under the free name it got), and the folder it left (B11-m1).

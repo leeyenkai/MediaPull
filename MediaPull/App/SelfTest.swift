@@ -83,6 +83,13 @@ final class SelfTestRunner {
         guard let (url, out, limit) = Self.arguments else { return }
         if let launched = Self.secondsSinceProcessStart() { note(String(format: "window ready %.2f s after launch", launched)) }
         let app = AppModel.shared
+        // The settings a result depends on start from their defaults, whoever's Mac this runs on (audit 12, C12-m6). Only
+        // in memory: a self-test never writes the person's settings.
+        app.preferences.defaultContent = Set(InstagramContent.defaults)
+        app.preferences.archiveEngineTemplate = NameTemplate.archiveEngine.pattern
+        app.preferences.archiveWebTemplate = NameTemplate.archiveWeb.pattern
+        app.preferences.plainTemplate = NameTemplate.plain.pattern
+        app.preferences.stopAfterKnown = 12
         let library = out.appendingPathComponent("library", isDirectory: true)
         try? FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
         while app.store == nil {
@@ -1017,10 +1024,11 @@ final class SelfTestRunner {
         let ivyRecord = await app.accountFolders.all().first { $0.account == "ivy" }
         let otherSave = app.save([listed("ivy2", owner: "51", colour: 43)], from: model, to: library)
         await waitUntil(timeout: 60) { otherSave?.state.isFinished ?? true }
+        // It remembers what it saved, so a deleted item never comes back at its first Update (audit 12, A12-M1, C12-M1).
         let madeFolderChecked = ivyRecord?.userID == "50" && firstSave?.saved == 1 && otherSave?.saved == 0
-            && (otherSave?.skipped ?? 0) == 1
-        note("update: a folder made by saving listed items took its owner's id \(ivyRecord?.userID ?? "none") "
-            + "and refused another owner's item \(otherSave?.skipped ?? -1)")
+            && (otherSave?.skipped ?? 0) == 1 && ivyRecord?.keys.contains("ig:ivy1") == true
+        note("update: a folder made by saving listed items took its owner's id \(ivyRecord?.userID ?? "none"), "
+            + "remembered \(ivyRecord?.keys.sorted() ?? []) and refused another owner's item \(otherSave?.skipped ?? -1)")
         // The same in a Plain library, the case A10-M1 was about (audit 11, A11-m1, C11-m5).
         let plainLibrary = out.appendingPathComponent("plain-library", isDirectory: true)
         try? fm.createDirectory(at: plainLibrary, withIntermediateDirectories: true)
@@ -1028,7 +1036,7 @@ final class SelfTestRunner {
         let plainSave = app.save([listed("ivo1", owner: "70", colour: 44, name: "ivo")], from: model, to: plainLibrary)
         await waitUntil(timeout: 60) { plainSave?.state.isFinished ?? true }
         let ivoRecord = await app.accountFolders.all().first { $0.account == "ivo" }
-        let plainChecked = ivoRecord?.userID == "70" && plainSave?.saved == 1
+        let plainChecked = ivoRecord?.userID == "70" && plainSave?.saved == 1 && ivoRecord?.keys.contains("ig:ivo1") == true
         note("update: in a Plain library the new folder took its owner's id \(ivoRecord?.userID ?? "none")")
         // Where an earlier version's first pull stopped is continued by the first Update (C3-m14, audit 11, A11-M1).
         let jay = library.appendingPathComponent("jay", isDirectory: true)

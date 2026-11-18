@@ -661,7 +661,8 @@ final class LibraryModel: MediaGridOwner {
             guard let url else { return }
             Task {
                 await self?.app.addRoot(url, makeDefault: self?.app.roots.isEmpty ?? true)
-                self?.selectedFolder = url
+                // Selected only where it can be seen: the selection is the save folder (audit 12, B12-m6).
+                if let window = self?.window, window.section == .collect, window.isShowing(.library) { self?.selectedFolder = url }
             }
         }
     }

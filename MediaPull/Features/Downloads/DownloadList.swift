@@ -124,6 +124,10 @@ extension DownloadsModel {
                 }
                 guard self.batch.indices.contains(index), self.batch[index].id == entry.id else { return }
                 switch job?.state {
+                case .completed where job?.failed ?? 0 > 0:
+                    // Not a green tick when files failed (audit 12, C12-m2).
+                    let failed = job?.failed ?? 0
+                    self.batch[index].progress = .failed("\(failed) file\(failed == 1 ? "" : "s") failed: Retry Failed in Activity.")
                 case .completed: self.batch[index].progress = .done
                 case let .failed(reason): self.batch[index].progress = .failed(reason)
                 case .none: self.batch[index].progress = .failed("It could not be started.")

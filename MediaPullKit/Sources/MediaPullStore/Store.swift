@@ -395,7 +395,12 @@ public actor AppStore {
     /// last pulled over a year ago. `keepAccounts` are accounts with a remembered folder.
     /// `recordedFolders` are account folders with a record, which remembers their Instagram items itself; `restorable` are
     /// files in the Trash that Undo can still put back.
-    public func prune(keepAccounts: Set<String>, recordedFolders: [String] = [], restorable: Set<String> = [], now: Date = Date()) {
+    /// `earlierMemoryBefore`: only Instagram entries saved before account folder records began are earlier versions'
+    /// memory that waits to be taken over; later ones are already in a folder's record and go with their file (audit 12,
+    /// C12-m4).
+    public func prune(keepAccounts: Set<String>, recordedFolders: [String] = [], restorable: Set<String> = [],
+                      earlierMemoryBefore: Date? = nil, now: Date = Date())
+    {
         let fm = FileManager.default
         let entries = (try? modelContext.fetch(FetchDescriptor<ArchiveEntryModel>())) ?? []
         let recorded = recordedFolders.map { $0.precomposedStringWithCanonicalMapping.lowercased() + "/" }
@@ -406,6 +411,7 @@ public actor AppStore {
             // folder with a record they are that record's to keep (audit 4, C4-m2).
             let path = entry.path.precomposedStringWithCanonicalMapping.lowercased()
             let waiting = entry.key.hasPrefix("ig:") && !recorded.contains { path.hasPrefix($0) }
+                && entry.savedAt < (earlierMemoryBefore ?? .distantFuture)
             if waiting || fm.fileExists(atPath: entry.path) || !Self.volumeMounted(entry.path)
                 || restorable.containsPathOrParent(of: entry.path) {
                 referenced.insert(entry.account)
@@ -427,13 +433,20 @@ public actor AppStore {
     /// entries of deleted files are removed once handed over.
     /// `savedBefore`: only items an earlier version remembered (saved before account folder records began); items saved
     /// since belong to the record of the folder they were saved into (audit 10, A10-M2; audit 11, A11-M2).
-    public func takeInstagramKeys(account: String, under folder: String, savedBefore: Date? = nil) -> Set<String> {
+    /// `orphansToo`: also entries whose folder is not there any more (renamed or moved in the Finder, which archive paths
+    /// do not follow), for an account with only this folder (audit 12, C12-M2).
+    public func takeInstagramKeys(account: String, under folder: String, savedBefore: Date? = nil, orphansToo: Bool = false)
+        -> Set<String>
+    {
         let name = account.lowercased()
         let prefix = folder.precomposedStringWithCanonicalMapping.lowercased() + "/"
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.account == name })
+        let fm = FileManager.default
         let entries = ((try? modelContext.fetch(descriptor)) ?? []).filter {
-            $0.key.hasPrefix("ig:") && $0.path.precomposedStringWithCanonicalMapping.lowercased().hasPrefix(prefix)
-                && $0.savedAt < (savedBefore ?? .distantFuture)
+            guard $0.key.hasPrefix("ig:"), $0.savedAt < (savedBefore ?? .distantFuture) else { return false }
+            if $0.path.precomposedStringWithCanonicalMapping.lowercased().hasPrefix(prefix) { return true }
+            let parent = URL(fileURLWithPath: $0.path).deletingLastPathComponent().path
+            return orphansToo && !fm.fileExists(atPath: parent) && Self.volumeMounted($0.path)
         }
         for entry in entries where !FileManager.default.fileExists(atPath: entry.path) && Self.volumeMounted(entry.path) {
             modelContext.delete(entry)

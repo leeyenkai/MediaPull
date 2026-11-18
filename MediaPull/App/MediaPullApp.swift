@@ -153,7 +153,12 @@ struct AppCommands: Commands {
                 .keyboardShortcut("y", modifiers: [.command, .shift])
                 .disabled(window?.browser.url == nil)
             if window?.section == .organise {
-                Button("Open Folder to Organise…") { if let window { window.organise.chooseFolder(for: window.organise.source) } }
+                Button("Open Folder to Organise…") {
+                    guard let window else { return }
+                    // The folder opens where it can be seen (audit 12, B12-m6).
+                    window.setShowing(.organiseSource, true)
+                    window.organise.chooseFolder(for: window.organise.source)
+                }
                     .keyboardShortcut("o")
             } else {
                 Button("Open PDF…") {
