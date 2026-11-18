@@ -498,7 +498,13 @@ struct CheckBar: View {
                 Spacer(minLength: 4)
                 if !report.orphanedMetadata.isEmpty {
                     Button("Trash Orphaned Metadata") {
-                        library.perform(FolderOperations.trash(report.orphanedMetadata)) { _ in
+                        // Only those still without their media: a file put back since the check keeps its metadata (audit 21,
+                        // B21-m2).
+                        let still = report.orphanedMetadata.filter {
+                            // lint:allow main-io a few checks on a click
+                            !FileManager.default.fileExists(atPath: $0.deletingPathExtension().path)
+                        }
+                        library.perform(FolderOperations.trash(still)) { _ in
                             library.checkFolder(report.folder)
                         }
                     }

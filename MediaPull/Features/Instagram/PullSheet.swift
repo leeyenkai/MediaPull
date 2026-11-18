@@ -167,7 +167,9 @@ struct InstagramForm: View {
                 DatePicker("To", selection: $draft.dateTo, in: ...Date(), displayedComponents: .date)
             }
         }
-        Toggle("Only new posts (stop at the posts the folder already has)", isOn: $draft.incremental)
+        // A tag has no folder memory (D-103, audit 21, A21-m5).
+        Toggle(draft.hashtag == nil ? "Only new posts (stop at the posts the folder already has)"
+            : "Only new posts (stop at the posts the library already has)", isOn: $draft.incremental)
             .disabled(draft.hashtag == nil && draft.username.isEmpty)
         Text(InstagramNotice.quality).font(.caption).foregroundStyle(.secondary)
     }

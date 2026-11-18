@@ -883,18 +883,20 @@ final class LibraryModel: MediaGridOwner {
     /// then the original to the Trash, then the edit to its name, a rename on one disk (audit 17, B17-m1, B17-M2).
     nonisolated static func placeEdit(_ edited: URL, as wanted: URL, replacing original: URL?, identity: String? = nil) throws -> URL {
         let manager = FileManager.default
-        // Checked again just before the original goes: a long trim or encode gives an Undo time to put another file there
-        // (audit 20, B20-m2).
-        if let original, let identity, AccountFolderRecord.number(of: original) != identity {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey:
-                "“\(original.lastPathComponent)” is another file now (it was renamed or moved since it was opened), "
-                    + "so nothing was changed."])
-        }
         let staged = wanted.deletingLastPathComponent()
             .appendingPathComponent(".mediapull-edit-\(UUID().uuidString).\(wanted.pathExtension)")
         try manager.moveItem(at: edited, to: staged) // lint:allow main-io called off the main actor
         var trashed: NSURL?
         do {
+            // Checked again just before the original goes, after the copy beside it (which takes long across disks): an Undo
+            // may have put another file there meanwhile (audit 20, B20-m2; audit 21, B21-m1).
+            if let original, let identity, AccountFolderRecord.number(of: original) != identity {
+                // Said as it is: gone, or another file in its place (audit 21, A21-m4).
+                let what = manager.fileExists(atPath: original.path) ? "is another file now (it was renamed or moved since it was opened)"
+                    : "is no longer there (it was moved or deleted since it was opened)"
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey:
+                    "“\(original.lastPathComponent)” \(what), so nothing was changed."])
+            }
             if let original { try manager.trashItem(at: original, resultingItemURL: &trashed) } // lint:allow main-io off main
             let target = uniqueURL(wanted, replacing: original)
             try manager.moveItem(at: staged, to: target) // lint:allow main-io called off the main actor

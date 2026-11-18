@@ -749,6 +749,9 @@ class KnownTracker:
         if self.post is None:
             return
         if self.post_known and self.post_own:
+            # The job's own post was new on the first run: it resets the run as it did then, so a Retry or Resume stops
+            # where the first run did, never earlier (audit 21, C21-m1).
+            self.run = 0
             return
         if self.post_known and not self.post_pinned:
             self.run += 1

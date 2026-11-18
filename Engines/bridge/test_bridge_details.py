@@ -337,6 +337,17 @@ def test_a_jobs_own_items_never_end_a_listing_early():
         pass
     assert 25 in reached, reached
     assert reached[-1] < 40, reached
+    # A post the job saved between held ones resets the run, as it did on the first run (audit 21, C21-m1).
+    tracker = bridge.tracker_for(None, {"ig:1", "ig:2", "ig:4", "ig:5", "ig:6"}, {"ig:3"}, 3)
+    seen = []
+    try:
+        for n in range(1, 8):
+            item = {"category": "instagram", "subcategory": "posts", "post_id": str(n), "num": 1, "media_id": str(n)}
+            tracker.observe(item, bridge.item_key(item, "u"))
+            seen.append(n)
+    except exception.StopExtraction:
+        pass
+    assert 6 in seen, seen
 
 
 def test_a_pull_reads_its_three_known_lists():

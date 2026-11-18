@@ -364,6 +364,13 @@ final class EditorModel: UnsavedEditing {
                     object["sha256"] = try? FileHasher.sha256(of: edited)
                     object["edited"] = true
                 }
+                // A copy is an item of its own: it never stands for the original, so Find Missing still brings back a
+                // deleted original (D-91, audit 21, C21-m2).
+                if copy {
+                    for key in VideoEditorModel.identityKeys {
+                        object[key] = nil
+                    }
+                }
                 let data = try JSONSerialization.data(withJSONObject: object,
                                                       options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
                 try data.write(to: newSidecar, options: .atomic)

@@ -130,7 +130,7 @@ final class VideoEditorModel: UnsavedEditing {
                 let problem = Self.writeSidecar(from: url, to: target, changes: [
                     "width": size.width, "height": size.height, "sha256": await Self.checksum(target),
                     "edited": true, "frame_time": (time * 1000).rounded() / 1000,
-                ], dropping: ["num", "count", "duration"])
+                ], dropping: ["num", "count", "duration"] + Self.identityKeys)
                 finishLibraryChange()
                 report("Saved the frame at \(Self.timestamp(time)) as \(target.lastPathComponent)."
                     + (problem.map { " The metadata file could not be written: \($0)" } ?? ""))
@@ -196,7 +196,7 @@ final class VideoEditorModel: UnsavedEditing {
                 if let problem = Self.writeSidecar(from: url, to: target, changes: [
                     "duration": (length * 1000).rounded() / 1000, "sha256": await Self.checksum(target), "edited": true,
                     "trimmed_from": [(selection.lowerBound * 1000).rounded() / 1000, (selection.upperBound * 1000).rounded() / 1000],
-                ], dropping: [], trashSource: replacing) {
+                ], dropping: replacing ? [] : Self.identityKeys, trashSource: replacing) {
                     report("Saved, but the metadata file could not be written: \(problem)")
                 }
                 finishLibraryChange()
@@ -265,6 +265,9 @@ final class VideoEditorModel: UnsavedEditing {
     static func checksum(_ file: URL) async -> String {
         await Task.detached(priority: .userInitiated) { (try? FileHasher.sha256(of: file)) ?? "" }.value
     }
+
+    /// What makes a metadata file stand for one Instagram item (D-79): a copy, a trim or a frame drops them (C21-m2).
+    nonisolated static let identityKeys = ["media_id", "post_id", "num", "shortcode", "post_shortcode"]
 
     /// Copies the video's metadata file for a derived file, with updated fields (SPEC R-3404). Returns what went wrong, if
     /// anything; a video with no metadata file needs none. Metadata files are a few kilobytes.
