@@ -75,6 +75,11 @@ final class AnalysisService {
         EnginePaths.defaultSupport.appendingPathComponent("Analysis", isDirectory: true)
     }
 
+    /// The bundled place table for a file's nearest place (D-59, D-110), loaded once, on first use, off the main actor.
+    nonisolated static let places: OfflineGeocoder? = modelsFolder.flatMap { folder in
+        ModelManifest.load(from: folder)?.places.flatMap { OfflineGeocoder(table: folder.appendingPathComponent($0)) }
+    }
+
     /// The bundled models, or the build cache in development builds.
     nonisolated static var modelsFolder: URL? {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("Models", isDirectory: true),

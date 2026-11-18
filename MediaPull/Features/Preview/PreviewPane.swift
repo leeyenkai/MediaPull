@@ -1,3 +1,5 @@
+import AppKit
+import MediaPullAnalysis
 import MediaPullCore
 import MediaPullLibrary
 import MediaPullMedia
@@ -278,11 +280,33 @@ struct FileDetails: View {
     var file: URL
     @State private var rows: [(String, String)] = []
     @State private var caption: String?
+    /// What the file itself records (D-110, R-1009b).
+    @State private var recorded: RecordedDetails?
+    @State private var mapExpanded = false
+    private var preferences: Preferences { AppModel.shared.preferences }
 
     var body: some View {
+        ZStack {
+            details
+            if mapExpanded, let recorded, let latitude = recorded.details.latitude, let longitude = recorded.details.longitude {
+                // Expanded: the map fills the pane until Collapse.
+                LocationMap(latitude: latitude, longitude: longitude, title: file.lastPathComponent, span: 0.2)
+                    .overlay(alignment: .topTrailing) {
+                        Button("Collapse") { mapExpanded = false }
+                            .controlSize(.small)
+                            .padding(8)
+                    }
+            }
+        }
+        .onChange(of: file) { mapExpanded = false }
+        .onChange(of: preferences.showMaps) { if !preferences.showMaps { mapExpanded = false } }
+    }
+
+    private var details: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 InfoGrid(rows: rows)
+                if let recorded { recordedSections(recorded) }
                 if let group = model.library.duplicateGroup(for: file), let report = model.library.duplicates {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Copies and look-alikes")
@@ -327,7 +351,116 @@ struct FileDetails: View {
             let result = await Task.detached(priority: .utility) { FileFacts.read(url) }.value
             rows = result.rows
             caption = result.caption
+            recorded = nil
+            recorded = await RecordedDetails.read(url)
         }
+    }
+
+    @ViewBuilder
+    private func recordedSections(_ recorded: RecordedDetails) -> some View {
+        ForEach(recorded.sections, id: \.title) { section in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(section.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                InfoGrid(rows: section.rows)
+            }
+        }
+        if let latitude = recorded.details.latitude, let longitude = recorded.details.longitude {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Location").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                InfoGrid(rows: recorded.locationRows)
+                HStack {
+                    Button("Copy Coordinates") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(RecordedDetails.coordinates(latitude, longitude), forType: .string)
+                    }
+                    if preferences.showMaps {
+                        Button("Expand Map") { mapExpanded = true }
+                    } else {
+                        Button("Show Map") { preferences.showMaps = true }
+                            .help("Loads map images of this area from Apple's map servers. Settings can turn maps off again.")
+                    }
+                }
+                .controlSize(.small)
+                if preferences.showMaps, !mapExpanded {
+                    LocationMap(latitude: latitude, longitude: longitude, title: file.lastPathComponent)
+                        .frame(height: 180)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+            }
+        }
+    }
+}
+
+/// What a file records about how it was made, in rows for the details (D-110, R-1009b). Read off the main actor.
+struct RecordedDetails: Sendable {
+    struct Section: Sendable {
+        var title: String
+        var rows: [(String, String)]
+    }
+
+    var details: MediaDetails
+    var sections: [Section]
+    var locationRows: [(String, String)]
+
+    static func read(_ url: URL) async -> RecordedDetails {
+        let details = await MediaDetailsReader.details(for: url)
+        let place = await Task.detached(priority: .utility) { () -> String? in
+            guard let lat = details.latitude, let lon = details.longitude else { return nil }
+            guard let places = AnalysisService.places else { return "Place data is not in this build of MediaPull" }
+            return places.place(latitude: lat, longitude: lon)?.display
+        }.value
+        return RecordedDetails(details: details, place: place)
+    }
+
+    init(details: MediaDetails, place: String?) {
+        self.details = details
+        var camera: [(String, String)] = []
+        if let name = details.camera { camera.append(("Model", name)) }
+        if let lens = details.lens { camera.append(("Lens", lens)) }
+        if let focal = details.focalLength {
+            let mm = focal.formatted(.number.precision(.fractionLength(0 ... 1)))
+            camera.append(("Focal length", details.focalLength35.map { "\(mm) mm (\($0) mm equivalent)" } ?? "\(mm) mm"))
+        }
+        if let aperture = details.aperture {
+            camera.append(("Aperture", "ƒ/" + aperture.formatted(.number.precision(.fractionLength(0 ... 1)))))
+        }
+        if let exposure = details.exposure { camera.append(("Shutter", Self.shutter(exposure))) }
+        if let iso = details.iso { camera.append(("ISO", "\(iso)")) }
+        if let flash = details.flashFired { camera.append(("Flash", flash ? "Fired" : "Off")) }
+        var taken: [(String, String)] = []
+        if let date = details.taken {
+            taken.append(("Taken", date.formatted(date: .abbreviated, time: .standard)
+                + (details.takenOffset.map { " (UTC\($0))" } ?? "")))
+        }
+        if let software = details.software { taken.append(("Software", software)) }
+        if let profile = details.colorProfile { taken.append(("Colour", profile)) }
+        var video: [(String, String)] = []
+        if let duration = details.duration {
+            video.append(("Length", Duration.seconds(duration).formatted(.time(pattern: .hourMinuteSecond))))
+        }
+        if let codec = details.codec { video.append(("Codec", codec)) }
+        if let rate = details.frameRate {
+            video.append(("Frame rate", rate.formatted(.number.precision(.fractionLength(0 ... 2))) + " fps"))
+        }
+        sections = [Section(title: "Camera", rows: camera), Section(title: "Taken", rows: taken), Section(title: "Video", rows: video)]
+            .filter { !$0.rows.isEmpty }
+        var location: [(String, String)] = []
+        if let lat = details.latitude, let lon = details.longitude {
+            location.append(("Coordinates", Self.coordinates(lat, lon)))
+            if let altitude = details.altitude { location.append(("Altitude", "\(Int(altitude.rounded())) m")) }
+            location.append(("Near", place ?? "No place within 50 km in the bundled place data"))
+        }
+        locationRows = location
+    }
+
+    static func coordinates(_ lat: Double, _ lon: Double) -> String {
+        String(format: "%.5f, %.5f", lat, lon)
+    }
+
+    /// 1/120 s for fast exposures, seconds for slow ones.
+    static func shutter(_ seconds: Double) -> String {
+        guard seconds < 1 else { return seconds.formatted(.number.precision(.fractionLength(0 ... 1))) + " s" }
+        return "1/\(Int((1 / seconds).rounded())) s"
     }
 }
 

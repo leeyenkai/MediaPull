@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import ImageIO
 import Foundation
 import MediaPullCore
 import MediaPullLibrary
@@ -115,6 +116,11 @@ final class SelfTestRunner {
         }
         if let folder = Self.value(after: "--selftest-analyse") {
             await exerciseAnalysis(source: URL(fileURLWithPath: folder, isDirectory: true), library: library, out: out)
+            quit()
+            return
+        }
+        if CommandLine.arguments.contains("--selftest-details") {
+            await exerciseDetails(library: library, out: out)
             quit()
             return
         }
@@ -664,6 +670,41 @@ final class SelfTestRunner {
         let pass = placed && undone && redone
         note("replace: \(pass ? "PASS" : "FAIL") a case-only rename with an edit keeps its metadata file (\(placed)), "
             + "⌘Z puts the original back (\(undone)), Redo does it again (\(redone)); now \(names()) \(editor.message ?? "")")
+    }
+
+    /// A photo's recorded details and location map in the Preview pane (D-110, R-1009b, R-514): no map until allowed, then a
+    /// map, then the map expanded; snapshots of each for a person to look at.
+    private func exerciseDetails(library: URL, out: URL) async {
+        let app = AppModel.shared
+        let photo = library.appendingPathComponent("Eiffel.jpg")
+        let image = NSImage(data: Self.jpeg(5)).flatMap { $0.cgImage(forProposedRect: nil, context: nil, hints: nil) }
+        if let image, let destination = CGImageDestinationCreateWithURL(photo as CFURL, "public.jpeg" as CFString, 1, nil) {
+            CGImageDestinationAddImage(destination, image, [
+                kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFMake: "Apple", kCGImagePropertyTIFFModel: "iPhone 15 Pro"],
+                kCGImagePropertyExifDictionary: [kCGImagePropertyExifFNumber: 1.78, kCGImagePropertyExifExposureTime: 1.0 / 120,
+                                                 kCGImagePropertyExifISOSpeedRatings: [64], kCGImagePropertyExifFocalLength: 6.86,
+                                                 kCGImagePropertyExifDateTimeOriginal: "2024:06:01 18:30:05"],
+                kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 48.8584, kCGImagePropertyGPSLatitudeRef: "N",
+                                                kCGImagePropertyGPSLongitude: 2.2945, kCGImagePropertyGPSLongitudeRef: "E"],
+            ] as CFDictionary)
+            CGImageDestinationFinalize(destination)
+        }
+        let savedMaps = app.preferences.showMaps
+        defer { app.preferences.showMaps = savedMaps }
+        app.preferences.showMaps = false
+        model.setShowing(.preview, true)
+        model.showInPreview(.file(photo))
+        let recorded = await RecordedDetails.read(photo)
+        let rows = recorded.sections.flatMap(\.rows).map(\.0) + recorded.locationRows.map(\.0)
+        let wanted = ["Model", "Focal length", "Aperture", "Shutter", "ISO", "Taken", "Coordinates", "Near"]
+        let missing = wanted.filter { !rows.contains($0) }
+        try? await Task.sleep(for: .seconds(1.5))
+        snapshot(to: out.appendingPathComponent("details-no-map.png"))
+        app.preferences.showMaps = true
+        try? await Task.sleep(for: .seconds(4))
+        snapshot(to: out.appendingPathComponent("details-map.png"))
+        let near = recorded.locationRows.first { $0.0 == "Near" }?.1 ?? "none"
+        note("details: \(missing.isEmpty ? "PASS" : "FAIL missing \(missing)") rows \(rows), near \(near)")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).
