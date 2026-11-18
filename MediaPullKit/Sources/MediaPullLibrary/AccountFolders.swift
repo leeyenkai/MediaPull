@@ -140,7 +140,7 @@ public enum AccountFolders {
     /// file votes, so web saves and pictures without metadata beside an account's folder keep their parent from being taken
     /// for it. The sample is spread over the folder's own files and each subfolder, so a folder of several accounts is never
     /// taken for its first one.
-    public static func dominantAccount(in folder: URL) -> String? {
+    static func dominantAccount(in folder: URL) -> String? {
         let fm = FileManager.default
         var counts: [String: Int] = [:]
         var seen = 0
@@ -237,15 +237,11 @@ public enum AccountFolders {
     /// it, or contains it (searched three levels down, never inside another account's folder), else a folder named after
     /// the account that is already there, else nil for a new folder. An account folder is never made inside another
     /// account's folder: then the new one goes beside it.
-    /// `excluding`: folders made by Save As (D-108, as `AccountFolderStore.key` paths), never found by searching below the
-    /// save folder; the save folder itself, or a folder it is inside, still counts.
-    public static func resolveTarget(account: String, saveFolder: URL, root: URL?, excluding: Set<String> = [])
-        -> (existing: URL?, parent: URL)
-    {
+    public static func resolveTarget(account: String, saveFolder: URL, root: URL?) -> (existing: URL?, parent: URL) {
         let account = account.lowercased()
         // From inside Hashtags or Saved posts, an account's folder goes beside that folder.
         if let collection = collectionFolder(containing: saveFolder, root: root) {
-            return resolveTarget(account: account, saveFolder: collection.deletingLastPathComponent(), root: root, excluding: excluding)
+            return resolveTarget(account: account, saveFolder: collection.deletingLastPathComponent(), root: root)
         }
         if let match = detect(saveFolder, stopAt: root) {
             if match.account == account { return (match.folder, match.folder.deletingLastPathComponent()) }
@@ -270,7 +266,6 @@ public enum AccountFolders {
                 visited += 1
                 let lowered = folder.lastPathComponent.lowercased()
                 if [SaveTarget.tagsFolder, SaveTarget.savedFolder].map({ $0.lowercased() }).contains(lowered) { continue }
-                if excluding.contains(AccountFolderStore.key(folder.path)) { continue }
                 guard let owner = dominantAccount(in: folder) else {
                     next += subfolders(folder) // several accounts, or none: look inside
                     continue
@@ -288,7 +283,7 @@ public enum AccountFolders {
         let collections = [SaveTarget.tagsFolder, SaveTarget.savedFolder].map { $0.lowercased() }
         if !collections.contains(wanted),
            let named = subfolders(saveFolder).first(where: { $0.lastPathComponent.lowercased() == wanted }),
-           dominantAccount(in: named) == nil, !excluding.contains(AccountFolderStore.key(named.path))
+           dominantAccount(in: named) == nil
         {
             return (named, saveFolder)
         }
@@ -341,9 +336,6 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     /// A reference that follows the folder itself through renames, moves and into the Trash, never to another folder
     /// made at its path (audit 9, A9-M1, A9-M2). Nil for older records, which follow their bookmark.
     public var reference: String?
-    /// Made by Save As (D-108): a folder the person chose for a copy, which an Automatic download never picks unless the
-    /// save folder is that folder or inside it. Nil for every other record.
-    public var savedAs: Bool?
 
     /// Whether an update or Find Missing stopped part way and can be continued.
     public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
@@ -634,14 +626,6 @@ public actor AccountFolderStore {
     public func place(_ placeID: UUID, in id: UUID) -> ResumePlace? {
         load()
         return records[id]?.places?.first { $0.id == placeID }
-    }
-
-    /// Marks a record made by Save As (D-108).
-    public func markSavedAs(_ id: UUID) {
-        guard var record = records[id], record.savedAs != true else { return }
-        record.savedAs = true
-        records[id] = record
-        save(record)
     }
 
     public func update(_ id: UUID, lastUpdate: Date? = nil, lastResult: String? = nil, userID: String? = nil) {

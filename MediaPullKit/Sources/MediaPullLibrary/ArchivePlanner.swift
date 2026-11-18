@@ -20,6 +20,8 @@ public struct SaveTarget: Sendable {
     public var accountFolderExisted = false
     /// Whether that folder sorts by type (`posts/`, `reels/`), worked out from what it already holds; nil follows Settings.
     public var typeSubfolders: Bool?
+    /// Save As (D-108): a copy already in the chosen folder is looked for in all of it, its subfolders included.
+    public var searchesWholeFolder = false
 
     public init(folder: URL, layout: SaveLayout, autoSubfolders: Bool, accountUsername: String? = nil, collectionPath: [String]? = nil) {
         self.folder = folder

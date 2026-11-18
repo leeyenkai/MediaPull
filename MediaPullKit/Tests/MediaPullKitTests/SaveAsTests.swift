@@ -32,12 +32,15 @@ final class SaveAsTests: XCTestCase {
         try file("chosen/d.jpg", metadata: ["category": "instagram", "media_id": "1", "post_id": "2", "num": 1])
         try file("other/e.jpg", metadata: ["category": "testsite", "post_id": "p2", "num": 1])
         let held = ExactFolder.held(in: root.appendingPathComponent("chosen"))
-        XCTAssertEqual(held.keys, ["testsite:p1", "testsite:p1:2", "testsite:m9", "youtube:v1"])
+        XCTAssertEqual(held.keys, ["testsite:p1:2", "testsite:m9", "youtube:v1"])
         XCTAssertEqual(held.videoIDs, ["v1"])
         XCTAssertFalse(held.keys.contains("testsite:p2"), "another folder never counts")
         XCTAssertFalse(held.keys.contains { $0.hasPrefix("instagram") }, "Instagram items are known by the folder index")
-        // Numbers in metadata files count as well as strings.
-        XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": 5, "num": 1]).keys, ["s:5", "s:5:1"])
+        // Numbers in metadata files count as well as strings; a file numbered 0 is keyed by its post alone, as the engine keys
+        // it (D-75, B24-M1), so a folder holding a post's later pages never counts as holding its first.
+        XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": 5, "num": 1]).keys, ["s:5:1"])
+        XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": "w", "num": 0, "count": 3]).keys, ["s:w"])
+        XCTAssertEqual(ExactFolder.keys(of: ["category": "s", "post_id": "w", "num": 2, "count": 3]).keys, ["s:w:2"])
     }
 
     func testDownloadAllEntriesStayInsideTheChosenFolder() throws {
@@ -51,6 +54,9 @@ final class SaveAsTests: XCTestCase {
         // A folder of that name holding another account's media is not taken: a numbered one beside it instead.
         try fm.removeItem(at: parent.appendingPathComponent("my alice"))
         XCTAssertEqual(ExactFolder.entryFolder(named: "alice", account: "alice", in: parent).lastPathComponent, "alice 2")
+        // A file of that name: a numbered folder beside it, never a failure (B24-m7).
+        try Data("x".utf8).write(to: parent.appendingPathComponent("dave"))
+        XCTAssertEqual(ExactFolder.entryFolder(named: "dave", account: nil, in: parent).lastPathComponent, "dave 2")
         for name in ["../escape", "/abs", ".."] {
             let folder = ExactFolder.entryFolder(named: name, account: nil, in: parent)
             XCTAssertTrue(ExactFolder.contains(parent, folder.path), "\(name) stays inside: \(folder.path)")
@@ -66,5 +72,21 @@ final class SaveAsTests: XCTestCase {
         let values = try? root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
         let caseSensitive = values?.volumeSupportsCaseSensitiveNames == true
         XCTAssertEqual(ExactFolder.contains(folder, root.appendingPathComponent("chosen/a.jpg").path), !caseSensitive)
+    }
+
+    /// A copy already anywhere in the chosen folder is found, its subfolders included, so Save As never keeps a second copy
+    /// (B24-m1).
+    func testSaveAsLooksForCopiesInTheWholeChosenFolder() {
+        let chosen = root.appendingPathComponent("chosen", isDirectory: true)
+        var flat = SaveTarget(folder: chosen, layout: .archive, autoSubfolders: false)
+        XCTAssertFalse(SavePipeline.duplicateScope(of: chosen, target: flat).recursive, "Automatic, as before")
+        flat.searchesWholeFolder = true
+        XCTAssertEqual(SavePipeline.duplicateScope(of: chosen, target: flat).folder, chosen)
+        XCTAssertTrue(SavePipeline.duplicateScope(of: chosen, target: flat).recursive)
+        var perSource = SaveTarget(folder: chosen, layout: .plain, autoSubfolders: true, collectionPath: ["carol (site)"])
+        perSource.searchesWholeFolder = true
+        let entry = chosen.appendingPathComponent("carol (site)", isDirectory: true)
+        XCTAssertEqual(SavePipeline.duplicateScope(of: entry, target: perSource).folder.lastPathComponent, "carol (site)")
+        XCTAssertTrue(SavePipeline.duplicateScope(of: entry, target: perSource).recursive)
     }
 }

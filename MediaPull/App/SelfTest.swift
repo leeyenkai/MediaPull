@@ -773,14 +773,6 @@ final class SelfTestRunner {
         check(inside && added == 3 && intoEmpty?.saved == 3 && fm.fileExists(atPath: alice2.appendingPathComponent("posts").path),
               "Instagram into an empty folder: a full copy of 3 in its posts folder, inside \(inside)")
 
-        // Automatic keeps going to the account's own folder: never to a copy or another account's folder Save As made (D-108).
-        before = snapshot()
-        let automatic = app.engines.startPull(draft, scanOnly: false, window: model, saveFolder: base)
-        await waitFor(automatic)
-        (inside, _) = onlyInside(alice, since: before)
-        check(inside && automatic?.destination?.standardizedFileURL.path == alice.standardizedFileURL.path,
-              "an Automatic pull afterwards goes to alice's own folder (\(automatic?.destination?.lastPathComponent ?? "none"))")
-
         // Videos: two of channel X.
         var videos: [[String: Any]] = []
         for index in 1 ... 2 {
@@ -823,17 +815,22 @@ final class SelfTestRunner {
         let videoIntoEmpty = await download(into: channelX2)
         (inside, added) = onlyInside(channelX2, since: before)
         check(inside && added == 2 && videoIntoEmpty.saved == 2, "videos into an empty folder: a full copy (\(added))")
+        let videoAllHeld = await download(into: channelX2)
+        check(videoAllHeld.state == .completed && videoAllHeld.saved == 0,
+              "videos into a folder that holds them all: nothing added, completed (\(videoAllHeld.state.label))")
 
         // Galleries: two items of carol on a test site.
+        // As the engine keys them (D-75): a file numbered 0 by its bare post id, others with their number. g3 is a post of
+        // two pages numbered from 0, as on pixiv.
         var galleryItems: [[String: Any]] = []
-        for index in 1 ... 2 {
+        for (index, (post, num, count)) in [("g1", 1, 1), ("g2", 1, 1), ("g3", 0, 2), ("g3", 1, 2)].enumerated() {
             let source = fixtures.appendingPathComponent("g\(index).jpg")
             try? Self.jpeg(80 + index).write(to: source)
-            galleryItems.append(["key": "testsite:g\(index):1", "source": source.path,
-                                 "meta": ["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g\(index)",
-                                          "num": 1, "date": "2024-02-0\(index) 10:00:00"]])
+            galleryItems.append(["key": num == 0 ? "testsite:\(post)" : "testsite:\(post):\(num)", "source": source.path,
+                                 "meta": ["category": "testsite", "subcategory": "user", "username": "carol", "post_id": post,
+                                          "num": num, "count": count, "date": "2024-02-0\(index + 1) 10:00:00"]])
         }
-        writeReplay(["account": ["username": "carol"], "items": galleryItems])
+        writeReplay(["account": ["username": "carol"], "gallery_items": galleryItems])
         let site = SiteInfo(category: "testsite", subcategory: "user")
         let galleryURL = URL(string: "https://example.org/carol")!
         func gallery(into chosen: URL) async -> Job? {
@@ -845,33 +842,37 @@ final class SelfTestRunner {
             return job
         }
         let carol = folder("carol"), dave = folder("dave")
+        // carol's folder holds g1 and the second page of g3, with metadata as the app writes it.
         let carolHeld = carol.appendingPathComponent("one.jpg")
-        try? Self.jpeg(81).write(to: carolHeld)
-        sidecar(["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g1", "num": 1], for: carolHeld)
+        try? Self.jpeg(80).write(to: carolHeld)
+        sidecar(["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g1", "num": 1, "count": 1], for: carolHeld)
+        let carolPage = carol.appendingPathComponent("three-2.jpg")
+        try? Self.jpeg(83).write(to: carolPage)
+        sidecar(["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g3", "num": 1, "count": 2], for: carolPage)
         let daveFile = dave.appendingPathComponent("dave.jpg")
         try? Self.jpeg(90).write(to: daveFile)
         sidecar(["category": "testsite", "subcategory": "user", "username": "dave", "post_id": "d1", "num": 1], for: daveFile)
         before = snapshot()
         let galleryIntoDave = await gallery(into: dave)
         (inside, added) = onlyInside(dave, since: before)
-        check(inside && added == 2 && galleryIntoDave?.saved == 2,
+        check(inside && added == 4 && galleryIntoDave?.saved == 4,
               "gallery into another user's folder: \(added) straight in, inside \(inside)")
         before = snapshot()
         let galleryIntoCarol = await gallery(into: carol)
         (inside, added) = onlyInside(carol, since: before)
-        check(inside && added == 1 && galleryIntoCarol?.saved == 1,
-              "gallery into its existing folder: only the missing one added (\(added))")
+        check(inside && added == 2 && galleryIntoCarol?.saved == 2,
+              "gallery into its existing folder: only the 2 missing added, the first page of a post among them (\(added))")
         let carol2 = folder("carol 2")
         before = snapshot()
         let galleryIntoEmpty = await gallery(into: carol2)
         (inside, added) = onlyInside(carol2, since: before)
-        check(inside && added == 2 && galleryIntoEmpty?.saved == 2, "gallery into an empty folder: a full copy (\(added))")
+        check(inside && added == 4 && galleryIntoEmpty?.saved == 4, "gallery into an empty folder: a full copy (\(added))")
 
         // A Retry stays in the chosen folder: one file fails, then is fetched again into the same folder.
-        writeReplay(["account": ["username": "carol"], "items": galleryItems, "fail_files": [2]])
+        writeReplay(["account": ["username": "carol"], "gallery_items": galleryItems, "fail_files": [2]])
         let carol3 = folder("carol 3")
         let failing = await gallery(into: carol3)
-        writeReplay(["account": ["username": "carol"], "items": galleryItems])
+        writeReplay(["account": ["username": "carol"], "gallery_items": galleryItems])
         before = snapshot()
         failing?.retry?()
         try? await Task.sleep(for: .seconds(1))
@@ -879,8 +880,14 @@ final class SelfTestRunner {
         (inside, added) = onlyInside(carol3, since: before)
         check(failing?.failed == 0 && inside && added == 1, "a Retry of a Save As download stays in its folder (\(added) added)")
 
-        // Download All As…: each entry in a folder of its own inside the chosen one, an existing one when it holds the source.
-        writeReplay(igReplay)
+        // Download All As…: each entry in a folder of its own inside the chosen one, an existing one when it holds the source;
+        // galleries and videos in `<user> (<site>)` folders named from their files.
+        var everything = igReplay
+        everything["gallery_items"] = galleryItems
+        everything["videos"] = videos
+        everything["video_info"] = ["webpage_url": "https://www.youtube.com/watch?v=v1", "title": "Video 1", "uploader": "X",
+                                    "id": "v1", "extractor": "youtube"]
+        writeReplay(everything)
         let batch = folder("batch")
         let myAlice = batch.appendingPathComponent("my alice/posts", isDirectory: true)
         try? fm.createDirectory(at: myAlice, withIntermediateDirectories: true)
@@ -888,7 +895,7 @@ final class SelfTestRunner {
         try? Self.jpeg(60).write(to: batchFirst)
         sidecar(igMeta(0), for: batchFirst)
         before = snapshot()
-        model.downloads.useList(["@alice", "#sunset"])
+        model.downloads.useList(["@alice", "#sunset", "https://example.org/carol", "https://www.youtube.com/watch?v=v1"])
         await waitUntil(timeout: 30) { !self.model.downloads.batch.contains { $0.kind == .checking } }
         model.downloads.runAll(window: model, exactParent: batch)
         try? await Task.sleep(for: .seconds(1))
@@ -897,8 +904,23 @@ final class SelfTestRunner {
         let allNew = snapshot().subtracting(before)
         let aliceAdded = allNew.filter { $0.hasPrefix("saveas/batch/my alice/") && !$0.hasSuffix(".json") }.count
         let tagAdded = allNew.filter { $0.hasPrefix("saveas/batch/sunset/") && !$0.hasSuffix(".json") }.count
-        check(inside && aliceAdded == 2 && tagAdded == 3 && model.downloads.batch.allSatisfy { $0.progress == .done },
-              "Download All As…: alice's 2 missing into the folder that holds her, #sunset's 3 into its own folder, inside \(inside)")
+        let carolAdded = allNew.filter { $0.hasPrefix("saveas/batch/carol (testsite)/") && !$0.hasSuffix(".json") }.count
+        let videosAdded = allNew.filter { $0.hasPrefix("saveas/batch/X (youtube.com)/") && !$0.hasSuffix(".json") }.count
+        check(inside && aliceAdded == 2 && tagAdded == 3 && carolAdded == 4 && videosAdded == 2
+            && model.downloads.batch.allSatisfy { $0.progress == .done },
+              "Download All As…: alice's 2 missing into her folder, #sunset 3, carol 4 and channel X 2 into folders of their own, "
+                  + "inside \(inside) (\(model.downloads.batch.map { "\($0.progress)" }))")
+        // Save As keeps no memory: no account folder record, no remembered item for any folder it saved into.
+        let records = await app.accountFolders.all().map { URL(fileURLWithPath: $0.path).lastPathComponent }
+        check(records.isEmpty, "Save As made no account folder records (\(records))")
+        // Automatic is as before: a pull of alice from the folder above goes to her own folder, never a copy Save As made.
+        writeReplay(igReplay)
+        before = snapshot()
+        let automatic = app.engines.startPull(draft, scanOnly: false, window: model, saveFolder: base)
+        await waitFor(automatic)
+        (inside, _) = onlyInside(alice, since: before)
+        check(inside && automatic?.destination?.standardizedFileURL.path == alice.standardizedFileURL.path,
+              "an Automatic pull afterwards goes to alice's own folder (\(automatic?.destination?.lastPathComponent ?? "none"))")
 
         note("save-as: \(failures.isEmpty ? "PASS" : "FAIL \(failures.count): \(failures.joined(separator: "; "))")")
     }

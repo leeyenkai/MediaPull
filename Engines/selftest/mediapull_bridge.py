@@ -27,15 +27,37 @@ def main():
     emit("hello", python=sys.version.split()[0], protocol=1)
     if request.get("op") == "stream":
         return stream(request, emit)
+    if request.get("op") == "supports":
+        # A made-up gallery site at example.org (`--selftest-save-as`), worked out locally as the real bridge does.
+        if "example.org" in str(request.get("url") or ""):
+            emit("supports", supported=True, category="testsite", subcategory="user", choices=[], defaults=[])
+        else:
+            emit("supports", supported=False)
+        emit("done", status="completed", counts={})
+        return 0
+    if request.get("op") == "video_info":
+        with open(os.path.join(os.environ["HOME"], "replay.json"), encoding="utf-8") as handle:
+            info = json.load(handle).get("video_info")
+        if info:
+            emit("video_info", formats=[], **info)
+        emit("done", status="completed", counts={})
+        return 0
     if request.get("op") != "pull":
         emit("done", status="completed", counts={})
         return 0
     with open(os.path.join(os.environ["HOME"], "replay.json"), encoding="utf-8") as handle:
         replay = json.load(handle)
-    known = set()
-    if request.get("known_ids"):
-        with open(request["known_ids"], encoding="utf-8") as handle:
-            known = set(json.load(handle))
+    def listed(name):
+        if not request.get(name):
+            return set()
+        with open(request[name], encoding="utf-8") as handle:
+            return set(json.load(handle))
+
+    # As the real bridge's tracker_for: the stories tray is read against the owners' list, saved posts against the saved
+    # list, everything else against the known list.
+    known, owners, saved = listed("known_ids"), listed("owners_known_ids"), listed("saved_known_ids")
+    # A gallery address replays the gallery's own items.
+    items = replay.get("gallery_items") if "example.org" in str(request.get("url") or "") else replay["items"]
     emit("account", **replay["account"])
     # As the real bridge: only the content asked for is listed, and only a walk of the posts listing reports its end.
     include = set(request.get("include") or [])
@@ -56,7 +78,7 @@ def main():
     # "fail_after_listing": the posts listing ends, then the pull fails (as a failed Reel download would).
     fail_after_listing = replay.get("fail_after_listing")
     emit("log", level="info", logger="stand-in", message=f"start {start}")
-    for number, item in enumerate(replay["items"], 1):
+    for number, item in enumerate(items, 1):
         if number <= start:
             continue
         if stop_known and known_in_a_row >= stop_known:
@@ -72,7 +94,8 @@ def main():
         if meta.get("subcategory") in POSITIONAL and meta.get("post_id") and meta.get("num"):
             keys.add(f"igp:{meta['post_id']}:{meta['num']}")
         counts["found"] += 1
-        if keys & known:
+        against = owners if meta.get("subcategory") == "stories-tray" else saved if meta.get("subcategory") in ("saved", "collection") else known
+        if keys & against:
             counts["skipped"] += 1
             known_in_a_row += 1
             emit("skip", key=item["key"], reason="known")

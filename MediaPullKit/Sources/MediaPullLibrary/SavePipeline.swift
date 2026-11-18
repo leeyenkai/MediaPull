@@ -465,6 +465,10 @@ public final class SavePipeline: Sendable {
     /// Where a save into `folder` looks for a copy it already has: an account or site folder is searched whole, in
     /// either layout (D-78), any other folder by itself. The app asks the same before downloading (audit 5, B5-m2).
     public static func duplicateScope(of folder: URL, target: SaveTarget) -> (folder: URL, recursive: Bool) {
+        if target.searchesWholeFolder {
+            // Save As: the chosen folder (or the entry's folder inside it) and everything below it.
+            return (target.autoSubfolders ? accountFolder(folder, target: target) : target.folder, true)
+        }
         let scopeIsAccount = (target.layout == .archive && target.autoSubfolders) || target.accountFolder != nil
         return scopeIsAccount ? (accountFolder(folder, target: target), true) : (folder, false)
     }

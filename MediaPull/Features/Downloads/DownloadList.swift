@@ -179,14 +179,12 @@ extension DownloadsModel {
         case let .gallery(url, site):
             let options = rememberedOptions(site)
             let choices = SiteCatalogue.visibleChoices(site.choices).filter { options.include.contains($0) }
-            let name = url.pathComponents.last { $0 != "/" && !$0.isEmpty } ?? url.host ?? site.category
-            switch await entryRoot(name) {
-            case let .success(root):
-                return (app.engines.startGalleryDownload(url: url, site: site, include: choices, switches: options.switches, range: nil,
-                                                         from: nil, to: nil, onlyNew: true, root: root, window: window), nil)
-            case let .failure(error):
-                return (nil, error.localizedDescription)
-            }
+            // Download All As…: each user's files in `<user> (<site>)` inside the chosen folder, named from the files themselves.
+            var root = parent
+            root.exact = exact
+            root.perSource = exact
+            return (app.engines.startGalleryDownload(url: url, site: site, include: choices, switches: options.switches, range: nil,
+                                                     from: nil, to: nil, onlyNew: true, root: root, window: window), nil)
         case let .video(url):
             switch await app.engines.videoInfo(for: url) {
             case let .failure(error):
@@ -194,14 +192,12 @@ extension DownloadsModel {
             case let .success(info):
                 var extras = BridgeRequest.Extras()
                 extras.playlist = VideoForm.looksLikeList(url)
-                let name = extras.playlist ? info.title : info.uploader?.nonEmpty ?? info.title
-                switch await entryRoot(name) {
-                case let .success(root):
-                    return (app.engines.saveVideo(info, pageURL: url, format: .bestMP4, height: nil, extras: extras, root: root,
-                                                  window: window), nil)
-                case let .failure(error):
-                    return (nil, error.localizedDescription)
-                }
+                // Download All As…: each channel's videos in `<channel> (<site>)` inside the chosen folder.
+                var root = parent
+                root.exact = exact
+                root.perSource = exact
+                return (app.engines.saveVideo(info, pageURL: url, format: .bestMP4, height: nil, extras: extras, root: root,
+                                              window: window), nil)
             }
         case .checking, .unrecognised:
             return (nil, nil)

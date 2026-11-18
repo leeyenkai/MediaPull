@@ -47,8 +47,12 @@ public enum ExactFolder {
         }
         if let media = text("media_id") { held.keys.insert("\(category):\(media)") }
         if let post = text("post_id") {
-            held.keys.insert("\(category):\(post)")
-            if let num = text("num") { held.keys.insert("\(category):\(post):\(num)") }
+            // As the engine keys an item: with its number in the post when it has one other than 0 (D-75).
+            if let num = text("num"), num != "0" {
+                held.keys.insert("\(category):\(post):\(num)")
+            } else {
+                held.keys.insert("\(category):\(post)")
+            }
             if ["video", "audio"].contains(metadata["subcategory"] as? String ?? "") { held.videoIDs.insert(post) }
         }
         return held
@@ -68,17 +72,12 @@ public enum ExactFolder {
         }
         let named = parent.appendingPathComponent(FileNaming.safeTopFolder(name.nonEmpty ?? "Download"), isDirectory: true)
         guard fm.fileExists(atPath: named.path) else { return named }
+        // A file of that name: a numbered folder beside it.
+        guard OperationJournal.isFolder(named) else { return AccountFolders.newFolder(named: name, in: parent) }
         if let account = account?.lowercased(), let other = AccountFolders.dominantAccount(in: named), other != account {
             return AccountFolders.newFolder(named: name, in: parent)
         }
         return named
-    }
-
-    /// The folder for the stories of `owner` from the stories tray, inside the chosen folder: one there that holds the
-    /// owner's media, else a new one named after the owner.
-    public static func ownerFolder(_ owner: String, in folder: URL) -> (folder: URL, exists: Bool) {
-        let found = entryFolder(named: owner, account: owner, in: folder)
-        return (found, FileManager.default.fileExists(atPath: found.path))
     }
 
     /// Whether `path` is `folder` or inside it, compared as the volume compares names.
