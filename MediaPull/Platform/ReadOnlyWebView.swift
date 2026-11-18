@@ -14,6 +14,11 @@ final class ReadOnlyWebView: WKWebView {
         return types
     }()
 
+    /// The page's typing has an undo list of its own: the window's is for file changes, so ⌘Z never erases typing in a page
+    /// the person is not in (SPEC 21, audit 17, B17-M3).
+    private let pageUndo = UndoManager()
+    override var undoManager: UndoManager? { pageUndo }
+
     private func carriesFiles(_ info: NSDraggingInfo) -> Bool {
         let types = Set(info.draggingPasteboard.types ?? [])
         return !types.isDisjoint(with: Self.fileTypes)

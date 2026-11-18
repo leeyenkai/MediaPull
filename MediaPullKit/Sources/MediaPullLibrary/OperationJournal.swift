@@ -394,6 +394,29 @@ public actor OperationJournal {
     private var remade: [String: String] = [:]
 
     /// Names under a temporary name (a swap of names) are never shown to the person: the name it had is.
+    /// Temporary names a change's steps use that hold an item now.
+    static func temporaryPathsPresent(_ steps: [JournalStep]) -> Set<String> {
+        Set(steps.flatMap(temporaryPaths).filter { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    static func temporaryPaths(_ step: JournalStep) -> [String] {
+        guard case let .move(from, to, _, _) = step else { return [] }
+        return [from, to].filter(isTemporary)
+    }
+
+    /// The temporary names a unit touched, as they are after it.
+    static func update(_ hidden: inout Set<String>?, after unit: [JournalStep]) {
+        for path in unit.flatMap(temporaryPaths) {
+            if FileManager.default.fileExists(atPath: path) { hidden?.insert(path) } else { hidden?.remove(path) }
+        }
+    }
+
+    /// Changes that left items under temporary names (MediaPull stopped mid-way, a crash): taken back at launch (audit 17,
+    /// B17-M1, C17-M2).
+    public func stranded() -> [UUID] {
+        entries().filter { !$0.undone && !Self.temporaryPathsPresent($0.steps).isEmpty }.map(\.id)
+    }
+
     static func isTemporary(_ path: String) -> Bool {
         URL(fileURLWithPath: path).lastPathComponent.hasPrefix(".mediapull-rename-")
     }
@@ -535,7 +558,7 @@ public actor OperationJournal {
     // MARK: Undo
 
     /// Reverses an entry's steps, newest first. Files changed or moved since are left where they are and reported.
-    public func undo(_ id: UUID) -> UndoReport {
+    public func undo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
         guard var entry = entry(id), !entry.undone else { return UndoReport(
             restored: 0,
             skipped: [],
@@ -559,13 +582,20 @@ public actor OperationJournal {
         var keptFolders: [[JournalStep]] = []
         var checkpoint = Date()
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
+        var hidden: Set<String>?
         for unit in units.reversed() {
-            // Stopped between items (Cancel in Activity, Quit): what was undone is recorded (R-3807, audit 15, B15-M1).
+            // Stopped between items (Cancel in Activity, Quit): what was undone is recorded (R-3807, audit 15, B15-M1); never
+            // while an item is under a temporary name (audit 17, C17-M2).
             if Task.isCancelled || stopsAfter.map({ visited >= $0 }) == true {
-                report.stopped = true
-                break
+                if hidden == nil { hidden = Self.temporaryPathsPresent(entry.steps) }
+                if hidden?.isEmpty ?? true {
+                    report.stopped = true
+                    break
+                }
             }
             visited += 1
+            if visited % 50 == 0 { progress?(Double(visited) / Double(units.count)) }
+            defer { if hidden != nil { Self.update(&hidden, after: unit) } }
             if undo(unit[0], entry: &entry, report: &report) {
                 for step in unit.dropFirst() {
                     undo(step, entry: &entry, report: &report)
@@ -608,7 +638,7 @@ public actor OperationJournal {
 
     /// Redo: does again what the last undo of `id` put back, recording the new steps so it can be undone once more. Items
     /// that changed or are in the way since are left and reported.
-    public func redo(_ id: UUID) -> UndoReport {
+    public func redo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
         fallbacks = [:]
@@ -628,13 +658,20 @@ public actor OperationJournal {
         var visited = 0
         var checkpoint = Date()
         let isFile = { (step: JournalStep) -> Bool in if case .makeFolder = step { false } else { true } }
+        var hidden: Set<String>?
         for unit in units {
-            // As Undo: stopped between items, and saved as it goes (R-3807, audit 15, B15-M1).
+            // As Undo: stopped between items, never while an item is under a temporary name, and saved as it goes (R-3807,
+            // audit 15, B15-M1; audit 17, C17-M2).
             if Task.isCancelled || stopsAfter.map({ visited >= $0 }) == true {
-                report.stopped = true
-                break
+                if hidden == nil { hidden = Self.temporaryPathsPresent(entry.steps + steps) }
+                if hidden?.isEmpty ?? true {
+                    report.stopped = true
+                    break
+                }
             }
             visited += 1
+            if visited % 50 == 0 { progress?(Double(visited) / Double(units.count)) }
+            defer { if hidden != nil { Self.update(&hidden, after: unit) } }
             if redo(unit[0], allowed: allowed, entry: &entry, report: &report) {
                 for step in unit.dropFirst() {
                     redo(step, allowed: allowed, entry: &entry, report: &report)

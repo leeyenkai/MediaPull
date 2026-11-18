@@ -77,7 +77,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
         // Analysis picks up where it stopped at the next launch, so only other jobs ask before quitting.
-        let running = AppModel.shared.jobs.jobs.filter { $0.state.isActive && $0.kind != .analyse }
+        // A file change whose job already shows an end (cancelled, or failed and now taking itself back) may still be
+        // working: it counts as running (audit 17, B17-M1).
+        let running = AppModel.shared.jobs.jobs.filter {
+            ($0.state.isActive || $0.kind == .organise && $0.task != nil && !$0.taskEnded) && $0.kind != .analyse
+        }
         guard !running.isEmpty, !SelfTestRunner.isActive else {
             AppModel.shared.analysis.cancelScan()
             return .terminateNow
@@ -90,14 +94,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             AppModel.shared.analysis.cancelScan()
             running.forEach { $0.cancel() }
-            // An Organise run stops between files and then saves its journal; quit once it has, so every step it took
-            // stays undoable (R-3807). A run that does not stop within a few seconds does not hold up quitting.
-            // Pulls also get a moment to write what they saved into their folder's record (D-79).
-            let organising = running.filter { [.organise, .pull].contains($0.kind) }.compactMap(\.task)
-            guard !organising.isEmpty else { return .terminateNow }
+            // A file change (an Organise run, an Undo or Redo, a take-back) stops between files and then saves its journal;
+            // quit once it has, however long the file in hand takes (a large video between disks), so no file is cut part
+            // way and every step stays undoable (R-3807, audit 17, B17-M1, B17-M2). Pulls get a few seconds to write what
+            // they saved into their folder's record (D-79).
+            let changes = running.filter { $0.kind == .organise }.compactMap(\.task)
+            let pulls = running.filter { $0.kind == .pull }.compactMap(\.task)
+            guard !changes.isEmpty || !pulls.isEmpty else { return .terminateNow }
             Task {
+                for task in changes { await task.value }
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask { for task in organising { await task.value } }
+                    group.addTask { for task in pulls { await task.value } }
                     group.addTask { try? await Task.sleep(for: .seconds(5)) }
                     await group.next()
                     group.cancelAll()

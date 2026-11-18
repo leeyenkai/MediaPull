@@ -15,17 +15,19 @@ from yt_dlp.extractor.common import InfoExtractor  # noqa: E402
 from yt_dlp.utils import DownloadError, ExtractorError  # noqa: E402
 
 SITE = {}
+LAST = []
 
 
 class Capture:
     def __init__(self):
         self.events = []
 
-    def emit(self, kind, **fields):
-        self.events.append((kind, fields))
+    # The event's own name is not called "kind": attachment events carry a field of that name (audit 17, A17-m5).
+    def emit(self, _event_type, **fields):
+        self.events.append((_event_type, fields))
 
-    def emit_last(self, kind, **fields):
-        self.events.append((kind, fields))
+    def emit_last(self, _event_type, **fields):
+        self.events.append((_event_type, fields))
 
 
 class MadeUpIE(InfoExtractor):
@@ -49,7 +51,8 @@ class MadeUpIE(InfoExtractor):
             raise ExtractorError(problem, expected=True)
         info = {"id": video, "title": video, "url": "madeup-media://" + video, "ext": "mp4"}
         if SITE.get("subtitles"):
-            info["subtitles"] = {"en": [{"url": "madeup-media://sub-" + video, "ext": "vtt"}]}
+            info["subtitles"] = {lang: [{"url": "madeup-media://sub-" + lang + "-" + video, "ext": "vtt"}]
+                                 for lang in SITE.get("languages", ["en"])}
         return info
 
 
@@ -64,7 +67,7 @@ def init(self, *args, **kwargs):
 
 
 def download(self, name, info, subtitle=False, test=False):
-    if subtitle and SITE.get("subtitle_fails"):
+    if subtitle and (SITE.get("subtitle_fails") or any(name.endswith("." + lang + ".vtt") for lang in SITE.get("missing", []))):
         raise DownloadError("HTTP Error 429: Too Many Requests")
     os.makedirs(os.path.dirname(name) or ".", exist_ok=True)
     with open(name, "wb") as handle:
@@ -87,6 +90,7 @@ def run(url, playlist, extras=None, **site):
     bridge.EMITTER = capture
     request = {"url": url, "staging": tempfile.mkdtemp(), "extras": dict(extras or {}, playlist=playlist), "key": "video:madeup"}
     bridge.op_stream(request)
+    LAST[:] = capture.events
     files = [fields["key"].split(":")[-1] for kind, fields in capture.events if kind == "file"]
     errors = [fields for kind, fields in capture.events if kind == "error"]
     return files, errors
@@ -104,6 +108,14 @@ def test_a_retry_downloads_what_is_not_saved_yet():
     assert [e["code"] for e in errors if not e["fatal"]] == ["download_failed"], errors
     files, _ = run("madeup://list", True, {"skip_ids": ["a", "b", "c"]})
     assert files == ["d", "e", "f"], files
+
+
+def test_a_retry_with_everything_saved_is_done():
+    """Audit 17 (C17-m3): a Retry that finds every video saved ends done, with no error."""
+    files, errors = run("madeup://list", True, {"skip_ids": list("abcdef")})
+    assert files == [] and errors == [], (files, errors)
+    done = [fields for kind, fields in LAST if kind == "done"]
+    assert done and done[-1].get("status") == "completed", done
 
 
 def test_every_video_of_a_page_asked_for_as_one_is_reported():
@@ -127,6 +139,16 @@ def test_a_subtitle_that_fails_never_stops_the_video():
     assert not any(e["fatal"] for e in errors), errors
     files, errors = run("madeup://list", True, {"subtitles": ["en"]}, videos=["a", "b"], subtitles=True, subtitle_fails=True)
     assert files == ["a", "b"], files
+
+
+def test_subtitles_that_come_are_reported_beside_their_video():
+    """Audit 17 (A17-m1, A17-m5): each subtitle language that came is an attachment of its video, so the app can say
+    which did not."""
+    run_files, errors = run("madeup://a", False, {"subtitles": ["en", "fr"]}, subtitles=True, languages=["en", "fr"],
+                            missing=["fr"])
+    assert run_files == ["a"], (run_files, errors)
+    kinds = [fields["kind"] for kind, fields in LAST if kind == "attachment"]
+    assert kinds == ["subtitles.en"], kinds
 
 
 def test_a_single_video_that_can_never_download_offers_no_retry():

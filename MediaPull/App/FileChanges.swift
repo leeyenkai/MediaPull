@@ -49,11 +49,26 @@ extension AppModel {
         }
     }
 
-    func undoChange(_ id: UUID) async -> UndoReport? {
+    /// Changes that left items under temporary names (a crash part way) are taken back at launch, so no photo stays hidden
+    /// (audit 17, B17-M1, C17-M2). Each is a job, so Quit waits for it.
+    func takeBackStranded() async {
+        for id in await journal.stranded() {
+            guard let entry = await journal.entry(id) else { continue }
+            let job = Job(kind: .organise, title: "Taking back “\(entry.title)”")
+            jobs.add(job)
+            job.state = .running
+            let task = Task { _ = await self.undoChange(id) }
+            job.task = task
+            await task.value
+            jobs.finish(job, .completed, notify: false)
+        }
+    }
+
+    func undoChange(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) async -> UndoReport? {
         // ⌘Z and the History's Undo can both reach an entry: the second one does nothing.
         guard let entry = await journal.entry(id), !entry.undone else { return nil }
         if let refusal = libraryFolderRefusal(entry.steps) { return refusal }
-        let report = await journal.undo(id)
+        let report = await journal.undo(id, progress: progress)
         await followMoves(report.moves, changedBy: id)
         foldersGone(foldersRemoved(by: entry.steps))
         await refreshAfterTrash(entry.steps, moved: report.moves)
@@ -61,10 +76,10 @@ extension AppModel {
         return report
     }
 
-    func redoChange(_ id: UUID) async -> UndoReport {
+    func redoChange(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) async -> UndoReport {
         let before = await journal.entry(id)
         if let entry = before, let refusal = libraryFolderRefusal(entry.undoneSteps ?? []) { return refusal }
-        let report = await journal.redo(id)
+        let report = await journal.redo(id, progress: progress)
         await followMoves(report.moves, changedBy: id)
         if let entry = await journal.entry(id) {
             foldersGone(foldersRemoved(by: entry.steps))
@@ -191,7 +206,7 @@ extension WindowModel {
                 finish(job, report: report)
                 undoing.remove(entry.id)
             }
-            report = await app.undoChange(entry.id)
+            report = await app.undoChange(entry.id, progress: Self.progress(of: job))
             guard let report else {
                 showFileMessage("“\(entry.title)” was already undone.")
                 return
@@ -275,7 +290,7 @@ extension WindowModel {
                 finish(job, report: result)
                 redoing.remove(entry.id)
             }
-            let report = await app.redoChange(entry.id)
+            let report = await app.redoChange(entry.id, progress: Self.progress(of: job))
             result = report
             // Nothing done again is said as such (audit 7, B7-m6).
             // Something done again but no file moved (a New Folder made again) is a redo too (audit 8, B8-m2).
@@ -322,6 +337,14 @@ extension WindowModel {
         app.jobs.add(job)
         job.state = .running
         return job
+    }
+
+    /// How far an Undo or Redo has got, shown on its job (R-3807, audit 17, C17-m9).
+    static func progress(of job: Job) -> @Sendable (Double) -> Void {
+        let id = job.id
+        return { fraction in
+            Task { @MainActor in AppModel.shared.jobs.jobs.first { $0.id == id }?.fraction = fraction }
+        }
     }
 
     /// Ends an Undo or Redo job as it went; one that went as asked leaves Activity, as small changes do (audit 16, B16-m3).

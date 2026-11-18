@@ -878,6 +878,25 @@ final class LibraryModel: MediaGridOwner {
         source.standardizedFileURL.path.lowercased() == target.standardizedFileURL.path.lowercased() ? target : uniqueURL(target)
     }
 
+    /// Puts an edited file in its folder, then sends the original to the Trash: first beside it under a hidden name (a
+    /// full copy when the edit is on another disk, so the original is never trashed for a copy that fails or is cut short),
+    /// then the original to the Trash, then the edit to its name, a rename on one disk (audit 17, B17-m1, B17-M2).
+    nonisolated static func placeEdit(_ edited: URL, as wanted: URL, replacing original: URL?) throws -> URL {
+        let manager = FileManager.default
+        let staged = wanted.deletingLastPathComponent()
+            .appendingPathComponent(".mediapull-edit-\(UUID().uuidString).\(wanted.pathExtension)")
+        try manager.moveItem(at: edited, to: staged) // lint:allow main-io called off the main actor
+        do {
+            if let original { try manager.trashItem(at: original, resultingItemURL: nil) } // lint:allow main-io off main
+            let target = uniqueURL(wanted, replacing: original)
+            try manager.moveItem(at: staged, to: target) // lint:allow main-io called off the main actor
+            return target
+        } catch {
+            try? manager.removeItem(at: staged) // lint:allow silent-write the edit is still in its cache only if this fails
+            throw error
+        }
+    }
+
     /// A free name for `url`: neither the file nor a metadata file of that name may exist, so a later sidecar write never
     /// replaces an orphaned one.
     /// `replacing` is the file an edit replaces: its own metadata file goes with the edit, so it does not take the name

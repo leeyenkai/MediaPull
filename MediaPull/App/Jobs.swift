@@ -96,7 +96,19 @@ final class Job: Identifiable {
     var checkpointURL: URL?
     let startedAt = Date()
     var finishedAt: Date?
-    var task: Task<Void, Never>?
+    var task: Task<Void, Never>? {
+        didSet {
+            // Known when the work itself has ended, whatever the job's state says (Quit waits on file changes, B17-M1).
+            taskEnded = false
+            guard let task else { return }
+            Task { [weak self] in
+                await task.value
+                if self?.task == task { self?.taskEnded = true }
+            }
+        }
+    }
+
+    var taskEnded = false
     var retry: (() -> Void)?
     /// Set while a Retry Failed is starting (its folder is being found), so a second click starts nothing more (A9-m2).
     var retryStarting = false

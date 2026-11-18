@@ -136,7 +136,10 @@ final class AppModel {
             engineMessage = "The library database could not be opened: \(error.localizedDescription)"
         }
         analysis.start(inMemory: SelfTestRunner.isActive)
-        Task { await journal.prune(olderThan: preferences.undoHistoryDays) }
+        Task {
+            await journal.prune(olderThan: preferences.undoHistoryDays)
+            await takeBackStranded()
+        }
         await refreshEngineVersions()
         // A self-test never asks the network for engine updates nor changes when the installed app last asked (audit 6, C6-m4).
         if !SelfTestRunner.isActive, preferences.weeklyEngineCheck,

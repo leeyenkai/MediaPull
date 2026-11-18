@@ -571,10 +571,9 @@ final class EngineService {
             run.clearFailures = false
             job.failed = 0
             job.failures = []
-            // A Retry walks again: what it finds starts from what is already saved, since it lists only what is not, and
-            // the posts it passes because they are saved are not counted as skipped again (audit 16, C16-m3, A16-m3). Notes
+            // A Retry walks again: an item the job has already counted (found, saved, already saved or skipped) is not
+            // counted again, whatever the listing sends again (audit 16, C16-m3, A16-m3; audit 17, A17-m2, A17-m3). Notes
             // about files that stay saved stay (audit 15, A15-m2).
-            job.found = job.saved + job.duplicates
             run.retrying = true
         }
         // Hashtags, saved posts and the stories tray go beside the accounts, never inside an account's folder (D-52, audit 4,
@@ -763,7 +762,7 @@ final class EngineService {
                     // Only this account's card: tray owners looked up on the way are not it (audit 6, A6-m1).
                     if isThisAccount { accounts[account] = info }
                 case let .item(item):
-                    job.found += 1
+                    if run.found.insert(item.key).inserted { job.found += 1 }
                     if job.state != .running { job.state = .running }
                     window?.ingestEngine([item.ingestInput(sourceURL: sourceURL)])
                 case let .file(file):
@@ -826,7 +825,7 @@ final class EngineService {
                            owner != folderID
                         {
                             // Not a failure to retry: it would be refused again (audit 7, A7-m4).
-                            job.skipped += 1
+                            if run.counted.insert(file.key).inserted { job.skipped += 1 }
                             let reason = "@\(user) is now a different Instagram account, so its item was not saved into "
                                 + "“\(found.folder.lastPathComponent)”."
                             if job.notes.count < 30 { job.notes.append(reason) }
@@ -873,6 +872,7 @@ final class EngineService {
                         job.failures.remove(at: failedBefore)
                         job.failed = max(0, job.failed - 1)
                     }
+                    let firstTime = run.counted.insert(file.key).inserted
                     switch outcome {
                     case let .saved(url):
                         job.saved += 1
@@ -887,7 +887,7 @@ final class EngineService {
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
                         if let date = context.date, newest.map({ date > $0 }) ?? true { newest = date }
                     case let .duplicate(url):
-                        job.duplicates += 1
+                        if firstTime { job.duplicates += 1 }
                         savedFromStaging[file.path.path] = url
                         await remember(file.key, subcategory: context.subcategory)
                         if draft.postURL != nil || context.subcategory == "stories-tray", let user = context.username?.lowercased() {
@@ -896,9 +896,11 @@ final class EngineService {
                         window?.markSaved(file.key, url: url)
                         await app.store?.recordArchive(key: file.key, account: account, path: url.path, sha256: "")
                     case let .skipped(reason):
-                        job.skipped += 1
-                        job.failures.append((file.key, reason))
+                        // Skipped is not failed: said as a note, never offered for Retry (audit 17, A17-M1).
+                        if firstTime { job.skipped += 1 }
+                        if job.notes.count < 30 { job.notes.append(reason) }
                     case let .failed(reason):
+                        run.counted.remove(file.key)
                         job.failed += 1
                         job.failures.append((file.key, reason))
                     }
@@ -1309,6 +1311,9 @@ final class EngineService {
                     self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)), notify: false)
                     return
                 }
+                // What failed before this run, so a Retry that stops at "At most" can say which it did not come to (A16-M2,
+                // audit 17, A17-M1).
+                savedIDs.earlierFailures = job.failures
                 job.failed = 0
                 job.failures = []
                 job.found = job.saved + job.duplicates
@@ -1317,7 +1322,6 @@ final class EngineService {
                 job.skipped = 0
                 job.notes.removeAll { savedIDs.skipNotes.contains($0) }
                 savedIDs.skipNotes = []
-                savedIDs.retried = true
                 // Where the folder is now, in its library's layout (A8-m6).
                 let root = self.app.destination(for: now)
                 if now.standardizedFileURL.path != folder.url.standardizedFileURL.path {
@@ -1403,14 +1407,13 @@ final class EngineService {
                     } else {
                         waiting[key, default: []].append((path, kind))
                     }
-                case let .error(code, message, _, false) where code == "note":
-                    if job.notes.count < 30 { job.notes.append(Self.plainEngineError(message)) }
                 case let .error(code, message, _, false) where code == "unavailable":
                     // Never downloadable (private, removed, not out yet, live): skipped with the reason, not a failure.
                     job.skipped += 1
                     if job.notes.count < 30 {
-                        job.notes.append(message)
-                        savedIDs.skipNotes.insert(message)
+                        let plain = Self.plainEngineError(message)
+                        job.notes.append(plain)
+                        savedIDs.skipNotes.insert(plain)
                     }
                 case let .error(code, message, key, fatal):
                     if code == "download_failed", !fatal {
@@ -1438,30 +1441,33 @@ final class EngineService {
             return
         }
         let noThumbnail = extras.thumbnail ? saved.keys.filter { !(attached[$0] ?? []).contains("thumbnail") }.count : 0
-        let noSubtitles = extras.subtitles.isEmpty ? 0
-            : saved.keys.filter { !(attached[$0] ?? []).contains { $0.hasPrefix("subtitles.") } }.count
         if noThumbnail > 0 {
-            job.notes.append(saved.count == 1 ? "No thumbnail was found for the video."
-                : "No thumbnail was found for \(noThumbnail) of the videos.")
+            job.notes.append(saved.count == 1 ? "No thumbnail was found for the video saved."
+                : "No thumbnail was found for \(noThumbnail) of the \(saved.count) videos saved.")
         }
-        if noSubtitles > 0 {
-            let languages = extras.subtitles.joined(separator: ", ")
-            job.notes.append(saved.count == 1 ? "No subtitles in \(languages) were found for the video."
-                : "No subtitles in \(languages) were found for \(noSubtitles) of the videos.")
+        // Each language asked for, not only whether any came (audit 17, A17-m1); "all" asks for whatever there is.
+        let missing = extras.subtitles.isEmpty ? [:]
+            : VideoRunNotes.missingSubtitles(asked: extras.subtitles, attached: saved.keys.map { attached[$0] ?? [] })
+        for (language, count) in missing.sorted(by: { $0.key < $1.key }) {
+            let what = language == "any" ? "No subtitles were found" : "No \(language) subtitles were found"
+            job.notes.append(saved.count == 1 ? "\(what) for the video saved." : "\(what) for \(count) of the \(saved.count) videos saved.")
         }
         // "At most" counts the videos the job saves, Retry included: when it is reached, videos that failed are not tried
         // again (D-99, audit 15, A15-M3).
         // A Retry that reached it may not have come to every video that failed before: said too (audit 16, A16-M2).
-        if let limit = savedIDs.limit, savedIDs.ids.count >= limit, job.failed > 0 || savedIDs.retried {
-            let named = job.failures.prefix(5).map(\.message).map(Self.plainEngineError)
+        let notReached = VideoRunNotes.notReached(earlier: savedIDs.earlierFailures, saved: savedIDs.ids, failedNow: job.failures)
+        savedIDs.earlierFailures = []
+        if let limit = savedIDs.limit, savedIDs.ids.count >= limit, job.failed > 0 || !notReached.isEmpty {
+            let named = (job.failures + notReached).prefix(5).map(\.message).map(Self.plainEngineError)
             job.notes.append("“At most \(limit)” was reached, so videos that failed were not tried again"
                 + (named.isEmpty ? "." : ": " + named.joined(separator: "; ")))
             job.failed = 0
             job.failures = []
         }
         let savedNow = job.saved + job.duplicates - savedBefore
-        if savedNow == 0, failure == nil, job.failed == 0, job.skipped > 0 {
-            // Skipped for a reason of its own (its name taken, say): not a failure (audit 13, A13-m2).
+        if savedNow == 0, failure == nil, job.failed == 0, job.skipped > 0 || job.saved + job.duplicates > 0 {
+            // Skipped for a reason of its own (its name taken, say), or a Retry that found everything saved already: not a
+            // failure (audit 13, A13-m2; audit 17, C17-m3).
             app.jobs.finish(job, .completed)
         } else if savedNow == 0, neverAvailable, job.failed == 0 {
             // A Retry whose videos can no longer be downloaded leaves what the job saved as it was (audit 16, A16-m6).
@@ -1470,6 +1476,9 @@ final class EngineService {
                 job.notes.append(reason)
                 app.jobs.finish(job, .completed)
             } else {
+                // One reason, said once, and not also counted as skipped (audit 17, A17-m4).
+                job.notes.removeAll { savedIDs.skipNotes.contains($0) }
+                if !extras.playlist { job.skipped = 0 }
                 app.jobs.finish(job, .failed(reason))
             }
         } else if savedNow == 0 {
@@ -1528,8 +1537,9 @@ final class EngineService {
             job.duplicates += 1
             return url
         case let .skipped(reason):
+            // Skipped is not failed: a note, never in Retry Failed's list (audit 17, A17-M1).
             job.skipped += 1
-            job.failures.append((file.key, reason))
+            if job.notes.count < 30 { job.notes.append(reason) }
         case let .failed(reason):
             job.failed += 1
             job.failures.append((file.key, reason))
@@ -1918,6 +1928,10 @@ private final class PullRun {
     var clearFailures = false
     /// A Retry is running: the posts it passes because they are saved are not skipped again (audit 16, A16-m3).
     var retrying = false
+    /// Items this job has found, and files it has counted as saved, already saved or skipped: a Retry that meets them again
+    /// does not count them again (audit 17, A17-m2, A17-m3).
+    var found = Set<String>()
+    var counted = Set<String>()
 
     init(draft: PullDraft) { self.draft = draft }
 
@@ -1934,8 +1948,8 @@ private final class PullRun {
 private final class VideoRun {
     var ids = Set<String>()
     /// The videos that failed in the last run, for Retry Failed; false when one failure named no video.
-    /// A Retry has run: failures it did not reach before "At most" are said (audit 16, A16-M2).
-    var retried = false
+    /// The failures of the run before a Retry: those it did not come to before "At most" are said (A16-M2, A17-M1).
+    var earlierFailures: [(id: String, message: String)] = []
     /// The job's "At most", which counts every video it saves, Retry included (D-99).
     var limit: Int?
     /// Notes about skipped videos, counted afresh by a Retry.

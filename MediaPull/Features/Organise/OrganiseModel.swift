@@ -855,6 +855,8 @@ final class OrganiseModel {
     }
 
     func refreshHistory() async {
+        // Kept no longer than the setting says, also while MediaPull stays open (audit 17, B17-m2).
+        await app.journal.prune(olderThan: app.preferences.undoHistoryDays)
         history = await app.journal.entries()
     }
 

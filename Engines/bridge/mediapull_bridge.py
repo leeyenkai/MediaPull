@@ -1372,6 +1372,7 @@ def op_stream(request):
                 emitted["count"] += 1
             return [], info
 
+    extras_skip = bool((request.get("extras") or {}).get("skip_ids"))
     options = stream_options(request, staging, StreamLogger(playlist), progress)
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
@@ -1386,6 +1387,9 @@ def op_stream(request):
             raise
     if emitted["count"]:
         finish("partial" if STATE["errors"] else "completed", {"files": emitted["count"]})
+    elif extras_skip and not STATE["errors"]:
+        # A Retry that found every video saved already has nothing to do: done, not failed (audit 17, C17-m3).
+        finish("completed", {"files": 0})
     else:
         message = STATE["errors"][-1] if STATE["errors"] else "The stream could not be downloaded."
         # Nothing that could ever be downloaded (all private or removed, or a live stream) is not offered for Retry (audit

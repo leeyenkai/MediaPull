@@ -170,10 +170,7 @@ final class VideoEditorModel: UnsavedEditing {
                 // The original goes to the Trash when replaced; moving from the cache to a library on another volume is a
                 // full copy: not on the main actor.
                 let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
-                    if replacing { try FileManager.default.trashItem(at: url, resultingItemURL: nil) } // lint:allow main-io detached
-                    let target = LibraryModel.uniqueURL(wanted, replacing: replacing ? url : nil)
-                    try FileManager.default.moveItem(at: trimmed, to: target) // lint:allow main-io detached
-                    return target
+                    try LibraryModel.placeEdit(trimmed, as: wanted, replacing: replacing ? url : nil)
                 }.value
                 if replacing { app.noteMoved([(from: url.path, to: target.path)]) }
                 if let problem = Self.writeSidecar(from: url, to: target, changes: [
