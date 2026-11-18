@@ -451,9 +451,8 @@ final class AppModel {
             await analysis.noteMoves(moves)
             await store?.moveArchivePaths(moves)
             await accountFolders.moveFolders(moves)
-            await journal.followFolderMoves(moves, except: nil)
-            await refreshAccountFolders()
             LibraryModel.followQueuedDestinations(moves)
+            await refreshAccountFolders(followJobs: false)
         }
     }
 
@@ -469,7 +468,9 @@ final class AppModel {
         return (keys, preferences.gallerySwitches[category] ?? [:])
     }
 
-    func refreshAccountFolders() async {
+    /// `followJobs`: folders the records followed after a Finder rename move queued jobs' destinations too. A caller that
+    /// already moved them for its own moves passes false, so a swap of two names is not applied twice (audit 8, B8-m6).
+    func refreshAccountFolders(followJobs: Bool = true) async {
         let before = Dictionary(accountFolderList.map { ($0.id, $0.path) }, uniquingKeysWith: { a, _ in a })
         accountFolderList = await accountFolders.all()
         // Folders followed after a Finder rename: queued and running jobs show where they are now (audit 7, A7-m9).
@@ -477,7 +478,7 @@ final class AppModel {
             guard let old = before[record.id], AccountFolderStore.key(old) != AccountFolderStore.key(record.path) else { return nil }
             return (old, record.path)
         }
-        if !moved.isEmpty { LibraryModel.followQueuedDestinations(moved) }
+        if followJobs, !moved.isEmpty { LibraryModel.followQueuedDestinations(moved) }
         // Each Library pane shows the account of its folder as it is now: renamed in the Finder, or made by a first pull
         // (audit 4, C4-m9).
         for window in windows { window.library.findAccount() }
@@ -530,14 +531,15 @@ final class AppModel {
             guard let self, let job else { return }
             let failedIDs = Set(job.failures.map(\.id))
             let retryItems = items.filter { failedIDs.contains($0.id) }
-            job.failed = 0
-            job.failures = []
             Task { [weak self, weak window] in
                 guard let self else { return }
                 guard let now = await followed.now() else {
+                    // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7).
                     job.notes.append(FollowedFolder.goneMessage(folder))
                     return
                 }
+                job.failed = 0
+                job.failures = []
                 self.save(retryItems, from: window, to: now, title: "Retrying \(retryItems.count) item\(retryItems.count == 1 ? "" : "s")")
             }
         }
@@ -580,14 +582,12 @@ final class AppModel {
                 guard let (existing, byType) = found else { continue }
                 // Items of whoever has the name now never go into the folder of the account that had it (D-88, audit 6,
                 // A6-M2): the folder's account id against each item's owner.
-                // A folder from before 1.8 with no id of its own is compared with the id its name was first seen with
-                // (audit 7, A7-M2); one with no record yet is the folder's own as found.
+                // A folder with no id yet (from before 1.8) learns it at its first update (D-92).
                 let existingKey = AccountFolderStore.key(existing.path)
                 let record = await self.accountFolders.all().first {
                     AccountFolderStore.key($0.path) == existingKey && $0.account == account
                 }
-                var folderID = await self.engines.folderAccountID(record, account: account)
-                if folderID == nil { folderID = await self.store?.account(account)?.userID.nonEmpty }
+                let folderID = await self.engines.folderAccountID(record, account: account)
                 var group = group
                 if let folderID {
                     let others = group.filter { ($0.source.engine?.ownerID).map { $0 != folderID } ?? false }

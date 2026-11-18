@@ -1004,10 +1004,27 @@ final class SelfTestRunner {
             && fm.fileExists(atPath: savesRenamed.appendingPathComponent("gus").path)
         note("update: a save folder renamed while the download was queued was followed \(savedFollowed) "
             + "(\(gusJob?.state.label ?? "no job"), saved \(gusJob?.saved ?? -1))")
+        // Download All saves where its folder is when each entry runs, not where it was at the click (C7-M4, audit 8, C8-m6).
+        let listFolder = library.appendingPathComponent("List", isDirectory: true)
+        try? fm.createDirectory(at: listFolder, withIntermediateDirectories: true)
+        let selectedBefore = model.library.selectedFolder
+        model.library.selectedFolder = listFolder
+        writeReplay(account("hal", id: "48", count: 2))
+        model.downloads.useList(["@hal"])
+        await waitUntil(timeout: 30) { !self.model.downloads.batch.contains { $0.kind == .checking } }
+        model.downloads.runAll(window: model)
+        let listRenamed = library.appendingPathComponent("List renamed", isDirectory: true)
+        try? fm.moveItem(at: listFolder, to: listRenamed)
+        await waitUntil(timeout: 120) { !self.model.downloads.batchRunning }
+        let listFollowed = model.downloads.batch.first?.progress == .done && !fm.fileExists(atPath: listFolder.path)
+            && fm.fileExists(atPath: listRenamed.appendingPathComponent("hal").path)
+        note("update: Download All followed its folder renamed after the click \(listFollowed) "
+            + "(\(model.downloads.batch.first.map { "\($0.progress)" } ?? "no entry"))")
+        model.library.selectedFolder = selectedBefore
         writeReplay(replay)
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
             && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash && refusedRoutes
-            && savedFollowed
+            && savedFollowed && listFollowed
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass

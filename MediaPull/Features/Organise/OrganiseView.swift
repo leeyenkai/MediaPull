@@ -77,7 +77,7 @@ struct OrganiseFolderPane: View {
                         .padding(.top, 6)
                         if !columns {
                             QueryBar(query: $pane.query, includeSubfolders: $pane.includeSubfolders, entries: pane.entries,
-                                     focusToken: model.searchFocusTokens[pane.paneID] ?? 0)
+                                     focusToken: model.searchFocusTokens[pane.paneID] ?? 0, onFocus: { pane.gridFocused() })
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                         }

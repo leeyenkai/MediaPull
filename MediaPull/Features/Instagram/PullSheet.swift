@@ -24,7 +24,7 @@ struct InstagramForm: View {
                     .font(.callout)
             } else {
                 HStack(alignment: .center) {
-                    AccountCard(username: draft.username, showErrors: app.engines.signedIn)
+                    AccountCard(username: draft.username, showErrors: app.engines.signedIn, held: model.downloads.lookUpsHeld)
                     if model.downloads.lookUpsHeld {
                         Button("Look Up") { model.downloads.lookUpsHeld = false }
                             .help("Asks Instagram about @\(draft.username). Sent from another app, so nothing was asked yet.")
@@ -269,6 +269,8 @@ struct AccountCard: View {
     var username: String
     /// Hidden while signed out: the sign-in notice below says why the lookup failed.
     var showErrors = true
+    /// Sent from another app and not looked up yet: nothing is asked of Instagram, and the card says so (A8-m2).
+    var held = false
     @State private var avatar: CGImage?
     private var app: AppModel { .shared }
 
@@ -284,7 +286,10 @@ struct AccountCard: View {
             }
             .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
-                if let account = app.engines.accounts[username] {
+                if held, !username.isEmpty {
+                    Text("@\(username)").font(.headline)
+                    Text("Not looked up yet").font(.caption).foregroundStyle(.secondary)
+                } else if let account = app.engines.accounts[username] {
                     Text(account.fullName?.nonEmpty ?? "@\(account.username)").font(.headline)
                     Text(line(account)).font(.caption).foregroundStyle(.secondary)
                 } else if let error = app.engines.lookupErrors[username] {
@@ -304,8 +309,8 @@ struct AccountCard: View {
             }
             Spacer()
         }
-        .task(id: app.engines.accounts[username]?.avatarURL) {
-            guard let url = app.engines.accounts[username]?.avatarURL else { return }
+        .task(id: "\(app.engines.accounts[username]?.avatarURL?.absoluteString ?? "")|\(held)") {
+            guard !held, let url = app.engines.accounts[username]?.avatarURL else { return }
             avatar = await app.thumbnails.thumbnail(for: url, maxPixel: 120, context: .init())?.image
         }
     }

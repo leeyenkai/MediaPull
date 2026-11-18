@@ -228,7 +228,8 @@ final class ProportionalSplitViewController: NSSplitViewController {
     func finishSetup() {
         splitView.isVertical = vertical
         splitView.dividerStyle = .thin
-        splitView.autosaveName = autosave
+        // A self-test lays panes out from the starting fractions and leaves the person's saved sizes alone (audit 8, B8-m7).
+        if !SelfTestRunner.isActive { splitView.autosaveName = autosave }
     }
 
     override func viewDidLayout() {
@@ -236,7 +237,8 @@ final class ProportionalSplitViewController: NSSplitViewController {
         let length = vertical ? view.bounds.width : view.bounds.height
         guard !placed, length > 300 else { return }
         placed = true
-        guard UserDefaults.standard.object(forKey: "NSSplitView Subview Frames " + autosave) == nil, fractions.count > 1 else { return }
+        let saved = !SelfTestRunner.isActive && UserDefaults.standard.object(forKey: "NSSplitView Subview Frames " + autosave) != nil
+        guard !saved, fractions.count > 1 else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let total = self.fractions.reduce(0, +)

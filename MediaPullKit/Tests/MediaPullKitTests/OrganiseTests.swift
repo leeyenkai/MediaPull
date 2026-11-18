@@ -305,15 +305,17 @@ final class FolderOperationTests: XCTestCase {
         XCTAssertEqual(steps, [.clone(from: "/a.jpg", to: "/b.jpg", files: nil)])
     }
 
-    /// A target that is not there (an unplugged drive) keeps its steps, so Undo works once it is back.
+    /// A target that is not there (an unplugged drive, or in the Trash for now) keeps its steps, so Undo works once it is
+    /// back. (A folder that was only renamed is followed: see Audit8Tests.)
     func testUndoCanBeRetriedWhenTheFolderComesBack() async throws {
         file("in/a.jpg", "one")
         let journal = OperationJournal(folder: root.appendingPathComponent("../journal-\(UUID().uuidString)").standardizedFileURL)
         let drive = root.appendingPathComponent("drive", isDirectory: true)
         try FileManager.default.createDirectory(at: drive, withIntermediateDirectories: true)
         let entry = await journal.run(FolderOperations.move([root.appendingPathComponent("in/a.jpg")], to: drive))
-        let away = root.appendingPathComponent("away", isDirectory: true)
-        try FileManager.default.moveItem(at: drive, to: away)
+        var trashed: NSURL?
+        try FileManager.default.trashItem(at: drive, resultingItemURL: &trashed)
+        let away = try XCTUnwrap(trashed as URL?)
         let first = await journal.undo(entry.id)
         XCTAssertEqual(first.restored, 0)
         try FileManager.default.moveItem(at: away, to: drive)

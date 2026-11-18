@@ -376,7 +376,10 @@ final class EditorModel: UnsavedEditing {
         guard case let .item(id) = request.subject, !isSaving, let window, let item = window.itemsByID[id] else { return false }
         isSaving = true
         defer { isSaving = false }
-        if hasNameChange { window.customNames[id] = cleanName } else if name.isEmpty { window.customNames[id] = nil }
+        // A name typed with edits names the edited copy only, never the original (audit 8, C8-M1).
+        if !hasImageEdits {
+            if hasNameChange { window.customNames[id] = cleanName } else if name.isEmpty { window.customNames[id] = nil }
+        }
         guard let destination = folder ?? window.saveFolder else {
             message = "Choose a library folder first."
             return false

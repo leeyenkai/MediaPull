@@ -61,7 +61,8 @@ final class DownloadsModel {
         }
         if fromBrowser, !followsBrowser { return }
         if !fromBrowser { followsBrowser = text.isEmpty }
-        if !fromBrowser { lookUpsHeld = fromOutside }
+        // The browser's own page and anything typed are looked up as usual; only what came from outside waits (C8-m2).
+        lookUpsHeld = fromOutside
         address = text
         checkTask?.cancel()
         checking = false
@@ -225,10 +226,11 @@ struct DownloadsPane: View {
         .onAppear { if let url = model.browser.url { downloads.use(url.absoluteString, fromBrowser: true) } }
         .onChange(of: model.browser.url) { _, url in if let url { downloads.use(url.absoluteString, fromBrowser: true) } }
         .onChange(of: model.downloadsFocus) { _, _ in focused = true }
-        // A link dropped here fills in the address; nothing starts until Download (R-1111c, D-82).
+        // A link dropped here fills in the address, as one sent from another app does: nothing is looked up or started
+        // until the person asks (R-1111c, D-82, audit 8, A8-M1).
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: { ["http", "https"].contains($0.scheme?.lowercased() ?? "") }) else { return false }
-            downloads.use(url.absoluteString)
+            downloads.use(url.absoluteString, fromOutside: true)
             return true
         }
     }

@@ -318,7 +318,7 @@ final class OrganisePane: MediaGridOwner {
 
     var paneID: PaneID { role == .source ? .organiseSource : .organiseTarget }
 
-    func gridFocused() { owner?.window?.focusedPane = paneID }
+    func gridFocused() { owner?.window?.noteOrganiseFocus(paneID) }
 
     func gridWriter(_ id: String) -> NSPasteboardWriting? { URL(fileURLWithPath: id, isDirectory: listFolders.isFolder(id)) as NSURL }
 

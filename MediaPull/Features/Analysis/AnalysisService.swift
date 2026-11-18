@@ -38,6 +38,11 @@ final class AnalysisService {
     @ObservationIgnored private var regroupTask: Task<Void, Never>?
     /// Loads the models and reads the vector files; deletions wait for it, so files it reads are never brought back.
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    /// Moves noted before the database is open (a library folder renamed in the Finder while MediaPull was quit, found at
+    /// launch): applied when it opens, before the first scan, so the files are not taken for new ones (audit 8, B8-m5).
+    @ObservationIgnored private var waitingMoves: [(from: String, to: String)] = []
+    /// The moves last given to the database, so later ones are applied after them, in the order they happened.
+    @ObservationIgnored private var movesApplied: Task<Void, Never>?
     /// Where the vector files live (a temporary folder for self-tests).
     @ObservationIgnored private var vectorFolder = AnalysisService.folder
     /// Deletions under way; no scan starts while one runs, so nothing is written into data being deleted.
@@ -95,6 +100,11 @@ final class AnalysisService {
     func start(inMemory: Bool = false) {
         guard store == nil else { return }
         store = Self.openStore(inMemory: inMemory) { [weak self] problem in self?.storeProblem = problem }
+        if let store, !waitingMoves.isEmpty {
+            let moves = waitingMoves
+            waitingMoves = []
+            movesApplied = Task { await store.movePaths(moves) }
+        }
         // Self-tests keep their vectors out of the real Analysis folder.
         let folder = inMemory ? FileManager.default.temporaryDirectory
             .appendingPathComponent("MediaPull-selftest-analysis-\(UUID().uuidString)")
@@ -114,6 +124,7 @@ final class AnalysisService {
                 Self.removeOtherVectorFiles(in: folder, keeping: inUse.compactMap(\.self), modelsLoaded: loaded.imageText != nil)
                 return (loaded, images, faces)
             }.value
+            await movesApplied?.value
             analyzer = loaded
             imageVectors = images
             faceVectors = faces
@@ -515,7 +526,17 @@ final class AnalysisService {
 
     /// Keeps results pointing at files that moved (R-3804).
     func noteMoves(_ moves: [(from: String, to: String)]) async {
-        await store?.movePaths(moves)
+        guard let store else {
+            waitingMoves += moves
+            return
+        }
+        let previous = movesApplied
+        let task = Task {
+            await previous?.value
+            await store.movePaths(moves)
+        }
+        movesApplied = task
+        await task.value
         revision += 1
     }
 

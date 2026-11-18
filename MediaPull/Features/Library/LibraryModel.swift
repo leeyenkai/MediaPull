@@ -313,9 +313,20 @@ final class LibraryModel: MediaGridOwner {
         guard !moves.isEmpty else { return }
         for job in AppModel.shared.jobs.jobs where job.state.canCancel {
             guard let old = job.destination else { continue }
-            let new = moves.reduce(old) { followed($0, from: $1.from, to: $1.to) }
+            let new = followed(old, simultaneously: moves)
             if new != old { job.destination = new }
         }
+    }
+
+    /// `url` after a batch of moves made at once: the first move that holds it decides, and no later one moves it again, so
+    /// two folders that swapped names each get the other's (audit 8, B8-m6). Batches that go through temporary names (a
+    /// batch rename) only ever rename files, never the folders jobs save into.
+    nonisolated static func followed(_ url: URL, simultaneously moves: [(from: String, to: String)]) -> URL {
+        for move in moves {
+            let new = followed(url, from: move.from, to: move.to)
+            if new != url { return new }
+        }
+        return url
     }
 
     /// `url` after the folder or file `from` became `to`, compared as the volume compares names; unchanged when outside it.

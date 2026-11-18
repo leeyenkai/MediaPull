@@ -39,17 +39,14 @@ extension AppModel {
         return report
     }
 
-    private func followMoves(_ moves: [(from: String, to: String)], changedBy id: UUID) async {
+    private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID) async {
         guard !moves.isEmpty else { return }
-        // Other changes' undo records follow a folder renamed or moved, so their Undo puts things back where the folder is
-        // now, never into a folder made again at its old path (audit 6, B6-M1).
-        await journal.followFolderMoves(moves, except: id)
         await analysis.noteMoves(moves)
         await store?.moveArchivePaths(moves)
         await accountFolders.moveFolders(moves)
-        await refreshAccountFolders()
-        // Queued and running jobs show where their folder is now (audit 6, B6-m8).
+        // Queued and running jobs show where their folder is now (audit 6, B6-m8), once (audit 8, B8-m6).
         LibraryModel.followQueuedDestinations(moves)
+        await refreshAccountFolders(followJobs: false)
         // A window's save folder moved or renamed (in Organise, say) is followed, so Save goes where it went (B3-m8).
         for window in windows {
             let held = [window.library.selectedFolder, window.library.otherFolder].compactMap { $0?.standardizedFileURL.path }
@@ -163,7 +160,8 @@ extension WindowModel {
         Task {
             let report = await app.redoChange(entry.id)
             // Nothing done again is said as such (audit 7, B7-m6).
-            if report.restored == 0, report.moves.isEmpty {
+            // Something done again but no file moved (a New Folder made again) is a redo too (audit 8, B8-m2).
+            if report.restored == 0, report.moves.isEmpty, !report.skipped.isEmpty {
                 showFileMessage("Nothing of “\(entry.title)” could be done again"
                     + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
             } else {

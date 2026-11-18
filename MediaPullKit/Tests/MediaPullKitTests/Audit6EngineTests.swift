@@ -47,15 +47,17 @@ final class Audit6EngineTests: XCTestCase {
         XCTAssertTrue(trashed.failures.isEmpty)
         let trip = root.appendingPathComponent("Trip", isDirectory: true)
         let renamed = await journal.run(FolderOperations.rename(trip, to: "Trip 2024"))
-        await journal.followFolderMoves(renamed.moves, except: renamed.id)
         let report = await journal.undo(trashed.id)
         XCTAssertEqual(report.restored, 1)
         XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent("Trip 2024/x.jpg").path), "back where its folder is now")
         XCTAssertFalse(fm.fileExists(atPath: trip.path), "the old folder is not made again")
 
-        // Renamed outside MediaPull: nothing is made, the file stays in the Trash and Undo can be tried again.
+        // Its folder in the Trash (since round 8 a Finder rename is followed): nothing is made, the file stays in the Trash
+        // and Undo can be tried again.
         let second = await journal.run(FolderOperations.trash([root.appendingPathComponent("Trip 2024/keep.jpg")]))
-        try fm.moveItem(at: root.appendingPathComponent("Trip 2024"), to: root.appendingPathComponent("Elsewhere"))
+        var gone: NSURL?
+        try fm.trashItem(at: root.appendingPathComponent("Trip 2024"), resultingItemURL: &gone)
+        defer { if let gone = gone as URL? { try? fm.removeItem(at: gone) } }
         let left = await journal.undo(second.id)
         XCTAssertEqual(left.restored, 0)
         XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Trip 2024").path))

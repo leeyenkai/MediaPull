@@ -36,29 +36,23 @@ final class Audit7Tests: XCTestCase {
         fm.fileExists(atPath: root.appendingPathComponent(path).path)
     }
 
-    /// The journal as the app drives it: every run, undo and redo is followed by the folder moves it made.
+    /// The journal as the app drives it.
     actor Driver {
         let journal: OperationJournal
         init(_ folder: URL) { journal = OperationJournal(folder: folder) }
 
         func run(_ plan: OrganisePlan) async -> JournalEntry {
-            let entry = await journal.run(plan)
-            await journal.followFolderMoves(entry.moves, except: entry.id)
-            return entry
+            await journal.run(plan)
         }
 
         @discardableResult
         func undo(_ id: UUID) async -> UndoReport {
-            let report = await journal.undo(id)
-            await journal.followFolderMoves(report.moves, except: id)
-            return report
+            await journal.undo(id)
         }
 
         @discardableResult
         func redo(_ id: UUID) async -> UndoReport {
-            let report = await journal.redo(id)
-            await journal.followFolderMoves(report.moves, except: id)
-            return report
+            await journal.redo(id)
         }
     }
 

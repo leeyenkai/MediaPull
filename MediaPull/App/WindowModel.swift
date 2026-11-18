@@ -136,6 +136,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         if video, let url = browser.url, address == nil, !downloads.batchRunning,
            !(url.host?.lowercased().hasSuffix("instagram.com") ?? false)
         {
+            downloads.lookUpsHeld = false
             downloads.target = .video(url)
         }
         downloadsFocus += 1
@@ -775,11 +776,17 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var searchFocusTokens: [PaneID: Int] = [:]
 
     /// The Library or Organise pane the keyboard is working in, or nil when it is the page or the Extracted pane: the
-    /// pane last clicked, unless the web page or a text field outside the Library has the keyboard now. In Organise, its
-    /// Source by default.
+    /// pane last clicked, unless the web page or a text field outside the Library has the keyboard now. In Organise, the
+    /// pane holding a text field that has the keyboard, else the pane last clicked, else its Source.
     var keyboardFolderPane: PaneID? {
         if section == .organise {
-            if let focusedPane, [.organiseSource, .organiseTarget].contains(focusedPane), isShowing(focusedPane) { return focusedPane }
+            let panes: [PaneID] = [.organiseSource, .organiseTarget]
+            if let responder = hostWindow?.firstResponder, responder is NSText || responder is NSTextField,
+               let view = Self.paneView(of: responder),
+               let pane = panes.first(where: { organisePaneViews[$0]?.view === view }), isShowing(pane) {
+                return pane
+            }
+            if let focusedPane, panes.contains(focusedPane), isShowing(focusedPane) { return focusedPane }
             return .organiseSource
         }
         guard !ReadOnlyWebView.isTyping(in: hostWindow), isShowing(.library) else { return nil }
@@ -800,6 +807,15 @@ final class WindowModel: Identifiable, MediaGridOwner {
     func noteLibraryFocus() {
         focusedPane = .library
         if let view = hostWindow.flatMap({ Self.paneView(of: $0.firstResponder) }) { libraryPaneView = view }
+    }
+
+    /// The Organise Source and Target panes' views, noted as the Library's is.
+    @ObservationIgnored var organisePaneViews: [PaneID: WeakView] = [:]
+
+    /// An Organise pane is being worked in (its grid, tree or search field took the keyboard).
+    func noteOrganiseFocus(_ pane: PaneID) {
+        focusedPane = pane
+        if let view = hostWindow.flatMap({ Self.paneView(of: $0.firstResponder) }) { organisePaneViews[pane] = WeakView(view: view) }
     }
 
     /// The pane holding `responder`: its view directly inside the split view that arranges the panes.
@@ -837,12 +853,18 @@ final class WindowModel: Identifiable, MediaGridOwner {
         }
     }
 
-    /// ⇧⌘N: a new folder in the folder shown in the section in front (the Organise pane being worked in, else the Library).
+    /// ⇧⌘N: a new folder in the folder shown in the folder pane being worked in, nil when no folder pane is on screen. A
+    /// hidden Library never gets one: making it would also change the save folder out of sight (audit 8, B8-m4).
     var newFolderParent: URL? {
-        switch keyboardFolderPane {
-        case .organiseSource: organise.source.folder
-        case .organiseTarget: organise.target.folder
-        default: section == .organise ? nil : library.selectedFolder
+        switch section {
+        case .organise:
+            switch keyboardFolderPane {
+            case .organiseSource: organise.source.folder
+            case .organiseTarget: organise.target.folder
+            default: nil
+            }
+        case .collect:
+            isShowing(.library) ? library.selectedFolder : nil
         }
     }
 
@@ -1292,6 +1314,11 @@ nonisolated final class ActionMenuItem: NSMenuItem {
         let handler = handler
         MainActor.assumeIsolated { handler() }
     }
+}
+
+/// A pane's view, held without keeping it alive.
+struct WeakView {
+    weak var view: NSView?
 }
 
 enum WindowSection: String, CaseIterable {

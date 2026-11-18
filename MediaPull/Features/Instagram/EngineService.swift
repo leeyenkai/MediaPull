@@ -118,7 +118,8 @@ final class EngineService {
             let now = Date()
             let recent = (UserDefaults.standard.array(forKey: Self.rateLimitKey) as? [Double] ?? [])
                 .filter { now.timeIntervalSince1970 - $0 < 86400 } + [now.timeIntervalSince1970]
-            UserDefaults.standard.set(recent, forKey: Self.rateLimitKey)
+            // A self-test never writes the person's settings (audit 8, B8-m7).
+            if !SelfTestRunner.isActive { UserDefaults.standard.set(recent, forKey: Self.rateLimitKey) }
             let minutes = [10, 20, 40][min(recent.count, 3) - 1]
             gate = .cooldown(until: now.addingTimeInterval(TimeInterval(minutes * 60)))
         } else {
@@ -435,19 +436,19 @@ final class EngineService {
         // since the job was queued is followed (audit 6, C6-M3).
         var root = root
         if !scanOnly, let chosen = root {
-            // An account folder known by its record decides where it is, whatever became of the folder around it (audit 7,
-            // A7-m1); otherwise the save folder is followed.
-            let followed: URL? = if let id = draft.accountFolderID, let folder = await app.accountFolders.currentFolder(of: id) {
-                folder.deletingLastPathComponent()
-            } else {
-                await run.root?.now()
+            // The save folder is followed; only when it is gone does an account folder known by its record decide where
+            // the job saves (audit 7, A7-m1), so a form pull keeps saving around the folder it was given (audit 8, C8-m5).
+            var followed = await run.root?.now()
+            if followed == nil, let id = draft.accountFolderID, let folder = await app.accountFolders.currentFolder(of: id) {
+                followed = folder.deletingLastPathComponent()
             }
             guard let followed else {
                 app.jobs.finish(job, .failed(FollowedFolder.goneMessage(chosen.url)))
                 return
             }
             if followed.standardizedFileURL.path != chosen.url.standardizedFileURL.path {
-                root = SaveDestination(url: followed, layout: chosen.layout)
+                // The folder's library decides the layout where it is now (D-70, audit 8, A8-m6).
+                root = SaveDestination(url: followed, layout: app.root(containing: followed)?.layout ?? chosen.layout)
                 // Activity shows where the job saves now (audit 7, A7-m6).
                 job.destination = job.destination.map { LibraryModel.followed($0, from: chosen.url.path, to: followed.path) }
             }
@@ -638,6 +639,10 @@ final class EngineService {
         // Single posts, Reels, stories and highlights go into their account's folder (D-78): found once per account, and
         // remembered in that folder's record like a pull's (D-79).
         var postPlaces: [String: AccountPlace] = [:]
+        // Accounts the engine looked up in this pull (tray owners included), by name.
+        var seenIDs: [String: String] = [:]
+        // Accounts whose folder this pull is making (none existed when their first item came).
+        var madePostFolders = Set<String>()
         // Where a place's folder is now: followed when renamed or moved, nil when it went to the Trash or was deleted. A new
         // folder nobody has made yet is where it was planned (audit 5, A5-M3).
         func whereNow(_ found: AccountPlace) async -> URL? {
@@ -648,9 +653,9 @@ final class EngineService {
         func rememberPost(_ key: String, account user: String, owner: String?) async {
             guard let folder = postPlaces[user]?.folder, FileManager.default.fileExists(atPath: folder.path) else { return }
             var record = await app.accountFolders.record(account: user, folder: folder)
-            // Only an id the folder's account had: a post of whoever has the name now never gives the folder that id
-            // (audit 7, A7-M2).
-            if let owner, record.userID == nil, await folderAccountID(record, account: user).map({ $0 == owner }) ?? true {
+            // Only a folder this pull made learns its account's id from a post: an older folder learns it at its own
+            // update, so a post of whoever has the name now never gives it that id (audit 7, A7-M2; D-92).
+            if let owner, record.userID == nil, madePostFolders.contains(user) {
                 await app.accountFolders.update(record.id, userID: owner)
                 record.userID = owner
             }
@@ -658,8 +663,6 @@ final class EngineService {
             // The folder is followed from now on, even one this pull made (audit 6, A6-m2).
             postPlaces[user]?.record = record
         }
-        // Accounts the engine looked up in this pull (tray owners included), by name.
-        var seenIDs: [String: String] = [:]
         func remember(_ key: String, subcategory: String) async {
             // Others' stories and saved posts belong to other folders, not to this account's record.
             guard !["stories-tray", "saved", "collection"].contains(subcategory) else { return }
@@ -766,6 +769,7 @@ final class EngineService {
                         } else if let resolved = await resolvePlace(account: user, draft: draft, root: root, name: user) {
                             found = resolved
                             postPlaces[user] = found
+                            if resolved.record == nil { madePostFolders.insert(user) }
                         } else {
                             continue
                         }
@@ -776,10 +780,11 @@ final class EngineService {
                         {
                             // Not a failure to retry: it would be refused again (audit 7, A7-m4).
                             job.skipped += 1
-                            if job.notes.count < 30 {
-                                job.notes.append("@\(user) is now a different Instagram account, so its item was not saved into "
-                                    + "“\(found.folder.lastPathComponent)”.")
-                            }
+                            let reason = "@\(user) is now a different Instagram account, so its item was not saved into "
+                                + "“\(found.folder.lastPathComponent)”."
+                            if job.notes.count < 30 { job.notes.append(reason) }
+                            // Shown on the item too, as when saving listed items (audit 8, A8-m9).
+                            window?.apply(.finished(itemID: file.key, outcome: .skipped(reason), note: nil))
                             continue
                         }
                         target.accountUsername = user
@@ -795,6 +800,8 @@ final class EngineService {
                        app.roots.contains(where: { AccountFolderStore.key($0.url.path) == AccountFolderStore.key(account.path) })
                     {
                         target.folder = account
+                        // Copies are looked for in Saved posts, not in the whole library (audit 8, A8-m8).
+                        target.accountFolder = nil
                     }
                     let isVideo = Self.videoExtensions.contains(file.path.pathExtension.lowercased())
                     let input = EngineItemInput(
@@ -993,12 +1000,11 @@ final class EngineService {
         }
     }
 
-    /// The account id a folder belongs to: its own, else, for a folder from before 1.8 that has none yet, the id its
-    /// name was first seen with (D-90, audit 7, A7-M2). Nil for a folder with no record (a new one).
-    func folderAccountID(_ record: AccountFolderRecord?, account: String) async -> String? {
-        guard let record else { return nil }
-        if let id = record.userID?.nonEmpty { return id }
-        return await app.store?.account(account.lowercased())?.userID.nonEmpty
+    /// The account id a folder belongs to: its own. A folder that has none yet (one from before 1.8) learns it at its
+    /// first update; the name-to-id table cannot stand in for it, since 1.7 replaced that id at every look-up (D-92, audit
+    /// 8, A8-m5, C8-m4).
+    func folderAccountID(_ record: AccountFolderRecord?, account _: String) async -> String? {
+        record?.userID?.nonEmpty
     }
 
     /// Starts a continuation for each place where posts may still be missing in an account folder (D-87).
@@ -1211,17 +1217,23 @@ final class EngineService {
             job.task = Task { [weak self, weak job] in
                 guard let self, let job else { return }
                 guard let now = await folder.now() else {
-                    self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)))
+                    // The failures stay, so Retry Failed is still offered once the folder is back (audit 8, A8-m7).
+                    job.notes.append(FollowedFolder.goneMessage(root.url))
+                    self.app.jobs.finish(job, job.failed > 0 ? .completed : .failed(FollowedFolder.goneMessage(root.url)))
                     return
                 }
-                let root = SaveDestination(url: now, layout: root.layout)
+                job.failed = 0
+                job.failures = []
+                // Where the folder is now, in its library's layout (A8-m6).
+                let root = self.app.destination(for: now)
+                if now.standardizedFileURL.path != folder.url.standardizedFileURL.path {
+                    job.destination = job.destination.map { LibraryModel.followed($0, from: folder.url.path, to: now.path) }
+                }
                 await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site)
             }
         }
         run()
         job.retry = { [weak job] in
-            job?.failed = 0
-            job?.failures = []
             job?.finishedAt = nil
             run()
         }
@@ -1533,17 +1545,18 @@ final class EngineService {
         let folder = FollowedFolder(root.url)
         job.retry = { [weak self, weak window, weak job] in
             // The new download takes over the failed files; this one no longer offers them (audit 6, A6-m4). It saves
-            // where the folder is now (audit 7, A7-m3).
-            job?.failed = 0
-            job?.failures = []
+            // where the folder is now, in its library's layout; when the folder is gone, its failures stay (audit 8, A8-m6,
+            // A8-m7).
             Task { [weak self, weak window] in
                 guard let self else { return }
                 guard let now = await folder.now() else {
                     job?.notes.append(FollowedFolder.goneMessage(root.url))
                     return
                 }
+                job?.failed = 0
+                job?.failures = []
                 _ = self.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: range, from: from,
-                                              to: to, onlyNew: true, root: SaveDestination(url: now, layout: root.layout), window: window)
+                                              to: to, onlyNew: true, root: self.app.destination(for: now), window: window)
             }
         }
         job.task = Task { [weak self, weak window] in

@@ -358,6 +358,17 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     static func volume(of number: String) -> Substring {
         number.split(separator: ":").first ?? ""
     }
+
+    /// Whether the folder now at `url` is another folder than this record's (one made where this one was trashed). A
+    /// folder copied or restored onto another volume is the same folder. Numbers written by an earlier build used the
+    /// device number, which changes on reconnecting a disk: for them only the file number counts (audit 8, C8-m3).
+    func isAnotherFolder(at url: URL) -> Bool {
+        guard let old = folderNumber, let now = Self.number(of: url), old != now else { return false }
+        let oldVolume = Self.volume(of: old), oldFile = old.split(separator: ":").last ?? ""
+        let newVolume = Self.volume(of: now), newFile = now.split(separator: ":").last ?? ""
+        if !oldVolume.contains("-") { return oldFile != newFile }
+        return oldVolume == newVolume && oldFile != newFile
+    }
 }
 
 public actor AccountFolderStore {
@@ -463,11 +474,7 @@ public actor AccountFolderStore {
               !FileFlags.isInTrash(URL(fileURLWithPath: record.path)) else { return nil }
         let url = URL(fileURLWithPath: record.path, isDirectory: true)
         // Another folder made at the path of one that went to the Trash is not this one (audit 7, A7-m7).
-        if let old = record.folderNumber, let now = AccountFolderRecord.number(of: url), old != now,
-           AccountFolderRecord.volume(of: old) == AccountFolderRecord.volume(of: now)
-        {
-            return nil
-        }
+        if record.isAnotherFolder(at: url) { return nil }
         return url
     }
 
@@ -479,13 +486,19 @@ public actor AccountFolderStore {
         var ids = records.values.filter { Self.key($0.path) == key }.map(\.id)
         if let id = formerPaths[key] { ids.append(id) }
         followMoves()
+        var replaced = false
         for id in ids {
-            if let record = records[id], FileManager.default.fileExists(atPath: record.path),
-               !FileFlags.isInTrash(URL(fileURLWithPath: record.path))
-            {
-                return URL(fileURLWithPath: record.path, isDirectory: true)
+            guard let record = records[id], FileManager.default.fileExists(atPath: record.path),
+                  !FileFlags.isInTrash(URL(fileURLWithPath: record.path)) else { continue }
+            let found = URL(fileURLWithPath: record.path, isDirectory: true)
+            // Another folder made where the job's folder was trashed is not its folder (audit 8, A8-m3).
+            if record.isAnotherFolder(at: found) {
+                replaced = true
+                continue
             }
+            return found
         }
+        if replaced { return nil }
         return FileManager.default.fileExists(atPath: url.path) && !FileFlags.isInTrash(url) ? url : nil
     }
 
@@ -512,9 +525,9 @@ public actor AccountFolderStore {
         // Only a different folder on the same volume is another folder: one copied to a new disk or restored from a
         // backup keeps its memory.
         let number = AccountFolderRecord.number(of: url)
-        for other in records.values where Self.key(other.path) == key && other.account == account.lowercased() {
-            guard let old = other.folderNumber, let number, old != number,
-                  AccountFolderRecord.volume(of: old) == AccountFolderRecord.volume(of: number) else { continue }
+        for other in records.values where Self.key(other.path) == key && other.account == account.lowercased()
+            && other.isAnotherFolder(at: url)
+        {
             forget(other.id)
         }
         if var existing = records.values.first(where: { Self.key($0.path) == key && $0.account == account.lowercased() }) {
@@ -546,7 +559,10 @@ public actor AccountFolderStore {
     public func all() -> [AccountFolderRecord] {
         load()
         followMoves()
-        return records.values.filter { FileManager.default.fileExists(atPath: $0.path) }.sorted { $0.path < $1.path }
+        // A record whose folder went to the Trash is not the record of a new folder made at its path (audit 8, A8-m3).
+        return records.values.filter {
+            FileManager.default.fileExists(atPath: $0.path) && !$0.isAnotherFolder(at: URL(fileURLWithPath: $0.path))
+        }.sorted { $0.path < $1.path }
     }
 
     public func addKeys(_ keys: Set<String>, to id: UUID) {

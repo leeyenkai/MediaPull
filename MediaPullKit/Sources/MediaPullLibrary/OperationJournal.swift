@@ -34,6 +34,11 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var finished: Bool
     /// The steps the last undo put back, in their original order, so Redo can do them again (nil before 1.8).
     public var undoneSteps: [JournalStep]?
+    /// Where the things this change touched are now: each path in its steps (an item, or the folder an item came from)
+    /// with a reference to the file or folder that was there, which follows it through renames, moves and the Trash. Undo
+    /// and Redo find things by these, never by a path another folder may have taken since (audit 8, B8-M1). Nil before
+    /// round 8 of the 1.8 audits: paths only.
+    public var places: [String: String]?
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
@@ -98,56 +103,6 @@ public actor OperationJournal {
             }
         }
         return paths
-    }
-
-    /// Folders renamed or moved since (by another change, or a library folder followed after a Finder rename): the
-    /// paths in every other journal follow them, so Undo and Redo work where the folder is now (audit 6, B6-M1). Only
-    /// what is inside the moved folder follows: an item's own path when the item is in it, and an empty place (where
-    /// Undo or Redo would put something back) only through its parent folder, since another folder may have taken the
-    /// moved folder's name since (audit 7, B7-M1). Moves of single files leave other journals alone.
-    public func followFolderMoves(_ moves: [(from: String, to: String)], except id: UUID?) {
-        let folders = moves.filter { Self.isFolder(URL(fileURLWithPath: $0.to)) }
-        guard !folders.isEmpty else { return }
-        // Something that is at `path` now.
-        func item(_ path: String) -> String {
-            for move in folders where path == move.from || path.hasPrefix(move.from + "/") {
-                return move.to + path.dropFirst(move.from.count)
-            }
-            return path
-        }
-        // A place nothing is at now: its folder follows, its own name stays.
-        func place(_ path: String) -> String {
-            let url = URL(fileURLWithPath: path)
-            let parent = url.deletingLastPathComponent().path
-            let followed = item(parent)
-            return followed == parent ? path : URL(fileURLWithPath: followed).appendingPathComponent(url.lastPathComponent).path
-        }
-        // Steps not undone: what they moved, copied or made is at its new place; their old places are empty.
-        func done(_ step: JournalStep) -> JournalStep {
-            switch step {
-            case let .makeFolder(path): .makeFolder(item(path))
-            case let .move(from, to, size, modified): .move(from: place(from), to: item(to), size: size, modified: modified)
-            case let .clone(from, to, files): .clone(from: item(from), to: item(to), files: files)
-            case let .trash(original, trashed): .trash(original: place(original), trashed: trashed)
-            }
-        }
-        // Steps undone (for Redo): things are back at their old places, and the new places are empty.
-        func undone(_ step: JournalStep) -> JournalStep {
-            switch step {
-            case let .makeFolder(path): .makeFolder(place(path))
-            case let .move(from, to, size, modified): .move(from: item(from), to: place(to), size: size, modified: modified)
-            case let .clone(from, to, files): .clone(from: item(from), to: place(to), files: files)
-            case let .trash(original, trashed): .trash(original: item(original), trashed: trashed)
-            }
-        }
-        for var entry in entries() where entry.id != id {
-            let steps = entry.steps.map(done), undoneSteps = entry.undoneSteps?.map(undone), root = item(entry.root)
-            guard steps != entry.steps || undoneSteps != entry.undoneSteps || root != entry.root else { continue }
-            entry.steps = steps
-            entry.undoneSteps = undoneSteps
-            entry.root = root
-            save(entry)
-        }
     }
 
     /// Forgets journals older than `days` (the files they describe are untouched).
@@ -233,11 +188,10 @@ public actor OperationJournal {
             if Task.isCancelled {
                 break
             }
-            if !fm.fileExists(atPath: folder.path) {
-                do {
-                    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-                    entry.steps.append(.makeFolder(folder.path))
-                } catch { entry.failures.append("\(folder.lastPathComponent): \(error.localizedDescription)") }
+            // Level by level, and only the levels the plan makes: a folder above them renamed or trashed since the
+            // preview is never made again (audit 8, B8-M2).
+            do { try makeMissingFolders(folder, allowed: allowed, entry: &entry) } catch {
+                entry.failures.append("\(folder.lastPathComponent): \(error.localizedDescription)")
             }
             tick()
         }
@@ -313,6 +267,43 @@ public actor OperationJournal {
         let isFolder = values?.isDirectory == true
         entry.steps.append(.move(from: from.path, to: to.path, size: isFolder ? nil : values?.fileSize.map(Int64.init),
                                  modified: isFolder ? nil : values?.contentModificationDate))
+        Self.note(to.path, at: to.path, in: &entry)
+        Self.note(from.deletingLastPathComponent().path, at: from.deletingLastPathComponent().path, in: &entry)
+    }
+
+    // MARK: Places
+
+    /// A reference to the file or folder at `path`, which keeps naming it when it is renamed, moved or put in the Trash.
+    static func reference(_ path: String) -> String? {
+        guard let ref = CFURLCreateFileReferenceURL(nil, URL(fileURLWithPath: path) as CFURL, nil)?.takeRetainedValue() else {
+            return nil
+        }
+        return CFURLGetString(ref) as String
+    }
+
+    /// Where a reference's file or folder is now; nil when it is gone (or its disk is not connected).
+    static func resolve(_ reference: String) -> String? {
+        guard let url = CFURLCreateWithString(nil, reference as CFString, nil),
+              let path = CFURLCreateFilePathURL(nil, url, nil)?.takeRetainedValue() else { return nil }
+        return (path as URL).standardizedFileURL.path
+    }
+
+    /// Remembers that the thing now at `current` is what the step path `key` names.
+    static func note(_ key: String, at current: String, in entry: inout JournalEntry) {
+        guard let ref = reference(current) else { return }
+        var places = entry.places ?? [:]
+        places[key] = ref
+        entry.places = places
+    }
+
+    /// Where the thing a step path names is now: followed by its reference; in the Trash counts as gone. A path with no
+    /// reference (older journals), or one whose reference no longer resolves (deleted, or a disk reconnected), is taken
+    /// as it is.
+    func locate(_ key: String, in entry: JournalEntry) -> String? {
+        if let ref = entry.places?[key], let now = Self.resolve(ref) {
+            return FileFlags.isInTrash(URL(fileURLWithPath: now)) ? nil : now
+        }
+        return fm.fileExists(atPath: key) ? key : nil
     }
 
     /// Creates a destination folder that is not there (deleted after the preview) and journals each folder it makes, so
@@ -333,6 +324,19 @@ public actor OperationJournal {
             try fm.createDirectory(at: created, withIntermediateDirectories: false)
             entry.steps.append(.makeFolder(created.path))
         }
+    }
+
+    /// Where a step's item goes again on Redo: into its folder where that is now, or a folder the change makes itself.
+    /// Nil when that folder went away (it is never made again elsewhere).
+    func destination(_ path: String, allowed: Set<String>, entry: inout JournalEntry) throws -> URL? {
+        let url = URL(fileURLWithPath: path)
+        let folder = url.deletingLastPathComponent()
+        if let now = locate(folder.path, in: entry), Self.isFolder(URL(fileURLWithPath: now)) {
+            return URL(fileURLWithPath: now).appendingPathComponent(url.lastPathComponent)
+        }
+        guard allowed.contains(folder.standardizedFileURL.path) else { return nil }
+        try makeMissingFolders(folder, allowed: allowed, entry: &entry)
+        return url
     }
 
     func cloneItem(_ from: URL, to: URL, entry: inout JournalEntry) throws {
@@ -380,6 +384,7 @@ public actor OperationJournal {
         var trashed: NSURL?
         try fm.trashItem(at: item, resultingItemURL: &trashed)
         entry.steps.append(.trash(original: item.path, trashed: (trashed as URL?)?.path ?? ""))
+        Self.note(item.deletingLastPathComponent().path, at: item.deletingLastPathComponent().path, in: &entry)
         // Where an item went in the Trash cannot be found again, so it is saved soon: at once for the first 200 steps, then
         // at most five times a second (rewriting a long entry after every item would write gigabytes for a large Trash).
         if entry.steps.count < 200 || Date().timeIntervalSince(lastTrashSave) >= 0.2 {
@@ -415,12 +420,12 @@ public actor OperationJournal {
         var undoneUnits: [[JournalStep]] = []
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
         for unit in Self.units(entry.steps).reversed() {
-            guard undo(unit[0], report: &report) else {
-                if canRetry(unit[0]) { left.append(unit) }
+            guard undo(unit[0], entry: &entry, report: &report) else {
+                if canRetry(unit[0], entry: entry) { left.append(unit) }
                 continue
             }
             for step in unit.dropFirst() {
-                undo(step, report: &report)
+                undo(step, entry: &entry, report: &report)
             }
             undoneUnits.append(unit)
         }
@@ -471,31 +476,35 @@ public actor OperationJournal {
                 }
                 return true
             case let .move(from, to, _, _):
-                guard fm.fileExists(atPath: from) else {
+                // The item where it is now, into the folder it went to where that is now (audit 8, B8-M1, B8-m1).
+                guard let now = locate(from, in: entry) else {
                     report.skipped.append("\(URL(fileURLWithPath: from).lastPathComponent) is no longer at \(from)")
                     return false
                 }
-                guard !fm.fileExists(atPath: to) || Self.sameFile(from, to) else {
-                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): another file now has that name")
+                guard let target = try destination(to, allowed: allowed, entry: &entry) else {
+                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): its folder is no longer there")
                     return false
                 }
-                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), allowed: allowed, entry: &entry)
-                try moveItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
+                guard !fm.fileExists(atPath: target.path) || Self.sameFile(now, target.path) else {
+                    report.skipped.append("\(target.lastPathComponent): another file now has that name")
+                    return false
+                }
+                try moveItem(URL(fileURLWithPath: now), to: target, entry: &entry)
                 if !to.hasSuffix(".json") { report.restored += 1 }
-                report.moves.append((from, to))
+                report.moves.append((now, target.path))
                 return true
             case let .clone(from, to, _):
-                guard fm.fileExists(atPath: from), !fm.fileExists(atPath: to) else {
+                guard let source = locate(from, in: entry), let target = try destination(to, allowed: allowed, entry: &entry),
+                      !fm.fileExists(atPath: target.path) else {
                     report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) could not be copied again")
                     return false
                 }
-                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), allowed: allowed, entry: &entry)
-                try cloneItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
+                try cloneItem(URL(fileURLWithPath: source), to: target, entry: &entry)
                 if !to.hasSuffix(".json") { report.restored += 1 }
                 return true
             case let .trash(original, _):
-                guard fm.fileExists(atPath: original) else { return true }
-                try trashItem(URL(fileURLWithPath: original), entry: &entry)
+                guard let now = locate(original, in: entry) else { return true }
+                try trashItem(URL(fileURLWithPath: now), entry: &entry)
                 if !original.hasSuffix(".json") { report.restored += 1 }
                 return true
             }
@@ -506,13 +515,12 @@ public actor OperationJournal {
     }
 
     /// Whether a step that could not be undone might be later: its file's folder is not there at all.
-    private func canRetry(_ step: JournalStep) -> Bool {
+    private func canRetry(_ step: JournalStep, entry: JournalEntry) -> Bool {
         switch step {
         case let .move(from, to, _, _):
-            !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
-                || !Self.isFolder(URL(fileURLWithPath: from).deletingLastPathComponent())
+            locate(to, in: entry) == nil || locate(URL(fileURLWithPath: from).deletingLastPathComponent().path, in: entry) == nil
         case let .clone(_, to, _): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
-        case let .trash(original, _): !Self.isFolder(URL(fileURLWithPath: original).deletingLastPathComponent())
+        case let .trash(original, _): locate(URL(fileURLWithPath: original).deletingLastPathComponent().path, in: entry) == nil
         case .makeFolder: false
         }
     }
@@ -541,7 +549,7 @@ public actor OperationJournal {
 
     /// Reverses one step. Returns whether it was put back (or there was nothing to put back), so its metadata file may follow.
     @discardableResult
-    func undo(_ step: JournalStep, report: inout UndoReport) -> Bool {
+    func undo(_ step: JournalStep, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
         switch step {
         case let .makeFolder(path):
             // Only an empty folder this operation made is removed; anything put in it since keeps it.
@@ -553,11 +561,12 @@ public actor OperationJournal {
             }
             return true
         case let .move(from, to, size, modified):
-            let dest = URL(fileURLWithPath: to)
-            guard fm.fileExists(atPath: to) else {
-                report.skipped.append("\(dest.lastPathComponent) is no longer at \(to)")
+            // The item where it is now, and the folder it came from where that is now (audit 8, B8-M1).
+            guard let now = locate(to, in: entry) else {
+                report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) is no longer at \(to)")
                 return false
             }
+            let dest = URL(fileURLWithPath: now)
             if let size {
                 let values = try? dest.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 if values?.fileSize.map(Int64.init) != size
@@ -567,24 +576,30 @@ public actor OperationJournal {
                     return false
                 }
             }
-            guard !fm.fileExists(atPath: from) || Self.sameFile(from, to) else {
+            // Undo never makes a folder: one deleted or put in the Trash since is not made again at its old path; the item
+            // stays where it is and Undo can be tried again (audit 6, B6-M1).
+            let fromURL = URL(fileURLWithPath: from)
+            guard let homePath = locate(fromURL.deletingLastPathComponent().path, in: entry), Self.isFolder(URL(fileURLWithPath: homePath))
+            else {
+                report.skipped.append("\(dest.lastPathComponent) was left where it is: its folder "
+                    + "“\(fromURL.deletingLastPathComponent().lastPathComponent)” is no longer there")
+                return false
+            }
+            let back = URL(fileURLWithPath: homePath).appendingPathComponent(fromURL.lastPathComponent)
+            guard !fm.fileExists(atPath: back.path) || Self.sameFile(back.path, now) else {
                 report.skipped.append("\(dest.lastPathComponent): another file now has its old name")
                 return false
             }
-            // Undo never makes a folder: one renamed, moved or deleted since is not made again at its old path; the item stays
-            // where it is and Undo can be tried again (audit 6, B6-M1).
-            let home = URL(fileURLWithPath: from).deletingLastPathComponent()
-            guard Self.isFolder(home) else {
-                report.skipped.append("\(dest.lastPathComponent) was left where it is: its folder “\(home.lastPathComponent)” "
-                    + "is no longer there")
-                return false
-            }
             do {
-                try fm.moveItem(at: dest, to: URL(fileURLWithPath: from))
+                try fm.moveItem(at: dest, to: back)
                 if !to.hasSuffix(".json") {
                     report.restored += 1
                 }
-                report.moves.append((to, from))
+                report.moves.append((now, back.path))
+                // For Redo: the item is back at its old place, and the folder it left is where it is now.
+                Self.note(from, at: back.path, in: &entry)
+                Self.note(URL(fileURLWithPath: to).deletingLastPathComponent().path, at: dest.deletingLastPathComponent().path,
+                          in: &entry)
                 return true
             } catch {
                 report.skipped.append("\(dest.lastPathComponent): \(error.localizedDescription)")
@@ -593,8 +608,8 @@ public actor OperationJournal {
         case let .clone(from, to, files):
             // Copies go to the Trash rather than being deleted (R-3804), and only those nobody changed since: an
             // imported photo that was edited afterwards stays (R-3806).
-            guard fm.fileExists(atPath: to) else { return true }
-            let target = URL(fileURLWithPath: to)
+            guard let copyNow = locate(to, in: entry) else { return true }
+            let target = URL(fileURLWithPath: copyNow)
             let recorded = files ?? Self.stamps(of: URL(fileURLWithPath: from)) ?? []
             let changed = Self.changedFiles(in: target, recorded: recorded)
             if changed.isEmpty {
@@ -628,17 +643,22 @@ public actor OperationJournal {
                 report.skipped.append("\(name) is no longer in the Trash")
                 return false
             }
-            guard !fm.fileExists(atPath: original) else {
+            let originalURL = URL(fileURLWithPath: original)
+            guard let homePath = locate(originalURL.deletingLastPathComponent().path, in: entry),
+                  Self.isFolder(URL(fileURLWithPath: homePath))
+            else {
+                report.skipped.append("\(name) was left in the Trash: its folder "
+                    + "“\(originalURL.deletingLastPathComponent().lastPathComponent)” is no longer there")
+                return false
+            }
+            let back = URL(fileURLWithPath: homePath).appendingPathComponent(name)
+            guard !fm.fileExists(atPath: back.path) else {
                 report.skipped.append("\(name) exists again")
                 return false
             }
-            let home = URL(fileURLWithPath: original).deletingLastPathComponent()
-            guard Self.isFolder(home) else {
-                report.skipped.append("\(name) was left in the Trash: its folder “\(home.lastPathComponent)” is no longer there")
-                return false
-            }
             do {
-                try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
+                try fm.moveItem(at: URL(fileURLWithPath: trashed), to: back)
+                Self.note(original, at: back.path, in: &entry)
                 if !original.hasSuffix(".json") {
                     report.restored += 1
                 }
