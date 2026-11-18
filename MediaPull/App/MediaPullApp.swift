@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_: Notification) {
         AppModel.shared.browsing.flush()
+        AppModel.shared.notes.flush()
     }
 
     /// Library folders renamed or moved in the Finder while MediaPull was in the background are followed (R-1702).

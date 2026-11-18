@@ -21,6 +21,7 @@ struct MainWindow: View {
     /// Organise is created when first shown, then kept so its state survives switching back and forth.
     @State private var organiseShown = false
     @State private var showActivity = false
+    @State private var showNotes = false
 
     var body: some View {
         // The Collect panes stay mounted while Organise is shown, so the Browser never reloads (D-62).
@@ -124,6 +125,11 @@ struct MainWindow: View {
         } else {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 2) {
+                    TopBarButton(title: "Notes", symbol: "note.text", active: showNotes) { showNotes.toggle() }
+                        .help("Notes: a scratchpad kept in MediaPull, not in any folder")
+                        .popover(isPresented: $showNotes, arrowEdge: .bottom) {
+                            NotesView(store: app.notes).frame(width: 560, height: 400)
+                        }
                     TopBarButton(title: "Downloads", symbol: "arrow.down.circle", active: model.showDownloads) {
                         if model.showDownloads {
                             model.setShowing(.downloads, false)
