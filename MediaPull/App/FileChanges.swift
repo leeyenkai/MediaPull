@@ -172,17 +172,20 @@ extension WindowModel {
                 showFileMessage("“\(entry.title)” was already undone.")
                 return
             }
-            // Nothing undone is said as such (audit 10, C10-m3, B10-m3).
+            // Nothing undone is said as such (audit 10, C10-m3, B10-m3). The change is still done, so ⇧⌘Z has nothing to
+            // redo; History's Undo tries again (audit 13, B13-m3, B13-m4).
             if report.done == 0 {
+                forgetUndo(entry.id)
                 showFileMessage("Nothing of “\(entry.title)” could be undone"
-                    + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
+                    + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")), unsaved: report.unsaved)
             } else if report.restored == 0, report.skipped.isEmpty {
                 // A New Folder taken back puts no item back (B11-m5).
-                showFileMessage("Undid “\(entry.title)”.")
+                showFileMessage("Undid “\(entry.title)”.", unsaved: report.unsaved)
             } else {
                 showFileMessage(report.skipped.isEmpty
                     ? "Undid “\(entry.title)”: \(report.restored) item\(report.restored == 1 ? "" : "s") put back."
-                    : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "))
+                    : "Undid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "),
+                    unsaved: report.unsaved)
             }
         }
     }
@@ -228,18 +231,22 @@ extension WindowModel {
             // Nothing done again is said as such (audit 7, B7-m6).
             // Something done again but no file moved (a New Folder made again) is a redo too (audit 8, B8-m2).
             if report.done == 0 {
+                // The change is still undone: ⌘Z has nothing to undo, and History's Redo tries again (audit 13, B13-m3).
+                forgetUndo(entry.id)
                 showFileMessage("Nothing of “\(entry.title)” could be done again"
-                    + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
+                    + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")), unsaved: report.unsaved)
             } else {
                 showFileMessage(report.skipped.isEmpty
                     ? "Redid “\(entry.title)”."
-                    : "Redid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "))
+                    : "Redid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "),
+                    unsaved: report.unsaved)
             }
         }
     }
 
     /// A result of a file change, shown in the section the person is looking at.
-    func showFileMessage(_ text: String) {
+    func showFileMessage(_ text: String, unsaved: Bool = false) {
+        let text = unsaved ? text + " " + OperationJournal.unsavedNote : text
         if section == .organise { organise.message = text } else { library.message = text }
     }
 }

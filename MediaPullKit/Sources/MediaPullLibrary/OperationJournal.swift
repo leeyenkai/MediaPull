@@ -73,6 +73,9 @@ public struct UndoReport: Sendable {
     public var moves: [(from: String, to: String)]
     /// Steps done (files and folders), so "nothing was done" can be told apart from a folder made again (audit 9, B9-m2).
     public var done = 0
+    /// The journal could not be written afterwards (a full disk), so the change may not be undone or redone again. Kept
+    /// apart from `skipped`, which lists items (audit 13, B13-m5).
+    public var unsaved = false
 
     public init(restored: Int, skipped: [String], moves: [(from: String, to: String)]) {
         self.restored = restored
@@ -316,15 +319,8 @@ public actor OperationJournal {
     func noteRemade(_ path: String, in entry: inout JournalEntry) {
         let old = entry.identities?[path]
         note(path, in: &entry)
-        if let old, let new = entry.identities?[path], old != new {
-            remade[old] = new
-            // What a folder copied again holds is new too (audit 12, B12-M1).
-            if Self.isFolder(URL(fileURLWithPath: path)) { remadeFolders.insert(path) }
-        }
+        if let old, let new = entry.identities?[path], old != new { remade[old] = new }
     }
-
-    /// Folders copied again by Redo this session: the files in them are the ones later changes moved or renamed.
-    private var remadeFolders = Set<String>()
 
     /// Identities of folders and copies made again by Redo, by the identity they replace (this session: Redo lives in it).
     private var remade: [String: String] = [:]
@@ -353,7 +349,7 @@ public actor OperationJournal {
         while noted != now, let next = remade[noted], seen.insert(noted).inserted {
             noted = next
         }
-        return noted == now || remadeFolders.contains { path.hasPrefix($0 + "/") }
+        return noted == now
     }
 
     /// Creates a destination folder that is not there (deleted after the preview) and journals each folder it makes, so
@@ -395,6 +391,13 @@ public actor OperationJournal {
         }
         entry.steps.append(.clone(from: from.path, to: to.path, files: Self.stamps(of: to)))
         noteRemade(to.path, in: &entry)
+        // Each item a copied folder holds, so a later change to one of them is found again when Redo copies the folder
+        // again, and nothing else is (audit 12, B12-M1; audit 13, B13-m1).
+        if Self.isFolder(to), let items = fm.enumerator(atPath: to.path) {
+            for case let item as String in items {
+                noteRemade(to.appendingPathComponent(item).path, in: &entry)
+            }
+        }
         note(from.path, in: &entry)
         // The folder it went into, so Redo never copies into another folder of that name (audit 10, B10-m5, C10-m1).
         note(to.deletingLastPathComponent().path, in: &entry)
@@ -473,6 +476,7 @@ public actor OperationJournal {
         var left: [[JournalStep]] = []
         var undoneUnits: [[JournalStep]] = []
         fallbacks = [:]
+        let unchanged = entry
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
         for unit in Self.units(entry.steps).reversed() {
             guard undo(unit[0], entry: &entry, report: &report) else {
@@ -484,12 +488,18 @@ public actor OperationJournal {
             }
             undoneUnits.append(unit)
         }
+        // Nothing undone: the change stays as it was, so Undo can be tried again once what was in the way is gone (audit 13,
+        // B13-m4).
+        guard report.done > 0 else {
+            if !save(unchanged) { report.unsaved = true }
+            return report
+        }
         entry.undoneSteps = undoneUnits.reversed().flatMap { $0 }
         // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
         // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
         entry.steps = left.reversed().flatMap { $0 }
         entry.undone = left.isEmpty
-        if !save(entry) { report.skipped.append(Self.unsavedNote) }
+        if !save(entry) { report.unsaved = true }
         return report
     }
 
@@ -509,25 +519,37 @@ public actor OperationJournal {
             report.skipped.append("“\(URL(fileURLWithPath: entry.root).lastPathComponent)” is no longer there, so nothing was done again.")
             return report
         }
+        let unchanged = entry
+        let before = entry.steps.count
         for unit in Self.units(steps) {
             guard redo(unit[0], allowed: allowed, entry: &entry, report: &report) else { continue }
             for step in unit.dropFirst() {
                 redo(step, allowed: allowed, entry: &entry, report: &report)
             }
         }
-        // Nothing done again: the change stays undone, so Redo can be tried once what was in the way is gone (audit 12,
-        // B12-m4).
-        if report.done > 0 {
-            entry.undone = false
-            entry.undoneSteps = nil
+        // A change with files of which none was done again makes no empty folders either: those just made are removed
+        // again, and the change stays undone, so Redo can be tried once what was in the way is gone (audit 12, B12-m4;
+        // audit 13, B13-m2).
+        let made = entry.steps[before...]
+        let hasFiles = steps.contains { if case .makeFolder = $0 { false } else { true } }
+        let filesDone = made.contains { if case .makeFolder = $0 { false } else { true } }
+        guard report.done > 0, filesDone || !hasFiles else {
+            for case let .makeFolder(path) in made.reversed() where Self.holdsNoFiles(URL(fileURLWithPath: path)) {
+                try? fm.removeItem(atPath: path)
+            }
+            report.done = 0
+            if !save(unchanged) { report.unsaved = true }
+            return report
         }
-        if !save(entry) { report.skipped.append(Self.unsavedNote) }
+        entry.undone = false
+        entry.undoneSteps = nil
+        if !save(entry) { report.unsaved = true }
         return report
     }
 
     /// Said when a journal could not be written after Undo or Redo (a full disk), so a later Undo is not trusted blindly
     /// (audit 12, B12-m7).
-    static let unsavedNote = "MediaPull could not record this, so it may not be possible to undo or redo it again."
+    public static let unsavedNote = "MediaPull could not record this, so it may not be possible to undo or redo it again."
 
     @discardableResult
     func redo(_ step: JournalStep, allowed: Set<String>, entry: inout JournalEntry, report: inout UndoReport) -> Bool {

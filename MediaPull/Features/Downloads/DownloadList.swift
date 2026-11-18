@@ -113,7 +113,7 @@ extension DownloadsModel {
                     return
                 }
                 self.batch[index].progress = .running
-                let job = await self.start(entry, root: self.app.destination(for: now), window: window)
+                let (job, notStarted) = await self.start(entry, root: self.app.destination(for: now), window: window)
                 if let job {
                     // A job held by Instagram (a check, a wait) is left in Activity to resume; the list goes on.
                     while !job.state.isFinished {
@@ -130,7 +130,8 @@ extension DownloadsModel {
                     self.batch[index].progress = .failed("\(failed) file\(failed == 1 ? "" : "s") failed: Retry Failed in Activity.")
                 case .completed: self.batch[index].progress = .done
                 case let .failed(reason): self.batch[index].progress = .failed(reason)
-                case .none: self.batch[index].progress = .failed("It could not be started.")
+                // Why it could not start, when the look-up said (audit 13, C13-m9).
+                case .none: self.batch[index].progress = .failed(notStarted ?? "It could not be started.")
                 case .blocked, .paused: self.batch[index].progress = .failed("Waiting for Instagram: resume it in Activity.")
                 default: self.batch[index].progress = .failed("Stopped.")
                 }
@@ -143,23 +144,29 @@ extension DownloadsModel {
         batchStopping = true
     }
 
-    private func start(_ entry: BatchEntry, root: SaveDestination, window: WindowModel) async -> Job? {
+    /// The job started, or why none did.
+    private func start(_ entry: BatchEntry, root: SaveDestination, window: WindowModel) async -> (Job?, String?) {
         switch entry.kind {
         case var .instagram(draft):
             if draft.postURL == nil, draft.hashtag == nil { await app.engines.applyStoredOptions(to: &draft) }
-            return app.engines.startPull(draft, scanOnly: false, window: window, saveFolder: root.url)
+            return (app.engines.startPull(draft, scanOnly: false, window: window, saveFolder: root.url), nil)
         case let .gallery(url, site):
             let options = rememberedOptions(site)
             let choices = SiteCatalogue.visibleChoices(site.choices).filter { options.include.contains($0) }
-            return app.engines.startGalleryDownload(url: url, site: site, include: choices, switches: options.switches, range: nil,
-                                                    from: nil, to: nil, onlyNew: true, root: root, window: window)
+            return (app.engines.startGalleryDownload(url: url, site: site, include: choices, switches: options.switches, range: nil,
+                                                     from: nil, to: nil, onlyNew: true, root: root, window: window), nil)
         case let .video(url):
-            guard case let .success(info) = await app.engines.videoInfo(for: url) else { return nil }
-            var extras = BridgeRequest.Extras()
-            extras.playlist = VideoForm.looksLikeList(url)
-            return app.engines.saveVideo(info, pageURL: url, format: .bestMP4, height: nil, extras: extras, root: root, window: window)
+            switch await app.engines.videoInfo(for: url) {
+            case let .failure(error):
+                return (nil, EngineService.plainEngineError(error.message))
+            case let .success(info):
+                var extras = BridgeRequest.Extras()
+                extras.playlist = VideoForm.looksLikeList(url)
+                return (app.engines.saveVideo(info, pageURL: url, format: .bestMP4, height: nil, extras: extras, root: root,
+                                              window: window), nil)
+            }
         case .checking, .unrecognised:
-            return nil
+            return (nil, nil)
         }
     }
 }

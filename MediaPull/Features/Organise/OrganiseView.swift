@@ -416,7 +416,11 @@ struct OrganiseWorkPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if entry.undone {
+                    if entry.undone, !(entry.undoneSteps ?? []).isEmpty {
+                        // A change whose Redo was refused, or that was undone in another window, can be done again here
+                        // (audit 13, B13-m3).
+                        Button("Redo") { organise.redo(entry) }.controlSize(.small)
+                    } else if entry.undone {
                         Text("Undone").font(.caption).foregroundStyle(.secondary)
                     } else {
                         Button("Undo") { organise.undo(entry) }.controlSize(.small)

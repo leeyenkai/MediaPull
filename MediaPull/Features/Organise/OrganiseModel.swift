@@ -853,6 +853,12 @@ final class OrganiseModel {
     }
 
     /// The History's Undo, and the toolbar's: through the window, so ⇧⌘Z can redo it.
+    func redo(_ entry: JournalEntry) {
+        // Off the ⇧⌘Z stack first, so the change is never done twice.
+        window?.forgetUndo(entry.id)
+        window?.redoChange(entry)
+    }
+
     func undo(_ entry: JournalEntry) {
         window?.undoChange(entry)
     }

@@ -84,7 +84,7 @@ def test_stream_options_map_extras():
     bridge.EMITTER = capture
     assert single["match_filter"]({"id": "x", "is_live": True}) == "Live streams can't be saved."
     assert single["match_filter"]({"id": "y", "live_status": "was_live"}) is None
-    assert capture.events and capture.events[0][1]["code"] == "live_stream"
+    assert capture.events and capture.events[0][1]["code"] == "unavailable"
 
 
 
@@ -429,6 +429,26 @@ def test_playlist_videos_that_fail_are_counted():
     errors = [fields for kind, fields in capture.events if kind == "error"]
     assert [e["code"] for e in errors] == ["download_failed", "unavailable"], errors
     assert all(e["fatal"] is False for e in errors)
+
+
+def test_only_videos_that_can_never_download_are_skipped():
+    """Audit 13 (A13-M1, C13-m5): a rate limit, members-only and age-checked videos are failures Retry offers; private
+    and removed videos are skipped."""
+    rate = ("ERROR: [youtube] abc: Video unavailable. This content isn't available, try again later. The current session "
+            "has been rate-limited by YouTube for up to an hour.")
+    assert bridge.problem_code(rate) == "download_failed"
+    assert bridge.problem_code("ERROR: [youtube] abc: Sign in to confirm your age.") == "download_failed"
+    assert bridge.problem_code("ERROR: [youtube] abc: Join this channel to get access to members-only content") == "download_failed"
+    assert bridge.problem_code("ERROR: [youtube] abc: Private video. Sign in if you've been granted access") == "unavailable"
+    assert bridge.problem_code("ERROR: [youtube] abc: Video unavailable. This video has been removed by the uploader") == "unavailable"
+    assert bridge.problem_code("ERROR: HTTP Error 500") == "download_failed"
+
+
+def test_a_retry_keeps_the_limit():
+    """Audit 13 (A13-M2): a Retry asks yt-dlp only for what is left of "At most"."""
+    request = {"extras": {"playlist": True, "max_downloads": 10, "skip_ids": [str(n) for n in range(8)]}}
+    options = bridge.stream_options(request, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)
+    assert options["max_downloads"] == 2, options["max_downloads"]
 
 
 def test_a_retry_skips_saved_videos():

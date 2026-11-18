@@ -1183,10 +1183,14 @@ def op_video_info(request):
 
 
 def refuse_live_streams(info, incomplete=False):
-    """A live stream never ends and would need ffmpeg's network downloaders: say so plainly instead of failing later."""
+    """A live stream never ends and would need ffmpeg's network downloaders: say so plainly instead of failing later. It is
+    skipped, like a video not out yet (audit 13, A13-m2)."""
     if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
-        EMITTER.emit("error", code="live_stream", message="Live streams can't be saved.", key=info.get("id"), fatal=False)
-        return "Live streams can't be saved."
+        message = "Live streams can't be saved."
+        STATE["errors"].append(message)
+        STATE.setdefault("problems", []).append("unavailable")
+        EMITTER.emit("error", code="unavailable", message=message, key=info.get("id"), fatal=False)
+        return message
     return None
 
 
@@ -1199,8 +1203,21 @@ def skip_saved(inner, saved):
     return check
 
 
-UNAVAILABLE = ("private video", "members-only", "members only", "this video is not available", "video unavailable",
-               "premieres in", "has been removed", "is not available in your country", "sign in to confirm your age")
+# A video that can never be downloaded is skipped; anything that may work later is a failure Retry Failed offers. A rate
+# limit says "Video unavailable ... try again later", and members-only and age-checked videos download with the site's
+# sign-in (R-3505), so those are looked for first (audit 13, A13-M1, C13-m5).
+MAY_WORK_LATER = ("try again later", "rate-limit", "rate limit", "too many requests", "http error 429", "confirm your age",
+                  "members-only", "members only", "join this channel", "sign in to confirm you")
+UNAVAILABLE = ("private video", "has been removed", "no longer available", "has been terminated", "premieres in",
+               "available in your country", "this video is not available", "video unavailable")
+
+
+def problem_code(text):
+    """"unavailable" for a video that can never be downloaded, else "download_failed"."""
+    lower = text.lower()
+    if any(words in lower for words in MAY_WORK_LATER):
+        return "download_failed"
+    return "unavailable" if any(words in lower for words in UNAVAILABLE) else "download_failed"
 
 
 class StreamLogger:
@@ -1223,9 +1240,10 @@ class StreamLogger:
     def error(self, message):
         text = _clean(message)
         STATE["errors"].append(text)
+        code = problem_code(text)
+        STATE.setdefault("problems", []).append(code)
         EMITTER.emit("log", level="error", logger="yt-dlp", message=text)
         if self.playlist:
-            code = "unavailable" if any(word in text.lower() for word in UNAVAILABLE) else "download_failed"
             EMITTER.emit("error", code=code, message=text[:300], fatal=False)
 
 
@@ -1267,7 +1285,10 @@ def stream_options(request, staging, logger, progress):
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
     if extras.get("max_downloads"):
-        options["max_downloads"] = int(extras["max_downloads"])
+        # Videos skipped as already saved do not count towards yt-dlp's limit, so a Retry asks only for what is left of
+        # it (audit 13, A13-M2, C13-m2).
+        left = int(extras["max_downloads"]) - len(extras.get("skip_ids") or [])
+        options["max_downloads"] = max(1, left)
     if extras.get("date_after") or extras.get("date_before"):
         options["daterange"] = yt_dlp.utils.DateRange(extras.get("date_after"), extras.get("date_before"))
     if extras.get("rate_limit"):
@@ -1349,7 +1370,11 @@ def op_stream(request):
         finish("partial" if playlist and STATE["errors"] else "completed", {"files": emitted["count"]})
     else:
         message = STATE["errors"][-1] if STATE["errors"] else "The stream could not be downloaded."
-        EMITTER.emit("error", code="download_failed", message=message[:300], fatal=True)
+        # Nothing that could ever be downloaded (all private or removed, or a live stream) is not offered for Retry (audit
+        # 13, C13-m4, A13-m2).
+        problems = STATE.get("problems") or []
+        code = "unavailable" if problems and all(p == "unavailable" for p in problems) else "download_failed"
+        EMITTER.emit("error", code=code, message=message[:300], fatal=True)
         finish("failed")
 
 

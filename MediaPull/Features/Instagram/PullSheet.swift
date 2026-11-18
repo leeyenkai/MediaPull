@@ -124,7 +124,7 @@ struct InstagramForm: View {
     }
 
     private func findPlace() async {
-        guard !draft.username.isEmpty, let saveFolder = model.saveFolder else {
+        guard !draft.username.isEmpty, let chosenFolder = model.saveFolder else {
             placeNote = nil
             return
         }
@@ -132,7 +132,9 @@ struct InstagramForm: View {
         guard !Task.isCancelled else { return }
         let account = draft.username
         let name = FileNaming.safeTopFolder(draft.folderName.isEmpty ? account : draft.folderName)
-        let root = app.root(containing: saveFolder)?.url
+        let root = app.root(containing: chosenFolder)?.url
+        // As the pull: beside another account's folder, never inside it (audit 13, A13-M4).
+        let saveFolder = await app.engines.accountsBase(chosenFolder, except: account)
         // The folder the pull itself will use: a remembered one first, then one found by what it holds (audit 5, C5-m5).
         let recorded = await app.engines.recordedFolder(of: account, around: saveFolder)
         let note = await Task.detached(priority: .utility) { () -> String in

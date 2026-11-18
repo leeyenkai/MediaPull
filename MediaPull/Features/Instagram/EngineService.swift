@@ -1065,9 +1065,9 @@ final class EngineService {
     private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination, name ownName: String? = nil) async
         -> AccountPlace? {
         let libraryRoot = app.root(containing: root.url)?.url
-        // Another account met in a pull (a post's, a tray story's) is looked for beside the account folder the save folder
-        // is, not inside it (A12-M2).
-        let saveFolder = ownName != nil ? await accountsBase(root.url, except: account) : root.url
+        // Any account other than the save folder's own, the pulled one too, is looked for beside the account folder the save
+        // folder is, never inside it or in a numbered new folder (A12-M2, audit 13, A13-M4).
+        let saveFolder = await accountsBase(root.url, except: account)
         let name = ownName ?? draft.folderName.nonEmpty ?? account
         // A folder chosen when the pull was queued is followed to where it is now (renamed or moved since).
         var chosen: URL?
@@ -1139,11 +1139,10 @@ final class EngineService {
         // the folder they were saved into, never to a new folder made at its path later (audit 10, A10-M2). A folder's
         // creation date is not used: a move or copy to another disk resets it (audit 11, A11-M2). The place where an earlier
         // version's pull stopped (only earlier versions stored one) is taken over as before (C3-m14, A11-M1).
-        // An account with only this folder also takes what was remembered under a path that no longer exists: the folder
-        // renamed or moved in the Finder before its first Update (audit 12, C12-M2).
-        let only = await app.accountFolders.all().filter { $0.account == account.lowercased() }.count <= 1
-        let keys = await app.store?.takeInstagramKeys(account: account, under: record.path,
-                                                      savedBefore: app.preferences.accountFoldersBegan, orphansToo: only) ?? []
+        // Under every path the folder had: records follow a rename or move in the Finder, which the remembered items do not
+        // (audit 13, A13-M3, C12-M2).
+        let keys = await app.store?.takeInstagramKeys(account: account, under: record.allPaths,
+                                                      savedBefore: app.preferences.accountFoldersBegan) ?? []
         if !keys.isEmpty { await app.accountFolders.addKeys(keys, to: record.id) }
         let info = await app.store?.account(account)
         if let cursor = info?.resumeCursor, !cursor.isEmpty {
@@ -1286,6 +1285,9 @@ final class EngineService {
                 }
                 job.failed = 0
                 job.failures = []
+                // What is not saved is looked at again, so what it skipped is counted afresh (audit 13, A13-m3, C13-m3).
+                job.skipped = 0
+                job.notes = []
                 // Where the folder is now, in its library's layout (A8-m6).
                 let root = self.app.destination(for: now)
                 if now.standardizedFileURL.path != folder.url.standardizedFileURL.path {
@@ -1332,6 +1334,7 @@ final class EngineService {
         var saved: [String: URL] = [:]
         var waiting: [String: [(URL, String)]] = [:]
         var failure: String?
+        var neverAvailable = false
         var index = 0
         do {
             for try await event in bridge.run(request, workingDirectory: staging) {
@@ -1364,7 +1367,7 @@ final class EngineService {
                         waiting[key, default: []].append((path, kind))
                     }
                 case let .error(code, message, _, false) where code == "unavailable":
-                    // Never downloadable (private, members only, removed): skipped with the reason, not a failure.
+                    // Never downloadable (private, removed, not out yet, live): skipped with the reason, not a failure.
                     job.skipped += 1
                     if job.notes.count < 30 { job.notes.append(message) }
                 case let .error(code, message, key, fatal):
@@ -1375,6 +1378,8 @@ final class EngineService {
                         job.failures.append((key ?? message, message))
                     } else if fatal || failure == nil {
                         failure = message
+                        // Nothing in it could ever be downloaded: no Retry is offered (audit 13, C13-m4).
+                        if fatal { neverAvailable = code == "unavailable" }
                     }
                 case let .policyViolation(method, host, _, reason):
                     failure = "MediaPull blocked a \(method) request to \(host): \(reason)"
@@ -1390,7 +1395,12 @@ final class EngineService {
             app.jobs.finish(job, .cancelled)
             return
         }
-        if job.saved + job.duplicates == 0 {
+        if job.saved + job.duplicates == 0, failure == nil, job.failed == 0, job.skipped > 0 {
+            // Skipped for a reason of its own (its name taken, say): not a failure (audit 13, A13-m2).
+            app.jobs.finish(job, .completed)
+        } else if job.saved + job.duplicates == 0, neverAvailable, job.failed == 0 {
+            app.jobs.finish(job, .failed(Self.plainEngineError(failure ?? "The video can't be downloaded.")))
+        } else if job.saved + job.duplicates == 0 {
             // Said plainly, and offered to Retry Failed like any failed file (audit 12, A12-m5).
             let reason = Self.plainEngineError(failure ?? "The video could not be downloaded.")
             if job.failed == 0 {

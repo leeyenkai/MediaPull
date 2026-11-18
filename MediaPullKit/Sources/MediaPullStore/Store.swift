@@ -391,6 +391,17 @@ public actor AppStore {
         try? modelContext.save()
     }
 
+    /// Account folders earlier versions saved into that are still there, by account: each gets a record at launch, so it
+    /// keeps that memory through a rename or move in the Finder (audit 13, A13-M3, C12-M2).
+    public func earlierMemoryFolders(before date: Date) -> [String: Set<String>] {
+        let entries = (try? modelContext.fetch(FetchDescriptor<ArchiveEntryModel>())) ?? []
+        var parents: [String: Set<String>] = [:]
+        for entry in entries where entry.key.hasPrefix("ig:") && entry.savedAt < date {
+            parents[entry.account, default: []].insert(URL(fileURLWithPath: entry.path).deletingLastPathComponent().path)
+        }
+        return parents
+    }
+
     /// Lifecycle (SPEC 6.3): archive entries whose file is gone (on a mounted disk) and accounts nothing refers to that were
     /// last pulled over a year ago. `keepAccounts` are accounts with a remembered folder.
     /// `recordedFolders` are account folders with a record, which remembers their Instagram items itself; `restorable` are
@@ -435,18 +446,20 @@ public actor AppStore {
     /// since belong to the record of the folder they were saved into (audit 10, A10-M2; audit 11, A11-M2).
     /// `orphansToo`: also entries whose folder is not there any more (renamed or moved in the Finder, which archive paths
     /// do not follow), for an account with only this folder (audit 12, C12-M2).
-    public func takeInstagramKeys(account: String, under folder: String, savedBefore: Date? = nil, orphansToo: Bool = false)
-        -> Set<String>
-    {
+    public func takeInstagramKeys(account: String, under folder: String, savedBefore: Date? = nil) -> Set<String> {
+        takeInstagramKeys(account: account, under: [folder], savedBefore: savedBefore)
+    }
+
+    public func takeInstagramKeys(account: String, under folders: [String], savedBefore: Date? = nil) -> Set<String> {
         let name = account.lowercased()
-        let prefix = folder.precomposedStringWithCanonicalMapping.lowercased() + "/"
+        let prefixes = folders.map { $0.precomposedStringWithCanonicalMapping.lowercased() + "/" }
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.account == name })
-        let fm = FileManager.default
-        let entries = ((try? modelContext.fetch(descriptor)) ?? []).filter {
-            guard $0.key.hasPrefix("ig:"), $0.savedAt < (savedBefore ?? .distantFuture) else { return false }
-            if $0.path.precomposedStringWithCanonicalMapping.lowercased().hasPrefix(prefix) { return true }
-            let parent = URL(fileURLWithPath: $0.path).deletingLastPathComponent().path
-            return orphansToo && !fm.fileExists(atPath: parent) && Self.volumeMounted($0.path)
+        // Only under the folder's own paths, now and before a rename in the Finder: never what was remembered of another
+        // folder of the account that is gone (audit 13, A13-M3).
+        let entries = ((try? modelContext.fetch(descriptor)) ?? []).filter { entry in
+            guard entry.key.hasPrefix("ig:"), entry.savedAt < (savedBefore ?? .distantFuture) else { return false }
+            let path = entry.path.precomposedStringWithCanonicalMapping.lowercased()
+            return prefixes.contains { path.hasPrefix($0) }
         }
         for entry in entries where !FileManager.default.fileExists(atPath: entry.path) && Self.volumeMounted(entry.path) {
             modelContext.delete(entry)
@@ -461,9 +474,23 @@ public actor AppStore {
         return FileManager.default.fileExists(atPath: "/Volumes/" + parts[2])
     }
 
+    /// When this Mac first had account folder records: Instagram entries saved before it are what earlier versions
+    /// remembered (D-95). Set once at launch.
+    public private(set) var earlierMemoryBefore: Date?
+
+    public func setEarlierMemoryBefore(_ date: Date?) {
+        earlierMemoryBefore = date
+    }
+
     public func recordArchive(key: String, account: String, path: String, sha256: String) {
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.key == key })
         if let model = try? modelContext.fetch(descriptor).first {
+            // What an earlier version remembered of a file in one folder is kept for that folder's first Update: saving the
+            // same item into another folder never moves it there (audit 13, C13-M1). The other folder's record has it.
+            let folder = { (path: String) in URL(fileURLWithPath: path).deletingLastPathComponent().path }
+            if key.hasPrefix("ig:"), let began = earlierMemoryBefore, model.savedAt < began, folder(model.path) != folder(path) {
+                return
+            }
             model.path = path
             model.sha256 = sha256
             model.account = account.lowercased()

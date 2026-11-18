@@ -1082,11 +1082,27 @@ final class SelfTestRunner {
             && fm.fileExists(atPath: listRenamed.appendingPathComponent("hal").path)
         note("update: Download All followed its folder renamed after the click \(listFollowed) "
             + "(\(model.downloads.batch.first.map { "\($0.progress)" } ?? "no entry"))")
+        // A pull with another account's folder as the save folder goes into the account's own folder beside it, never a
+        // numbered new folder or one inside (audit 12, A12-M2; audit 13, A13-M4).
+        let danaFolder = await app.accountFolders.all().first { $0.account == "dana" }.map { URL(fileURLWithPath: $0.path) }
+        let ivyFolder = library.appendingPathComponent("ivy", isDirectory: true)
+        writeReplay(account("dana", id: "44", count: 17))
+        var besideDraft = app.engines.draft(username: "dana")
+        besideDraft.content = [.posts]
+        besideDraft.incremental = false
+        let besideJob = app.engines.startPull(besideDraft, scanOnly: false, window: model, saveFolder: ivyFolder)
+        await waitUntil(timeout: 120) { besideJob?.state.isFinished ?? true }
+        let danaEntries = (try? fm.contentsOfDirectory(atPath: library.path)) ?? []
+        let besideChecked = besideJob?.saved == 1 && danaFolder != nil && !danaEntries.contains("dana 2")
+            && !fm.fileExists(atPath: ivyFolder.appendingPathComponent("dana").path)
+            && besideJob?.destination?.standardizedFileURL.path == danaFolder?.standardizedFileURL.path
+        note("update: a pull with another account's folder selected went into the account's folder beside it \(besideChecked) "
+            + "(saved \(besideJob?.saved ?? -1), to \(besideJob?.destination?.path ?? "none"))")
         model.library.selectedFolder = selectedBefore
         writeReplay(replay)
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
             && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash && refusedRoutes
-            && savedFollowed && listFollowed && madeFolderChecked && plainChecked && jayContinued
+            && savedFollowed && listFollowed && madeFolderChecked && plainChecked && jayContinued && besideChecked
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass
