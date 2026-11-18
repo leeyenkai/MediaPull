@@ -69,6 +69,8 @@ struct VideoForm: View {
                 Text(summary(info)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()
+                    Button("Save As…") { model.chooseExactFolder { save(into: $0) } }
+                        .help("Choose the folder the videos go into, exactly, with no site or channel folders")
                     Button(extras.playlist ? "Download All" : "Download") { save() }
                         .buttonStyle(.borderedProminent)
                         .disabled(root == nil)
@@ -220,8 +222,10 @@ struct VideoForm: View {
         return parts.joined(separator: " ")
     }
 
-    private func save() {
-        guard let info, let root else { return }
+    /// `exactFolder`: Save As (D-108), exactly into that folder.
+    private func save(into exactFolder: URL? = nil) {
+        guard let info, var root = exactFolder.map(app.destination(for:)) ?? root else { return }
+        root.exact = exactFolder != nil
         var chosen = extras
         if subtitleChoice != .none {
             chosen.subtitles = subtitleLanguages.split(whereSeparator: { $0 == "," || $0 == " " }).map(String.init).filter { !$0.isEmpty }

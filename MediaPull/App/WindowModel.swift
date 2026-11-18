@@ -600,6 +600,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
         library.selectedFolder = folder
     }
 
+    /// Save As (D-108): asks for the folder a download goes exactly into, starting in the save folder, which does not change.
+    func chooseExactFolder(downloadAll: Bool = false, then start: @escaping (URL) -> Void) {
+        FolderPicker.chooseFolder(title: downloadAll ? "Download All Into" : "Save As", prompt: "Download Here", start: saveFolder,
+                                  window: hostWindow) { url in
+            if let url { start(url) }
+        }
+    }
+
     func chooseSaveFolder(then action: (() -> Void)? = nil) {
         FolderPicker.chooseFolder(title: "Choose Where to Save", prompt: "Choose", start: saveFolder,
                                   window: hostWindow) { [weak self] url in

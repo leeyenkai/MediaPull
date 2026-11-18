@@ -314,6 +314,9 @@ struct GalleryForm: View {
                     Text(pageDescription).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
+                Button("Save As…") { model.chooseExactFolder { start(into: $0) } }
+                    .disabled(!choices.isEmpty && downloads.include.isEmpty)
+                    .help("Choose the folder the files go into, exactly; only what it does not hold yet is added")
                 Button("Download") { start() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!choices.isEmpty && downloads.include.isEmpty || model.saveFolder == nil)
@@ -436,8 +439,10 @@ struct GalleryForm: View {
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func start() {
-        guard let root = model.saveFolder.map(app.destination(for:)) else { return }
+    /// `exactFolder`: Save As (D-108), exactly into that folder.
+    private func start(into exactFolder: URL? = nil) {
+        guard var root = (exactFolder ?? model.saveFolder).map(app.destination(for:)) else { return }
+        root.exact = exactFolder != nil
         downloads.remember(site)
         let dates = downloads.dateWindow.bounds(from: downloads.dateFrom, to: downloads.dateTo)
         let include = choices.filter { downloads.include.contains($0) }

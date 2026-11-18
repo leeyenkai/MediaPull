@@ -78,6 +78,8 @@ struct PullDraft: Identifiable, Equatable {
 struct SaveDestination {
     var url: URL
     var layout: SaveLayout
+    /// Save As (D-108): this folder is the source's own folder; nothing is redirected and only what it holds is skipped.
+    var exact = false
 }
 
 struct VideoLookupError: Error, Equatable {
@@ -290,7 +292,7 @@ final class EngineService {
 
     /// `saveFolder` overrides the window's (Download All keeps the folder chosen when it was clicked).
     @discardableResult
-    func startPull(_ draft: PullDraft, scanOnly: Bool, window: WindowModel?, saveFolder: URL? = nil) -> Job? {
+    func startPull(_ draft: PullDraft, scanOnly: Bool, window: WindowModel?, saveFolder: URL? = nil, exactly exact: Bool = false) -> Job? {
         guard let bridge else { return nil }
         let isPost = draft.postURL != nil
         let subject = draft.hashtag.map { "#\($0)" } ?? (draft.username.isEmpty ? "your account" : "@\(draft.username)")
@@ -301,7 +303,10 @@ final class EngineService {
         app.jobs.add(job)
         // An update writes into the account's folder, so that folder's library decides the layout, not the window's (the
         // folder itself may be a library root).
-        let root: SaveDestination? = if let folder = draft.accountFolder {
+        let root: SaveDestination? = if exact, let saveFolder {
+            // Save As (D-108): exactly the chosen folder.
+            SaveDestination(url: saveFolder, layout: app.destination(for: saveFolder).layout, exact: true)
+        } else if let folder = draft.accountFolder {
             SaveDestination(url: folder.deletingLastPathComponent(),
                             layout: app.root(containing: folder)?.layout ?? app.preferences.defaultLayout)
         } else {
@@ -312,7 +317,9 @@ final class EngineService {
             return job
         }
         if !scanOnly, let root {
-            if let tag = draft.hashtag {
+            if root.exact {
+                job.destination = root.url
+            } else if let tag = draft.hashtag {
                 job.destination = root.url.appendingPathComponent(SaveTarget.tagsFolder, isDirectory: true).appendingPathComponent(tag)
             } else if draft.postURL == nil, !draft.username.isEmpty {
                 // The account's own folder, found when the pull starts (D-78); meanwhile where it will be looked for, beside
@@ -473,7 +480,10 @@ final class EngineService {
             // The save folder is followed; only when it is gone does an account folder known by its record decide where
             // the job saves (audit 7, A7-m1), so a form pull keeps saving around the folder it was given (audit 8, C8-m5).
             var followed = await run.root?.now()
-            if followed == nil, let id = draft.accountFolderID, let folder = await app.accountFolders.currentFolder(of: id) {
+            // Save As never falls back to another folder (D-108).
+            if followed == nil, !chosen.exact, let id = draft.accountFolderID,
+               let folder = await app.accountFolders.currentFolder(of: id)
+            {
                 followed = folder.deletingLastPathComponent()
             }
             guard let followed else {
@@ -483,7 +493,7 @@ final class EngineService {
             }
             if followed.standardizedFileURL.path != chosen.url.standardizedFileURL.path {
                 // The folder's library decides the layout where it is now (D-70, audit 8, A8-m6).
-                root = SaveDestination(url: followed, layout: app.root(containing: followed)?.layout ?? chosen.layout)
+                root = SaveDestination(url: followed, layout: app.root(containing: followed)?.layout ?? chosen.layout, exact: chosen.exact)
                 // Activity shows where the job saves now (audit 7, A7-m6).
                 job.destination = job.destination.map { LibraryModel.followed($0, from: chosen.url.path, to: followed.path) }
             }
@@ -582,7 +592,8 @@ final class EngineService {
         // C4-m10).
         var hashtagBase = root?.url
         let collectionPull = draft.hashtag != nil || (!isAccount && draft.postURL == nil)
-        if collectionPull, !scanOnly, let base = root?.url {
+        let exact = root?.exact ?? false
+        if collectionPull, !scanOnly, !exact, let base = root?.url {
             let libraryRoot = app.root(containing: base)?.url
             // Inside Hashtags or Saved posts themselves: beside that folder, never Saved posts/Saved posts (audit 5, C5-m4).
             let (detected, collection) = await Task.detached(priority: .userInitiated) {
@@ -600,11 +611,14 @@ final class EngineService {
                 }
             }
         }
-        if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil {
+        if draft.postURL == nil, !scanOnly, isAccount || draft.hashtag != nil || exact {
             var known: Set<String> = []
             if let place {
                 let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
                 known = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
+            } else if exact, let folder = root?.url {
+                // Save As: only what the chosen folder holds (D-108).
+                known = await Task.detached(priority: .userInitiated) { AccountFolders.index(folder).identities }.value
             } else if draft.hashtag != nil, draft.incremental || resuming || run.retrying {
                 // What the library held when the job began: its own items go as retry_ids, which never end the walk early,
                 // so a Retry or Resume walks past what it just saved (D-103, audit 20, A20-M1, A20-m2).
@@ -640,7 +654,7 @@ final class EngineService {
             }
         }
         // Saved posts know what their Saved posts folders remember, unless the person turned that off (D-106).
-        if !scanOnly, app.preferences.savedPostsRemember,
+        if !scanOnly, !exact, app.preferences.savedPostsRemember,
            draft.content.contains(.saved) || (!isAccount && draft.postURL == nil && draft.hashtag == nil)
         {
             let saved = await app.savedPostsMemory.all().filter { $0.account == account.lowercased() }
@@ -658,7 +672,7 @@ final class EngineService {
         }
         // The stories tray knows what its owners' folders remember, so a story deleted from one is not fetched again (D-104,
         // audit 20, C20-M2).
-        if !scanOnly, draft.content.contains(.storiesTray) || (!isAccount && draft.postURL == nil && draft.hashtag == nil) {
+        if !scanOnly, !exact, draft.content.contains(.storiesTray) || (!isAccount && draft.postURL == nil && draft.hashtag == nil) {
             // Every account folder's memory: narrowing it to one library left out a folder that is a library itself (audit 22,
             // A22-M1); a story another folder remembers is at worst missing from a second copy.
             let owners = await app.accountFolders.all().reduce(into: Set<String>()) { $0.formUnion($1.keys) }
@@ -702,6 +716,8 @@ final class EngineService {
         // The folder decides the layout, not the draft (D-70).
         var target: SaveTarget? = root.map { root in
             if let tag = draft.hashtag {
+                // Save As: straight into the chosen folder (D-108).
+                if root.exact { return SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: false) }
                 return SaveTarget(folder: hashtagBase ?? root.url, layout: root.layout, autoSubfolders: true,
                                   collectionPath: [SaveTarget.tagsFolder, tag])
             }
@@ -896,7 +912,12 @@ final class EngineService {
                     }
                     // Saved posts go beside the account's folder, but never outside the library: a library folder that is
                     // the account's keeps them inside it (D-52, audit 7, A7-m2).
-                    if ["saved", "collection"].contains(context.subcategory), let account = target.accountFolder,
+                    if exact, ["saved", "collection"].contains(context.subcategory), let chosen = root?.url {
+                        // Save As: in a Saved posts folder inside the chosen folder, never beside it (D-108).
+                        target.folder = chosen
+                        target.accountFolder = nil
+                        target.autoSubfolders = true
+                    } else if ["saved", "collection"].contains(context.subcategory), let account = target.accountFolder,
                        app.roots.contains(where: { AccountFolderStore.key($0.url.path) == AccountFolderStore.key(account.path) })
                     {
                         target.folder = account
@@ -1155,6 +1176,7 @@ final class EngineService {
     /// to the Trash, deleted): it is never made again (audit 4, A4-M5).
     private func resolvePlace(account: String, draft: PullDraft, root: SaveDestination, name ownName: String? = nil) async
         -> AccountPlace? {
+        if root.exact { return await exactPlace(account: account, draft: draft, root: root, owner: ownName) }
         let libraryRoot = app.root(containing: root.url)?.url
         // Any account other than the save folder's own, the pulled one too, is looked for beside the account folder the save
         // folder is, never inside it or in a numbered new folder (A12-M2, audit 13, A13-M4).
@@ -1189,6 +1211,27 @@ final class EngineService {
             // What the folder holds now is remembered, so an item deleted from it later stays deleted, a folder an earlier
             // version made included (D-79, D-98, audit 15, C15-M1).
             if !index.identities.isSubset(of: new.keys) { await app.accountFolders.addKeys(index.identities, to: new.id) }
+            record = await app.accountFolders.record(account: account, folder: folder)
+        }
+        return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
+    }
+
+    /// Save As (D-108): the chosen folder is the account's folder, whatever it holds; a tray story's owner gets a folder of
+    /// its own inside it. Nothing is looked up elsewhere, and no other folder's memory is taken over.
+    private func exactPlace(account: String, draft: PullDraft, root: SaveDestination, owner: String?) async -> AccountPlace? {
+        guard FileManager.default.fileExists(atPath: root.url.path) else { return nil }
+        let trayOwner = owner != nil && draft.postURL == nil
+        let chosen = root.url
+        let (folder, exists) = await Task.detached(priority: .userInitiated) { () -> (URL, Bool) in
+            trayOwner ? ExactFolder.ownerFolder(account, in: chosen) : (chosen, true)
+        }.value
+        guard exists else { return AccountPlace(folder: folder, index: AccountFolders.Index(), record: nil, sortsByType: nil) }
+        let (index, byType) = await Task.detached(priority: .userInitiated) {
+            (AccountFolders.index(folder), AccountFolders.sortsByType(folder))
+        }.value
+        var record = await app.accountFolders.record(account: account, folder: folder)
+        if !index.identities.isSubset(of: record.keys) {
+            await app.accountFolders.addKeys(index.identities, to: record.id)
             record = await app.accountFolders.record(account: account, folder: folder)
         }
         return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
@@ -1352,10 +1395,11 @@ final class EngineService {
         job.subtitle = format.label + (format.isAudioOnly ? "" : ", " + (height.map { "\($0)p" } ?? "best resolution"))
         let site = info.webpageURL.host.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 } ?? info.extractor
         let channel = info.uploader?.nonEmpty ?? "Videos"
-        job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(site), isDirectory: true)
+        job.destination = root.exact ? root.url : root.url.appendingPathComponent(FileNaming.safeTopFolder(site), isDirectory: true)
             .appendingPathComponent(FileNaming.sanitize(channel, maxBytes: 80), isDirectory: true)
         app.jobs.add(job)
         let url = pageURL ?? info.webpageURL
+        let exact = root.exact
         // Retry saves where the folder is then (audit 7, A7-m3), and downloads only the videos not saved yet (A12-M3).
         let folder = FollowedFolder(root.url)
         let savedIDs = VideoRun()
@@ -1379,12 +1423,18 @@ final class EngineService {
                 job.notes.removeAll { savedIDs.skipNotes.contains($0) }
                 savedIDs.skipNotes = []
                 // Where the folder is now, in its library's layout (A8-m6).
-                let root = self.app.destination(for: now)
+                var root = self.app.destination(for: now)
+                root.exact = exact
                 if now.standardizedFileURL.path != folder.url.standardizedFileURL.path {
                     job.destination = job.destination.map { LibraryModel.followed($0, from: folder.url.path, to: now.path) }
                 }
                 var extras = extras
-                extras.skipIDs = Array(savedIDs.ids)
+                var skip = savedIDs.ids
+                if exact {
+                    // Save As: videos the chosen folder already holds are skipped (D-108).
+                    skip.formUnion(await Task.detached(priority: .userInitiated) { ExactFolder.held(in: now).videoIDs }.value)
+                }
+                extras.skipIDs = Array(skip)
                 await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site,
                                     saved: savedIDs)
             }
@@ -1564,7 +1614,9 @@ final class EngineService {
                                     isDash: false, fallbackURL: nil)
         let item = input.makeItem(discoveryIndex: index)
         let channel = FileNaming.sanitize(uploader?.nonEmpty ?? "Videos", maxBytes: 80)
-        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [site, channel])
+        // Save As: straight into the chosen folder, with no site or channel folders (D-108).
+        let target = root.exact ? SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: false)
+            : SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: [site, channel])
         var settings = app.saveSettings
         settings.conversion.keepDownloadedMedia = format.keepsDownloadedFile
         let (outcome, note) = await app.pipeline().saveStaged(file.path, item: item, target: target, settings: settings, index: index,
@@ -1763,9 +1815,10 @@ final class EngineService {
         guard let bridge else { return nil }
         let job = Job(kind: .pull, title: "Downloading from \(siteName)")
         job.subtitle = [category, range.map { "items \($0)" }].compactMap { $0 }.joined(separator: ", ")
-        job.destination = root.url.appendingPathComponent(FileNaming.safeTopFolder(category), isDirectory: true)
+        job.destination = root.exact ? root.url : root.url.appendingPathComponent(FileNaming.safeTopFolder(category), isDirectory: true)
         app.jobs.add(job)
         let account = "gallery:\(category):\(url.absoluteString.lowercased())"
+        let exact = root.exact
         // Retry Failed downloads the address again, skipping what was saved (R-1903).
         let folder = FollowedFolder(root.url)
         job.retry = { [weak self, weak window, weak job] in
@@ -1781,9 +1834,10 @@ final class EngineService {
                 }
                 job?.failed = 0
                 job?.failures = []
+                var root = self.app.destination(for: now)
+                root.exact = exact
                 _ = self.startGalleryDownload(url: url, site: site, include: include, switches: switches, range: range, from: from,
-                                              to: to, onlyNew: true, root: self.app.destination(for: now), window: window,
-                                              alsoKnown: handled.keys)
+                                              to: to, onlyNew: true, root: root, window: window, alsoKnown: handled.keys)
             }
         }
         job.task = Task { [weak self, weak window] in
@@ -1819,7 +1873,23 @@ final class EngineService {
             request.video = BridgeRequest.Video(format: selector.format, formatSort: selector.sort)
             if let from { request.dateFrom = ISO8601DateFormatter().string(from: from) }
             if let to { request.dateTo = ISO8601DateFormatter().string(from: to) }
-            if onlyNew {
+            if exact {
+                // Save As: what the chosen folder holds, from its metadata files and what MediaPull saved there, never
+                // other folders (D-108).
+                let folder = root.url
+                let saved = await self.app.store?.knownPaths(account: account) ?? [:]
+                let known = await Task.detached(priority: .userInitiated) { () -> Set<String> in
+                    ExactFolder.held(in: folder).keys.union(saved.filter { ExactFolder.contains(folder, $0.value) }.keys)
+                }.value.union(handled.keys)
+                let knownFile = staging.appendingPathComponent("known.json")
+                do {
+                    try JSONEncoder().encode(Array(known)).write(to: knownFile)
+                    request.knownIDs = knownFile.path
+                } catch {
+                    job.notes.append("Saved items could not be listed for the engine (\(error.localizedDescription)), "
+                        + "so every item is checked.")
+                }
+            } else if onlyNew {
                 let known = (await self.app.store?.knownKeys(account: account) ?? []).union(handled.keys)
                 let knownFile = staging.appendingPathComponent("known.json")
                 do {
@@ -1878,7 +1948,9 @@ final class EngineService {
                         if include.count > 1, self.app.preferences.typeSubfolders, let part = file.subcategory, include.contains(part) {
                             path.append(SiteCatalogue.choiceLabel(part))
                         }
-                        let target = SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: path)
+                        // Save As: straight into the chosen folder (D-108).
+                        let target = exact ? SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: false)
+                            : SaveTarget(folder: root.url, layout: root.layout, autoSubfolders: true, collectionPath: path)
                         job.currentItem = file.path.lastPathComponent
                         let (outcome, note) = await pipeline.saveStaged(file.path, item: input.makeItem(discoveryIndex: index),
                                                                         target: target, settings: settings, index: index)

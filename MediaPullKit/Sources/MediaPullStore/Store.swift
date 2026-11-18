@@ -360,6 +360,16 @@ public actor AppStore {
         return Set(models.filter { FileManager.default.fileExists(atPath: $0.path) }.map(\.key))
     }
 
+    /// The keys remembered for `account` with the path of each one's file, for files still there: a Save As download keeps
+    /// only those inside its folder (D-108).
+    public func knownPaths(account: String) -> [String: String] {
+        let name = account.lowercased()
+        let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.account == name })
+        let models = (try? modelContext.fetch(descriptor)) ?? []
+        return Dictionary(models.filter { FileManager.default.fileExists(atPath: $0.path) }.map { ($0.key, $0.path) },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
     public func isArchived(_ key: String) -> String? {
         let descriptor = FetchDescriptor<ArchiveEntryModel>(predicate: #Predicate { $0.key == key })
         guard let model = try? modelContext.fetch(descriptor).first, FileManager.default.fileExists(atPath: model.path) else { return nil }

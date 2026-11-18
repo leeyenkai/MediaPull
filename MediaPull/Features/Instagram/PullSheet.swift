@@ -29,6 +29,15 @@ struct InstagramForm: View {
                         Button("Look Up") { model.downloads.lookUpsHeld = false }
                             .help("Asks Instagram about @\(draft.username). Dropped or sent from another app, so nothing was asked yet.")
                     }
+                    Button("Save As…") {
+                        model.downloads.lookUpsHeld = false
+                        let draft = draft
+                        model.chooseExactFolder {
+                            app.engines.startPull(draft, scanOnly: false, window: model, saveFolder: $0, exactly: true)
+                        }
+                    }
+                    .disabled(!canStart)
+                    .help("Choose the folder this account's media goes into, exactly; only what it does not hold yet is added")
                     Button("Download") {
                         // Clicking Download is asking: the account card may look the account up now (audit 9, A9-m4).
                         model.downloads.lookUpsHeld = false
@@ -105,6 +114,14 @@ struct InstagramForm: View {
                 .disabled(!canStart)
                 .help("List the media without saving it, then pick what to save")
                 if draft.hashtag != nil || draft.username.isEmpty {
+                    Button("Save As…") {
+                        let draft = draft
+                        model.chooseExactFolder {
+                            app.engines.startPull(draft, scanOnly: false, window: model, saveFolder: $0, exactly: true)
+                        }
+                    }
+                    .disabled(!canStart)
+                    .help("Choose the folder the media goes into, exactly")
                     Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canStart || model.saveFolder == nil)

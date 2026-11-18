@@ -139,6 +139,10 @@ else
       --selftest-update 2>&1 | grep -E "(update|replace): (PASS|FAIL)" | tee /dev/stderr)"
     # Editor Replace and ⌘Z through the whole app (D-107), then the account folder updates.
     grep -q "replace: PASS" <<<"$RESULTS" && grep -q "update: PASS" <<<"$RESULTS" && ! grep -q ": FAIL" <<<"$RESULTS" || FAILED=1
+    # Save As in the Downloads pane never redirects (D-108): Instagram, videos and galleries, offline.
+    rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-save-as 2>&1 \
+      | grep -E "save-as: (PASS|FAIL)" | tee /dev/stderr | grep -q "save-as: PASS" || FAILED=1
   else
     echo "error: the app was not built, so the self-test did not run"
     FAILED=1

@@ -1,5 +1,6 @@
 import MediaPullCore
 import MediaPullEngines
+import MediaPullLibrary
 import SwiftUI
 
 /// One address of several typed or pasted at once (R-1111d).
@@ -88,8 +89,9 @@ extension DownloadsModel {
     }
 
     /// Download All: one address after another, each with its kind's remembered options, into the window's save folder.
-    func runAll(window: WindowModel) {
-        guard !batchRunning, let chosen = window.saveFolder else { return }
+    /// `exactParent`: Download All As… (D-108), each entry exactly into its own folder inside that folder.
+    func runAll(window: WindowModel, exactParent: URL? = nil) {
+        guard !batchRunning, let chosen = exactParent ?? window.saveFolder else { return }
         // The folder chosen at the click, wherever it goes while the list runs (audit 7, C7-M4).
         let folder = FollowedFolder(chosen)
         batchRunning = true
@@ -113,7 +115,8 @@ extension DownloadsModel {
                     return
                 }
                 self.batch[index].progress = .running
-                let (job, notStarted) = await self.start(entry, root: self.app.destination(for: now), window: window)
+                let (job, notStarted) = await self.start(entry, root: self.app.destination(for: now), exact: exactParent != nil,
+                                                         window: window)
                 if let job {
                     // A job held by Instagram (a check, a wait) is left in Activity to resume; the list goes on.
                     while !job.state.isFinished {
@@ -145,16 +148,45 @@ extension DownloadsModel {
     }
 
     /// The job started, or why none did.
-    private func start(_ entry: BatchEntry, root: SaveDestination, window: WindowModel) async -> (Job?, String?) {
+    private func start(_ entry: BatchEntry, root parent: SaveDestination, exact: Bool, window: WindowModel) async -> (Job?, String?) {
+        // Download All As…: the entry's own folder inside the chosen one, found or made (D-108).
+        func entryRoot(_ name: String, account: String? = nil) async -> Result<SaveDestination, Error> {
+            guard exact else { return .success(parent) }
+            let folder = parent.url
+            return await Task.detached(priority: .userInitiated) { () -> Result<URL, Error> in
+                let target = ExactFolder.entryFolder(named: name, account: account, in: folder)
+                do {
+                    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+                    return .success(target)
+                } catch {
+                    return .failure(error)
+                }
+            }.value.map { SaveDestination(url: $0, layout: parent.layout, exact: true) }
+        }
         switch entry.kind {
         case var .instagram(draft):
             if draft.postURL == nil, draft.hashtag == nil { await app.engines.applyStoredOptions(to: &draft) }
-            return (app.engines.startPull(draft, scanOnly: false, window: window, saveFolder: root.url), nil)
+            // The stories tray makes a folder per owner itself; everything else gets one named after what it is.
+            let isTray = draft.username.isEmpty && draft.hashtag == nil && draft.postURL == nil && !draft.content.contains(.saved)
+            let name = draft.hashtag ?? draft.username.nonEmpty ?? draft.postURL?.lastPathComponent.nonEmpty
+                ?? (draft.content.contains(.saved) ? SaveTarget.savedFolder : "Stories")
+            let root: SaveDestination
+            switch isTray || !exact ? .success(parent) : await entryRoot(name, account: draft.username.nonEmpty) {
+            case let .success(found): root = found
+            case let .failure(error): return (nil, error.localizedDescription)
+            }
+            return (app.engines.startPull(draft, scanOnly: false, window: window, saveFolder: root.url, exactly: exact), nil)
         case let .gallery(url, site):
             let options = rememberedOptions(site)
             let choices = SiteCatalogue.visibleChoices(site.choices).filter { options.include.contains($0) }
-            return (app.engines.startGalleryDownload(url: url, site: site, include: choices, switches: options.switches, range: nil,
-                                                     from: nil, to: nil, onlyNew: true, root: root, window: window), nil)
+            let name = url.pathComponents.last { $0 != "/" && !$0.isEmpty } ?? url.host ?? site.category
+            switch await entryRoot(name) {
+            case let .success(root):
+                return (app.engines.startGalleryDownload(url: url, site: site, include: choices, switches: options.switches, range: nil,
+                                                         from: nil, to: nil, onlyNew: true, root: root, window: window), nil)
+            case let .failure(error):
+                return (nil, error.localizedDescription)
+            }
         case let .video(url):
             switch await app.engines.videoInfo(for: url) {
             case let .failure(error):
@@ -162,8 +194,14 @@ extension DownloadsModel {
             case let .success(info):
                 var extras = BridgeRequest.Extras()
                 extras.playlist = VideoForm.looksLikeList(url)
-                return (app.engines.saveVideo(info, pageURL: url, format: .bestMP4, height: nil, extras: extras, root: root,
-                                              window: window), nil)
+                let name = extras.playlist ? info.title : info.uploader?.nonEmpty ?? info.title
+                switch await entryRoot(name) {
+                case let .success(root):
+                    return (app.engines.saveVideo(info, pageURL: url, format: .bestMP4, height: nil, extras: extras, root: root,
+                                                  window: window), nil)
+                case let .failure(error):
+                    return (nil, error.localizedDescription)
+                }
             }
         case .checking, .unrecognised:
             return (nil, nil)
@@ -201,6 +239,11 @@ struct DownloadList: View {
                     Button(downloads.batchStopping ? "Stopping After This One" : "Stop After This One") { downloads.stopAll() }
                         .disabled(downloads.batchStopping)
                 } else {
+                    Button("Download All As…") {
+                        model.chooseExactFolder(downloadAll: true) { downloads.runAll(window: model, exactParent: $0) }
+                    }
+                        .disabled(runnable == 0 || downloads.batch.contains { $0.kind == .checking })
+                        .help("Choose one folder; each address goes into a folder of its own inside it")
                     Button("Download All (\(runnable))") { downloads.runAll(window: model) }
                         .buttonStyle(.borderedProminent)
                         .disabled(runnable == 0 || model.saveFolder == nil || downloads.batch.contains { $0.kind == .checking })

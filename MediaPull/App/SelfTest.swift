@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import Foundation
 import MediaPullCore
+import MediaPullEngines
 import MediaPullLibrary
 import MediaPullMedia
 import MediaPullNet
@@ -115,6 +116,11 @@ final class SelfTestRunner {
         }
         if let folder = Self.value(after: "--selftest-analyse") {
             await exerciseAnalysis(source: URL(fileURLWithPath: folder, isDirectory: true), library: library, out: out)
+            quit()
+            return
+        }
+        if CommandLine.arguments.contains("--selftest-save-as") {
+            await exerciseSaveAs(library: library, out: out)
             quit()
             return
         }
@@ -499,7 +505,7 @@ final class SelfTestRunner {
     }
 
     /// A 4-second 640×360 H.264 clip with a moving square.
-    static func writeTestClip(to url: URL) async throws {
+    static func writeTestClip(to url: URL, seed: Int = 0) async throws {
         try? FileManager.default.removeItem(at: url)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -522,7 +528,7 @@ final class SelfTestRunner {
                                        bytesPerRow: CVPixelBufferGetBytesPerRow(pixels), space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
             {
-                context.setFillColor(red: 0.1, green: 0.12, blue: 0.2 + Double(frame) / 200, alpha: 1)
+                context.setFillColor(red: 0.1 + Double(seed % 7) / 10, green: 0.12, blue: 0.2 + Double(frame) / 200, alpha: 1)
                 context.fill(CGRect(x: 0, y: 0, width: 640, height: 360))
                 context.setFillColor(red: 0.95, green: 0.6, blue: 0.3, alpha: 1)
                 context.fill(CGRect(x: 40 + frame * 5, y: 120, width: 120, height: 120))
@@ -664,6 +670,229 @@ final class SelfTestRunner {
         let pass = placed && undone && redone
         note("replace: \(pass ? "PASS" : "FAIL") a case-only rename with an edit keeps its metadata file (\(placed)), "
             + "⌘Z puts the original back (\(undone)), Redo does it again (\(redone)); now \(names()) \(editor.message ?? "")")
+    }
+
+    /// Save As in the Downloads pane (D-108), offline through the stand-in bridge: for Instagram, videos and galleries, a
+    /// download goes exactly into the chosen folder, never redirected, whether that folder is another source's, an existing
+    /// folder of the same source (only what is missing is added) or empty (a full copy). Download All As… puts each entry in a
+    /// folder of its own inside the chosen one, and a Retry stays in the chosen folder.
+    private func exerciseSaveAs(library: URL, out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        guard let home = app.enginePaths?.engineHome, app.enginePaths?.bridgeDirectory == Self.replayBridge else {
+            note("save-as: FAIL the stand-in bridge is not in use")
+            return
+        }
+        let base = library.appendingPathComponent("saveas", isDirectory: true)
+        let fixtures = out.appendingPathComponent("save-as-fixtures", isDirectory: true)
+        for directory in [base, fixtures, home] {
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("save-as: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        func sidecar(_ fields: [String: Any], for file: URL) {
+            try? JSONSerialization.data(withJSONObject: fields).write(to: Sidecar.sidecarURL(for: file))
+        }
+        // Temporary folders are reached through /var and /private/var: compared resolved.
+        let top = library.resolvingSymlinksInPath().path
+        /// Every file under the library, by path relative to it.
+        func snapshot() -> Set<String> {
+            let walker = fm.enumerator(at: library, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            var paths = Set<String>()
+            while let url = walker?.nextObject() as? URL {
+                let path = url.resolvingSymlinksInPath().path
+                if !OperationJournal.isFolder(url), path.hasPrefix(top + "/") { paths.insert(String(path.dropFirst(top.count + 1))) }
+            }
+            return paths
+        }
+        /// New files since `before` all lie inside `folder`.
+        func onlyInside(_ folder: URL, since before: Set<String>) -> (Bool, Int) {
+            let prefix = String(folder.resolvingSymlinksInPath().path.dropFirst(top.count + 1)) + "/"
+            let added = snapshot().subtracting(before)
+            return (added.allSatisfy { $0.hasPrefix(prefix) }, added.filter { !$0.hasSuffix(".json") }.count)
+        }
+        func folder(_ name: String) -> URL {
+            let url = base.appendingPathComponent(name, isDirectory: true)
+            try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        func writeReplay(_ value: [String: Any]) {
+            try? JSONSerialization.data(withJSONObject: value).write(to: home.appendingPathComponent("replay.json"))
+        }
+        func waitFor(_ job: Job?) async { await waitUntil(timeout: 120) { job?.state.isFinished ?? true } }
+
+        // Instagram: three posts of alice.
+        let mediaIDs = (1 ... 3).map { "3700000000000000\($0)" }, postIDs = (1 ... 3).map { "3800000000000000\($0)" }
+        func igMeta(_ index: Int) -> [String: Any] {
+            ["category": "instagram", "subcategory": "posts", "username": "alice", "post_id": postIDs[index], "media_id": mediaIDs[index],
+             "num": 1, "count": 1, "date": "2024-0\(index + 1)-01 10:00:00", "owner_id": "42"]
+        }
+        var igItems: [[String: Any]] = []
+        for index in 0 ..< 3 {
+            let source = fixtures.appendingPathComponent("ig\(index).jpg")
+            try? Self.jpeg(60 + index).write(to: source)
+            igItems.append(["key": "ig:\(mediaIDs[index])", "source": source.path, "meta": igMeta(index)])
+        }
+        let igReplay: [String: Any] = ["account": ["username": "alice", "user_id": "42", "post_count": 3, "is_private": false],
+                                       "items": igItems]
+        // alice's own folder holds post 1; bob's folder holds one of bob's.
+        let alice = folder("alice"), bob = folder("bob")
+        try? fm.createDirectory(at: alice.appendingPathComponent("posts"), withIntermediateDirectories: true)
+        let aliceFirst = alice.appendingPathComponent("posts/first.jpg")
+        try? Self.jpeg(60).write(to: aliceFirst)
+        sidecar(igMeta(0), for: aliceFirst)
+        let bobFile = bob.appendingPathComponent("bob.jpg")
+        try? Self.jpeg(70).write(to: bobFile)
+        sidecar(["category": "instagram", "subcategory": "posts", "username": "bob", "post_id": "1", "media_id": "2", "num": 1],
+                for: bobFile)
+        writeReplay(igReplay)
+        var draft = app.engines.draft(username: "alice")
+        draft.content = [.posts]
+        func pull(into chosen: URL) async -> Job? {
+            let job = app.engines.startPull(draft, scanOnly: false, window: model, saveFolder: chosen, exactly: true)
+            await waitFor(job)
+            return job
+        }
+        var before = snapshot()
+        let intoBob = await pull(into: bob)
+        var (inside, added) = onlyInside(bob, since: before)
+        check(inside && added == 3 && intoBob?.saved == 3 && fm.fileExists(atPath: bobFile.path),
+              "Instagram into another account's folder: \(added) files, all inside bob \(inside)")
+        before = snapshot()
+        let intoOwn = await pull(into: alice)
+        (inside, added) = onlyInside(alice, since: before)
+        check(inside && added == 2 && intoOwn?.saved == 2 && (intoOwn?.skipped ?? 0) >= 1,
+              "Instagram into its existing folder: only the 2 missing added, inside \(inside)")
+        let alice2 = folder("alice 2")
+        before = snapshot()
+        let intoEmpty = await pull(into: alice2)
+        (inside, added) = onlyInside(alice2, since: before)
+        check(inside && added == 3 && intoEmpty?.saved == 3 && fm.fileExists(atPath: alice2.appendingPathComponent("posts").path),
+              "Instagram into an empty folder: a full copy of 3 in its posts folder, inside \(inside)")
+
+        // Videos: two of channel X.
+        var videos: [[String: Any]] = []
+        for index in 1 ... 2 {
+            let clip = fixtures.appendingPathComponent("v\(index).mp4")
+            try? await Self.writeTestClip(to: clip, seed: index)
+            videos.append(["key": "video:youtube:v\(index)", "source": clip.path,
+                           "meta": ["id": "v\(index)", "title": "Video \(index)", "uploader": "X", "upload_date": "2024010\(index)",
+                                    "webpage_url": "https://www.youtube.com/watch?v=v\(index)"]])
+        }
+        writeReplay(["videos": videos])
+        let info = VideoInfo(title: "X", uploader: "X", id: "list", uploadDate: nil, webpageURL: URL(string: "https://www.youtube.com/@x")!,
+                             extractor: "youtube", duration: nil, thumbnail: nil, description: nil, formats: [])
+        func download(into chosen: URL) async -> Job {
+            var extras = BridgeRequest.Extras()
+            extras.playlist = true
+            var root = app.destination(for: chosen)
+            root.exact = true
+            let job = app.engines.saveVideo(info, format: .bestMP4, height: nil, extras: extras, root: root, window: model)
+            await waitFor(job)
+            return job
+        }
+        let channelX = folder("X videos"), channelY = folder("Y videos")
+        let held = channelX.appendingPathComponent("held.mp4")
+        try? fm.copyItem(at: fixtures.appendingPathComponent("v1.mp4"), to: held)
+        sidecar(["category": "youtube", "subcategory": "video", "username": "X", "post_id": "v1"], for: held)
+        let yFile = channelY.appendingPathComponent("y.mp4")
+        try? await Self.writeTestClip(to: yFile, seed: 5)
+        sidecar(["category": "youtube", "subcategory": "video", "username": "Y", "post_id": "y1"], for: yFile)
+        before = snapshot()
+        let videoIntoY = await download(into: channelY)
+        (inside, added) = onlyInside(channelY, since: before)
+        check(inside && added == 2 && videoIntoY.saved == 2,
+              "videos into another channel's folder: \(added) straight in, inside \(inside) (\(videoIntoY.state.label))")
+        before = snapshot()
+        let videoIntoX = await download(into: channelX)
+        (inside, added) = onlyInside(channelX, since: before)
+        check(inside && added == 1 && videoIntoX.saved == 1, "videos into the channel's folder: only the missing one added (\(added))")
+        let channelX2 = folder("X videos 2")
+        before = snapshot()
+        let videoIntoEmpty = await download(into: channelX2)
+        (inside, added) = onlyInside(channelX2, since: before)
+        check(inside && added == 2 && videoIntoEmpty.saved == 2, "videos into an empty folder: a full copy (\(added))")
+
+        // Galleries: two items of carol on a test site.
+        var galleryItems: [[String: Any]] = []
+        for index in 1 ... 2 {
+            let source = fixtures.appendingPathComponent("g\(index).jpg")
+            try? Self.jpeg(80 + index).write(to: source)
+            galleryItems.append(["key": "testsite:g\(index):1", "source": source.path,
+                                 "meta": ["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g\(index)",
+                                          "num": 1, "date": "2024-02-0\(index) 10:00:00"]])
+        }
+        writeReplay(["account": ["username": "carol"], "items": galleryItems])
+        let site = SiteInfo(category: "testsite", subcategory: "user")
+        let galleryURL = URL(string: "https://example.org/carol")!
+        func gallery(into chosen: URL) async -> Job? {
+            var root = app.destination(for: chosen)
+            root.exact = true
+            let job = app.engines.startGalleryDownload(url: galleryURL, site: site, include: [], switches: [:], range: nil, from: nil,
+                                                       to: nil, onlyNew: false, root: root, window: model)
+            await waitFor(job)
+            return job
+        }
+        let carol = folder("carol"), dave = folder("dave")
+        let carolHeld = carol.appendingPathComponent("one.jpg")
+        try? Self.jpeg(81).write(to: carolHeld)
+        sidecar(["category": "testsite", "subcategory": "user", "username": "carol", "post_id": "g1", "num": 1], for: carolHeld)
+        let daveFile = dave.appendingPathComponent("dave.jpg")
+        try? Self.jpeg(90).write(to: daveFile)
+        sidecar(["category": "testsite", "subcategory": "user", "username": "dave", "post_id": "d1", "num": 1], for: daveFile)
+        before = snapshot()
+        let galleryIntoDave = await gallery(into: dave)
+        (inside, added) = onlyInside(dave, since: before)
+        check(inside && added == 2 && galleryIntoDave?.saved == 2,
+              "gallery into another user's folder: \(added) straight in, inside \(inside)")
+        before = snapshot()
+        let galleryIntoCarol = await gallery(into: carol)
+        (inside, added) = onlyInside(carol, since: before)
+        check(inside && added == 1 && galleryIntoCarol?.saved == 1,
+              "gallery into its existing folder: only the missing one added (\(added))")
+        let carol2 = folder("carol 2")
+        before = snapshot()
+        let galleryIntoEmpty = await gallery(into: carol2)
+        (inside, added) = onlyInside(carol2, since: before)
+        check(inside && added == 2 && galleryIntoEmpty?.saved == 2, "gallery into an empty folder: a full copy (\(added))")
+
+        // A Retry stays in the chosen folder: one file fails, then is fetched again into the same folder.
+        writeReplay(["account": ["username": "carol"], "items": galleryItems, "fail_files": [2]])
+        let carol3 = folder("carol 3")
+        let failing = await gallery(into: carol3)
+        writeReplay(["account": ["username": "carol"], "items": galleryItems])
+        before = snapshot()
+        failing?.retry?()
+        try? await Task.sleep(for: .seconds(1))
+        await waitUntil(timeout: 120) { !app.jobs.jobs.contains { $0.kind == .pull && !$0.state.isFinished } }
+        (inside, added) = onlyInside(carol3, since: before)
+        check(failing?.failed == 0 && inside && added == 1, "a Retry of a Save As download stays in its folder (\(added) added)")
+
+        // Download All As…: each entry in a folder of its own inside the chosen one, an existing one when it holds the source.
+        writeReplay(igReplay)
+        let batch = folder("batch")
+        let myAlice = batch.appendingPathComponent("my alice/posts", isDirectory: true)
+        try? fm.createDirectory(at: myAlice, withIntermediateDirectories: true)
+        let batchFirst = myAlice.appendingPathComponent("first.jpg")
+        try? Self.jpeg(60).write(to: batchFirst)
+        sidecar(igMeta(0), for: batchFirst)
+        before = snapshot()
+        model.downloads.useList(["@alice", "#sunset"])
+        await waitUntil(timeout: 30) { !self.model.downloads.batch.contains { $0.kind == .checking } }
+        model.downloads.runAll(window: model, exactParent: batch)
+        try? await Task.sleep(for: .seconds(1))
+        await waitUntil(timeout: 180) { !self.model.downloads.batchRunning }
+        (inside, added) = onlyInside(batch, since: before)
+        let allNew = snapshot().subtracting(before)
+        let aliceAdded = allNew.filter { $0.hasPrefix("saveas/batch/my alice/") && !$0.hasSuffix(".json") }.count
+        let tagAdded = allNew.filter { $0.hasPrefix("saveas/batch/sunset/") && !$0.hasSuffix(".json") }.count
+        check(inside && aliceAdded == 2 && tagAdded == 3 && model.downloads.batch.allSatisfy { $0.progress == .done },
+              "Download All As…: alice's 2 missing into the folder that holds her, #sunset's 3 into its own folder, inside \(inside)")
+
+        note("save-as: \(failures.isEmpty ? "PASS" : "FAIL \(failures.count): \(failures.joined(separator: "; "))")")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).

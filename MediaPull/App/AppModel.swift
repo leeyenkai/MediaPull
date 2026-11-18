@@ -79,7 +79,9 @@ final class AppModel {
         var paths = EnginePaths.locate()
         // --selftest-update runs the update path offline: a stand-in bridge replays recorded events, and the engine folders
         // live in a temporary folder so Application Support is left alone.
-        if SelfTestRunner.isActive, CommandLine.arguments.contains("--selftest-update") {
+        if SelfTestRunner.isActive, CommandLine.arguments.contains("--selftest-update")
+            || CommandLine.arguments.contains("--selftest-save-as")
+        {
             paths?.bridgeDirectory = SelfTestRunner.replayBridge
             paths?.support = FileManager.default.temporaryDirectory
                 .appendingPathComponent("MediaPull-selftest-engines-\(UUID().uuidString)")

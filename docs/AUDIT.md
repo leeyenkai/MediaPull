@@ -28,6 +28,12 @@ entry), not another patch to the last one. Earlier rules that were patched round
 ones (D-93 Undo, D-98 earlier versions' memory, D-102 playlist Retry); an auditor does not re-report those designs, only
 code that does not do what they say.
 
+## Scope after the 1.8 audit
+
+The freeze is lifted for new features decided after round 23, each written into the spec first. Save As in the Downloads
+pane (D-108) is audited under the rules above until two rounds in a row find no major; its rounds look only at D-108 and
+at code it touches, and do not re-report D-93 to D-107.
+
 ## Cause categories (from the 1.8 review, plan section C)
 
 1. Spec drift: a requirement written but not built, or built differently.

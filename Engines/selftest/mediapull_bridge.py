@@ -25,6 +25,8 @@ def main():
         sys.stdout.flush()
 
     emit("hello", python=sys.version.split()[0], protocol=1)
+    if request.get("op") == "stream":
+        return stream(request, emit)
     if request.get("op") != "pull":
         emit("done", status="completed", counts={})
         return 0
@@ -95,6 +97,24 @@ def main():
         emit("done", status="failed", counts=counts)
         return 0
     emit("done", status="partial" if failed_files else "completed", counts=counts)
+    return 0
+
+
+def stream(request, emit):
+    """Video downloads (`--selftest-save-as`): the replay's "videos" are reported as downloaded, except those whose id the
+    request's extras name in skip_ids, as yt-dlp's match filter skips them in the real bridge."""
+    with open(os.path.join(os.environ["HOME"], "replay.json"), encoding="utf-8") as handle:
+        replay = json.load(handle)
+    skip = set((request.get("extras") or {}).get("skip_ids") or [])
+    for video in replay.get("videos") or []:
+        meta = video["meta"]
+        if meta.get("id") in skip:
+            emit("log", level="info", logger="stand-in", message=f"skipped {meta.get('id')}")
+            continue
+        target = os.path.join(request["staging"], os.path.basename(video["source"]))
+        shutil.copyfile(video["source"], target)
+        emit("file", key=video["key"], path=target, bytes=os.path.getsize(target), subcategory="video", meta=meta)
+    emit("done", status="completed", counts={})
     return 0
 
 
