@@ -60,7 +60,10 @@ struct OrganiseFolderPane: View {
             .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: headerTargeted ? 2 : 0).allowsHitTesting(false))
             .onDrop(of: [.fileURL], isTargeted: $headerTargeted) { openDropped($0) }
             Divider()
-            if let root = pane.root {
+            if pane.root != nil, mode == .profile, let source = pane.profileSource {
+                // The folder as its site showed it, from its saved files (D-113).
+                ProfilePane(source: source, revision: pane.profileRevision)
+            } else if let root = pane.root {
                 VStack(spacing: 0) {
                     // A compact tree: the media grid gets the room. Column view is its own tree (R-1710).
                     if !columns {

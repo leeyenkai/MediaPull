@@ -313,6 +313,18 @@ public struct EngineContext: Codable, Hashable, Sendable {
     public var sourceURL: URL?
     /// A higher resolution the site offered only in a codec the policy did not take ("2160p"), for the sidecar (R-1607).
     public var higherResolutionAvailable: String?
+    /// D-111: Instagram's place for a post (a name and its id, no coordinates).
+    public var locationName: String?
+    public var locationID: String?
+    /// D-112: a highlight's cover image.
+    public var highlightCover = false
+    /// D-111: a subreddit or a Pinterest board.
+    public var community: String?
+    /// D-111: the playlist a video was saved from, and its channel.
+    public var playlistTitle: String?
+    public var playlistID: String?
+    public var playlistIndex: Int?
+    public var channelID: String?
 
     public init(key: String, category: String, subcategory: String) {
         self.key = key

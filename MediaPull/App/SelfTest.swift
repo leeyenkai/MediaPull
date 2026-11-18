@@ -130,6 +130,11 @@ final class SelfTestRunner {
             quit()
             return
         }
+        if CommandLine.arguments.contains("--selftest-profile") {
+            await exerciseProfiles(library: library, out: out)
+            quit()
+            return
+        }
         if CommandLine.arguments.contains("--selftest-update") {
             await exerciseReplace(library: library)
             await exerciseNotes(out: out)
@@ -1058,6 +1063,102 @@ final class SelfTestRunner {
         snapshot(to: out.appendingPathComponent("details-map.png"))
         let near = recorded.locationRows.first { $0.0 == "Near" }?.1 ?? "none"
         note("details: \(missing.isEmpty ? "PASS" : "FAIL missing \(missing)") rows \(rows), near \(near)")
+    }
+
+    /// Profile views (D-113, section 40), offline: which folders offer the Profile view, how their files group, that nothing
+    /// is fetched, with a snapshot of each layout for a person to look at.
+    private func exerciseProfiles(library: URL, out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        let base = library.appendingPathComponent("profiles", isDirectory: true)
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("profile: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        var colour = 10
+        func file(_ path: String, _ meta: [String: Any]?) {
+            let url = base.appendingPathComponent(path)
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            colour += 1
+            if url.pathExtension == "mp4" {
+                try? fm.copyItem(at: out.appendingPathComponent("clip.mp4"), to: url)
+            } else {
+                try? Self.jpeg(colour).write(to: url)
+            }
+            if let meta { try? JSONSerialization.data(withJSONObject: meta).write(to: Sidecar.sidecarURL(for: url)) }
+        }
+        try? await Self.writeTestClip(to: out.appendingPathComponent("clip.mp4"))
+        for (name, count) in [("alice", 6), ("bob", 3)] {
+            func ig(_ sub: String, _ post: String, num: Int = 1, count: Int = 1, day: Int, extra: [String: Any] = [:]) -> [String: Any] {
+                ["category": "instagram", "subcategory": sub, "username": name, "post_id": "\(name)\(post)",
+                 "media_id": "\(name)\(post)\(num)",
+                 "num": num, "count": count, "date": String(format: "2024-%02d-01 10:00:00", day)].merging(extra) { $1 }
+            }
+            for index in 1 ... count {
+                file("accounts/\(name)/posts/p\(index).jpg", ig("posts", "p\(index)", day: index,
+                                                               extra: ["description": "Post \(index) #saved", "location_name": "Lisbon"]))
+            }
+            file("accounts/\(name)/posts/p1-2.jpg", ig("posts", "p1", num: 2, count: 2, day: 1))
+            file("accounts/\(name)/posts/pinned.jpg", ig("posts", "pin", day: 1, extra: ["pinned": true]))
+            file("accounts/\(name)/reels/r1.mp4", ig("reels", "r1", day: 7, extra: ["product_type": "clips", "duration": 4.0]))
+            file("accounts/\(name)/stories/s1.jpg", ig("stories", "s1", day: 9))
+            file("accounts/\(name)/highlights/Trips/cover.jpg", ig("highlights", "h1", day: 8,
+                                                                  extra: ["highlight_title": "Trips", "highlight_cover": true]))
+            file("accounts/\(name)/highlights/Trips/1.jpg", ig("highlights", "h1", num: 2, day: 8, extra: ["highlight_title": "Trips"]))
+            file("accounts/\(name)/profile pictures/me.jpg", ig("avatar", "av", day: 9, extra: ["author": name.capitalized]))
+        }
+        for index in 1 ... 3 {
+            file("Channel X/v\(index).mp4", ["category": "youtube", "subcategory": "video", "username": "Channel X", "post_id": "v\(index)",
+                                             "date": "2024-0\(index)-01 10:00:00", "title": "Video \(index)", "duration": 4,
+                                             "playlist_title": "Trips", "playlist_index": index])
+        }
+        for index in 1 ... 3 {
+            file("feed/t\(index).jpg", ["category": "twitter", "subcategory": "user", "username": "carol", "post_id": "t\(index)",
+                                        "date": "2024-0\(index)-01 10:00:00", "description": "Tweet \(index)"])
+            file("board/b\(index).jpg", ["category": "pinterest", "subcategory": "board", "username": "dee", "community": "Kitchen",
+                                         "post_id": "b\(index)", "title": "Pin \(index)"])
+        }
+        file("plain/photo.jpg", nil)
+
+        let sockets = Self.socketCount()
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        let pane = model.organise.source
+        func open(_ name: String) async -> ProfileSource? {
+            model.organise.open(base.appendingPathComponent(name))
+            await waitUntil(timeout: 20) { pane.profileSource != nil || pane.folder?.lastPathComponent == name && !pane.loading }
+            try? await Task.sleep(for: .milliseconds(600))
+            return pane.profileSource
+        }
+        let accounts = await open("accounts")
+        check(accounts?.kind == .profile && accounts?.sources.map(\.name) == ["alice", "bob"],
+              "a folder of two accounts offers Profile with both (\(accounts?.sources.map(\.name) ?? []))")
+        check(model.availableViewModes(for: .organiseSource).contains(.profile), "Profile is in the pane's views")
+        model.setViewMode(.profile, for: .organiseSource)
+        try? await Task.sleep(for: .seconds(3))
+        snapshot(to: out.appendingPathComponent("profile-instagram.png"))
+        if let alice = accounts?.sources.first, case let .profile(profile) = ProfileBuilder.build(alice, kind: .profile).content {
+            check(profile.posts.first?.pinned == true && profile.posts.count == 7 && profile.posts.last?.media.count == 2,
+                  "alice: pinned first, 7 posts, the oldest a carousel of 2 (\(profile.posts.count))")
+            check(profile.reels.count == 1 && profile.highlights.first?.cover?.url.lastPathComponent == "cover.jpg"
+                && profile.storyDays.count == 1 && profile.avatars.count == 1,
+                  "alice: a Reel, the saved highlight cover, a story, a picture")
+        } else {
+            check(false, "alice's profile could be built")
+        }
+        for (name, kind) in [("Channel X", ProfileKind.channel), ("feed", .timeline), ("board", .board)] {
+            let found = await open(name)
+            check(found?.kind == kind && model.viewMode(for: .organiseSource) == .profile, "\(name) shows as \(kind.rawValue)")
+            try? await Task.sleep(for: .seconds(2))
+            snapshot(to: out.appendingPathComponent("profile-\(kind.rawValue).png"))
+        }
+        _ = await open("plain")
+        check(pane.profileSource == nil && !model.availableViewModes(for: .organiseSource).contains(.profile)
+            && model.viewMode(for: .organiseSource) == .icon, "a plain folder offers no Profile view and shows icons")
+        check(Self.socketCount() <= sockets, "no network sockets opened (\(sockets) before, \(Self.socketCount()) after)")
+        model.setViewMode(.icon, for: .organiseSource)
+        note("profile: \(failures.isEmpty ? "PASS" : "FAIL \(failures.count): \(failures.joined(separator: "; "))")")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).

@@ -84,6 +84,12 @@ public struct BridgeAccount: Sendable, Equatable {
     public var postCount: Int?
     public var avatarURL: URL?
     public var biography: String?
+    /// D-112: the rest of what a profile header shows.
+    public var followerCount: Int?
+    public var followingCount: Int?
+    public var externalURL: String?
+    public var isVerified: Bool?
+    public var categoryName: String?
 }
 
 public struct BridgeItem: Sendable {
@@ -160,7 +166,9 @@ public enum BridgeEvent: Sendable {
                 username: string("username") ?? "", fullName: string("full_name"), userID: string("user_id"),
                 isPrivate: value["is_private"]?.bool ?? false, followedByViewer: value["followed_by_viewer"]?.bool,
                 postCount: value["post_count"]?.int, avatarURL: string("avatar_url").flatMap(URL.init(string:)),
-                biography: string("biography")
+                biography: string("biography"), followerCount: value["follower_count"]?.int,
+                followingCount: value["following_count"]?.int, externalURL: string("external_url"),
+                isVerified: value["is_verified"]?.bool, categoryName: string("category_name")
             ))
         case "item":
             var meta: [String: JSONValue] = [:]
@@ -430,7 +438,8 @@ public extension EngineContext {
         context.num = meta["num"]?.int
         context.count = meta["count"]?.int
         context.date = (meta["date"]?.string ?? meta["post_date"]?.string).flatMap(DateFormats.parseEngineDate)
-        context.description = meta["description"]?.string ?? meta["content"]?.string
+        // The post's own text first (D-111): X, Bluesky and Reddit keep it apart from a file's description.
+        context.description = meta["post_text"]?.string?.nonEmpty ?? meta["description"]?.string ?? meta["content"]?.string
         context.title = meta["title"]?.string
         context.postURL = meta["post_url"]?.string.flatMap(URL.init(string:))
         context.highlightTitle = meta["highlight_title"]?.string
@@ -439,6 +448,14 @@ public extension EngineContext {
         context.originalWidth = meta["width_original"]?.int
         context.originalHeight = meta["height_original"]?.int
         context.higherResolutionAvailable = meta["higher_res_available"]?.string
+        context.locationName = meta["location_name"]?.string?.nonEmpty
+        context.locationID = context.locationName == nil ? nil : meta["location_id"]?.string
+        context.highlightCover = meta["highlight_cover"]?.bool ?? false
+        context.community = meta["community"]?.string?.nonEmpty
+        context.playlistTitle = meta["playlist_title"]?.string?.nonEmpty
+        context.playlistID = meta["playlist_id"]?.string?.nonEmpty
+        context.playlistIndex = meta["playlist_index"]?.int
+        context.channelID = meta["channel_id"]?.string?.nonEmpty
         if let name = meta["filename"]?.string, let ext = meta["extension"]?.string {
             context.fileName = "\(name).\(ext)"
         }

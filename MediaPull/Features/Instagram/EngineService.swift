@@ -787,6 +787,7 @@ final class EngineService {
         }
         // Single posts, Reels, stories and highlights go into their account's folder (D-78): found once per account, and
         // remembered in that folder's record like a pull's (D-79).
+        var seenProfile: AccountProfile?
         var postPlaces: [String: AccountPlace] = [:]
         // Accounts the engine looked up in this pull (tray owners included), by name.
         var seenIDs: [String: String] = [:]
@@ -845,6 +846,13 @@ final class EngineService {
                     // accounts a listing looks up are not this folder's.
                     let isThisAccount = info.username.lowercased() == account.lowercased()
                     if let id = info.userID?.nonEmpty { seenIDs[info.username.lowercased()] = id }
+                    // What the profile said, kept with the folder's record at the end (D-112).
+                    if isAccount, isThisAccount {
+                        seenProfile = AccountProfile(fullName: info.fullName, biography: info.biography, postCount: info.postCount,
+                                                     followerCount: info.followerCount, followingCount: info.followingCount,
+                                                     externalURL: info.externalURL, isVerified: info.isVerified,
+                                                     category: info.categoryName)
+                    }
                     if isAccount, isThisAccount, place != nil, let id = info.userID?.nonEmpty {
                         if let folderRecord = place?.record {
                             let expected = await folderAccountID(folderRecord, account: account)
@@ -1133,6 +1141,7 @@ final class EngineService {
         app.libraryRevision += 1
         // What this pull saved into the folder is remembered there, so an item deleted on purpose stays deleted on the
         // next Update (D-79). A new folder gets its record once it exists.
+        if let seenProfile, let record = await folderRecord() { await app.accountFolders.setProfile(seenProfile, in: record.id) }
         if let record = await folderRecord() {
             await app.accountFolders.addKeys(unrecordedKeys, to: record.id)
             // Only a pull whose posts listing was walked counts as an update; any other leaves the date of the last one (a
@@ -1669,7 +1678,12 @@ final class EngineService {
         context.shortcode = context.postID
         context.date = VideoInfo.date(uploadDate: meta["upload_date"]?.string, timestamp: meta["timestamp"]?.double) ?? info.uploadDate
         context.title = title
-        context.description = title
+        // The video's own description, with its title kept apart (D-111).
+        context.description = meta["description"]?.string?.nonEmpty ?? title
+        context.playlistTitle = meta["playlist_title"]?.string?.nonEmpty
+        context.playlistID = meta["playlist_id"]?.string?.nonEmpty
+        context.playlistIndex = meta["playlist_index"]?.int
+        context.channelID = meta["channel_id"]?.string?.nonEmpty
         context.postURL = page
         context.sourceURL = page
         let input = EngineItemInput(context: context, kind: format.isAudioOnly ? .audio : .video, engineURL: page.absoluteString,

@@ -291,6 +291,34 @@ public enum AccountFolders {
     }
 }
 
+/// What an account's profile said when a pull last read it (D-112), for the profile header (D-113). Kept with the folder's
+/// record in Application Support, never in the library.
+public struct AccountProfile: Codable, Sendable, Equatable {
+    public var fullName: String?
+    public var biography: String?
+    public var postCount: Int?
+    public var followerCount: Int?
+    public var followingCount: Int?
+    public var externalURL: String?
+    public var isVerified: Bool?
+    public var category: String?
+    public var seen: Date
+
+    public init(fullName: String?, biography: String?, postCount: Int?, followerCount: Int?, followingCount: Int?, externalURL: String?,
+                isVerified: Bool?, category: String?, seen: Date = Date())
+    {
+        self.fullName = fullName
+        self.biography = biography
+        self.postCount = postCount
+        self.followerCount = followerCount
+        self.followingCount = followingCount
+        self.externalURL = externalURL
+        self.isVerified = isVerified
+        self.category = category
+        self.seen = seen
+    }
+}
+
 /// What MediaPull remembers about each account folder (D-79): the items it ever saved there (so items deleted on purpose
 /// stay deleted on Update), where an interrupted update stopped, and when the folder was last updated. One small JSON
 /// file per folder in Application Support, found again through a bookmark when the folder moves.
@@ -336,6 +364,8 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     /// A reference that follows the folder itself through renames, moves and into the Trash, never to another folder
     /// made at its path (audit 9, A9-M1, A9-M2). Nil for older records, which follow their bookmark.
     public var reference: String?
+    /// What the account's profile said at the last pull (D-112). Nil for older records.
+    public var profile: AccountProfile?
 
     /// Whether an update or Find Missing stopped part way and can be continued.
     public var stoppedPartWay: Bool { !(places ?? []).isEmpty }
@@ -626,6 +656,14 @@ public actor AccountFolderStore {
     public func place(_ placeID: UUID, in id: UUID) -> ResumePlace? {
         load()
         return records[id]?.places?.first { $0.id == placeID }
+    }
+
+    /// Keeps what the account's profile said (D-112).
+    public func setProfile(_ profile: AccountProfile, in id: UUID) {
+        guard var record = records[id], record.profile != profile else { return }
+        record.profile = profile
+        records[id] = record
+        save(record)
     }
 
     public func update(_ id: UUID, lastUpdate: Date? = nil, lastResult: String? = nil, userID: String? = nil) {

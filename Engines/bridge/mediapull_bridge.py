@@ -339,6 +339,8 @@ def configure_gallery_dl(request, staging):
             "warn-videos": False,
             "pinned": True,
             "order-files": "asc",
+            # D-112: each highlight's cover comes first in its folder.
+            "covers": "highlights" in (request.get("include") or []),
         },
     }
     # R-1203: never faster than a site's own interval between requests. A global sleep-request replaces gallery-dl's
@@ -552,7 +554,11 @@ def classify_instagram_error(exc):
 META_KEYS = ("category", "subcategory", "username", "fullname", "post_shortcode", "post_id", "num", "count",
              "date", "post_date", "description", "post_url", "highlight_title", "media_id", "shortcode",
              "width", "height", "width_original", "height_original", "extension", "filename", "title",
-             "type", "id", "author", "user", "owner_id")
+             "type", "id", "author", "user", "owner_id", "location_name", "location_id")
+
+# The post's own text on sites that keep it apart from a file's description (D-111): X `content`, Bluesky `text`, Reddit
+# `selftext`. Kept as `post_text`, at most 5,000 characters.
+POST_TEXT_KEYS = ("content", "text", "selftext")
 
 
 def collection_of(url):
@@ -588,7 +594,10 @@ def item_meta(url, kwdict):
             continue
         if key == "author":
             if isinstance(value, dict):
-                value = value.get("username") or value.get("name") or value.get("nick")
+                # Bluesky names its author by handle and display name (D-111).
+                if value.get("displayName") and not kwdict.get("fullname"):
+                    meta["fullname"] = str(value["displayName"])
+                value = value.get("username") or value.get("name") or value.get("nick") or value.get("handle")
             if value is None:
                 continue
             value = str(value)
@@ -601,11 +610,25 @@ def item_meta(url, kwdict):
             continue
         elif isinstance(value, bool) or value is None:
             continue
-        elif isinstance(value, int) and key in ("post_id", "media_id", "id", "owner_id"):
+        elif isinstance(value, int) and key in ("post_id", "media_id", "id", "owner_id", "location_id"):
             value = str(value)
         meta[key] = value
     if kwdict.get("pinned"):
         meta["pinned"] = True
+    # D-111: the post's own text, its community (a subreddit, a Pinterest board) and a highlight's cover.
+    for key in POST_TEXT_KEYS if kwdict.get("category") != "instagram" else ():
+        value = kwdict.get(key)
+        if isinstance(value, str) and value.strip():
+            meta["post_text"] = value[:5000]
+            break
+    board = kwdict.get("board")
+    community = kwdict.get("subreddit") or (board.get("name") if isinstance(board, dict) else None)
+    if isinstance(community, str) and community.strip():
+        meta["community"] = community
+    if kwdict.get("category") == "instagram" and str(kwdict.get("media_id") or "").endswith("_cover"):
+        meta["highlight_cover"] = True
+    if not meta.get("location_name"):
+        meta.pop("location_id", None)
     for key in ("width_original", "height_original"):
         if meta.get(key) == 0:
             meta.pop(key)
@@ -998,6 +1021,9 @@ def account_fields(kwdict):
             return value.get("count")
         return value
 
+    def number(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
     hd = kwdict.get("hd_profile_pic_url_info")
     avatar = (hd.get("url") if isinstance(hd, dict) else None) or kwdict.get("profile_pic_url_hd") or kwdict.get("profile_pic_url")
     friendship = kwdict.get("friendship_status") if isinstance(kwdict.get("friendship_status"), dict) else {}
@@ -1008,9 +1034,15 @@ def account_fields(kwdict):
         "user_id": str(kwdict.get("id") or kwdict.get("pk") or ""),
         "is_private": bool(kwdict.get("is_private")),
         "followed_by_viewer": bool(followed) if followed is not None else None,
-        "post_count": count(kwdict.get("media_count")) or count(kwdict.get("edge_owner_to_timeline_media")),
+        "post_count": count(kwdict.get("media_count")) or count(kwdict.get("count_media")),
         "avatar_url": avatar,
-        "biography": (kwdict.get("biography") or "")[:500],
+        "biography": (kwdict.get("biography") or "")[:2000],
+        # D-112: what the profile header shows, kept with the folder's record; only plain values.
+        "follower_count": number(count(kwdict.get("follower_count")) or kwdict.get("count_followed")),
+        "following_count": number(count(kwdict.get("following_count")) or kwdict.get("count_follow")),
+        "external_url": kwdict.get("external_url") if isinstance(kwdict.get("external_url"), str) else None,
+        "is_verified": bool(kwdict.get("is_verified")) if kwdict.get("is_verified") is not None else None,
+        "category_name": kwdict.get("category_name") if isinstance(kwdict.get("category_name"), str) else None,
     }
 
 
@@ -1161,7 +1193,12 @@ def video_meta(info):
         "duration": info.get("duration"), "uploader": info.get("uploader") or info.get("channel"),
         "uploader_id": info.get("uploader_id") or info.get("channel_id"), "id": info.get("id"),
         "upload_date": info.get("upload_date"), "timestamp": info.get("timestamp"), "webpage_url": info.get("webpage_url"),
-        "extractor": (info.get("extractor_key") or info.get("extractor") or "").lower(), "description": (info.get("description") or "")[:2000],
+        "extractor": (info.get("extractor_key") or info.get("extractor") or "").lower(), "description": (info.get("description") or "")[:5000],
+        # D-111: the playlist a video was saved from, and its channel.
+        "playlist_title": info.get("playlist_title") if isinstance(info.get("playlist_title"), str) else None,
+        "playlist_id": str(info["playlist_id"]) if info.get("playlist_id") not in (None, "") else None,
+        "playlist_index": info.get("playlist_index") if isinstance(info.get("playlist_index"), int) else None,
+        "channel_id": info.get("channel_id") if isinstance(info.get("channel_id"), str) else None,
     }
 
 

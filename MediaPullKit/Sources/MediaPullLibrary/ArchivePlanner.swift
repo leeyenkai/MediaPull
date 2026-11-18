@@ -246,6 +246,17 @@ public enum ArchivePlanner {
             if let owner = engine.username, owner.lowercased() != account.lowercased() { sidecar.ownerUsername = owner }
             sidecar.highlightTitle = engine.highlightTitle
             if engine.isInstagram { sidecar.productType = subcategory == "reels" ? "clips" : nil }
+            // D-111: what the profile views show. A title is kept apart when the description is the post's own text.
+            sidecar.locationName = engine.isInstagram ? engine.locationName : nil
+            sidecar.locationID = engine.isInstagram ? engine.locationID : nil
+            sidecar.pinned = engine.pinned
+            sidecar.highlightCover = engine.isInstagram && engine.highlightCover
+            if !engine.isInstagram, let title = engine.title?.nonEmpty, title != sidecar.description { sidecar.title = title }
+            sidecar.playlistTitle = engine.playlistTitle
+            sidecar.playlistID = engine.playlistID
+            sidecar.playlistIndex = engine.playlistIndex
+            sidecar.channelID = engine.channelID
+            sidecar.community = engine.community
             sidecar.sha256 = info.sha256
             sidecar.extractor = settings.extractorVersion
             sidecar.mediapullVersion = settings.appVersion

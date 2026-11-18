@@ -3,12 +3,15 @@ import Foundation
 /// How a pane shows its media, as in the Finder (SPEC R-1708, D-76).
 public enum PaneViewMode: String, Codable, Sendable, CaseIterable, Hashable {
     case icon, list, column
+    /// A folder of saved media as its site showed it (D-113): only where the folder is one the views can show.
+    case profile
 
     public var label: String {
         switch self {
         case .icon: "as Icons"
         case .list: "as List"
         case .column: "as Columns"
+        case .profile: "as Profile"
         }
     }
 
@@ -17,13 +20,15 @@ public enum PaneViewMode: String, Codable, Sendable, CaseIterable, Hashable {
         case .icon: "square.grid.2x2"
         case .list: "list.bullet"
         case .column: "rectangle.split.3x1"
+        case .profile: "person.crop.square"
         }
     }
 
     /// Extracted Media is not a folder, so it has no column view.
     public static func allowed(for pane: PaneID) -> [PaneViewMode] {
         switch pane {
-        case .library, .organiseSource, .organiseTarget: [.icon, .list, .column]
+        case .organiseSource, .organiseTarget: [.icon, .list, .column, .profile]
+        case .library: [.icon, .list, .column]
         case .extracted: [.icon, .list]
         default: [.icon]
         }

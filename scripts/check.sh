@@ -150,6 +150,12 @@ else
     echo "error: the app was not built, so the self-test did not run"
     FAILED=1
   fi
+  # Profile views read saved folders only, offline (D-113).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-profile 2>&1 \
+      | grep -E "profile: (PASS|FAIL)" | tee /dev/stderr | grep -q "profile: PASS" || FAILED=1
+  fi
   rm -rf "$OUT"
 fi
 

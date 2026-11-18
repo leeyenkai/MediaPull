@@ -121,7 +121,33 @@ final class OrganisePane: MediaGridOwner {
     }
 
     var folder: URL? {
-        didSet { if folder != oldValue { selection = []; reload() } }
+        didSet {
+            if folder != oldValue {
+                selection = []
+                reload()
+                detectProfile()
+            }
+        }
+    }
+
+    /// What the folder can be shown as in the Profile view (D-113), worked out off the main actor; nil when it is not one.
+    var profileSource: ProfileSource?
+    /// Bumped when the folder's files change, so an open Profile view reads them again.
+    var profileRevision = 0
+    @ObservationIgnored private var profileTask: Task<Void, Never>?
+
+    func detectProfile() {
+        profileTask?.cancel()
+        guard let folder else {
+            profileSource = nil
+            return
+        }
+        profileTask = Task { [weak self] in
+            let found = await Task.detached(priority: .utility) { ProfileDetector.detect(folder) }.value
+            guard let self, !Task.isCancelled, self.folder == folder else { return }
+            if found != self.profileSource { self.profileSource = found }
+            self.profileRevision += 1
+        }
     }
 
     var entries: [MediaEntry] = []
@@ -168,7 +194,7 @@ final class OrganisePane: MediaGridOwner {
     }
 
     isolated deinit {
-        for task in [treeRefresh, loadTask, filterTask] {
+        for task in [treeRefresh, loadTask, filterTask, profileTask] {
             task?.cancel()
         }
     }
@@ -628,6 +654,7 @@ final class OrganiseModel {
             if affected {
                 pane.reload()
                 pane.invalidateTree()
+                pane.detectProfile()
             }
         }
         if events.contains(where: siblingCache.shows) { refreshSiblings() }
