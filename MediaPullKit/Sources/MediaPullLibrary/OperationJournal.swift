@@ -127,7 +127,8 @@ public actor OperationJournal {
     /// Forgets journals older than `days` (the files they describe are untouched).
     public func prune(olderThan days: Int) {
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
-        for entry in entries() where entry.date < cutoff {
+        // Never a change that still holds items under temporary names: it is taken back first (audit 19, C19-m1).
+        for entry in entries() where entry.date < cutoff && Self.temporaryPathsPresent(entry.steps).isEmpty {
             try? fm.removeItem(at: url(for: entry.id))
         }
         pruneRemade(before: cutoff)
@@ -476,6 +477,9 @@ public actor OperationJournal {
     func cloneItem(_ from: URL, to: URL, entry: inout JournalEntry) throws {
         // COPYFILE_CLONE makes an APFS clone where the volume supports it, and a full copy elsewhere.
         let existed = fm.fileExists(atPath: to.path)
+        // Never into an item that took the name since the plan was made: a folder would be copied inside it, and Undo would
+        // take that item for the copy (audit 19, B19-m1).
+        if existed { throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: to.path]) }
         if copyfile(from.path, to.path, nil, copyfile_flags_t(COPYFILE_CLONE | COPYFILE_ALL | COPYFILE_RECURSIVE)) != 0 {
             // A copy that failed part-way (a full disk) is not journaled, so undo could never remove what it left.
             if !existed { try? fm.removeItem(at: to) }

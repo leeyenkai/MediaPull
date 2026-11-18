@@ -86,6 +86,13 @@ final class EditorModel: UnsavedEditing {
     private var sourceFile: URL?
     /// The file opened, so Save never acts on another file that took its name since (an Undo, a rename; audit 18, B18-M2).
     private var openedIdentity: String?
+
+    /// Why Save or Rename did nothing: the opened file is gone, or another file has its name now (audit 19, A19-m3).
+    static func changedMessage(_ url: URL) -> String {
+        FileManager.default.fileExists(atPath: url.path) // lint:allow main-io one check, after the person pressed Save
+            ? "“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was changed."
+            : "“\(url.lastPathComponent)” is no longer there (it was moved or deleted since it was opened), so nothing was changed."
+    }
     private var format: MediaFormat = .jpeg
 
     init(request: EditorRequest, window: WindowModel?) {
@@ -281,7 +288,7 @@ final class EditorModel: UnsavedEditing {
     func saveFile(asCopy: Bool) async -> URL? {
         guard case let .file(url) = request.subject, !isSaving else { return nil }
         guard openedIdentity == nil || AccountFolderRecord.number(of: url) == openedIdentity else {
-            message = "“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was saved."
+            message = Self.changedMessage(url)
             return nil
         }
         isSaving = true

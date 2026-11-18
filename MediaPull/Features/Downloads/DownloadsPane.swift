@@ -359,7 +359,8 @@ struct GalleryForm: View {
                 TextField("All", text: $downloads.range, prompt: Text("All, or a range such as 1-50"))
                     .labelsHidden()
             }
-            Toggle("Only what is new since the last download", isOn: $downloads.onlyNew)
+            // What the library holds now is skipped (D-103, audit 19, A19-m2).
+            Toggle("Skip what the library already holds", isOn: $downloads.onlyNew)
             if choices.count > 1 {
                 Toggle(
                     "Sort into folders by type (\(choices.prefix(2).map(SiteCatalogue.choiceLabel).joined(separator: ", "))…)",

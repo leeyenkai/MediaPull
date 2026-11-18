@@ -176,7 +176,11 @@ final class JobCenter {
     func add(_ job: Job) {
         jobs.insert(job, at: 0)
         if jobs.count > 200 {
-            jobs.removeAll { $0.state.isFinished && $0.finishedAt.map { Date().timeIntervalSince($0) > 3600 } ?? false }
+            // Never a file change whose work still runs, so Quit waits for it (audit 19, B19-m5).
+            jobs.removeAll {
+                $0.state.isFinished && $0.finishedAt.map { Date().timeIntervalSince($0) > 3600 } ?? false
+                    && !($0.kind == .organise && $0.task != nil && !$0.taskEnded)
+            }
         }
     }
 

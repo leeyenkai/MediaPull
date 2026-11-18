@@ -886,13 +886,20 @@ final class LibraryModel: MediaGridOwner {
         let staged = wanted.deletingLastPathComponent()
             .appendingPathComponent(".mediapull-edit-\(UUID().uuidString).\(wanted.pathExtension)")
         try manager.moveItem(at: edited, to: staged) // lint:allow main-io called off the main actor
+        var trashed: NSURL?
         do {
-            if let original { try manager.trashItem(at: original, resultingItemURL: nil) } // lint:allow main-io off main
+            if let original { try manager.trashItem(at: original, resultingItemURL: &trashed) } // lint:allow main-io off main
             let target = uniqueURL(wanted, replacing: original)
             try manager.moveItem(at: staged, to: target) // lint:allow main-io called off the main actor
             return target
         } catch {
-            // The edit goes back where it was, so Save can be tried again (audit 18, C18-m4).
+            // The original comes back from the Trash and the edit goes back where it was, so Save can be tried again (audit
+            // 18, C18-m4; audit 19, C19-m5).
+            if let original, let trashed = trashed as URL? {
+                // lint:allow main-io called off the main actor
+                try? manager.moveItem(at: trashed, to: original) // lint:allow silent-write the original stays in the Trash otherwise
+            }
+            // lint:allow main-io called off the main actor
             try? manager.moveItem(at: staged, to: edited) // lint:allow silent-write the staged edit stays beside the folder otherwise
             throw error
         }

@@ -58,7 +58,8 @@ extension AppModel {
             jobs.add(job)
             job.state = .running
             let undo = Task { await self.undoChange(id) }
-            job.task = Task { _ = await undo.value }
+            // Cancel reaches the Undo, which stops at its next stopping point (audit 19, C19-m2).
+            job.task = Task { await withTaskCancellationHandler { _ = await undo.value } onCancel: { undo.cancel() } }
             // Said as it went: files still under hidden names are not "done" (audit 18, C18-m1).
             let report = await undo.value
             if let report, report.done > 0, !report.stopped {
@@ -256,7 +257,14 @@ extension WindowModel {
             guard let entry = known.first(where: { $0.id == id }) else {
                 // Not in the History yet (it refreshes just after a change): the journal has it.
                 Task {
-                    if let entry = await app.journal.entry(id), !entry.undone { undoChange(entry) }
+                    if let entry = await app.journal.entry(id), !entry.undone {
+                        undoChange(entry)
+                    } else {
+                        // Undone elsewhere, or no longer kept: off the stack, so the next click reaches the change below
+                        // (audit 19, B19-m3).
+                        forgetUndo(id)
+                        showFileMessage("That change is no longer in the undo history.")
+                    }
                 }
                 return true
             }
@@ -359,7 +367,7 @@ extension WindowModel {
     /// Ends an Undo or Redo job as it went; one that went as asked leaves Activity, as small changes do (audit 16, B16-m3).
     private func finish(_ job: Job, report: UndoReport?) {
         guard let report else {
-            app.jobs.finish(job, .failed("It was already undone."), notify: false)
+            app.jobs.finish(job, .failed("It was undone already, or is no longer in the undo history."), notify: false)
             return
         }
         if report.stopped {

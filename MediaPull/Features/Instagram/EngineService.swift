@@ -377,8 +377,9 @@ final class EngineService {
             }
             // Nothing asked for at all would walk every post (C16-M2): the first run's choice stands then.
             if walk.content.isEmpty { walk.content = running.draft.content }
-            // A Retry walks the whole account or tag, so no failure deep in the listing is left behind (A4-M4, audit 18, A18-m2).
-            if walk.postURL == nil { walk.incremental = false }
+            // A Retry walks the whole account, so no failure deep in the listing is left behind (A4-M4). A tag keeps its early
+            // stop: it has no folder memory, and a whole walk would bring back what was deleted long before (audit 19, A19-M2).
+            if walk.postURL == nil, walk.hashtag == nil { walk.incremental = false }
             running.draft = walk
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
                 guard let job else { return }
@@ -626,7 +627,7 @@ final class EngineService {
         }
         // A Retry skips what its own job saved, whatever it pulls (a post, the tray, saved posts), so a file deleted since
         // is not fetched again (D-103, audit 18, A18-M1, C18-M1).
-        if run.retrying, !run.counted.isEmpty {
+        if run.retrying || resuming, !run.counted.isEmpty {
             let retryFile = staging.appendingPathComponent("retry.json")
             do {
                 try JSONEncoder().encode(Array(run.counted)).write(to: retryFile)
@@ -949,8 +950,11 @@ final class EngineService {
                         job.failed += 1
                         job.failures.append((kind, "The \(what) could not be saved: \(error.localizedDescription)"))
                     }
-                case .skip:
+                case let .skip(key, _):
                     if !run.retrying { job.skipped += 1 }
+                    // What the job passed as already held is its own too: a Retry or Resume does not fetch it again after a
+                    // deletion (D-103, audit 19, A19-M1).
+                    run.counted.insert(key)
                 case let .wait(seconds, reason):
                     job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
                 case let .progress(received, total, _):
@@ -1699,7 +1703,8 @@ final class EngineService {
     // MARK: Any gallery-dl site (SPEC section 12)
 
     /// Downloads everything gallery-dl finds at `url` into `<root>/<site>/<user or gallery>/`, through the save pipeline.
-    /// `range` limits which items ("1-50"); `onlyNew` skips what an earlier download of the same address saved.
+    /// `range` limits which items ("1-50"); `onlyNew` skips what the library holds now; a Retry also skips what its own job
+    /// saved or passed (D-103).
     @discardableResult
     func startGalleryDownload(url: URL, site: SiteInfo, include: [String], switches: [String: Bool], range: String?, from: Date?, to: Date?,
                               onlyNew: Bool, root: SaveDestination, window: WindowModel?, alsoKnown: Set<String> = []) -> Job?
@@ -1855,8 +1860,9 @@ final class EngineService {
                     case let .file(file):
                         job.failed += 1
                         job.failures.append((file.key, "The engine reported a file outside its working folder. It was left alone."))
-                    case .skip:
+                    case let .skip(key, _):
                         job.skipped += 1
+                        handled.keys.insert(key)
                     case let .wait(seconds, reason):
                         job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
                     case let .progress(received, total, _):

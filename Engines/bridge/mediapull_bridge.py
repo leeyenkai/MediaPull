@@ -745,6 +745,12 @@ class KnownTracker:
             self.run = 0
 
 
+def tracker_for(collection, known, retry, limit):
+    """Saved posts and others' stories are not the account's: its folder's known items and early stop do not apply, but a
+    Retry's own saved items do (D-103)."""
+    return KnownTracker(retry, None) if collection else KnownTracker(known | retry, limit)
+
+
 def load_known(request):
     path = request.get("known_ids")
     if not path:
@@ -811,7 +817,7 @@ def make_jobs(request):
             job.DownloadJob.__init__(self, url, parent)
             # Saved posts and others' stories are not the account's: its folder's known items and early stop do not
             # apply to them.
-            self.tracker = KnownTracker(retry, None) if STATE.get("collection") else KnownTracker(known, limit)
+            self.tracker = tracker_for(STATE.get("collection"), known, retry, limit)
 
         def dispatch(self, extractor):
             # A listing that broke off (an error, not the early stop) is told apart from files that failed one by one: only

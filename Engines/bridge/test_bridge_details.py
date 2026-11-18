@@ -300,6 +300,26 @@ def test_posts_are_known_by_post_and_number_but_stories_only_by_media_id():
     assert tracker.observe(other, bridge.item_key(other, "u")) is False
 
 
+def test_a_retry_knows_what_its_job_saved_in_every_listing():
+    """D-103 (audit 18, A18-M1, C18-M1; audit 19, C19-m6): a Retry's own saved keys are known to account listings and to
+    collections (saved posts, the tray), which otherwise know nothing; collections never stop early."""
+    import json
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        json.dump(["ig:55"], handle)
+    retry = bridge.load_known({"known_ids": handle.name})
+    os.remove(handle.name)
+    saved_post = {"category": "instagram", "subcategory": "saved", "post_id": "5", "num": 1, "media_id": "55"}
+    tray = bridge.tracker_for("saved", {"ig:1"}, retry, 12)
+    assert tray.observe(saved_post, bridge.item_key(saved_post, "u")) is True
+    assert tray.limit is None
+    other = {"category": "instagram", "subcategory": "saved", "post_id": "6", "num": 1, "media_id": "1"}
+    assert tray.observe(other, bridge.item_key(other, "u")) is False, "the account's own known items do not apply"
+    account = bridge.tracker_for(None, {"ig:1"}, retry, 12)
+    post = {"category": "instagram", "subcategory": "posts", "post_id": "5", "num": 1, "media_id": "55"}
+    assert account.observe(post, bridge.item_key(post, "u")) is True
+
+
 def test_files_from_the_stories_tray_and_saved_posts_say_so():
     """Audit round 1 (A1): gallery-dl lists others' stories and saved posts through child extractors."""
     bridge.STATE["collection"] = bridge.collection_of("https://www.instagram.com/stories/me/")

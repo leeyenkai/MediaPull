@@ -25,6 +25,13 @@ final class VideoEditorModel: UnsavedEditing {
     /// The file opened, so Save never acts on another file that took its name since (an Undo, a rename; audit 18, B18-M2).
     private var openedIdentity: String?
 
+    /// Why Save or Rename did nothing: the opened file is gone, or another file has its name now (audit 19, A19-m3).
+    static func changedMessage(_ url: URL) -> String {
+        FileManager.default.fileExists(atPath: url.path) // lint:allow main-io one check, after the person pressed Save
+            ? "“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was changed."
+            : "“\(url.lastPathComponent)” is no longer there (it was moved or deleted since it was opened), so nothing was changed."
+    }
+
     init(request: EditorRequest, window: WindowModel?) {
         self.request = request
         self.window = window
@@ -159,7 +166,7 @@ final class VideoEditorModel: UnsavedEditing {
     func saveTrim(replacing: Bool) async {
         guard let sourceFile, let selection else { return }
         if case let .file(url) = request.subject, openedIdentity != nil, AccountFolderRecord.number(of: url) != openedIdentity {
-            fail("“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was saved.")
+            fail(Self.changedMessage(url))
             return
         }
         isWorking = true
@@ -213,6 +220,11 @@ final class VideoEditorModel: UnsavedEditing {
     /// Renames a library video and its metadata file, as one journaled change ⌘Z takes back (R-3806).
     func rename() {
         guard case let .file(url) = request.subject, hasNameChange else { return }
+        // Never another file that took the opened file's name (audit 19, C19-m4).
+        if openedIdentity != nil, AccountFolderRecord.number(of: url) != openedIdentity {
+            fail(Self.changedMessage(url))
+            return
+        }
         let plan = FolderOperations.rename(url, to: FileNaming.fileName(stem: cleanName, ext: url.pathExtension))
         guard !plan.isEmpty else {
             window?.editorRequest = nil
