@@ -43,7 +43,8 @@ change as the code.
 | R-701a | built | `PaneArrangement`, `PaneMenu`, `PaneMoveCommands`, `LayoutPresetCommands`, `PaneSplitController.resetSavedSizes` | `testMovesAndStacks`, `testDecodingRepairsMissingAndDuplicatePanes`, `--selftest-layout` | Presets, per-arrangement divider autosave, hosts kept so the page never reloads |
 | R-702 | person | `AppCommands`, `WindowModel.setShowing` | none | Checked: Opt-Cmd-1 to 3, Cmd-I, Ctrl-Cmd-1 and 2 wired in the View menu; keyboard needs a person |
 | R-703 | person | `MediaPullApp`, `MainWindow`, `AppModel` | none | Checked: WindowGroup gives Cmd-N; each window has its own WindowModel, shared store, roots and jobs |
-| R-704 | person | `MainWindow`, `SectionTabs`, `TopBarButton` | none | Compact toolbar with section tabs, Downloads, Activity and Undo; visual check only |
+| R-704 | amended | `MainWindow`, `SectionTabs`, `TopBarButton` | none | Compact toolbar with section tabs, Notes (D-109), Downloads, Activity and Undo; visual check only |
+| R-706 | built | `NotesView`, `NotesStore`, `NoteCollection` | `--selftest-update`, `testNotesKeepNewestFirstAndNameThemselves` | Notes in Collect's title bar: add, edit, delete, saved to Application Support and read back (D-109); the popover's feel needs a person |
 | R-705 | person | `ExtractedStatusBar`, `SaveFolderMenu` | none | Counts, selection size, save folder menu and Save button; visual check only |
 | R-710 | built | `TourPage`, `WalkthroughView`, `GeneralSettings` | `--selftest-browser` | Eight tour pages; reopened from Settings and Help; self-test opens the tour sheet |
 | R-801 | built | `ReadOnlyWebView`, `WebViewSetup.configuration` | `--selftest-browser` | Default persistent data store shared by every tab and window |

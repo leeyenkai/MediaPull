@@ -42,6 +42,7 @@ final class AppModel {
     /// The walkthrough (SPEC 7.2): on first run with the setup steps, or the tour alone from Settings or Help.
     var walkthrough: WalkthroughMode?
     let browsing = BrowsingStore(persistent: !SelfTestRunner.isActive)
+    let notes = NotesStore(folder: SelfTestRunner.isActive ? nil : NotesStore.defaultFolder)
     /// Duplicate detection for the Library pane (SPEC section 33); hashes are cached between launches.
     let duplicates: DuplicateFinder
     /// On-device analysis for search, sorting, Organise and people (SPEC sections 36 to 39).

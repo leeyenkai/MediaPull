@@ -120,6 +120,7 @@ final class SelfTestRunner {
         }
         if CommandLine.arguments.contains("--selftest-update") {
             await exerciseReplace(library: library)
+            await exerciseNotes(out: out)
             await exerciseUpdate(library: library, out: out)
             quit()
             return
@@ -664,6 +665,30 @@ final class SelfTestRunner {
         let pass = placed && undone && redone
         note("replace: \(pass ? "PASS" : "FAIL") a case-only rename with an edit keeps its metadata file (\(placed)), "
             + "⌘Z puts the original back (\(undone)), Redo does it again (\(redone)); now \(names()) \(editor.message ?? "")")
+    }
+
+    /// The scratchpad (D-109): notes added, edited and deleted are written to their file and read back by a new store; a file
+    /// that cannot be read is set aside, never written over.
+    private func exerciseNotes(out: URL) async {
+        let folder = out.appendingPathComponent("notes", isDirectory: true)
+        let store = NotesStore(folder: folder)
+        await waitUntil(timeout: 10) { store.hasLoaded }
+        let kept = store.add()
+        store.update(kept.id, text: "Ideas\nsave the gallery")
+        let gone = store.add()
+        store.update(gone.id, text: "Delete me")
+        store.delete(gone.id)
+        store.flush()
+        let reread = NotesStore(folder: folder)
+        await waitUntil(timeout: 10) { reread.notes.notes.count == 1 }
+        let readBack = reread.notes.notes.map(\.title) == ["Ideas"] && reread.problem == nil
+        try? Data("not json".utf8).write(to: folder.appendingPathComponent("notes.json"))
+        let damaged = NotesStore(folder: folder)
+        await waitUntil(timeout: 10) { damaged.problem != nil }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        let setAside = names.contains { $0.hasPrefix("notes.damaged-") } && damaged.notes.notes.isEmpty
+        let pass = readBack && setAside
+        note("notes: \(pass ? "PASS" : "FAIL") read back after quit \(readBack), an unreadable file set aside \(setAside)")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).
