@@ -30,6 +30,8 @@ final class SaveAsTests: XCTestCase {
         try file("chosen/a.jpg", metadata: ["category": "testsite", "post_id": "p1", "num": 2, "count": 3])
         try file("chosen/sub/b.jpg", metadata: ["category": "testsite", "media_id": "m9"])
         try file("chosen/c.mp4", metadata: ["category": "youtube", "subcategory": "video", "post_id": "v1"])
+        // An M4A never gets a metadata file (R-3503), so audio is recognised only as a copy of its bytes; an audio metadata
+        // file from elsewhere is still kept apart from videos (B25-m3, B27-m5).
         try file("chosen/c.m4a", metadata: ["category": "youtube", "subcategory": "audio", "post_id": "v2"])
         try file("chosen/d.jpg", metadata: ["category": "instagram", "media_id": "1", "post_id": "2", "num": 1])
         try file("other/e.jpg", metadata: ["category": "testsite", "post_id": "p2", "num": 1])

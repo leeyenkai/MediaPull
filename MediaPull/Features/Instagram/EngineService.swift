@@ -1167,7 +1167,7 @@ final class EngineService {
                 await app.store?.updateAccount(account, newestSavedDate: newest, lastResult: fatal)
             }
             // A Save As into a folder MediaPull does not remember keeps no place: its own Resume or Retry continues it (A26-m3).
-            let next = exact && place?.record == nil ? "Retry Failed in Activity continues it."
+            let next = exact && place?.record == nil ? "Save As into the same folder again, with Only new posts off, to continue."
                 : "Pull again to continue from where it stopped."
             app.jobs.finish(job, .failed("Stopped part way: \(fatal) \(next)"))
             return
