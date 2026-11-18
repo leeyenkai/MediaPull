@@ -13,7 +13,7 @@ final class EngineTests: XCTestCase {
     override func setUpWithError() throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        guard let found = EnginePaths.developmentPaths(repository: repository) else {
+        guard let found = EnginePaths.developmentPaths(repository: repository, support: TestEngines.support) else {
             throw XCTSkip("Engines are not installed; run scripts/fetch-engines.sh")
         }
         paths = found
@@ -195,7 +195,9 @@ final class EngineUpdateNetworkTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["MEDIAPULL_NETWORK_TESTS"] == "1" else { throw XCTSkip("Network tests are off") }
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        guard let paths = EnginePaths.developmentPaths(repository: repository) else { throw XCTSkip("Engines are not installed") }
+        guard let paths = EnginePaths.developmentPaths(repository: repository, support: TestEngines.support) else {
+            throw XCTSkip("Engines are not installed")
+        }
         let manager = EngineManager(paths: paths, gate: NetworkGate())
         let updates = try await manager.checkForUpdates()
         for update in updates {

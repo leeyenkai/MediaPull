@@ -81,7 +81,17 @@ final class Job: Identifiable {
     var currentItem: String?
     var fraction: Double?
     var destination: URL?
-    var notes: [String] = []
+    /// Each note once: a Retry that meets the same thing says it once (audit 16, C16-m3).
+    var notes: [String] = [] {
+        didSet {
+            var seen = Set<String>()
+            if notes.contains(where: { !seen.insert($0).inserted }) {
+                var once = Set<String>()
+                notes = notes.filter { once.insert($0).inserted }
+            }
+        }
+    }
+
     var failures: [(id: String, message: String)] = []
     var checkpointURL: URL?
     let startedAt = Date()

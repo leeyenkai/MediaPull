@@ -803,7 +803,9 @@ final class OrganiseModel {
             // it is taken back at once (audit 3, B3-m7, C3-m9).
             let usedTemporaryNames = plan.moves.contains { $0.destination.lastPathComponent.hasPrefix(".mediapull-rename-") }
             if usedTemporaryNames, !entry.finished || !entry.failures.isEmpty, !entry.steps.isEmpty {
-                let report = await app.undoChange(entry.id)
+                // In a task of its own: the run was stopped (Cancel, Quit), and a stopped task's Undo would stop before it
+                // started. The run's task waits for it, so Quit does too (audit 16, B16-M2).
+                let report = await Task { await app.undoChange(entry.id) }.value
                 guard let self else { return }
                 // Only what the undo really did, and whether it was recorded (audit 4, B4-m10; audit 14, B14-m5).
                 if let report, report.done == 0 {

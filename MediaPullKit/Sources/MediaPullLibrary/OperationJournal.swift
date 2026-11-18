@@ -378,6 +378,13 @@ public actor OperationJournal {
         var date: Date
     }
 
+    /// Tests stop an Undo or Redo after this many items, as Cancel does at that point (audit 16, C16-m5).
+    var stopsAfter: Int?
+
+    func stop(after count: Int?) {
+        stopsAfter = count
+    }
+
     private var remadeLoaded = false
     private var remadeChanged = false
     private var remadeOrder: [String] = []
@@ -554,7 +561,7 @@ public actor OperationJournal {
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
         for unit in units.reversed() {
             // Stopped between items (Cancel in Activity, Quit): what was undone is recorded (R-3807, audit 15, B15-M1).
-            if Task.isCancelled {
+            if Task.isCancelled || stopsAfter.map({ visited >= $0 }) == true {
                 report.stopped = true
                 break
             }
@@ -572,8 +579,8 @@ public actor OperationJournal {
             // Saved as it goes, so a quit part way leaves the change partly undone, never wrong (B15-M1).
             if report.done > 0, Date().timeIntervalSince(checkpoint) >= 0.5 {
                 var part = entry
-                part.steps = units.dropLast(visited).flatMap { $0 } + left.reversed().flatMap { $0 }
-                    + keptFolders.reversed().flatMap { $0 }
+                // In the order the final save uses, so folders still come after their items (audit 16, B16-m1).
+                part.steps = units.dropLast(visited).flatMap { $0 } + (left + keptFolders).reversed().flatMap { $0 }
                 part.undoneSteps = undoneUnits.reversed().flatMap { $0 } + (unchanged.undoneSteps ?? [])
                 part.undone = false
                 save(part)
@@ -623,7 +630,7 @@ public actor OperationJournal {
         let isFile = { (step: JournalStep) -> Bool in if case .makeFolder = step { false } else { true } }
         for unit in units {
             // As Undo: stopped between items, and saved as it goes (R-3807, audit 15, B15-M1).
-            if Task.isCancelled {
+            if Task.isCancelled || stopsAfter.map({ visited >= $0 }) == true {
                 report.stopped = true
                 break
             }

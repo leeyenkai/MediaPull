@@ -11,4 +11,11 @@ enum TestEngines {
     }
 
     static var ffmpegFolder: URL { cache.appendingPathComponent("engines/ffmpeg", isDirectory: true) }
+
+    /// A support folder of the tests' own: never the person's engine updates or engine home (audit 16, C16-m4).
+    static let support: URL = {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mediapull-test-support", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }()
 }

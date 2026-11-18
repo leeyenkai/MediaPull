@@ -1194,17 +1194,13 @@ def refuse_live_streams(info, incomplete=False):
     return None
 
 
-def skip_saved(inner, saved, only=None):
-    """A Retry of a playlist downloads only the videos not saved yet (audit 12, A12-M3), or, when it knows them, exactly
-    the videos that failed (audit 14, C14-M2). The video looked at last names a failure whose message has no id."""
+def skip_saved(inner, saved):
+    """A Retry of a playlist runs it again and downloads only the videos not saved yet (audit 12, A12-M3; D-100). The
+    video looked at last names a failure whose message has no id."""
     def check(info, incomplete=False):
         video = str(info.get("id") or "")
         if saved and video in saved:
             return "Already saved."
-        # Only a video is asked for by id: the playlist itself, and entries whose id is not known yet, pass, and are
-        # checked again once it is (audit 15, A15-M1).
-        if only and video and info.get("_type") not in ("playlist", "multi_video") and video not in only:
-            return "Not asked for."
         if video and not incomplete:
             STATE["current_id"] = video
         return inner(info, incomplete=incomplete)
@@ -1212,7 +1208,8 @@ def skip_saved(inner, saved, only=None):
 
 
 def failed_video(text):
-    """The id of the video an error is about: yt-dlp writes "[site] id: reason", else the video looked at last."""
+    """The id of the video an error is about, to tell failures apart: yt-dlp writes "[site] id: reason", else the video
+    looked at last."""
     match = re.search(r"\[[^\]]+\] ([^\s:]+): ", text)
     return match.group(1) if match else STATE.get("current_id")
 
@@ -1249,12 +1246,9 @@ class StreamLogger:
         pass
 
     def warning(self, message):
-        text = _clean(message)
-        EMITTER.emit("log", level="warning", logger="yt-dlp", message=text)
-        # A subtitle or thumbnail that could not be saved is said, beside a video that was (audit 15, A15-m1).
-        lower = text.lower()
-        if "unable to download video subtitles" in lower or "thumbnail" in lower and ("unable" in lower or "failed" in lower):
-            EMITTER.emit("error", code="note", message=text[:300], fatal=False)
+        # A subtitle or thumbnail that did not come is said by the app, from what came beside each video (audit 16,
+        # C16-m1, A16-m1).
+        EMITTER.emit("log", level="warning", logger="yt-dlp", message=_clean(message))
 
     def error(self, message):
         text = _clean(message)
@@ -1262,8 +1256,8 @@ class StreamLogger:
         code = problem_code(text)
         STATE.setdefault("problems", []).append(code)
         EMITTER.emit("log", level="error", logger="yt-dlp", message=text)
-        if self.playlist:
-            EMITTER.emit("error", code=code, message=text[:300], key=failed_video(text), fatal=False)
+        # Every video's problem is reported, a page with several videos asked for as one included (audit 16, A16-M3).
+        EMITTER.emit("error", code=code, message=text[:300], key=failed_video(text), fatal=False)
 
 
 def stream_options(request, staging, logger, progress):
@@ -1301,7 +1295,7 @@ def stream_options(request, staging, logger, progress):
         # The bundled ffmpeg has no network protocols (R-507): yt-dlp's own downloaders fetch every stream.
         "hls_prefer_native": True,
         "external_downloader": {},
-        "match_filter": skip_saved(refuse_live_streams, set(extras.get("skip_ids") or []), set(extras.get("only_ids") or [])),
+        "match_filter": skip_saved(refuse_live_streams, set(extras.get("skip_ids") or [])),
     }
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
@@ -1391,7 +1385,7 @@ def op_stream(request):
         if not STATE["errors"]:
             raise
     if emitted["count"]:
-        finish("partial" if playlist and STATE["errors"] else "completed", {"files": emitted["count"]})
+        finish("partial" if STATE["errors"] else "completed", {"files": emitted["count"]})
     else:
         message = STATE["errors"][-1] if STATE["errors"] else "The stream could not be downloaded."
         # Nothing that could ever be downloaded (all private or removed, or a live stream) is not offered for Retry (audit

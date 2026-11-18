@@ -740,7 +740,7 @@ final class SelfTestRunner {
         try? fm.removeItem(at: Sidecar.sidecarURL(for: byName))
         try? fm.removeItem(at: byName)
         let afterDeletion = await run("Update after a deletion", findMissing: false)
-        let deletionKept = afterDeletion?.saved == 0 && !fm.fileExists(atPath: byName.path)
+        let deletionKept = afterDeletion?.saved == 0 && afterDeletion?.state == .completed && !fm.fileExists(atPath: byName.path)
         note("update: a file held before the first Update and deleted since stayed deleted \(deletionKept)")
         let missing = await run("Find Missing", findMissing: true)
         let code4 = InstagramIDs.shortcode(fromID: ids[4]) ?? "-"

@@ -37,6 +37,8 @@ class MadeUpIE(InfoExtractor):
         if video == "list":
             def entries():
                 for name in SITE["videos"]:
+                    if SITE.get("page_fails_after") and SITE["videos"].index(name) > SITE["videos"].index(SITE["page_fails_after"]):
+                        raise ExtractorError("Unable to download JSON metadata: HTTP Error 500", video_id="list", expected=True)
                     if SITE.get("no_ids"):
                         yield self.url_result("madeup://" + name)
                     else:
@@ -90,12 +92,25 @@ def run(url, playlist, extras=None, **site):
     return files, errors
 
 
-def test_a_retry_downloads_the_failed_videos():
-    """Audit 15 (A15-M1): a Retry by id downloads the videos asked for, with ids in the listing or not."""
-    files, _ = run("madeup://list", True, {"only_ids": ["b"], "skip_ids": ["a", "c"]})
+def test_a_retry_downloads_what_is_not_saved_yet():
+    """D-100 (audit 16, A16-M1): a Retry runs the list again and downloads only the videos not saved yet, within what is
+    left of "At most", with ids in the listing or not, and after a page of the listing failed."""
+    files, _ = run("madeup://list", True, {"skip_ids": ["a", "c"], "max_downloads": 1})
     assert files == ["b"], files
-    files, _ = run("madeup://list", True, {"only_ids": ["c"], "skip_ids": ["a", "b"]}, no_ids=True)
-    assert files == ["c"], files
+    files, _ = run("madeup://list", True, {"skip_ids": ["a", "b"], "max_downloads": 2}, no_ids=True)
+    assert files == ["c", "d"], files
+    files, errors = run("madeup://list", True, {}, page_fails_after="c")
+    assert files == ["a", "b", "c"], files
+    assert [e["code"] for e in errors if not e["fatal"]] == ["download_failed"], errors
+    files, _ = run("madeup://list", True, {"skip_ids": ["a", "b", "c"]})
+    assert files == ["d", "e", "f"], files
+
+
+def test_every_video_of_a_page_asked_for_as_one_is_reported():
+    """Audit 16 (A16-M3): a page that turns out to hold several videos reports each one that fails."""
+    files, errors = run("madeup://list", False, {}, videos=["a", "b", "c"], problems={"b": "HTTP Error 403"})
+    assert files == ["a", "c"], files
+    assert [(e["code"], e.get("key")) for e in errors if not e["fatal"]] == [("download_failed", "b")], errors
 
 
 def test_a_failed_video_is_named_and_the_rest_downloaded():
@@ -106,21 +121,20 @@ def test_a_failed_video_is_named_and_the_rest_downloaded():
 
 
 def test_a_subtitle_that_fails_never_stops_the_video():
-    """Audit 15 (A15-M4, A15-m1): the video is saved and the missing subtitle is said."""
+    """Audit 15 (A15-M4): the video is saved (the app says the subtitle is missing, from what came beside it)."""
     files, errors = run("madeup://a", False, {"subtitles": ["en"]}, subtitles=True, subtitle_fails=True)
     assert files == ["a"], (files, errors)
-    assert any(e["code"] == "note" for e in errors), errors
+    assert not any(e["fatal"] for e in errors), errors
     files, errors = run("madeup://list", True, {"subtitles": ["en"]}, videos=["a", "b"], subtitles=True, subtitle_fails=True)
     assert files == ["a", "b"], files
-    assert sum(e["code"] == "note" for e in errors) == 2, errors
 
 
 def test_a_single_video_that_can_never_download_offers_no_retry():
     """Audit 13 (C13-m4), audit 14 (A14-m1): a private single video ends unavailable; a failing one ends failed."""
     _, errors = run("madeup://a", False, problems={"a": "Private video. Sign in if you've been granted access"})
-    assert [(e["code"], e["fatal"]) for e in errors] == [("unavailable", True)], errors
+    assert [(e["code"], e["fatal"]) for e in errors] == [("unavailable", False), ("unavailable", True)], errors
     _, errors = run("madeup://a", False, problems={"a": "HTTP Error 500"})
-    assert [(e["code"], e["fatal"]) for e in errors] == [("download_failed", True)], errors
+    assert [(e["code"], e["fatal"]) for e in errors] == [("download_failed", False), ("download_failed", True)], errors
 
 
 if __name__ == "__main__":

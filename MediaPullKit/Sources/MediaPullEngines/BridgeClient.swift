@@ -51,8 +51,13 @@ public struct EnginePaths: Sendable {
         return developmentPaths()
     }
 
-    public static func developmentPaths(repository: URL? = nil) -> EnginePaths? {
-        let cache = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches/MediaPullBuild/engines")
+    /// The build cache's engines (`MEDIAPULL_ENGINE_CACHE`, as the build scripts read it). `support` keeps tests away from
+    /// the person's own engine updates and home (audit 16, C16-m4).
+    public static func developmentPaths(repository: URL? = nil, support: URL? = nil) -> EnginePaths? {
+        let base = ProcessInfo.processInfo.environment["MEDIAPULL_ENGINE_CACHE"].flatMap { $0.isEmpty ? nil : $0 }
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches/MediaPullBuild", isDirectory: true)
+        let cache = base.appendingPathComponent("engines", isDirectory: true)
         let python = cache.appendingPathComponent("python/bin/python3")
         guard FileManager.default.isExecutableFile(atPath: python.path) else { return nil }
         var bridge = repository?.appendingPathComponent("Engines/bridge")
@@ -69,7 +74,7 @@ public struct EnginePaths: Sendable {
         guard let bridge else { return nil }
         return EnginePaths(
             python: python, bridgeDirectory: bridge, baselineSitePackages: cache.appendingPathComponent("site-packages"),
-            helpers: cache.appendingPathComponent("ffmpeg"), support: defaultSupport
+            helpers: cache.appendingPathComponent("ffmpeg"), support: support ?? defaultSupport
         )
     }
 

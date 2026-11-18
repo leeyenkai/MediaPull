@@ -414,7 +414,7 @@ def test_the_account_is_reported_when_its_name_is_looked_up():
 
 def test_playlist_videos_that_fail_are_counted():
     """Audit 11 (A11-M3), audit 12 (A12-M3): in a playlist a video that fails is a failed file, one that can never be
-    downloaded is skipped, and outside a playlist errors stay log lines (the download itself fails)."""
+    downloaded is skipped; outside a playlist each problem is reported too."""
     capture = Capture()
     bridge.EMITTER = capture
     saved = list(bridge.STATE.get("errors") or [])
@@ -427,7 +427,8 @@ def test_playlist_videos_that_fail_are_counted():
     finally:
         bridge.STATE["errors"] = saved
     errors = [fields for kind, fields in capture.events if kind == "error"]
-    assert [e["code"] for e in errors] == ["download_failed", "unavailable"], errors
+    # A video asked for alone reports its problem too: its page may hold several (audit 16, A16-M3).
+    assert [e["code"] for e in errors] == ["download_failed", "unavailable", "download_failed"], errors
     assert all(e["fatal"] is False for e in errors)
 
 
@@ -444,21 +445,17 @@ def test_only_videos_that_can_never_download_are_skipped():
     assert bridge.problem_code("ERROR: HTTP Error 500") == "download_failed"
 
 
-def test_a_retry_asks_for_exactly_the_failed_videos():
-    """Audit 14 (A14-M1, C14-M2), audit 15 (A15-M1): a Retry names the videos that failed; the playlist itself and entries
-    whose id is not known yet pass the filter; the limit is what the app sends; a failure's video comes from the message
-    or the video looked at last."""
-    request = {"extras": {"playlist": True, "max_downloads": 2, "skip_ids": ["a", "d", "e"], "only_ids": ["b", "c"]}}
+def test_a_retry_skips_what_is_saved_and_keeps_the_limit():
+    """D-100: a Retry skips the saved videos; the limit is what the app sends; a failure's video is named from the
+    message or the video looked at last."""
+    request = {"extras": {"playlist": True, "max_downloads": 2, "skip_ids": ["a", "d", "e"]}}
     options = bridge.stream_options(request, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)
     assert options["max_downloads"] == 2, options.get("max_downloads")
     assert options["ignoreerrors"] is True
     check = options["match_filter"]
     assert check({"id": "a"}) == "Already saved."
-    assert check({"id": "f"}) == "Not asked for."
-    assert check({"id": "b"}) is None and check({"id": "c"}) is None
+    assert check({"id": "b"}) is None
     assert check({"title": "A playlist"}, incomplete=True) is None
-    assert check({"id": "PL1", "_type": "playlist"}, incomplete=True) is None
-    assert check({"url": "https://example.com/v/9", "_type": "url"}, incomplete=True) is None
     assert bridge.failed_video("ERROR: [youtube] abc123: Sign in to confirm your age") == "abc123"
     bridge.STATE["current_id"] = "xyz"
     assert bridge.failed_video("ERROR: unable to download video data: HTTP Error 403: Forbidden") == "xyz"

@@ -184,13 +184,15 @@ extension WindowModel {
             other.forgetUndo(entry.id)
         }
         undoing.insert(entry.id)
-        let job = longChangeJob(entry, undoing: true)
+        let job = changeJob(entry, undoing: true)
         let task = Task {
+            var report: UndoReport?
             defer {
-                if let job { app.jobs.finish(job, .completed, notify: false) }
+                finish(job, report: report)
                 undoing.remove(entry.id)
             }
-            guard let report = await app.undoChange(entry.id) else {
+            report = await app.undoChange(entry.id)
+            guard let report else {
                 showFileMessage("“\(entry.title)” was already undone.")
                 return
             }
@@ -216,7 +218,7 @@ extension WindowModel {
                     unsaved: report.unsaved)
             }
         }
-        job?.task = task
+        job.task = task
     }
 
     /// The change ⌘Z undoes in this window: the top of its file-change stack, whichever section made it.
@@ -248,6 +250,9 @@ extension WindowModel {
 
     /// Takes a change off this window's undo and redo stacks.
     func forgetUndo(_ id: UUID) {
+        // The markers go with the actions, so put-back never runs another change's action (audit 16, B16-m2).
+        if lastUndoRegistered == id { lastUndoRegistered = nil }
+        if lastRedoRegistered == id { lastRedoRegistered = nil }
         guard let target = undoTargets.removeValue(forKey: id) else { return }
         hostWindow?.undoManager?.removeAllActions(withTarget: target)
         undoOrder.removeAll { $0 == id }
@@ -263,13 +268,15 @@ extension WindowModel {
         let viaManager = hostWindow?.undoManager?.isRedoing ?? false
         registerUndo(entry)
         redoing.insert(entry.id)
-        let job = longChangeJob(entry, undoing: false)
+        let job = changeJob(entry, undoing: false)
         let task = Task {
+            var result: UndoReport?
             defer {
-                if let job { app.jobs.finish(job, .completed, notify: false) }
+                finish(job, report: result)
                 redoing.remove(entry.id)
             }
             let report = await app.redoChange(entry.id)
+            result = report
             // Nothing done again is said as such (audit 7, B7-m6).
             // Something done again but no file moved (a New Folder made again) is a redo too (audit 8, B8-m2).
             if report.stopped {
@@ -287,7 +294,7 @@ extension WindowModel {
                     unsaved: report.unsaved)
             }
         }
-        job?.task = task
+        job.task = task
     }
 
     /// Puts a change ⌘Z or ⇧⌘Z could not act on back where it was: the undo manager runs the opposite action it has just
@@ -307,15 +314,30 @@ extension WindowModel {
         }
     }
 
-    /// A long Undo or Redo shows in Activity, so Quit waits for it (R-3807, audit 14, B14-M2).
-    private func longChangeJob(_ entry: JournalEntry, undoing: Bool) -> Job? {
-        let count = (undoing ? entry.steps : entry.undoneSteps ?? []).count
-        guard count > 40 else { return nil }
+    /// Every Undo and Redo is a job, as every change is, so Quit waits for it, whatever its size: a few videos moved
+    /// between disks take as long as many small files (R-3807, audit 16, B16-M1, B16-M3). Running, with its task, so Cancel
+    /// stops it between items (B15-M1).
+    private func changeJob(_ entry: JournalEntry, undoing: Bool) -> Job {
         let job = Job(kind: .organise, title: (undoing ? "Undoing " : "Redoing ") + "“\(entry.title)”")
         app.jobs.add(job)
-        // Running, with its task, so Quit waits for it and Cancel stops it between items (audit 15, B15-M1).
         job.state = .running
         return job
+    }
+
+    /// Ends an Undo or Redo job as it went; one that went as asked leaves Activity, as small changes do (audit 16, B16-m3).
+    private func finish(_ job: Job, report: UndoReport?) {
+        guard let report else {
+            app.jobs.finish(job, .failed("It was already undone."), notify: false)
+            return
+        }
+        if report.stopped {
+            app.jobs.finish(job, .cancelled, notify: false)
+        } else if report.done == 0 {
+            app.jobs.finish(job, .failed(report.skipped.first ?? "Nothing could be done."), notify: false)
+        } else {
+            app.jobs.finish(job, .completed, notify: false)
+            if report.skipped.isEmpty { app.jobs.jobs.removeAll { $0 === job } }
+        }
     }
 
     /// A result of a file change, shown in the section the person is looking at.
