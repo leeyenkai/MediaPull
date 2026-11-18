@@ -13,7 +13,7 @@ import XCTest
 /// Requirements found without a test in the 1.8 conformance pass (docs/CONFORMANCE.md).
 final class ConformanceTests: XCTestCase {
     private var tools: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MediaPullBuild/engines/ffmpeg")
+        TestEngines.ffmpegFolder
     }
 
     private func ffmpeg() throws -> FFmpeg {

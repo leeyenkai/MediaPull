@@ -45,7 +45,8 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
         // An undone change still names the files it moved (audit 7, B7-m7).
-        (undone ? undoneSteps ?? steps : steps).filter {
+        // A partly undone change counts both parts (audit 15, B15-m6).
+        (undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])).filter {
             switch $0 {
             // A rename through a temporary name is one file, not two (audit 12, B12-m2).
             case let .move(from, to, _, _): !from.hasSuffix(".json") && !OperationJournal.isTemporary(to)
@@ -76,6 +77,8 @@ public struct UndoReport: Sendable {
     /// The journal could not be written afterwards (a full disk), so the change may not be undone or redone again. Kept
     /// apart from `skipped`, which lists items (audit 13, B13-m5).
     public var unsaved = false
+    /// Stopped part way (cancelled, or the app quit): what was done is recorded, the rest can be done later (R-3807).
+    public var stopped = false
 
     public init(restored: Int, skipped: [String], moves: [(from: String, to: String)]) {
         self.restored = restored
@@ -127,6 +130,7 @@ public actor OperationJournal {
         for entry in entries() where entry.date < cutoff {
             try? fm.removeItem(at: url(for: entry.id))
         }
+        pruneRemade(before: cutoff)
     }
 
     func url(for id: UUID) -> URL {
@@ -323,44 +327,61 @@ public actor OperationJournal {
         note(path, in: &entry)
         if let old, let new = entry.identities?[path], old != new {
             loadRemade()
+            if remade[old] == nil { remadeOrder.append(old) }
             remade[old] = new
+            remadeDates[old] = Date()
             remadeChanged = true
         }
     }
 
-    /// The map outlives the session: History's Redo can run after a relaunch (audit 14, B14-M1). Kept small: the oldest
-    /// half goes once it is large, by insertion order.
+    /// The map outlives the session: History's Redo can run after a relaunch (audit 14, B14-M1). Pairs are kept in the
+    /// order they were made, with when, and go with the journals they serve (audit 15, B15-m2, B15-m7).
     private func loadRemade() {
         guard !remadeLoaded else { return }
         remadeLoaded = true
-        if let data = try? Data(contentsOf: folder.appendingPathComponent("remade.plist")),
-           let pairs = try? PropertyListDecoder().decode([[String]].self, from: data)
-        {
-            for pair in pairs where pair.count == 2 {
-                remade[pair[0]] = pair[1]
-                remadeOrder.append(pair[0])
-            }
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("remade.plist")),
+              let rows = try? PropertyListDecoder().decode([RemadePair].self, from: data) else { return }
+        for row in rows {
+            remade[row.old] = row.new
+            remadeDates[row.old] = row.date
         }
+        remadeOrder = rows.map(\.old)
     }
 
     private func saveRemade() {
         guard remadeChanged else { return }
         remadeChanged = false
-        for key in remade.keys where !remadeOrder.contains(key) { remadeOrder.append(key) }
-        if remadeOrder.count > 20000 {
-            for key in remadeOrder.prefix(10000) { remade[key] = nil }
-            remadeOrder.removeFirst(10000)
-        }
-        let pairs = remadeOrder.compactMap { key in remade[key].map { [key, $0] } }
-        if let data = try? PropertyListEncoder().encode(pairs) {
+        let rows = remadeOrder.compactMap { old in remade[old].map { RemadePair(old: old, new: $0, date: remadeDates[old] ?? Date()) } }
+        if let data = try? PropertyListEncoder().encode(rows) {
             // lint:allow silent-write only Redo across a relaunch relies on it
             try? data.write(to: folder.appendingPathComponent("remade.plist"), options: .atomic)
         }
     }
 
+    /// Forgets pairs older than the journals kept.
+    private func pruneRemade(before cutoff: Date) {
+        loadRemade()
+        let old = remadeOrder.filter { (remadeDates[$0] ?? .distantPast) < cutoff }
+        guard !old.isEmpty else { return }
+        for key in old {
+            remade[key] = nil
+            remadeDates[key] = nil
+        }
+        remadeOrder.removeAll { remade[$0] == nil }
+        remadeChanged = true
+        saveRemade()
+    }
+
+    struct RemadePair: Codable {
+        var old: String
+        var new: String
+        var date: Date
+    }
+
     private var remadeLoaded = false
     private var remadeChanged = false
     private var remadeOrder: [String] = []
+    private var remadeDates: [String: Date] = [:]
 
     /// Identities of folders and copies made again by Redo, by the identity they replace (this session: Redo lives in it).
     private var remade: [String: String] = [:]
@@ -518,6 +539,7 @@ public actor OperationJournal {
         // (audit 14, B14-m2).
         guard !entry.steps.isEmpty else {
             entry.undone = true
+            report.done = 1
             if !save(entry) { report.unsaved = true }
             return report
         }
@@ -525,17 +547,42 @@ public actor OperationJournal {
         var undoneUnits: [[JournalStep]] = []
         fallbacks = [:]
         let unchanged = entry
+        let units = Self.units(entry.steps)
+        var visited = 0
+        var keptFolders: [[JournalStep]] = []
+        var checkpoint = Date()
         // A metadata file is undone with its media and only when the media went back, so the two stay together.
-        for unit in Self.units(entry.steps).reversed() {
-            guard undo(unit[0], entry: &entry, report: &report) else {
-                if canRetry(unit[0], entry: entry) { left.append(unit) }
-                continue
+        for unit in units.reversed() {
+            // Stopped between items (Cancel in Activity, Quit): what was undone is recorded (R-3807, audit 15, B15-M1).
+            if Task.isCancelled {
+                report.stopped = true
+                break
             }
-            for step in unit.dropFirst() {
-                undo(step, entry: &entry, report: &report)
+            visited += 1
+            if undo(unit[0], entry: &entry, report: &report) {
+                for step in unit.dropFirst() {
+                    undo(step, entry: &entry, report: &report)
+                }
+                undoneUnits.append(unit)
+            } else if canRetry(unit[0], entry: entry) {
+                left.append(unit)
+            } else if case .makeFolder = unit[0] {
+                keptFolders.append(unit)
             }
-            undoneUnits.append(unit)
+            // Saved as it goes, so a quit part way leaves the change partly undone, never wrong (B15-M1).
+            if report.done > 0, Date().timeIntervalSince(checkpoint) >= 0.5 {
+                var part = entry
+                part.steps = units.dropLast(visited).flatMap { $0 } + left.reversed().flatMap { $0 }
+                    + keptFolders.reversed().flatMap { $0 }
+                part.undoneSteps = undoneUnits.reversed().flatMap { $0 } + (unchanged.undoneSteps ?? [])
+                part.undone = false
+                save(part)
+                checkpoint = Date()
+            }
         }
+        // A folder the change made that still holds an item left for later goes with that item (audit 15, B15-m4).
+        let later = units.dropLast(visited).flatMap { $0 }
+        if !left.isEmpty || !later.isEmpty { left += keptFolders }
         // Nothing undone: the change stays as it was, so Undo can be tried again once what was in the way is gone (audit 13,
         // B13-m4).
         guard report.done > 0 else {
@@ -546,8 +593,8 @@ public actor OperationJournal {
         entry.undoneSteps = undoneUnits.reversed().flatMap { $0 } + (entry.undoneSteps ?? [])
         // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
         // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
-        entry.steps = left.reversed().flatMap { $0 }
-        entry.undone = left.isEmpty
+        entry.steps = later + left.reversed().flatMap { $0 }
+        entry.undone = entry.steps.isEmpty
         if !save(entry) { report.unsaved = true }
         return report
     }
@@ -570,18 +617,37 @@ public actor OperationJournal {
         }
         let unchanged = entry
         let before = entry.steps.count
-        for unit in Self.units(steps) {
-            guard redo(unit[0], allowed: allowed, entry: &entry, report: &report) else { continue }
-            for step in unit.dropFirst() {
-                redo(step, allowed: allowed, entry: &entry, report: &report)
+        let units = Self.units(steps)
+        var visited = 0
+        var checkpoint = Date()
+        let isFile = { (step: JournalStep) -> Bool in if case .makeFolder = step { false } else { true } }
+        for unit in units {
+            // As Undo: stopped between items, and saved as it goes (R-3807, audit 15, B15-M1).
+            if Task.isCancelled {
+                report.stopped = true
+                break
+            }
+            visited += 1
+            if redo(unit[0], allowed: allowed, entry: &entry, report: &report) {
+                for step in unit.dropFirst() {
+                    redo(step, allowed: allowed, entry: &entry, report: &report)
+                }
+            }
+            if Date().timeIntervalSince(checkpoint) >= 0.5, entry.steps[before...].contains(where: isFile) {
+                var part = entry
+                part.undoneSteps = units.dropFirst(visited).flatMap { $0 }
+                part.undone = false
+                save(part)
+                checkpoint = Date()
             }
         }
+        let notReached = units.dropFirst(visited).flatMap { $0 }
         // A change with files of which none was done again makes no empty folders either: those just made are removed
         // again, and the change stays undone, so Redo can be tried once what was in the way is gone (audit 12, B12-m4;
         // audit 13, B13-m2).
         let made = entry.steps[before...]
-        let hasFiles = steps.contains { if case .makeFolder = $0 { false } else { true } }
-        let filesDone = made.contains { if case .makeFolder = $0 { false } else { true } }
+        let hasFiles = steps.contains(where: isFile)
+        let filesDone = made.contains(where: isFile)
         guard report.done > 0, filesDone || !hasFiles else {
             for case let .makeFolder(path) in made.reversed() where Self.holdsNoFiles(URL(fileURLWithPath: path)) {
                 try? fm.removeItem(atPath: path)
@@ -591,7 +657,7 @@ public actor OperationJournal {
             return report
         }
         entry.undone = false
-        entry.undoneSteps = nil
+        entry.undoneSteps = notReached.isEmpty ? nil : notReached
         if !save(entry) { report.unsaved = true }
         return report
     }

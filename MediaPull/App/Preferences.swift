@@ -19,8 +19,6 @@ final class Preferences {
     var pacing: PacingPreset { didSet { set(pacing.rawValue, "pacing") } }
     var typeSubfolders: Bool { didSet { set(typeSubfolders, "instagramTypeSubfolders") } }
     var stopAfterKnown: Int { didSet { set(stopAfterKnown, "stopAfterKnown") } }
-    /// When this Mac first ran a version with account folder records (1.8): what earlier versions remembered was saved
-    /// before it; anything saved since belongs to a folder's own record (audit 11, A11-M2).
     var weeklyEngineCheck: Bool { didSet { set(weeklyEngineCheck, "weeklyEngineCheck") } }
     var lastEngineCheck: Date? { didSet { set(lastEngineCheck, "lastEngineCheck") } }
     var notifyWhenDone: Bool { didSet { set(notifyWhenDone, "notifyWhenDone") } }

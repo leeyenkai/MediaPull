@@ -110,6 +110,8 @@ echo "== Bridge tests"
 if [[ -x "$CACHE/engines/python/bin/python3" ]]; then
   "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_egress_guard.py "$CACHE/engines/site-packages" 2>&1 | tail -3 || FAILED=1
   "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_bridge_details.py "$CACHE/engines/site-packages" 2>&1 | tail -1 || FAILED=1
+  # Downloads through the bundled yt-dlp with a made-up site, offline (audit 15).
+  "$CACHE/engines/python/bin/python3" -I Engines/bridge/test_stream_runs.py "$CACHE/engines/site-packages" 2>&1 | tail -1 || FAILED=1
 else
   missing "engines not installed (scripts/fetch-engines.sh), so the egress guard was not tested"
 fi

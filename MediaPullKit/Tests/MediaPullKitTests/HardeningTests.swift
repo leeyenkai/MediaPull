@@ -182,7 +182,7 @@ final class ConversionFidelityTests: XCTestCase {
             }
         }
         // The ffmpeg path, as saves use it (skipped when ffmpeg is not built).
-        let tools = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MediaPullBuild/engines/ffmpeg")
+        let tools = TestEngines.ffmpegFolder
         if FileManager.default.isExecutableFile(atPath: tools.appendingPathComponent("ffmpeg").path) {
             let ffmpeg = FFmpeg(ffmpeg: tools.appendingPathComponent("ffmpeg"), ffprobe: tools.appendingPathComponent("ffprobe"))
             try ImageConversion.writePNG(image(8, 8), to: folder.appendingPathComponent("f0.png"))
@@ -209,7 +209,7 @@ final class ConversionFidelityTests: XCTestCase {
 /// when it is not built).
 final class VideoFidelityTests: XCTestCase {
     private var tools: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MediaPullBuild/engines/ffmpeg")
+        TestEngines.ffmpegFolder
     }
 
     private func ffmpeg() throws -> FFmpeg {

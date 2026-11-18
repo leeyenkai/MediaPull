@@ -445,17 +445,20 @@ def test_only_videos_that_can_never_download_are_skipped():
 
 
 def test_a_retry_asks_for_exactly_the_failed_videos():
-    """Audit 14 (A14-M1, C14-M2): a Retry names the videos that failed, so it never reaches one past "At most" and never
-    stops before trying each of them; a failure's video comes from the message or the video looked at last."""
-    request = {"extras": {"playlist": True, "max_downloads": 3, "skip_ids": ["a", "d", "e"], "only_ids": ["b", "c"]}}
+    """Audit 14 (A14-M1, C14-M2), audit 15 (A15-M1): a Retry names the videos that failed; the playlist itself and entries
+    whose id is not known yet pass the filter; the limit is what the app sends; a failure's video comes from the message
+    or the video looked at last."""
+    request = {"extras": {"playlist": True, "max_downloads": 2, "skip_ids": ["a", "d", "e"], "only_ids": ["b", "c"]}}
     options = bridge.stream_options(request, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)
-    assert "max_downloads" not in options, options.get("max_downloads")
+    assert options["max_downloads"] == 2, options.get("max_downloads")
+    assert options["ignoreerrors"] is True
     check = options["match_filter"]
     assert check({"id": "a"}) == "Already saved."
     assert check({"id": "f"}) == "Not asked for."
     assert check({"id": "b"}) is None and check({"id": "c"}) is None
-    first = {"extras": {"playlist": True, "max_downloads": 3}}
-    assert bridge.stream_options(first, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)["max_downloads"] == 3
+    assert check({"title": "A playlist"}, incomplete=True) is None
+    assert check({"id": "PL1", "_type": "playlist"}, incomplete=True) is None
+    assert check({"url": "https://example.com/v/9", "_type": "url"}, incomplete=True) is None
     assert bridge.failed_video("ERROR: [youtube] abc123: Sign in to confirm your age") == "abc123"
     bridge.STATE["current_id"] = "xyz"
     assert bridge.failed_video("ERROR: unable to download video data: HTTP Error 403: Forbidden") == "xyz"

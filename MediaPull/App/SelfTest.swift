@@ -735,6 +735,13 @@ final class SelfTestRunner {
         let second = await run("second Update", findMissing: false)
         app.preferences.stopAfterKnown = savedStop
         let stoppedEarly = second?.skipped == 2
+        // A file the folder held before its first 1.8 Update (an earlier version saved it), deleted since, stays deleted
+        // (D-79, D-98, audit 15, C15-M1).
+        try? fm.removeItem(at: Sidecar.sidecarURL(for: byName))
+        try? fm.removeItem(at: byName)
+        let afterDeletion = await run("Update after a deletion", findMissing: false)
+        let deletionKept = afterDeletion?.saved == 0 && !fm.fileExists(atPath: byName.path)
+        note("update: a file held before the first Update and deleted since stayed deleted \(deletionKept)")
         let missing = await run("Find Missing", findMissing: true)
         let code4 = InstagramIDs.shortcode(fromID: ids[4]) ?? "-"
         let restored = fm.enumerator(atPath: folder.path)?.allObjects.contains { ($0 as? String)?.contains(code4) ?? false }
@@ -1102,9 +1109,9 @@ final class SelfTestRunner {
         writeReplay(replay)
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
             && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash && refusedRoutes
-            && savedFollowed && listFollowed && madeFolderChecked && plainChecked && jayContinued && besideChecked
+            && savedFollowed && listFollowed && madeFolderChecked && plainChecked && jayContinued && besideChecked && deletionKept
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
-            && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
+            && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 2 && restored == true && continued && cleared
             && keptPlace && placesPass
         note("update: \(passed ? "PASS" : "FAIL") (new items placed \(first?.saved ?? 0) of 2, story in stories/ \(story), "
             + "nested folder \(nested), "

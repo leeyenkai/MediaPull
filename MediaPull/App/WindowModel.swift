@@ -57,8 +57,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
     @ObservationIgnored var undoOrder: [UUID] = []
     /// A change ⌘Z or ⇧⌘Z could not act on, being put back on the stack it came from (audit 14, C14-M3).
     @ObservationIgnored var reinstating: UUID?
-    /// Changes being redone from History, so a second click does nothing (audit 14, B14-m3).
+    /// Changes being undone or redone, so a second click in History does nothing (audit 14, B14-m3; audit 15, B15-m3).
     @ObservationIgnored var redoing: Set<UUID> = []
+    @ObservationIgnored var undoing: Set<UUID> = []
+    /// The changes whose actions were registered last on each stack: a change is put back only by its own action, never by
+    /// another with the same title (audit 15, B15-m1).
+    @ObservationIgnored var lastUndoRegistered: UUID?
+    @ObservationIgnored var lastRedoRegistered: UUID?
     var items: [MediaItem] = []
     @ObservationIgnored var itemsByID: [String: MediaItem] = [:]
     var visible: [MediaItem] = []

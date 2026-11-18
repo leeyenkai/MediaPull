@@ -138,6 +138,7 @@ extension WindowModel {
             MainActor.assumeIsolated { self?.undoChange(entry) }
         }
         manager.setActionName(entry.title)
+        lastUndoRegistered = entry.id
         undoOrder.removeAll { $0 == entry.id }
         undoOrder.append(entry.id)
     }
@@ -152,6 +153,7 @@ extension WindowModel {
                 MainActor.assumeIsolated { self?.redoChange(entry) }
             }
             manager.setActionName(entry.title)
+            lastRedoRegistered = entry.id
             undoOrder.removeAll { $0 == entry.id }
             return
         }
@@ -166,6 +168,7 @@ extension WindowModel {
                     MainActor.assumeIsolated { self?.redoChange(entry) }
                 }
                 manager.setActionName(entry.title)
+                lastRedoRegistered = entry.id
             } else if undoTargets[entry.id] != nil {
                 // From the History or the toolbar: the change on top of ⌘Z's stack is undone through it, so ⇧⌘Z redoes it;
                 // one further down leaves the stack, so ⌘Z never reaches a change already undone.
@@ -180,16 +183,25 @@ extension WindowModel {
         for other in app.windows where other !== self && !(hostWindow?.undoManager?.isUndoing ?? false) {
             other.forgetUndo(entry.id)
         }
+        undoing.insert(entry.id)
         let job = longChangeJob(entry, undoing: true)
-        Task {
-            defer { if let job { app.jobs.finish(job, .completed, notify: false) } }
+        let task = Task {
+            defer {
+                if let job { app.jobs.finish(job, .completed, notify: false) }
+                undoing.remove(entry.id)
+            }
             guard let report = await app.undoChange(entry.id) else {
                 showFileMessage("“\(entry.title)” was already undone.")
                 return
             }
             // Nothing undone is said as such (audit 10, C10-m3, B10-m3). The change is still done, so ⇧⌘Z has nothing to
             // redo; History's Undo tries again (audit 13, B13-m3, B13-m4).
-            if report.done == 0 {
+            if report.stopped {
+                // Cancelled or quitting: what was undone is recorded; History undoes the rest (R-3807, audit 15, B15-M1).
+                forgetUndo(entry.id)
+                showFileMessage("“\(entry.title)” stopped part way: \(report.restored) item\(report.restored == 1 ? "" : "s") put back. "
+                    + "History undoes the rest.", unsaved: report.unsaved)
+            } else if report.done == 0 {
                 // Still done: ⌘Z offers it again once what was in the way is gone (audit 14, C14-M3).
                 if viaManager { putBack(entry, onUndoStack: true) } else { forgetUndo(entry.id) }
                 showFileMessage("Nothing of “\(entry.title)” could be undone"
@@ -204,6 +216,7 @@ extension WindowModel {
                     unsaved: report.unsaved)
             }
         }
+        job?.task = task
     }
 
     /// The change ⌘Z undoes in this window: the top of its file-change stack, whichever section made it.
@@ -249,8 +262,9 @@ extension WindowModel {
         }
         let viaManager = hostWindow?.undoManager?.isRedoing ?? false
         registerUndo(entry)
+        redoing.insert(entry.id)
         let job = longChangeJob(entry, undoing: false)
-        Task {
+        let task = Task {
             defer {
                 if let job { app.jobs.finish(job, .completed, notify: false) }
                 redoing.remove(entry.id)
@@ -258,7 +272,10 @@ extension WindowModel {
             let report = await app.redoChange(entry.id)
             // Nothing done again is said as such (audit 7, B7-m6).
             // Something done again but no file moved (a New Folder made again) is a redo too (audit 8, B8-m2).
-            if report.done == 0 {
+            if report.stopped {
+                forgetUndo(entry.id)
+                showFileMessage("“\(entry.title)” stopped part way. History does the rest again.", unsaved: report.unsaved)
+            } else if report.done == 0 {
                 // The change is still undone: ⇧⌘Z offers it again, and History's Redo (audit 13, B13-m3; audit 14, C14-M3).
                 if viaManager { putBack(entry, onUndoStack: false) } else { forgetUndo(entry.id) }
                 showFileMessage("Nothing of “\(entry.title)” could be done again"
@@ -270,14 +287,14 @@ extension WindowModel {
                     unsaved: report.unsaved)
             }
         }
+        job?.task = task
     }
 
     /// Puts a change ⌘Z or ⇧⌘Z could not act on back where it was: the undo manager runs the opposite action it has just
     /// registered, which registers the change again on the original stack without clearing the other one.
     private func putBack(_ entry: JournalEntry, onUndoStack: Bool) {
         guard let manager = hostWindow?.undoManager, manager.groupingLevel == 0,
-              onUndoStack ? manager.canRedo && manager.redoActionName == entry.title
-              : manager.canUndo && manager.undoActionName == entry.title
+              onUndoStack ? manager.canRedo && lastRedoRegistered == entry.id : manager.canUndo && lastUndoRegistered == entry.id
         else {
             forgetUndo(entry.id)
             return
@@ -292,9 +309,12 @@ extension WindowModel {
 
     /// A long Undo or Redo shows in Activity, so Quit waits for it (R-3807, audit 14, B14-M2).
     private func longChangeJob(_ entry: JournalEntry, undoing: Bool) -> Job? {
-        guard entry.fileCount > 20 else { return nil }
+        let count = (undoing ? entry.steps : entry.undoneSteps ?? []).count
+        guard count > 40 else { return nil }
         let job = Job(kind: .organise, title: (undoing ? "Undoing " : "Redoing ") + "“\(entry.title)”")
         app.jobs.add(job)
+        // Running, with its task, so Quit waits for it and Cancel stops it between items (audit 15, B15-M1).
+        job.state = .running
         return job
     }
 

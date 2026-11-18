@@ -324,8 +324,13 @@ final class EngineService {
                     Task { [weak self, weak job] in
                         guard let self, let job else { return }
                         let base = await self.accountsBase(root.url, except: username)
-                        let existing = await self.recordedFolder(of: username, around: base)
-                        if job.state == .queued { job.destination = existing ?? base.appendingPathComponent(name, isDirectory: true) }
+                        let libraryRoot = self.app.root(containing: root.url)?.url
+                        // A folder found by what it holds counts too, as when the pull starts (audit 15, C15-m5).
+                        let recorded = await self.recordedFolder(of: username, around: base)
+                        let found = await Task.detached(priority: .utility) {
+                            recorded ?? AccountFolders.resolveTarget(account: username, saveFolder: base, root: libraryRoot).existing
+                        }.value
+                        if job.state == .queued { job.destination = found ?? base.appendingPathComponent(name, isDirectory: true) }
                     }
                 }
             } else {
@@ -363,6 +368,9 @@ final class EngineService {
             job.placeID = UUID()
             var walk = running.draft
             walk.continueFrom = nil
+            // Media only: the account's details were saved by the first run, and fetching them again would page a whole
+            // followers list and save a numbered copy (audit 15, C15-m4).
+            walk.content.subtract([.profileInfo, .followers, .following])
             if walk.postURL == nil, walk.hashtag == nil { walk.incremental = false }
             running.draft = walk
             self.enqueueInstagram(job: job) { [weak self, weak job, weak window] in
@@ -557,10 +565,9 @@ final class EngineService {
             run.clearFailures = false
             job.failed = 0
             job.failures = []
-            // A Retry walks again: what it finds and skips is counted afresh, not on top (audit 14, C14-m2).
-            job.found = 0
+            // A Retry walks again: what it skips is counted afresh, not on top (audit 14, C14-m2). What it finds adds to the
+            // first run's, as its saves do, and notes about files that stay saved stay (audit 15, A15-m2, A15-m3).
             job.skipped = 0
-            job.notes = []
         }
         // Hashtags, saved posts and the stories tray go beside the accounts, never inside an account's folder (D-52, audit 4,
         // C4-m10).
@@ -1108,6 +1115,9 @@ final class EngineService {
         var record = existing ? await app.accountFolders.record(account: account, folder: folder) : nil
         if let new = record {
             await adoptEarlierMemory(of: new, account: account)
+            // What the folder holds now is remembered, so an item deleted from it later stays deleted, a folder an earlier
+            // version made included (D-79, D-98, audit 15, C15-M1).
+            if !index.identities.isSubset(of: new.keys) { await app.accountFolders.addKeys(index.identities, to: new.id) }
             record = await app.accountFolders.record(account: account, folder: folder)
         }
         return AccountPlace(folder: folder, index: index, record: record, sortsByType: byType)
@@ -1276,6 +1286,7 @@ final class EngineService {
         // Retry saves where the folder is then (audit 7, A7-m3), and downloads only the videos not saved yet (A12-M3).
         let folder = FollowedFolder(root.url)
         let savedIDs = VideoRun()
+        savedIDs.limit = extras.maxDownloads
         let run = { [weak self, weak job] in
             guard let self, let job else { return }
             job.task = Task { [weak self, weak job] in
@@ -1289,14 +1300,17 @@ final class EngineService {
                 }
                 job.failed = 0
                 job.failures = []
-                // What is not saved is looked at again, so what it skipped is counted afresh (audit 13, A13-m3, C13-m3); notes
-                // about videos that stay saved (a subtitle not placed) stay (audit 14, A14-m2).
-                job.skipped = 0
-                job.notes.removeAll { savedIDs.skipNotes.contains($0) }
-                savedIDs.skipNotes = []
                 // Exactly the videos that failed, when each failure named its video: never one past "At most", none missed
                 // (audit 14, A14-M1, C14-M2).
                 let only = savedIDs.failedIDs
+                // A Retry that looks at every video counts what it skips afresh (A13-m3, C13-m3); one that asks for its
+                // videos by id never sees the skipped ones again, so they stay counted (audit 15, C15-m1). Notes about
+                // videos that stay saved stay (A14-m2).
+                if only.isEmpty || savedIDs.failureWithoutID {
+                    job.skipped = 0
+                    job.notes.removeAll { savedIDs.skipNotes.contains($0) }
+                    savedIDs.skipNotes = []
+                }
                 savedIDs.failedIDs = []
                 // Where the folder is now, in its library's layout (A8-m6).
                 let root = self.app.destination(for: now)
@@ -1306,6 +1320,8 @@ final class EngineService {
                 var extras = extras
                 extras.skipIDs = Array(savedIDs.ids)
                 if !only.isEmpty, !savedIDs.failureWithoutID { extras.onlyIDs = Array(only) }
+                // What is left of "At most" (D-99): the end of a run that reached it offers no Retry.
+                if let limit = savedIDs.limit { extras.maxDownloads = max(1, limit - savedIDs.ids.count) }
                 savedIDs.failureWithoutID = false
                 await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site,
                                     saved: savedIDs)
@@ -1347,6 +1363,8 @@ final class EngineService {
         var waiting: [String: [(URL, String)]] = [:]
         var failure: String?
         var neverAvailable = false
+        // This run's saves decide how it ends, not a Retry's first run's (audit 15, A15-M1).
+        let savedBefore = job.saved + job.duplicates
         var index = 0
         do {
             for try await event in bridge.run(request, workingDirectory: staging) {
@@ -1360,6 +1378,7 @@ final class EngineService {
                 case let .file(found) where found.isInside(staging):
                     index += 1
                     job.found += 1
+                    let failedBefore = job.failed
                     if let url = await saveVideoFile(found, index: index, info: info, format: format, height: height, root: root,
                                                      site: site, job: job)
                     {
@@ -1368,6 +1387,9 @@ final class EngineService {
                         for (path, kind) in waiting.removeValue(forKey: found.key) ?? [] {
                             if let problem = await placeAttachment(path, kind: kind, beside: url) { job.notes.append(problem) }
                         }
+                    } else if job.failed > failedBefore {
+                        // A video that could not be saved is retried like one that could not be downloaded (A15-M2).
+                        if let id = found.meta["id"]?.string { savedIDs.failedIDs.insert(id) } else { savedIDs.failureWithoutID = true }
                     }
                 case .file:
                     // A path outside the staging folder comes from site metadata and is never trusted, as for pulls.
@@ -1378,6 +1400,8 @@ final class EngineService {
                     } else {
                         waiting[key, default: []].append((path, kind))
                     }
+                case let .error(code, message, _, false) where code == "note":
+                    if job.notes.count < 30 { job.notes.append(Self.plainEngineError(message)) }
                 case let .error(code, message, _, false) where code == "unavailable":
                     // Never downloadable (private, removed, not out yet, live): skipped with the reason, not a failure.
                     job.skipped += 1
@@ -1411,12 +1435,22 @@ final class EngineService {
             app.jobs.finish(job, .cancelled)
             return
         }
-        if job.saved + job.duplicates == 0, failure == nil, job.failed == 0, job.skipped > 0 {
+        // "At most" counts the videos the job saves, Retry included: when it is reached, videos that failed are not tried
+        // again (D-99, audit 15, A15-M3).
+        if let limit = savedIDs.limit, savedIDs.ids.count >= limit, job.failed > 0 {
+            job.notes.append("“At most \(limit)” was reached, so \(job.failed) video\(job.failed == 1 ? "" : "s") that failed "
+                + "\(job.failed == 1 ? "was" : "were") not tried again.")
+            job.failed = 0
+            job.failures = []
+            savedIDs.failedIDs = []
+        }
+        let savedNow = job.saved + job.duplicates - savedBefore
+        if savedNow == 0, failure == nil, job.failed == 0, job.skipped > 0 {
             // Skipped for a reason of its own (its name taken, say): not a failure (audit 13, A13-m2).
             app.jobs.finish(job, .completed)
-        } else if job.saved + job.duplicates == 0, neverAvailable, job.failed == 0 {
+        } else if savedNow == 0, neverAvailable, job.failed == 0 {
             app.jobs.finish(job, .failed(Self.plainEngineError(failure ?? "The video can't be downloaded.")))
-        } else if job.saved + job.duplicates == 0 {
+        } else if savedNow == 0 {
             // Said plainly, and offered to Retry Failed like any failed file (audit 12, A12-m5).
             let reason = Self.plainEngineError(failure ?? "The video could not be downloaded.")
             if job.failed == 0 {
@@ -1878,6 +1912,8 @@ private final class VideoRun {
     /// The videos that failed in the last run, for Retry Failed; false when one failure named no video.
     var failedIDs = Set<String>()
     var failureWithoutID = false
+    /// The job's "At most", which counts every video it saves, Retry included (D-99).
+    var limit: Int?
     /// Notes about skipped videos, counted afresh by a Retry.
     var skipNotes = Set<String>()
 }

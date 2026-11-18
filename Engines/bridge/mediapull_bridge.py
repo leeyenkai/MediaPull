@@ -1201,7 +1201,9 @@ def skip_saved(inner, saved, only=None):
         video = str(info.get("id") or "")
         if saved and video in saved:
             return "Already saved."
-        if only and video not in only:
+        # Only a video is asked for by id: the playlist itself, and entries whose id is not known yet, pass, and are
+        # checked again once it is (audit 15, A15-M1).
+        if only and video and info.get("_type") not in ("playlist", "multi_video") and video not in only:
             return "Not asked for."
         if video and not incomplete:
             STATE["current_id"] = video
@@ -1247,7 +1249,12 @@ class StreamLogger:
         pass
 
     def warning(self, message):
-        EMITTER.emit("log", level="warning", logger="yt-dlp", message=_clean(message))
+        text = _clean(message)
+        EMITTER.emit("log", level="warning", logger="yt-dlp", message=text)
+        # A subtitle or thumbnail that could not be saved is said, beside a video that was (audit 15, A15-m1).
+        lower = text.lower()
+        if "unable to download video subtitles" in lower or "thumbnail" in lower and ("unable" in lower or "failed" in lower):
+            EMITTER.emit("error", code="note", message=text[:300], fatal=False)
 
     def error(self, message):
         text = _clean(message)
@@ -1288,7 +1295,9 @@ def stream_options(request, staging, logger, progress):
         "check_formats": False,
         "retries": 3,
         "fragment_retries": 5,
-        "ignoreerrors": bool(extras.get("playlist")),
+        # A video's own problem is logged, classed and reported at the end, never raised: a subtitle that fails is then a
+        # warning, not the end of the download (audit 15, A15-M4).
+        "ignoreerrors": True,
         # The bundled ffmpeg has no network protocols (R-507): yt-dlp's own downloaders fetch every stream.
         "hls_prefer_native": True,
         "external_downloader": {},
@@ -1296,8 +1305,8 @@ def stream_options(request, staging, logger, progress):
     }
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
-    if extras.get("max_downloads") and not extras.get("only_ids"):
-        # A Retry that names its videos needs no limit: they were within "At most" (audit 14, C14-M2).
+    if extras.get("max_downloads"):
+        # The app sends what is left of "At most" for a Retry (D-99).
         options["max_downloads"] = int(extras["max_downloads"])
     if extras.get("date_after") or extras.get("date_before"):
         options["daterange"] = yt_dlp.utils.DateRange(extras.get("date_after"), extras.get("date_before"))

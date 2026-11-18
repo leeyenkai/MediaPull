@@ -858,14 +858,15 @@ final class OrganiseModel {
 
     /// The History's Undo, and the toolbar's: through the window, so ⇧⌘Z can redo it.
     func redo(_ entry: JournalEntry) {
-        guard let window, window.redoing.insert(entry.id).inserted else { return }
+        guard let window, !window.redoing.contains(entry.id), !window.undoing.contains(entry.id) else { return }
         // Off every window's ⇧⌘Z stack first, so the change is never done twice (audit 14, B14-m3).
         for other in app.windows { other.forgetUndo(entry.id) }
         window.redoChange(entry)
     }
 
     func undo(_ entry: JournalEntry) {
-        window?.undoChange(entry)
+        guard let window, !window.redoing.contains(entry.id), !window.undoing.contains(entry.id) else { return }
+        window.undoChange(entry)
     }
 
     /// Any window changed files: the History and both panes show the result.

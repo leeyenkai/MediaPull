@@ -156,6 +156,8 @@ struct VideoForm: View {
     static func looksLikeList(_ url: URL) -> Bool {
         let path = url.path.lowercased()
         let query = url.query?.lowercased() ?? ""
+        // A video page under a user's address ("/@user/video/123") is one video (audit 15, A15-m4).
+        if path.contains("/video/") { return false }
         return path.hasPrefix("/playlist") || path.hasPrefix("/@") || path.hasPrefix("/channel/") || path.hasPrefix("/c/")
             || (query.contains("list=") && !path.hasPrefix("/watch"))
     }
