@@ -267,7 +267,7 @@ final class VideoEditorModel: UnsavedEditing {
     }
 
     /// What makes a metadata file stand for one Instagram item (D-79): a copy, a trim or a frame drops them (C21-m2).
-    nonisolated static let identityKeys = ["media_id", "post_id", "num", "shortcode", "post_shortcode"]
+    nonisolated static let identityKeys = ["media_id", "post_id", "num", "count", "shortcode", "post_shortcode"]
 
     /// Copies the video's metadata file for a derived file, with updated fields (SPEC R-3404). Returns what went wrong, if
     /// anything; a video with no metadata file needs none. Metadata files are a few kilobytes.

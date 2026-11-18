@@ -504,6 +504,8 @@ struct CheckBar: View {
                             // lint:allow main-io a few checks on a click
                             !FileManager.default.fileExists(atPath: $0.deletingPathExtension().path)
                         }
+                        // Nothing left to trash: the report is simply out of date (audit 22, B22-m4).
+                        guard !still.isEmpty else { return library.checkFolder(report.folder) }
                         library.perform(FolderOperations.trash(still)) { _ in
                             library.checkFolder(report.folder)
                         }

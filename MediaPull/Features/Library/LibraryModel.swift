@@ -921,7 +921,8 @@ final class LibraryModel: MediaGridOwner {
     nonisolated static func uniqueURL(_ url: URL, replacing: URL? = nil) -> URL {
         func free(_ candidate: URL) -> Bool {
             let fm = FileManager.default
-            let ownSidecar = replacing.map { $0.standardizedFileURL == candidate.standardizedFileURL } ?? false
+            // Compared as the volume compares names, so a case-only rename keeps its own name (audit 22, B22-m1).
+            let ownSidecar = replacing.map { AccountFolderStore.key($0.path) == AccountFolderStore.key(candidate.path) } ?? false
             return !fm.fileExists(atPath: candidate.path) && (ownSidecar || !fm.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path))
         }
         guard !free(url) else { return url }

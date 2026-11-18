@@ -642,11 +642,9 @@ final class EngineService {
         // The stories tray knows what its owners' folders remember, so a story deleted from one is not fetched again (D-104,
         // audit 20, C20-M2).
         if !scanOnly, draft.content.contains(.storiesTray) || (!isAccount && draft.postURL == nil && draft.hashtag == nil) {
-            // The owners' folders in the save folder's own library: a folder elsewhere is independent (D-79, audit 21, A21-m3).
-            let library = root.flatMap { app.root(containing: $0.url)?.url }.map { AccountFolderStore.key($0.path) + "/" }
-            let owners = await app.accountFolders.all()
-                .filter { record in library.map { AccountFolderStore.key(record.path).hasPrefix($0) } ?? true }
-                .reduce(into: Set<String>()) { $0.formUnion($1.keys) }
+            // Every account folder's memory: narrowing it to one library left out a folder that is a library itself (audit 22,
+            // A22-M1); a story another folder remembers is at worst missing from a second copy.
+            let owners = await app.accountFolders.all().reduce(into: Set<String>()) { $0.formUnion($1.keys) }
             let ownersFile = staging.appendingPathComponent("owners.json")
             if !owners.isEmpty {
                 do {
@@ -974,8 +972,8 @@ final class EngineService {
                 case let .skip(key, _):
                     // What the job passed as already held is its own too: a Retry or Resume does not fetch it again after a
                     // deletion (D-103, audit 19, A19-M1). Counted once, whatever walks pass it again (audit 20, A20-m1).
-                    // A Retry's whole walk passes the job's saved posts too: not counted as skipped (A16-m3, audit 21, A21-m1).
-                    if run.counted.insert(key).inserted, !run.retrying { job.skipped += 1 }
+                    // Each item skipped as already held is counted once per job, whichever run passed it (audit 22, A22-m2).
+                    if run.counted.insert(key).inserted { job.skipped += 1 }
                 case let .wait(seconds, reason):
                     job.state = .waiting(until: Date().addingTimeInterval(seconds), reason: reason)
                 case let .progress(received, total, _):
