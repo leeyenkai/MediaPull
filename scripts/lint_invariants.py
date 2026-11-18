@@ -25,12 +25,20 @@ RULES = [
     },
     {
         "id": "main-io",
-        "why": "file moves, copies, listings and reads block the main actor; run them off the main actor (LibraryModel.offMain or a detached task)",
-        "pattern": re.compile(
-            r"(?<![A-Za-z])(moveItem|copyItem|contentsOfDirectory|enumerator)\(|Data\(contentsOf|\.trashItem\("
-        ),
+        "why": "listings and reads block the main actor; run them off the main actor (a detached task or @concurrent)",
+        "pattern": re.compile(r"(?<![A-Za-z])(contentsOfDirectory|enumerator)\(|Data\(contentsOf"),
         "paths": [APP],
         "skip_files": ["MediaPull/App/SelfTest.swift"],
+    },
+    {
+        # D-107: moves, copies and trashing of the person's files go through FileOps (off the main actor, metadata file
+        # with its media, never overwriting); only MediaPull's own data in Application Support may be moved here.
+        "id": "file-write",
+        "why": "move, copy and trash files through FileOps (D-107); only MediaPull's own app data may use FileManager directly",
+        "pattern": re.compile(r"(?<![A-Za-z])(moveItem|copyItem|replaceItem|trashItem|copyfile)\(|renamex_np"),
+        "paths": [APP],
+        "skip_files": ["MediaPull/App/SelfTest.swift"],
+        "allow_as": "app-data",
     },
     {
         "id": "unsafe-int",
@@ -79,7 +87,10 @@ RULES.append({
 })
 
 ALLOW = re.compile(r"lint:allow\s+((?:[\w-]+\s+)+)\S")
-RULE_IDS = {"shortcut", "main-io", "unsafe-int", "icon-label", "silent-write", "framework"}
+RULE_IDS = {"shortcut", "main-io", "unsafe-int", "icon-label", "silent-write", "framework", "app-data"}
+# Markers that must sit on (or just above) a line their rule matches: an exception that excuses nothing is removed, so the
+# count of exceptions stays the count of real ones (D-107).
+CHECKED_MARKERS = {"main-io": "main-io", "app-data": "file-write"}
 
 
 def files(paths):
@@ -116,7 +127,7 @@ def main():
                     window = "\n".join(lines[index : index + rule["window"] + 1])
                     if rule["needs_nearby"].search(window):
                         continue
-                if allowed(lines, index, rule["id"]):
+                if allowed(lines, index, rule.get("allow_as", rule["id"])):
                     continue
                 hits.append(f"{path}:{index + 1}: {stripped}")
         if hits:
@@ -124,6 +135,27 @@ def main():
             print(f"error: [{rule['id']}] {rule['why']}:")
             for hit in hits:
                 print("  ", hit)
+    patterns = {rule["id"]: rule["pattern"] for rule in RULES}
+    stale = []
+    for path in files([APP]):
+        if path == "MediaPull/App/SelfTest.swift":
+            continue
+        with open(os.path.join(ROOT, path), encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+        for index, line in enumerate(lines):
+            for match in ALLOW.finditer(line):
+                for word in match.group(1).split():
+                    rule_id = CHECKED_MARKERS.get(word)
+                    if rule_id is None:
+                        continue
+                    covered = lines[index : index + 2]
+                    if not any(patterns[rule_id].search(text) and not text.strip().startswith("//") for text in covered):
+                        stale.append(f"{path}:{index + 1}: {line.strip()}")
+    if stale:
+        problems += len(stale)
+        print("error: [stale-marker] a lint:allow marker for main-io or app-data excuses nothing on its line or the next; remove it:")
+        for hit in stale:
+            print("  ", hit)
     if problems:
         print(f"{problems} invariant problem(s). Fix them, or mark a justified exception with // lint:allow <rule> <reason>.")
         sys.exit(1)

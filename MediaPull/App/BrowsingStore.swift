@@ -189,7 +189,7 @@ final class BrowsingStore {
         if let value = try? decoder.decode(type, from: data) { return value }
         let stamp = Int(Date().timeIntervalSince1970)
         let aside = folder.appendingPathComponent((name as NSString).deletingPathExtension + ".damaged-\(stamp).json")
-        // lint:allow main-io silent-write setting a damaged file aside is best effort; it is never written over either way
+        // lint:allow app-data silent-write setting a damaged file aside is best effort; it is never written over either way
         try? FileManager.default.moveItem(at: file, to: aside)
         return nil
     }

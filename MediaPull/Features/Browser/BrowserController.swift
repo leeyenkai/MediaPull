@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import MediaPullBrowser
 import MediaPullCore
+import MediaPullLibrary
 import Observation
 import WebKit
 
@@ -208,9 +209,8 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
     func download(_ download: WKDownload, decideDestinationUsing _: URLResponse, suggestedFilename: String) async -> URL? {
         guard let chosen = await onChooseDownloadDestination?(suggestedFilename) else { return nil }
         // The save panel already asked about replacing; WebKit refuses to write over an existing file. The old one goes to the
-        // Trash, never away for good (R-1703).
-        // lint:allow main-io silent-write the person chose to replace this file in the save panel; one item to the Trash
-        if FileManager.default.fileExists(atPath: chosen.path) { try? FileManager.default.trashItem(at: chosen, resultingItemURL: nil) }
+        // Trash with its metadata file, never away for good (R-1703, D-107); if it cannot, WebKit reports the download failed.
+        if FileManager.default.fileExists(atPath: chosen.path) { try? await FileOps.trash(chosen) }
         downloadDestinations[ObjectIdentifier(download)] = chosen
         return chosen
     }

@@ -104,6 +104,9 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 - Duplicate detection must stay deterministic (checksums, pHash, dHash, colour grid); no learned models (D-50). Learned models are for analysis only (D-57).
 - Analysis results, face data and Organise journals live in Application Support, never in library folders (R-601, D-60). Face embeddings need the opt-in; face boxes do not (R-3901).
 - Organise operations go through `FolderOperations` plans and `OperationJournal`, so every change is undoable and sidecars move with their media.
+- Every other move, copy or trash of the person's files goes through `FileOps` (D-107): off the main actor, metadata file with its
+  media, exclusive renames, never over an orphaned metadata file. Editor Replace is `OperationJournal.replace`. The lint's
+  `file-write` rule allows `FileManager` moves only for MediaPull's own app data (`lint:allow app-data`); stale markers fail.
 - The Collect panes stay mounted while Organise is shown (opacity, not `if`), so the Browser never reloads. Both sections use `PaneSplit` with their own `PaneArrangement` (`PaneGroup` collect/organise); a pane's group decides which arrangement it joins.
 - No sheets for everyday work (D-69): downloads live in the Downloads pane, Organise previews and People are in the Organise pane, folder renames are inline. Pop-ups only for errors and confirmations of destructive actions.
 - ⌘+/⌘-/⌘0 zoom the web page; ⌥⌘+/⌥⌘- change thumbnail size.

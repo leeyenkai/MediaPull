@@ -41,6 +41,11 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var identities: [String: String]?
     /// Folders the change moved to the Trash only because they were left empty: Redo moves them again only while empty.
     public var emptiedFolders: [String]?
+    /// An editor Replace (D-107): the hidden names the edited file and its metadata file wait under beside the original
+    /// until the original is in the Trash. Never left there: Undo sends what is under them to the Trash.
+    public var edits: [String]?
+    /// What Undo of a Replace sent to the Trash from those names, by name, so Redo can bring it back first.
+    public var parked: [String: String]?
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
@@ -128,7 +133,7 @@ public actor OperationJournal {
     public func prune(olderThan days: Int) {
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
         // Never a change that still holds items under temporary names: it is taken back first (audit 19, C19-m1).
-        for entry in entries() where entry.date < cutoff && Self.temporaryPathsPresent(entry.steps).isEmpty {
+        for entry in entries() where entry.date < cutoff && !Self.hiddenPresent(entry) {
             try? fm.removeItem(at: url(for: entry.id))
         }
         pruneRemade(before: cutoff)
@@ -386,6 +391,13 @@ public actor OperationJournal {
         stopsAfter = count
     }
 
+    /// Tests make a Replace fail once the original is in the Trash, as a full disk would.
+    var failsAfterTrash = false
+
+    func failReplace(afterTrash: Bool) {
+        failsAfterTrash = afterTrash
+    }
+
     private var remadeLoaded = false
     private var remadeChanged = false
     private var remadeOrder: [String] = []
@@ -415,11 +427,20 @@ public actor OperationJournal {
     /// Changes that left items under temporary names (MediaPull stopped mid-way, a crash): taken back at launch (audit 17,
     /// B17-M1, C17-M2).
     public func stranded() -> [UUID] {
-        entries().filter { !$0.undone && !Self.temporaryPathsPresent($0.steps).isEmpty }.map(\.id)
+        entries().filter { !$0.undone && Self.hiddenPresent($0) }.map(\.id)
     }
 
     static func isTemporary(_ path: String) -> Bool {
-        URL(fileURLWithPath: path).lastPathComponent.hasPrefix(".mediapull-rename-")
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.hasPrefix(".mediapull-rename-") || name.hasPrefix(editPrefix)
+    }
+
+    /// The hidden name an edit waits under beside the file it replaces (D-107).
+    static let editPrefix = ".mediapull-edit-"
+
+    /// Hidden names of a change that hold an item now: a swap of names part way, or a Replace part way.
+    static func hiddenPresent(_ entry: JournalEntry) -> Bool {
+        !temporaryPathsPresent(entry.steps).isEmpty || (entry.edits ?? []).contains { FileManager.default.fileExists(atPath: $0) }
     }
 
     /// The name to show for a step's item: never a temporary name, but the name it had (`otherwise`) (B11-m2).
@@ -563,6 +584,12 @@ public actor OperationJournal {
 
     /// Reverses an entry's steps, newest first. Files changed or moved since are left where they are and reported.
     public func undo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
+        undo(id, park: true, progress: progress)
+    }
+
+    /// `park`: an edit a Replace placed goes to the Trash once it is back under its hidden name (D-107). A Replace that
+    /// failed part way keeps it there instead, to put it back where it came from.
+    func undo(_ id: UUID, park: Bool, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
         guard var entry = entry(id), !entry.undone else { return UndoReport(
             restored: 0,
             skipped: [],
@@ -572,6 +599,7 @@ public actor OperationJournal {
         // A change that changed nothing (its files went away before it ran) has nothing to undo: it is simply undone
         // (audit 14, B14-m2).
         guard !entry.steps.isEmpty else {
+            if park { parkEdits(&entry) }
             entry.undone = true
             report.done = 1
             if !save(entry) { report.unsaved = true }
@@ -630,6 +658,7 @@ public actor OperationJournal {
             if !save(unchanged) { report.unsaved = true }
             return report
         }
+        if park { parkEdits(&entry) }
         // A second part of a change undone later joins what Redo does again, never replaces it (audit 14, B14-m1).
         entry.undoneSteps = undoneUnits.reversed().flatMap { $0 } + (entry.undoneSteps ?? [])
         // Steps whose folder is missing altogether (a drive that is not connected) stay in the entry, so Undo can be tried
@@ -656,6 +685,8 @@ public actor OperationJournal {
             report.skipped.append("“\(URL(fileURLWithPath: entry.root).lastPathComponent)” is no longer there, so nothing was done again.")
             return report
         }
+        // A Replace's edit comes back from the Trash first; without it the original is never trashed again.
+        guard unparkEdits(&entry, report: &report) else { return report }
         let unchanged = entry
         let before = entry.steps.count
         let units = Self.units(steps)
@@ -702,7 +733,10 @@ public actor OperationJournal {
                 try? fm.removeItem(atPath: path)
             }
             report.done = 0
-            if !save(unchanged) { report.unsaved = true }
+            // An edit brought back from the Trash for this goes back to it, never left under its hidden name.
+            var kept = unchanged
+            parkEdits(&kept)
+            if !save(kept) { report.unsaved = true }
             return report
         }
         entry.undone = false
@@ -796,7 +830,8 @@ public actor OperationJournal {
                     return false
                 }
                 try trashItem(URL(fileURLWithPath: original), entry: &entry)
-                if !original.hasSuffix(".json") { report.restored += 1 }
+                // A Replace counts its one file once, when the edit takes its place.
+                if !original.hasSuffix(".json"), entry.edits == nil { report.restored += 1 }
                 report.done += 1
                 return true
             }
@@ -983,5 +1018,117 @@ public actor OperationJournal {
                 return false
             }
         }
+    }
+
+    // MARK: Editor Replace (D-107)
+
+    /// Replaces `original` with `edit` (an edited image, a trimmed video) as one change ⌘Z takes back: the edit and its new
+    /// metadata wait beside the original under hidden names (a full copy when the edit is on another disk, so the original
+    /// is never trashed for a copy that fails or is cut short), the original is checked to be the file that was opened
+    /// just before it and its metadata file go to the Trash, then the edit takes a free name at `wanted` (the original's
+    /// own name is free again, whatever its case). A failure part way puts the original back and the edit where it was.
+    public func replace(_ original: URL, identity: String?, with edit: URL, named wanted: URL, metadata: Data?, title: String)
+        throws -> JournalEntry
+    {
+        let folder = wanted.deletingLastPathComponent()
+        let hidden = folder.appendingPathComponent("\(Self.editPrefix)\(UUID().uuidString).\(wanted.pathExtension)")
+        let hiddenMetadata = Sidecar.sidecarURL(for: hidden)
+        var entry = JournalEntry(id: UUID(), title: title, root: folder.path, date: Date(), steps: [], failures: [],
+                                 undone: false, finished: false)
+        entry.edits = [hidden.path] + (metadata == nil ? [] : [hiddenMetadata.path])
+        // Recorded before anything moves, so a crash part way is found and taken back at launch.
+        guard save(entry) else {
+            let message = "The undo record could not be saved, so nothing was changed."
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        func discard() { try? fm.removeItem(at: url(for: entry.id)) }
+        do {
+            try FileOps.renameExclusive(edit, to: hidden)
+        } catch {
+            discard()
+            throw error
+        }
+        func unstage() {
+            try? FileOps.renameExclusive(hidden, to: edit) // lint:allow silent-write the error being thrown is what is reported
+            try? fm.removeItem(at: hiddenMetadata)
+        }
+        do {
+            if let metadata { try FileOps.writeNew(metadata, to: hiddenMetadata) }
+            guard FileOps.isStill(original, identity) else { throw FileOps.changedError(original) }
+        } catch {
+            unstage()
+            discard()
+            throw error
+        }
+        do {
+            let sidecar = MediaFiles.companion(of: original)
+            try trashItem(original, entry: &entry)
+            if let sidecar { try trashItem(sidecar, entry: &entry) }
+            if failsAfterTrash { throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "Stopped for a test."]) }
+            let target = FileOps.freeName(for: wanted, replacing: original)
+            try moveItemExclusive(hidden, to: target, entry: &entry)
+            if metadata != nil { try moveItemExclusive(hiddenMetadata, to: Sidecar.sidecarURL(for: target), entry: &entry) }
+            entry.finished = true
+            save(entry)
+            return entry
+        } catch {
+            save(entry)
+            let report = undo(entry.id, park: false)
+            unstage()
+            if report.skipped.isEmpty, !FileManager.default.fileExists(atPath: hidden.path) { discard() }
+            let note = report.skipped.isEmpty ? "" : " " + report.skipped.joined(separator: " ")
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: error.localizedDescription + note])
+        }
+    }
+
+    /// As `moveItem`, but never over a file another change put at `to` meanwhile.
+    func moveItemExclusive(_ from: URL, to: URL, entry: inout JournalEntry) throws {
+        try FileOps.renameExclusive(from, to: to)
+        let values = try? to.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        entry.steps.append(.move(from: from.path, to: to.path, size: values?.fileSize.map(Int64.init),
+                                 modified: values?.contentModificationDate))
+        note(to.path, in: &entry)
+        note(from.deletingLastPathComponent().path, in: &entry)
+    }
+
+    /// After Undo of a Replace: what is back under the hidden names goes to the Trash, remembered for Redo.
+    func parkEdits(_ entry: inout JournalEntry) {
+        for path in entry.edits ?? [] where fm.fileExists(atPath: path) {
+            var trashed: NSURL?
+            guard (try? fm.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: &trashed)) != nil,
+                  let inTrash = (trashed as URL?)?.path else { continue }
+            if entry.parked == nil { entry.parked = [:] }
+            entry.parked![path] = inTrash
+            note(inTrash, in: &entry)
+        }
+    }
+
+    /// Before Redo of a Replace: the edit comes back from the Trash to its hidden name. False (and nothing done) when it is
+    /// no longer there as it was.
+    func unparkEdits(_ entry: inout JournalEntry, report: inout UndoReport) -> Bool {
+        guard let parked = entry.parked, !parked.isEmpty else { return true }
+        let media = parked.keys.filter { !$0.hasSuffix(".json") }
+        guard media.allSatisfy({ path in
+            let inTrash = parked[path] ?? ""
+            return !fm.fileExists(atPath: path) && fm.fileExists(atPath: inTrash) && isSame(inTrash, in: entry)
+        }) else {
+            report.skipped.append("The edited version is no longer in the Trash, so nothing was done again.")
+            return false
+        }
+        for (path, inTrash) in parked.sorted(by: { $0.key < $1.key }) where !fm.fileExists(atPath: path) {
+            do {
+                try fm.moveItem(at: URL(fileURLWithPath: inTrash), to: URL(fileURLWithPath: path))
+            } catch {
+                guard path.hasSuffix(".json") else {
+                    report.skipped.append("The edited version could not be taken out of the Trash, so nothing was done again.")
+                    return false
+                }
+                report.skipped.append("The edited version's metadata file stayed in the Trash: \(error.localizedDescription)")
+                continue
+            }
+            note(path, in: &entry)
+        }
+        entry.parked = nil
+        return true
     }
 }

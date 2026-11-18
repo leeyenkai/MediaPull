@@ -501,7 +501,6 @@ struct CheckBar: View {
                         // Only those still without their media: a file put back since the check keeps its metadata (audit 21,
                         // B21-m2).
                         let still = report.orphanedMetadata.filter {
-                            // lint:allow main-io a few checks on a click
                             !FileManager.default.fileExists(atPath: $0.deletingPathExtension().path)
                         }
                         // Nothing left to trash: the report is simply out of date (audit 22, B22-m4).

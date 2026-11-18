@@ -3,6 +3,7 @@ import Foundation
 import MediaPullCore
 import MediaPullLibrary
 import MediaPullMedia
+import MediaPullNet
 import MediaPullStore
 import Observation
 import UniformTypeIdentifiers
@@ -847,17 +848,11 @@ final class LibraryModel: MediaGridOwner {
                     let work = SavePipeline.defaultWorkDirectory.appendingPathComponent("import-\(UUID().uuidString)")
                     defer { try? FileManager.default.removeItem(at: work) }
                     let result = try await converter.convert(url, policy: policy, layout: .archive, workDirectory: work)
-                    let stem = url.deletingPathExtension().lastPathComponent
-                    let name = FileNaming.fileName(stem: stem, ext: result.format.fileExtension)
-                    let output = Self.uniqueURL(folder.appendingPathComponent(name))
-                    let converted = result.converted, convertedURL = result.url
-                    try await Self.offMain {
-                        if converted {
-                            try FileManager.default.moveItem(at: convertedURL, to: output) // lint:allow main-io inside offMain
-                        } else {
-                            try FileManager.default.copyItem(at: url, to: output) // lint:allow main-io inside offMain
-                        }
-                    }
+                    let name = FileNaming.fileName(stem: url.deletingPathExtension().lastPathComponent, ext: result.format.fileExtension)
+                    // A new file, like a save (D-86), with a copy of the original's metadata file that no longer identifies
+                    // the item; never over a name another file or an orphaned metadata file has (D-107).
+                    let placed = try await Self.placeConverted(result, from: url, as: folder.appendingPathComponent(name))
+                    if let problem = placed.metadataProblem { problems.append("\(url.lastPathComponent): metadata file: \(problem)") }
                 } catch {
                     problems.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -872,70 +867,17 @@ final class LibraryModel: MediaGridOwner {
         try await Task.detached(priority: .userInitiated, operation: work).value
     }
 
-    /// Where a rename lands: the name asked for when only its case changes (the volume sees the same file), otherwise
-    /// a free name.
-    static func renameTarget(from source: URL, to target: URL) -> URL {
-        source.standardizedFileURL.path.lowercased() == target.standardizedFileURL.path.lowercased() ? target : uniqueURL(target)
-    }
-
-    /// Puts an edited file in its folder, then sends the original to the Trash: first beside it under a hidden name (a
-    /// full copy when the edit is on another disk, so the original is never trashed for a copy that fails or is cut short),
-    /// then the original to the Trash, then the edit to its name, a rename on one disk (audit 17, B17-m1, B17-M2).
-    nonisolated static func placeEdit(_ edited: URL, as wanted: URL, replacing original: URL?, identity: String? = nil) throws -> URL {
-        let manager = FileManager.default
-        let staged = wanted.deletingLastPathComponent()
-            .appendingPathComponent(".mediapull-edit-\(UUID().uuidString).\(wanted.pathExtension)")
-        try manager.moveItem(at: edited, to: staged) // lint:allow main-io called off the main actor
-        var trashed: NSURL?
-        do {
-            // Checked again just before the original goes, after the copy beside it (which takes long across disks): an Undo
-            // may have put another file there meanwhile (audit 20, B20-m2; audit 21, B21-m1).
-            if let original, let identity, AccountFolderRecord.number(of: original) != identity {
-                // Said as it is: gone, or another file in its place (audit 21, A21-m4).
-                let what = manager.fileExists(atPath: original.path) ? "is another file now (it was renamed or moved since it was opened)"
-                    : "is no longer there (it was moved or deleted since it was opened)"
-                throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey:
-                    "“\(original.lastPathComponent)” \(what), so nothing was changed."])
-            }
-            if let original { try manager.trashItem(at: original, resultingItemURL: &trashed) } // lint:allow main-io off main
-            let target = uniqueURL(wanted, replacing: original)
-            try manager.moveItem(at: staged, to: target) // lint:allow main-io called off the main actor
-            return target
-        } catch {
-            // The original comes back from the Trash and the edit goes back where it was, so Save can be tried again (audit
-            // 18, C18-m4; audit 19, C19-m5).
-            if let original, let trashed = trashed as URL? {
-                // lint:allow main-io called off the main actor
-                try? manager.moveItem(at: trashed, to: original) // lint:allow silent-write the original stays in the Trash otherwise
-            }
-            // lint:allow main-io called off the main actor
-            try? manager.moveItem(at: staged, to: edited) // lint:allow silent-write the staged edit stays beside the folder otherwise
-            throw error
-        }
-    }
-
-    /// A free name for `url`: neither the file nor a metadata file of that name may exist, so a later sidecar write never
-    /// replaces an orphaned one.
-    /// `replacing` is the file an edit replaces: its own metadata file goes with the edit, so it does not take the name
-    /// (audit 3, B3-M1).
-    nonisolated static func uniqueURL(_ url: URL, replacing: URL? = nil) -> URL {
-        func free(_ candidate: URL) -> Bool {
-            let fm = FileManager.default
-            // Letter for letter, as the editors' metadata step compares: a case-only rename while editing gets " 2", never
-            // a metadata file sent to the Trash (B22-m1 reverted, audit 23, B23-M1).
-            let ownSidecar = replacing.map { $0.standardizedFileURL == candidate.standardizedFileURL } ?? false
-            return !fm.fileExists(atPath: candidate.path) && (ownSidecar || !fm.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path))
-        }
-        guard !free(url) else { return url }
-        let stem = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-        var counter = 2
-        while true {
-            let candidate = url.deletingLastPathComponent()
-                .appendingPathComponent(ext.isEmpty ? "\(stem) \(counter)" : "\(stem) \(counter).\(ext)")
-            if free(candidate) { return candidate }
-            counter += 1
-        }
+    /// A converted file (or the original, when it needed no conversion) placed at a free name with a copy of the original's
+    /// metadata file, off the main actor (D-107).
+    nonisolated static func placeConverted(_ result: ConversionResult, from original: URL, as wanted: URL) async throws -> FileOps.Placed {
+        let converted = result.converted, output = result.url
+        let metadata = try? await Task.detached(priority: .userInitiated) { () throws -> Data? in
+            let checksum = try FileHasher.sha256(of: converted ? output : original)
+            return try FileOps.metadata(of: original, applying: .init(values: ["sha256": .string(checksum)], isCopy: true))
+        }.value
+        let companion: FileOps.Companion = metadata.flatMap { $0 }.map(FileOps.Companion.data) ?? .none
+        return converted ? try await FileOps.place(output, as: wanted, with: companion)
+            : try await FileOps.place(original, as: wanted, with: companion, keepSource: true)
     }
 
     /// Handles anything dropped on a folder: extracted items are saved, files are copied or moved.

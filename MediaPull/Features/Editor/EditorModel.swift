@@ -89,7 +89,7 @@ final class EditorModel: UnsavedEditing {
 
     /// Why Save or Rename did nothing: the opened file is gone, or another file has its name now (audit 19, A19-m3).
     static func changedMessage(_ url: URL) -> String {
-        FileManager.default.fileExists(atPath: url.path) // lint:allow main-io one check, after the person pressed Save
+        FileManager.default.fileExists(atPath: url.path)
             ? "“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was changed."
             : "“\(url.lastPathComponent)” is no longer there (it was moved or deleted since it was opened), so nothing was changed."
     }
@@ -310,84 +310,38 @@ final class EditorModel: UnsavedEditing {
                     }
                     return plan.moves.first?.destination ?? url
                 }
-                let wanted = folder.appendingPathComponent(FileNaming.fileName(
-                    stem: asCopy ? "\(cleanName) copy" : cleanName,
-                    ext: fileExtension
-                ))
-                let target = asCopy ? LibraryModel.uniqueURL(wanted) : LibraryModel.renameTarget(from: url, to: wanted)
-                // A copy of a large file to another disk takes a while: file operations run off the main actor.
-                try await LibraryModel.offMain {
-                    let manager = FileManager.default
-                    // lint:allow main-io inside offMain
-                    if asCopy { try manager.copyItem(at: url, to: target) } else { try manager.moveItem(at: url, to: target) }
-                }
-                if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
-                await moveSidecar(from: url, to: target, copy: asCopy, edited: nil)
-                return target
+                // Save as Copy with no edits: a copy that no longer identifies the item (D-105), at a free name (D-107).
+                let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(cleanName) copy", ext: fileExtension))
+                let placed = try await FileOps.copy(url, as: wanted)
+                if let problem = placed.metadataProblem { message = "Saved, but the metadata file could not be written: \(problem)" }
+                return placed.url
             }
             let edited = try await writeEdited()
             let stem = asCopy ? (hasNameChange ? cleanName : "\(cleanName) edited") : cleanName
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: format.fileExtension))
-            let identity = openedIdentity
-            let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
-                // The original goes to the Trash (D-34), and the edit takes a free name next to it.
-                try LibraryModel.placeEdit(edited, as: wanted, replacing: asCopy ? nil : url, identity: identity)
+            // The edit's metadata: the original's, with the new size and checksum (R-3202); a copy drops the identity keys.
+            let metadata = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
+                var values: [String: FileOps.MetadataValue] = ["edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: edited))]
+                if let size = ImageConversion.analyze(edited) {
+                    values["width"] = .int(size.width)
+                    values["height"] = .int(size.height)
+                }
+                return try FileOps.metadata(of: url, applying: .init(values: values, isCopy: asCopy))
             }.value
-            if !asCopy { AppModel.shared.noteMoved([(from: url.path, to: target.path)]) }
-            await moveSidecar(from: url, to: target, copy: asCopy, edited: target)
-            return target
+            if asCopy {
+                let placed = try await FileOps.place(edited, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
+                if let problem = placed.metadataProblem { message = "Saved, but the metadata file could not be written: \(problem)" }
+                return placed.url
+            }
+            // The original and its metadata file go to the Trash as one change ⌘Z takes back (D-34, D-107).
+            let replaced = try await AppModel.shared.replaceFile(url, identity: openedIdentity, with: edited, named: wanted,
+                                                                 metadata: metadata, title: "Edit “\(url.lastPathComponent)”")
+            window?.registerUndo(replaced.entry)
+            return replaced.url
         } catch {
             message = error.localizedDescription
             return nil
         }
-    }
-
-    /// Keeps the metadata file with its media file, updating size and checksum after edits. A metadata file that cannot be
-    /// written is reported: the picture is saved, and the person should know its record did not follow.
-    private func moveSidecar(from source: URL, to target: URL, copy: Bool, edited: URL?) async {
-        let oldSidecar = Sidecar.sidecarURL(for: source)
-        let newSidecar = Sidecar.sidecarURL(for: target)
-        let problem = await Task.detached(priority: .userInitiated) { () -> String? in
-            let manager = FileManager.default
-            guard manager.fileExists(atPath: oldSidecar.path) else { return nil }
-            do {
-                // lint:allow main-io detached
-                guard var object = try JSONSerialization.jsonObject(with: Data(contentsOf: oldSidecar)) as? [String: Any] else {
-                    if !copy { try manager.moveItem(at: oldSidecar, to: newSidecar) } // lint:allow main-io detached
-                    return nil
-                }
-                if let edited {
-                    if let size = ImageConversion.analyze(edited) {
-                        object["width"] = size.width
-                        object["height"] = size.height
-                    }
-                    object["sha256"] = try? FileHasher.sha256(of: edited)
-                    object["edited"] = true
-                }
-                // A copy is an item of its own: it never stands for the original, so Find Missing still brings back a
-                // deleted original (D-91, audit 21, C21-m2).
-                if copy {
-                    for key in VideoEditorModel.identityKeys {
-                        object[key] = nil
-                    }
-                }
-                let data = try JSONSerialization.data(withJSONObject: object,
-                                                      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-                try data.write(to: newSidecar, options: .atomic)
-                if !copy, oldSidecar != newSidecar {
-                    // Renamed: the old record is no longer needed; edited: the original's record goes to the Trash with it.
-                    if edited == nil {
-                        try manager.removeItem(at: oldSidecar)
-                    } else {
-                        try manager.trashItem(at: oldSidecar, resultingItemURL: nil) // lint:allow main-io detached
-                    }
-                }
-                return nil
-            } catch {
-                return error.localizedDescription
-            }
-        }.value
-        if let problem { message = "Saved, but the metadata file could not be updated: \(problem)" }
     }
 
     /// Extracted item: remember the name, and save the edited image if there are edits.

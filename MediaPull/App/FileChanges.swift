@@ -22,6 +22,18 @@ extension AppModel {
         return entry
     }
 
+    /// An editor Replace (an edited image, a trimmed video) as one journaled change ⌘Z takes back (D-107): records keyed by
+    /// path follow the original to the edit, as they did before the change was journaled.
+    func replaceFile(_ original: URL, identity: String?, with edit: URL, named wanted: URL, metadata: Data?, title: String)
+        async throws -> (entry: JournalEntry, url: URL)
+    {
+        let entry = try await journal.replace(original, identity: identity, with: edit, named: wanted, metadata: metadata, title: title)
+        let placed = entry.moves.last { !$0.to.hasSuffix(".json") }?.to ?? wanted.path
+        await followMoves([(from: original.path, to: placed)], changedBy: entry.id)
+        fileChangeRevision += 1
+        return (entry, URL(fileURLWithPath: placed))
+    }
+
     /// Folders gone from where windows show or save to (trashed, or removed by Undo): the save folder and Organise panes
     /// go to the folder above (audit 4, B4-m2; audit 10, B10-m7).
     private func foldersGone(_ paths: [String]) {

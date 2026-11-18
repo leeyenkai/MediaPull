@@ -131,12 +131,14 @@ else
 
   # Offline end to end: a stand-in engine replays account updates through the whole app (no network). Closures proved
   # only here must not regress unseen (audit 5, C5-m10).
-  echo "== Self-test: account folder updates (offline)"
+  echo "== Self-test: editor Replace and account folder updates (offline)"
   APP="$CACHE/DerivedData/Build/Products/Debug/MediaPull.app/Contents/MacOS/MediaPull"
   OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
   if [[ -x "$APP" ]]; then
-    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-update 2>&1 \
-      | grep -E "update: (PASS|FAIL)" | tee /dev/stderr | grep -q "update: PASS" || FAILED=1
+    RESULTS="$(NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" \
+      --selftest-update 2>&1 | grep -E "(update|replace): (PASS|FAIL)" | tee /dev/stderr)"
+    # Editor Replace and ⌘Z through the whole app (D-107), then the account folder updates.
+    grep -q "replace: PASS" <<<"$RESULTS" && grep -q "update: PASS" <<<"$RESULTS" && ! grep -q ": FAIL" <<<"$RESULTS" || FAILED=1
   else
     echo "error: the app was not built, so the self-test did not run"
     FAILED=1

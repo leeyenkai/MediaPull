@@ -984,7 +984,7 @@ final class EngineService {
                         }
                         folder = now
                     }
-                    switch fileAccountDocument(path, kind: kind, into: folder) {
+                    switch await fileAccountDocument(path, kind: kind, into: folder) {
                     case let .success(saved):
                         if job.notes.count < 30 { job.notes.append("Saved the \(what) as \(saved.lastPathComponent)") }
                     case let .failure(error):
@@ -1290,7 +1290,7 @@ final class EngineService {
     }
 
     /// Moves a followers or following list, or the profile, into `<account>/Account details/` with the date in its name.
-    private func fileAccountDocument(_ file: URL, kind: String, into accountFolder: URL) -> Result<URL, Error> {
+    private func fileAccountDocument(_ file: URL, kind: String, into accountFolder: URL) async -> Result<URL, Error> {
         let directory = accountFolder.appendingPathComponent(SaveTarget.accountDetailsFolder, isDirectory: true)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -1298,10 +1298,9 @@ final class EngineService {
         formatter.dateFormat = "yyyy-MM-dd"
         let name = FileNaming.fileName(stem: "\(formatter.string(from: Date()))_\(kind)", ext: file.pathExtension)
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let target = LibraryModel.uniqueURL(directory.appendingPathComponent(name))
-            try FileManager.default.moveItem(at: file, to: target) // lint:allow main-io a small list or profile file
-            return .success(target)
+            // At a free name, never over an earlier list of the same day (D-107).
+            let placed = try await FileOps.place(file, as: directory.appendingPathComponent(name), with: .none, makingFolder: true)
+            return .success(placed.url)
         } catch {
             return .failure(error)
         }
@@ -1605,18 +1604,23 @@ final class EngineService {
         let destination = video.deletingLastPathComponent().appendingPathComponent(name)
         // The same video downloaded again already has its side files: they are not added a second time, numbered.
         let finalName = kind == "thumbnail" ? destination.deletingPathExtension().appendingPathExtension("jpg") : destination
-        if FileManager.default.fileExists(atPath: finalName.path) { // lint:allow main-io one file's existence
-            try? FileManager.default.removeItem(at: path) // lint:allow main-io silent-write a staged copy, cleaned with staging anyway
+        if FileManager.default.fileExists(atPath: finalName.path) {
+            // A staged copy, removed with the staging folder anyway.
+            try? FileManager.default.removeItem(at: path)
             return nil
         }
         // Thumbnails are saved as JPEG (R-3505), whatever the site served: WebP, PNG and the rest.
-        if kind == "thumbnail", !["jpg", "jpeg"].contains(ext),
-           await Self.convertToJPEG(path, output: LibraryModel.uniqueURL(destination.deletingPathExtension().appendingPathExtension("jpg")))
-        {
-            return nil
+        if kind == "thumbnail", !["jpg", "jpeg"].contains(ext) {
+            let converted = path.deletingPathExtension().appendingPathExtension("converted.jpg")
+            if await Self.convertToJPEG(path, output: converted),
+               (try? await FileOps.place(converted, as: finalName, with: .none)) != nil
+            {
+                return nil
+            }
         }
         do {
-            try FileManager.default.moveItem(at: path, to: LibraryModel.uniqueURL(destination)) // lint:allow main-io a small side file
+            // At a free name beside the video, never over another file (D-107).
+            _ = try await FileOps.place(path, as: destination, with: .none)
             return nil
         } catch {
             return "\(name) could not be saved beside the video: \(error.localizedDescription)"

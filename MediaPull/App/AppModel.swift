@@ -806,17 +806,14 @@ final class AppModel {
                         continue
                     }
                     let folder = destination ?? file.deletingLastPathComponent()
-                    let stem = file.deletingPathExtension().lastPathComponent
-                    let ext = result.format.fileExtension, converted = result.url
-                    // The work folder is in Caches, so the move is a copy when the output is on another disk: off the main actor.
-                    let output = try await Task.detached(priority: .userInitiated) { () throws -> URL in
-                        // A name whose orphaned metadata file is still there is taken too (audit 4, B4-m11).
-                        let output = LibraryModel.uniqueURL(folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: ext)))
-                        try FileManager.default.moveItem(at: converted, to: output) // lint:allow main-io in a detached task
-                        return output
-                    }.value
+                    let name = FileNaming.fileName(stem: file.deletingPathExtension().lastPathComponent, ext: result.format.fileExtension)
+                    // A free name (an orphaned metadata file's name is taken too), with a copy of the original's metadata
+                    // file, off the main actor (D-107).
+                    let placed = try await LibraryModel.placeConverted(result, from: file, as: folder.appendingPathComponent(name))
+                    let output = placed.url
                     job.saved += 1
-                    onResult(file, "Saved \(output.lastPathComponent)")
+                    onResult(file, "Saved \(output.lastPathComponent)"
+                        + (placed.metadataProblem.map { "; its metadata file could not be written: \($0)" } ?? ""))
                 } catch {
                     job.failed += 1
                     job.failures.append((file.path, error.localizedDescription))

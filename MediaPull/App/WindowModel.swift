@@ -1196,10 +1196,11 @@ final class WindowModel: Identifiable, MediaGridOwner {
                 var destination = url.pathExtension.lowercased() == actual
                     ? url
                     : url.deletingPathExtension().appendingPathExtension(actual)
-                destination = LibraryModel.uniqueURL(destination)
-                let target = destination
-                // A video copied to another disk can take a while: not on the main actor.
-                try await LibraryModel.offMain { try MediaFiles.copy(saved, to: target, withSidecar: withSidecar) }
+                // A free name, never over a file or an orphaned metadata file, off the main actor; the metadata file goes
+                // with it as it is (D-107).
+                let sidecar = Sidecar.sidecarURL(for: saved)
+                let companion: FileOps.Companion = withSidecar ? .file(sidecar) : .none
+                _ = try await FileOps.place(saved, as: destination, with: companion, keepSource: true)
                 return nil
             } catch {
                 return error

@@ -136,34 +136,13 @@ public enum ShortHash {
     }
 }
 
-/// Moving, copying and trashing a media file together with its metadata file, which always travel together (R-1801).
-/// A folder has no metadata file: a file named "<folder>.json" beside it is left alone. The metadata file is best effort;
-/// the media file's own error is what is thrown.
+/// A media file's metadata file, which always travels with it (R-1801); moving, copying and trashing go through
+/// `FileOps` (D-107). A folder has no metadata file: a file named "<folder>.json" beside it is left alone.
 public enum MediaFiles {
     public static func companion(of url: URL) -> URL? {
         var isFolder: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), !isFolder.boolValue else { return nil }
         let sidecar = Sidecar.sidecarURL(for: url)
         return FileManager.default.fileExists(atPath: sidecar.path) ? sidecar : nil
-    }
-
-    public static func move(_ url: URL, to target: URL) throws {
-        let sidecar = companion(of: url)
-        try FileManager.default.moveItem(at: url, to: target)
-        // lint:allow silent-write documented above: the metadata file is best effort, the media file's error is thrown
-        if let sidecar { try? FileManager.default.moveItem(at: sidecar, to: Sidecar.sidecarURL(for: target)) }
-    }
-
-    public static func copy(_ url: URL, to target: URL, withSidecar: Bool = true) throws {
-        let sidecar = withSidecar ? companion(of: url) : nil
-        try FileManager.default.copyItem(at: url, to: target)
-        // lint:allow silent-write documented above: the metadata file is best effort, the media file's error is thrown
-        if let sidecar { try? FileManager.default.copyItem(at: sidecar, to: Sidecar.sidecarURL(for: target)) }
-    }
-
-    public static func trash(_ url: URL) throws {
-        let sidecar = companion(of: url)
-        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-        if let sidecar { try? FileManager.default.trashItem(at: sidecar, resultingItemURL: nil) }
     }
 }

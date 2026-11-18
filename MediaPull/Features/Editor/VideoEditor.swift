@@ -27,7 +27,7 @@ final class VideoEditorModel: UnsavedEditing {
 
     /// Why Save or Rename did nothing: the opened file is gone, or another file has its name now (audit 19, A19-m3).
     static func changedMessage(_ url: URL) -> String {
-        FileManager.default.fileExists(atPath: url.path) // lint:allow main-io one check, after the person pressed Save
+        FileManager.default.fileExists(atPath: url.path)
             ? "“\(url.lastPathComponent)” is another file now (it was renamed or moved since it was opened), so nothing was changed."
             : "“\(url.lastPathComponent)” is no longer there (it was moved or deleted since it was opened), so nothing was changed."
     }
@@ -123,14 +123,14 @@ final class VideoEditorModel: UnsavedEditing {
             let stem = "\(cleanName)_frame_\(Self.timestamp(time, forFileName: true))"
             switch request.subject {
             case let .file(url):
-                let target = LibraryModel.uniqueURL(
-                    url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: stem, ext: "png"))
-                )
-                try await LibraryModel.offMain { try FileManager.default.moveItem(at: still, to: target) } // lint:allow main-io offMain
-                let problem = Self.writeSidecar(from: url, to: target, changes: [
-                    "width": size.width, "height": size.height, "sha256": await Self.checksum(target),
-                    "edited": true, "frame_time": (time * 1000).rounded() / 1000,
-                ], dropping: ["num", "count", "duration"] + Self.identityKeys)
+                let wanted = url.deletingLastPathComponent().appendingPathComponent(FileNaming.fileName(stem: stem, ext: "png"))
+                // A new file at a free name, with a copy of the video's metadata file that is not part of its post (R-3404).
+                let metadata = try await Self.metadata(from: url, for: still, values: [
+                    "width": .int(size.width), "height": .int(size.height), "edited": .bool(true),
+                    "frame_time": .double((time * 1000).rounded() / 1000),
+                ], dropping: ["num", "count", "duration"], isCopy: true)
+                let placed = try await FileOps.place(still, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
+                let target = placed.url, problem = placed.metadataProblem
                 finishLibraryChange()
                 report("Saved the frame at \(Self.timestamp(time)) as \(target.lastPathComponent)."
                     + (problem.map { " The metadata file could not be written: \($0)" } ?? ""))
@@ -186,18 +186,22 @@ final class VideoEditorModel: UnsavedEditing {
                 let folder = url.deletingLastPathComponent()
                 let stem = replacing ? cleanName : (hasNameChange ? cleanName : "\(cleanName)_trimmed")
                 let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: stem, ext: url.pathExtension))
-                // The original goes to the Trash when replaced; moving from the cache to a library on another volume is a
-                // full copy: not on the main actor.
-                let identity = openedIdentity
-                let target = try await Task.detached(priority: .userInitiated) { () throws -> URL in
-                    try LibraryModel.placeEdit(trimmed, as: wanted, replacing: replacing ? url : nil, identity: identity)
-                }.value
-                if replacing { app.noteMoved([(from: url.path, to: target.path)]) }
-                if let problem = Self.writeSidecar(from: url, to: target, changes: [
-                    "duration": (length * 1000).rounded() / 1000, "sha256": await Self.checksum(target), "edited": true,
-                    "trimmed_from": [(selection.lowerBound * 1000).rounded() / 1000, (selection.upperBound * 1000).rounded() / 1000],
-                ], dropping: replacing ? [] : Self.identityKeys, trashSource: replacing) {
-                    report("Saved, but the metadata file could not be written: \(problem)")
+                let metadata = try await Self.metadata(from: url, for: trimmed, values: [
+                    "duration": .double((length * 1000).rounded() / 1000), "edited": .bool(true),
+                    "trimmed_from": .doubles([(selection.lowerBound * 1000).rounded() / 1000,
+                                              (selection.upperBound * 1000).rounded() / 1000]),
+                ], dropping: [], isCopy: !replacing)
+                let target: URL
+                if replacing {
+                    // The original and its metadata file go to the Trash as one change ⌘Z takes back (D-107).
+                    let replaced = try await app.replaceFile(url, identity: openedIdentity, with: trimmed, named: wanted,
+                                                             metadata: metadata, title: "Trim “\(url.lastPathComponent)”")
+                    window?.registerUndo(replaced.entry)
+                    target = replaced.url
+                } else {
+                    let placed = try await FileOps.place(trimmed, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
+                    target = placed.url
+                    if let problem = placed.metadataProblem { report("Saved, but the metadata file could not be written: \(problem)") }
                 }
                 finishLibraryChange()
                 window?.editorRequest = nil
@@ -261,42 +265,16 @@ final class VideoEditorModel: UnsavedEditing {
         app.libraryRevision += 1
     }
 
-    /// SHA-256 of a whole file, which can be gigabytes for a video: never on the main actor.
-    static func checksum(_ file: URL) async -> String {
-        await Task.detached(priority: .userInitiated) { (try? FileHasher.sha256(of: file)) ?? "" }.value
-    }
-
-    /// What makes a metadata file stand for one Instagram item (D-79): a copy, a trim or a frame drops them (C21-m2).
-    nonisolated static let identityKeys = ["media_id", "post_id", "num", "count", "shortcode", "post_shortcode"]
-
-    /// Copies the video's metadata file for a derived file, with updated fields (SPEC R-3404). Returns what went wrong, if
-    /// anything; a video with no metadata file needs none. Metadata files are a few kilobytes.
-    @discardableResult
-    static func writeSidecar(from source: URL, to target: URL, changes: [String: Any], dropping: [String], trashSource: Bool = false)
-        -> String?
+    /// The source video's metadata with `values` and the new file's checksum (a whole video can be gigabytes: never on the
+    /// main actor); nil when the video has no metadata file. A copy drops the keys that identify the item (D-105).
+    static func metadata(from source: URL, for file: URL, values: [String: FileOps.MetadataValue], dropping: [String],
+                         isCopy: Bool) async throws -> Data?
     {
-        let oldSidecar = Sidecar.sidecarURL(for: source)
-        guard FileManager.default.fileExists(atPath: oldSidecar.path) else { return nil }
-        guard let data = try? Data(contentsOf: oldSidecar), // lint:allow main-io a few kilobytes
-              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return "the original metadata file could not be read" }
-        for key in dropping {
-            object[key] = nil
-        }
-        for (key, value) in changes {
-            object[key] = value
-        }
-        do {
-            let output = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-            try output.write(to: Sidecar.sidecarURL(for: target), options: .atomic)
-            // Replacing under the same name writes the new metadata to the old path: never trash what was just written.
-            if trashSource, oldSidecar.standardizedFileURL != Sidecar.sidecarURL(for: target).standardizedFileURL {
-                try FileManager.default.trashItem(at: oldSidecar, resultingItemURL: nil) // lint:allow main-io one small file
-            }
-            return nil
-        } catch {
-            return error.localizedDescription
-        }
+        try await Task.detached(priority: .userInitiated) { () throws -> Data? in
+            var values = values
+            values["sha256"] = .string(try FileHasher.sha256(of: file))
+            return try FileOps.metadata(of: source, applying: .init(values: values, dropping: dropping, isCopy: isCopy))
+        }.value
     }
 }
 

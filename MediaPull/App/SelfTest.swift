@@ -119,6 +119,7 @@ final class SelfTestRunner {
             return
         }
         if CommandLine.arguments.contains("--selftest-update") {
+            await exerciseReplace(library: library)
             await exerciseUpdate(library: library, out: out)
             quit()
             return
@@ -623,6 +624,46 @@ final class SelfTestRunner {
             && copyNamed
         note("editor: \(started && added > 0 && originalKept ? "PASS" : "FAIL") an edited copy of a saved item is saved "
             + "(\(added) files added), the original keeps its own state \(originalKept)")
+    }
+
+    /// Editor Replace through the whole app, offline (D-107): a case-only rename with an edit keeps the metadata file, ⌘Z
+    /// puts the original back exactly, Redo does it again, and nothing is left under a hidden name.
+    private func exerciseReplace(library: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        let folder = library.appendingPathComponent("edits", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let original = folder.appendingPathComponent("Photo.jpg")
+        let originalData = Self.jpeg(3)
+        try? originalData.write(to: original)
+        try? #"{"category":"instagram","username":"x","media_id":"m1"}"#
+            .write(to: Sidecar.sidecarURL(for: original), atomically: true, encoding: .utf8)
+        func metadata(_ url: URL) -> [String: Any]? {
+            (try? Data(contentsOf: Sidecar.sidecarURL(for: url))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        }
+        func names() -> [String] { ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).sorted() }
+        let editor = EditorModel(request: EditorRequest(subject: .file(original)), window: model)
+        await editor.load()
+        editor.rotate(clockwise: true)
+        await editor.settled()
+        editor.name = "photo"
+        let replaced = await editor.saveFile(asCopy: false)
+        let placed = replaced?.lastPathComponent == "photo.jpg" && names() == ["photo.jpg", "photo.jpg.json"]
+            && metadata(folder.appendingPathComponent("photo.jpg"))?["edited"] as? Bool == true
+            && metadata(folder.appendingPathComponent("photo.jpg"))?["media_id"] as? String == "m1"
+        let entry = await app.journal.entries().first { $0.title.hasPrefix("Edit ") }
+        var undone = false, redone = false
+        if let entry {
+            _ = await app.undoChange(entry.id)
+            undone = names() == ["Photo.jpg", "Photo.jpg.json"] && (try? Data(contentsOf: original)) == originalData
+                && metadata(original)?["edited"] == nil
+            _ = await app.redoChange(entry.id)
+            redone = names() == ["photo.jpg", "photo.jpg.json"]
+                && metadata(folder.appendingPathComponent("photo.jpg"))?["edited"] as? Bool == true
+        }
+        let pass = placed && undone && redone
+        note("replace: \(pass ? "PASS" : "FAIL") a case-only rename with an edit keeps its metadata file (\(placed)), "
+            + "⌘Z puts the original back (\(undone)), Redo does it again (\(redone)); now \(names()) \(editor.message ?? "")")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).
