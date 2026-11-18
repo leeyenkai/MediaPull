@@ -22,10 +22,10 @@ change as the code.
 | R-306 | amended | `scripts/make-dmg.sh` | — | D-77: applies to a public release only |
 | R-307 | built | `scripts/bundle-engines.sh`, `EngineSettings` | `scripts/check.sh` | Licences and SOURCES.txt with every bundled version are in the app (1.8) |
 | R-308 | amended | `Config/Info.plist`, `RequestPolicy.evaluate` | `testOnlyReadsAreAllowed` | D-77: arbitrary loads allowed for http media from any host; the gate still allows only GET and HEAD |
-| R-401 | built | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans |
+| R-401 | amended | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans; MapKit only in `LocationMap` (D-110) |
 | R-402 | built | `scripts/lint_invariants.py`, `LibraryModel.offMain`, `MediaListing.load` | `scripts/lint_invariants.py` | The main-io lint fails on file moves, copies, listings and reads in the app target unless justified (1.8) |
 | R-403 | person | `BridgeClient.run`, `FFmpeg.run`, `CookieFile.cleanUpAll` | `testFinalEventsAreNeverLost` | Helpers run per job and stop with it; Activity Monitor check needs a person |
-| R-501 | built | `GatedRequest`, `NetworkGate`, `RedirectGuard`, `RedirectPolicy.nextHeaders` | `testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer`, `testCookiesStayBehindAndEveryHopIsLogged`, `testACutShortDownloadIsNotKept` | Per-hop Referer and same-origin cookies since 1.8; per-host limits follow redirects |
+| R-501 | amended | `GatedRequest`, `NetworkGate`, `RedirectGuard`, `RedirectPolicy.nextHeaders` | `testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer`, `testCookiesStayBehindAndEveryHopIsLogged`, `testACutShortDownloadIsNotKept` | Per-hop Referer and same-origin cookies since 1.8; per-host limits follow redirects; D-110: the one exception is the location map MapKit draws after the person allows maps |
 | R-502 | built | `RequestPolicy.urlRequest`, `RedirectGuard` | `testEngineUpdatesNeedHTTPS`, `testOnlyReadsAreAllowed` | Plain http is for media only (D-21); engine updates and their redirects are https only (1.8) |
 | R-503 | built | `NetworkGate.entries`, `NetworkGate.logCapacity`, `AdvancedSettings` | `testCookiesStayBehindAndEveryHopIsLogged` | 2,000-entry in-memory log shown as Network activity; never written to disk |
 | R-504 | amended | `WindowModel.previewFile`, `PlayerView` | `--selftest-video` | D-77: media is downloaded through the gate to a cache file before AVFoundation opens it |
@@ -37,6 +37,7 @@ change as the code.
 | R-510 | built | `scripts/lint_invariants.py` | `scripts/lint_invariants.py` | Lint: only Apple frameworks and MediaPull modules, no package dependencies (1.8) |
 | R-511 | person | `AppModel.exportDiagnostics`, `AppModel.diagnosticsReport`, `AdvancedSettings` | `--selftest-url` | Logs in the unified log (app.mediapull); Export Diagnostics writes a readable text file (1.8) |
 | R-512 | built | `CookieFile.write`, `CookieFile.cleanUpAll`, `EngineCookies` | `testCookieFileRoundTrip` | 0600 file in a 0700 folder, deleted at job end and cleaned at launch |
+| R-514 | person | `LocationMap`, `Preferences.showMaps`, `FileDetails` | `--selftest-details` | No map loads until Show Map or the Privacy setting (D-110); the map itself needs a person to look at |
 | R-513 | built | `AnalysisService`, `SelfTestRunner.socketCount` | `--selftest-analyse` | Self-test records socket count while analysing |
 | R-601 | built | `OperationJournal`, `AnalysisStore`, `FingerprintIndex` | `--selftest-analyse` | Journals, analysis and fingerprints in Application Support; self-test checks the tree is restored exactly |
 | R-701 | built | `PaneArrangement.standard`, `PaneSplit`, `MainWindow` | `testMovesAndStacks`, `--selftest-layout` | Five panes, Downloads below Browser by repair, min widths and 1100 x 700 window |
@@ -88,6 +89,7 @@ change as the code.
 | R-1006a | built | `QuickFilterBar`, `MediaFilter` | `testResolutionSliderUsesLongestSide`, `testLengthFilterKinds` | Type chips, longest-side slider with the listed stops, shown of found count |
 | R-1007 | built | `SortOrder`, `MediaFilter.sorted` | `testEqualValuesKeepDiscoveryOrder` | All seven sort orders |
 | R-1008 | built | `MediaFilter.apply`, `WindowModel.rememberFilter`, `Preferences.filterPresets`, `FilterBar` | `testFilteringFiveThousandItemsIsWithinBudget` | 5,000 items in 5.1 ms optimised (budget 10 ms; the byte count and sort keys were the cost, fixed in 1.8); new windows start with the last filters; presets saved and deleted in the filter row |
+| R-1009b | built | `MediaDetailsReader`, `RecordedDetails`, `FileDetails`, `AnalysisService.places` | `testEveryCameraAndLocationFieldIsRead`, `testSouthWestAndMissingFields`, `--selftest-details` | Camera, Taken, Video and Location sections from the file itself, nearest place offline (D-110) |
 | R-1009 | built | `PreviewPane`, `ItemDetails`, `VariantRanker.reason` | `testReasons`, `--selftest-url` | The reason for the chosen variant is shown (1.8) |
 | R-1009a | built | `WindowModel.showInPreview`, `WindowModel.openEditor`, `EditorModel` | `--selftest-edit` | Editor opens in the Preview pane; unsaved edits keep it from being replaced |
 | R-1010 | person | `QuickLook`, `WindowModel.quickLook`, `WindowModel.previewFile` | none | Downloads through the gate to the cache, then previews the local file |

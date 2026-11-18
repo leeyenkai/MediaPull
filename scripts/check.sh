@@ -66,7 +66,9 @@ if [[ -n "$webkit" ]]; then
 fi
 check_only_in '^import (Vision|CoreML)' 'MediaPullKit/Sources/MediaPullAnalysis/' 'Vision and Core ML'
 # Analysis runs offline (D-59): no online geocoding, map search, model downloads or Vision asset downloads.
-check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|downloadAssets|MLModelCollection|import CoreLocation|import MapKit' 'NONE' 'Online analysis'
+check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|MKGeocod|MKMapItem|MKDirections|MKLookAround|downloadAssets|MLModelCollection|import CoreLocation' 'NONE' 'Online analysis'
+# The one map (D-110): drawn in one file, only after the person allows maps.
+check_only_in '^import MapKit' 'MediaPull/Platform/LocationMap.swift' 'MapKit'
 if grep -rn "runOpenPanelWith" MediaPull MediaPullKit/Sources --include=*.swift; then
   echo "error: the browser pane must not implement a file open panel"
   FAILED=1

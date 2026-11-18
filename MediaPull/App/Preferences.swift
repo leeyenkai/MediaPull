@@ -42,6 +42,8 @@ final class Preferences {
         if arrangement.group == .collect { paneArrangement = arrangement } else { organiseArrangement = arrangement }
     }
     var rememberHistory: Bool { didSet { set(rememberHistory, "rememberHistory") } }
+    /// Maps of where photos were taken load map images from Apple, so they are off until the person asks (D-110, R-514).
+    var showMaps: Bool { didSet { set(showMaps, "showMaps") } }
     var highlightDuplicates: Bool { didSet { set(highlightDuplicates, "highlightDuplicates") } }
     var duplicateSensitivity: DuplicateSensitivity { didSet { set(duplicateSensitivity.rawValue, "duplicateSensitivity") } }
     var thumbnailSize: CGFloat { didSet { set(Double(thumbnailSize), "thumbnailSize") } }
@@ -107,6 +109,7 @@ final class Preferences {
         organiseArrangement = d.data(forKey: "organiseArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
             .flatMap { $0.group == .organise ? $0 : nil } ?? .organiseStandard
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true
+        showMaps = d.object(forKey: "showMaps") as? Bool ?? false
         highlightDuplicates = d.object(forKey: "highlightDuplicates") as? Bool ?? true
         duplicateSensitivity = DuplicateSensitivity(rawValue: d.string(forKey: "duplicateSensitivity") ?? "") ?? .nearIdentical
         thumbnailSize = CGFloat(d.object(forKey: "thumbnailSize") as? Double ?? 150)

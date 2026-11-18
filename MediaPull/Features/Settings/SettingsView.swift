@@ -106,6 +106,13 @@ struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Privacy") {
+                Toggle("Show maps of where photos were taken", isOn: $preferences.showMaps)
+                Text("Map images for the area around a photo's location come from Apple's map servers. Coordinates and the nearest "
+                    + "place are always shown, worked out on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Browser") {
                 Toggle("Remember browsing history", isOn: $preferences.rememberHistory)
                 HStack {
