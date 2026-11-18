@@ -1299,7 +1299,6 @@ final class EngineService {
         // Retry saves where the folder is then (audit 7, A7-m3), and downloads only the videos not saved yet (A12-M3).
         let folder = FollowedFolder(root.url)
         let savedIDs = VideoRun()
-        savedIDs.limit = extras.maxDownloads
         let run = { [weak self, weak job] in
             guard let self, let job else { return }
             job.task = Task { [weak self, weak job] in
@@ -1311,14 +1310,11 @@ final class EngineService {
                     self.app.jobs.finish(job, .failed(FollowedFolder.goneMessage(root.url)), notify: false)
                     return
                 }
-                // What failed before this run, so a Retry that stops at "At most" can say which it did not come to (A16-M2,
-                // audit 17, A17-M1).
-                savedIDs.earlierFailures = job.failures
                 job.failed = 0
                 job.failures = []
                 job.found = job.saved + job.duplicates
-                // A Retry runs the list again and downloads what is not saved yet (D-100): what it skips is counted afresh
-                // (A13-m3, C13-m3); notes about videos that stay saved stay (A14-m2).
+                // A Retry runs the same list again; videos already saved are skipped, and "At most" applies as on any run
+                // (D-102). What it skips is counted afresh (A13-m3, C13-m3); notes about videos that stay saved stay (A14-m2).
                 job.skipped = 0
                 job.notes.removeAll { savedIDs.skipNotes.contains($0) }
                 savedIDs.skipNotes = []
@@ -1329,8 +1325,6 @@ final class EngineService {
                 }
                 var extras = extras
                 extras.skipIDs = Array(savedIDs.ids)
-                // What is left of "At most" (D-99): the end of a run that reached it offers no Retry.
-                if let limit = savedIDs.limit { extras.maxDownloads = max(1, limit - savedIDs.ids.count) }
                 await self.runVideo(job: job, url: url, info: info, format: format, height: height, extras: extras, root: root, site: site,
                                     saved: savedIDs)
             }
@@ -1451,18 +1445,6 @@ final class EngineService {
         for (language, count) in missing.sorted(by: { $0.key < $1.key }) {
             let what = language == "any" ? "No subtitles were found" : "No \(language) subtitles were found"
             job.notes.append(saved.count == 1 ? "\(what) for the video saved." : "\(what) for \(count) of the \(saved.count) videos saved.")
-        }
-        // "At most" counts the videos the job saves, Retry included: when it is reached, videos that failed are not tried
-        // again (D-99, audit 15, A15-M3).
-        // A Retry that reached it may not have come to every video that failed before: said too (audit 16, A16-M2).
-        let notReached = VideoRunNotes.notReached(earlier: savedIDs.earlierFailures, saved: savedIDs.ids, failedNow: job.failures)
-        savedIDs.earlierFailures = []
-        if let limit = savedIDs.limit, savedIDs.ids.count >= limit, job.failed > 0 || !notReached.isEmpty {
-            let named = (job.failures + notReached).prefix(5).map(\.message).map(Self.plainEngineError)
-            job.notes.append("“At most \(limit)” was reached, so videos that failed were not tried again"
-                + (named.isEmpty ? "." : ": " + named.joined(separator: "; ")))
-            job.failed = 0
-            job.failures = []
         }
         let savedNow = job.saved + job.duplicates - savedBefore
         if savedNow == 0, failure == nil, job.failed == 0, job.skipped > 0 || job.saved + job.duplicates > 0 {
@@ -1947,11 +1929,6 @@ private final class PullRun {
 @MainActor
 private final class VideoRun {
     var ids = Set<String>()
-    /// The videos that failed in the last run, for Retry Failed; false when one failure named no video.
-    /// The failures of the run before a Retry: those it did not come to before "At most" are said (A16-M2, A17-M1).
-    var earlierFailures: [(id: String, message: String)] = []
-    /// The job's "At most", which counts every video it saves, Retry included (D-99).
-    var limit: Int?
     /// Notes about skipped videos, counted afresh by a Retry.
     var skipNotes = Set<String>()
 }

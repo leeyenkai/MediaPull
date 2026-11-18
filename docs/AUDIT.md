@@ -9,12 +9,22 @@ How MediaPull is audited, so that coverage accumulates and each audit finds what
   where each requirement lives, then look at the code for the cause categories below.
 - **Proved.** Every finding quotes the code (`file:line`) and gives a concrete failure: the inputs or state, and the wrong
   result. A suspicion that cannot be shown either way says so and is not counted as a finding.
-- **Graded.** Critical (data loss, a broken read-only contract, a crash on ordinary input), major (wrong result a person
-  would notice, a spec requirement not met), minor (polish, unlikely edge, wording).
+- **Graded.** Critical: a broken read-only contract, or a crash on ordinary input. Major: data lost or misplaced (a file
+  deleted, cut short, overwritten, hidden, put in the wrong folder, or downloaded again after being deleted on purpose) in
+  a plausible use. Minor: everything else, including something reported or counted wrongly, a message or note that is
+  wrong, a missing progress or status, a spec requirement met differently without losing data, and any rare sequence
+  (several quick actions, two windows racing, a crash at an exact moment) that loses no data.
 - **Ledger.** Each audit is written to `docs/audits/<date>-<n>.md` with its findings and a "checked and fine" list of what
   it read and found sound, so the next audit can go where this one did not.
 - **Closed by a test.** A finding is closed only with a regression test or self-test step, and a lint or helper when it is
   a pattern.
+
+## Scope (from round 18 of the 1.8 audit)
+
+Scope is frozen: rounds only fix. A fix bigger than a few lines needs a simpler rule written in the spec first (a D-nn
+entry), not another patch to the last one. Earlier rules that were patched round after round were replaced by simpler
+ones (D-93 Undo, D-98 earlier versions' memory, D-102 playlist Retry); an auditor does not re-report those designs, only
+code that does not do what they say.
 
 ## Cause categories (from the 1.8 review, plan section C)
 

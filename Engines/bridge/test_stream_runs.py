@@ -96,11 +96,13 @@ def run(url, playlist, extras=None, **site):
     return files, errors
 
 
-def test_a_retry_downloads_what_is_not_saved_yet():
-    """D-100 (audit 16, A16-M1): a Retry runs the list again and downloads only the videos not saved yet, within what is
-    left of "At most", with ids in the listing or not, and after a page of the listing failed."""
-    files, _ = run("madeup://list", True, {"skip_ids": ["a", "c"], "max_downloads": 1})
-    assert files == ["b"], files
+def test_a_retry_runs_the_list_again_and_skips_what_is_saved():
+    """D-102: a Retry runs the same list again; videos already saved are skipped, and "At most" applies as on any run.
+    With ids in the listing or not, and after a page of the listing failed."""
+    files, _ = run("madeup://list", True, {"skip_ids": ["a", "c"]})
+    assert files == ["b", "d", "e", "f"], files
+    files, _ = run("madeup://list", True, {"skip_ids": ["a", "c"], "max_downloads": 2})
+    assert files == ["b", "d"], files
     files, _ = run("madeup://list", True, {"skip_ids": ["a", "b"], "max_downloads": 2}, no_ids=True)
     assert files == ["c", "d"], files
     files, errors = run("madeup://list", True, {}, page_fails_after="c")

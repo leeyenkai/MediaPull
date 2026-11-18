@@ -1195,7 +1195,7 @@ def refuse_live_streams(info, incomplete=False):
 
 
 def skip_saved(inner, saved):
-    """A Retry of a playlist runs it again and downloads only the videos not saved yet (audit 12, A12-M3; D-100). The
+    """A Retry of a playlist runs it again and downloads only the videos not saved yet (audit 12, A12-M3; D-102). The
     video looked at last names a failure whose message has no id."""
     def check(info, incomplete=False):
         video = str(info.get("id") or "")
@@ -1300,7 +1300,7 @@ def stream_options(request, staging, logger, progress):
     if extras.get("playlist_items"):
         options["playlist_items"] = extras["playlist_items"]
     if extras.get("max_downloads"):
-        # The app sends what is left of "At most" for a Retry (D-99).
+        # "At most" applies to every run, a Retry included (D-102).
         options["max_downloads"] = int(extras["max_downloads"])
     if extras.get("date_after") or extras.get("date_before"):
         options["daterange"] = yt_dlp.utils.DateRange(extras.get("date_after"), extras.get("date_before"))

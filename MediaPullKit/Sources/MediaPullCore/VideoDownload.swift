@@ -245,21 +245,8 @@ public enum VideoPage {
     }
 }
 
-/// What a video job says at its end, worked out apart from the job so it can be tested (audit 17, A17-M1, A17-m1).
+/// What a video job says at its end, worked out apart from the job so it can be tested (audit 17, A17-m1).
 public enum VideoRunNotes {
-    /// The part of a failure key that names the video ("video:site:abc" and "abc" are one video).
-    public static func videoID(_ key: String) -> String {
-        key.split(separator: ":").last.map(String.init) ?? key
-    }
-
-    /// Failures of the run before a Retry that the Retry neither saved nor failed again: it did not come to them.
-    public static func notReached(earlier: [(id: String, message: String)], saved: Set<String>,
-                                  failedNow: [(id: String, message: String)]) -> [(id: String, message: String)]
-    {
-        let now = Set(failedNow.map { videoID($0.id) })
-        return earlier.filter { !saved.contains(videoID($0.id)) && !now.contains(videoID($0.id)) }
-    }
-
     /// For each subtitle language asked for, how many saved videos came without it; "any" counts videos with none at all
     /// when "all" (or a pattern) was asked for.
     public static func missingSubtitles(asked: [String], attached: [Set<String>]) -> [String: Int] {

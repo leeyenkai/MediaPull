@@ -445,8 +445,8 @@ def test_only_videos_that_can_never_download_are_skipped():
     assert bridge.problem_code("ERROR: HTTP Error 500") == "download_failed"
 
 
-def test_a_retry_skips_what_is_saved_and_keeps_the_limit():
-    """D-100: a Retry skips the saved videos; the limit is what the app sends; a failure's video is named from the
+def test_a_retry_skips_what_is_saved():
+    """D-102: a Retry skips the saved videos; "At most" is passed as on any run; a failure's video is named from the
     message or the video looked at last."""
     request = {"extras": {"playlist": True, "max_downloads": 2, "skip_ids": ["a", "d", "e"]}}
     options = bridge.stream_options(request, "/tmp/staging", bridge.StreamLogger(True), lambda info: None)
