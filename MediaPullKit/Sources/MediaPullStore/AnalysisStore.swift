@@ -125,6 +125,8 @@ public struct PersonInfo: Sendable, Hashable, Identifiable {
     public var number: Int
     public var faceCount: Int
     public var dismissedSuggestion: String?
+    /// Photos in the Trash that Undo can still bring back (not in `faceCount`, audit 7, B7-m5).
+    public var heldCount = 0
 
     public var displayName: String {
         name?.isEmpty == false ? name! : "Person \(number)"
@@ -418,19 +420,21 @@ public actor AnalysisStore {
         // Checksums some file on disk holds; nil when nothing is held, so every face counts.
         let shown: Set<String>? = heldPaths.isEmpty ? nil : Set(((try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? [])
             .filter { !heldPaths.contains($0.path) }.map(\.sha256))
-        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] where shown?.contains(face.sha256) ?? true {
-            if let id = face.personID {
-                counts[id, default: 0] += 1
-            }
+        var held: [UUID: Int] = [:]
+        for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] {
+            guard let id = face.personID else { continue }
+            if shown?.contains(face.sha256) ?? true { counts[id, default: 0] += 1 } else { held[id, default: 0] += 1 }
         }
         return ((try? modelContext.fetch(FetchDescriptor<PersonModel>(sortBy: [SortDescriptor(\.number)]))) ?? []).map {
-            PersonInfo(
+            var person = PersonInfo(
                 id: $0.id,
                 name: $0.name,
                 number: $0.number,
                 faceCount: counts[$0.id] ?? 0,
                 dismissedSuggestion: $0.dismissedSuggestion
             )
+            person.heldCount = held[$0.id] ?? 0
+            return person
         }
     }
 

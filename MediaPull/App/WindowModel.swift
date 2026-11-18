@@ -122,11 +122,11 @@ final class WindowModel: Identifiable, MediaGridOwner {
         }
     }
 
-    func showDownloads(_ address: String? = nil, video: Bool = false) {
+    func showDownloads(_ address: String? = nil, video: Bool = false, fromOutside: Bool = false) {
         section = .collect
         setShowing(.downloads, true)
         if let address {
-            downloads.use(address)
+            downloads.use(address, fromOutside: fromOutside)
         } else if let url = browser.url {
             downloads.followsBrowser = true
             downloads.use(url.absoluteString, fromBrowser: true)

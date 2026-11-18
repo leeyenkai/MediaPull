@@ -32,14 +32,14 @@ public struct OrganisePlan: Sendable {
     /// Folders that must still be there when the plan runs: a merge into a folder trashed or renamed since its preview
     /// stops rather than making the folder again (audit 4, B4-M1).
     public var requiredFolders: [URL] = []
-    /// Whether the root was there when the plan was made. Such a root must still be there when it runs (audit 5, B5-M1);
-    /// a plan into a folder nobody has made yet makes it.
-    public var rootExisted: Bool
+    /// A plan works inside its root, which must be there when it runs (audit 5, B5-M1): a folder renamed, moved or
+    /// trashed since, even before the plan was made, is never made again (audit 7, B7-m2). Only a plan that says so makes
+    /// its root (a copy into a new folder).
+    public var createsRoot = false
 
     public init(title: String, root: URL) {
         self.title = title
         self.root = root
-        rootExisted = OperationJournal.isFolder(root)
     }
 
     public var isEmpty: Bool {

@@ -141,6 +141,9 @@ final class Preferences {
     }
 
     private func set(_ value: Any?, _ key: String) {
+        // A self-test reads the person's settings but never writes them: a run that is stopped part way leaves nothing
+        // changed for the installed app (audit 7, C7-m1).
+        guard !SelfTestRunner.isActive else { return }
         if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
     }
 

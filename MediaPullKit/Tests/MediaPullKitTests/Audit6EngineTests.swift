@@ -82,8 +82,14 @@ final class Audit6EngineTests: XCTestCase {
         let entry = await journal().run(FolderOperations.move([photo], to: gone))
         XCTAssertTrue(entry.steps.isEmpty)
         XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Refs").path))
-        let fresh = await journal().run(FolderOperations.move([photo], to: root.appendingPathComponent("out", isDirectory: true)))
-        XCTAssertFalse(fresh.steps.isEmpty, "a new folder in a folder that is there is fine")
+        var intoNew = FolderOperations.move([photo], to: root.appendingPathComponent("out", isDirectory: true))
+        intoNew.createsRoot = true
+        let fresh = await journal().run(intoNew)
+        XCTAssertFalse(fresh.steps.isEmpty, "a plan that makes its root, in a folder that is there, is fine")
+        // A root that is gone is never made again unless the plan makes it (audit 7, B7-m2).
+        let goneRoot = await journal().run(FolderOperations.move([file("in/b.jpg")], to: root.appendingPathComponent("trashed")))
+        XCTAssertTrue(goneRoot.steps.isEmpty)
+        XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("trashed").path))
     }
 
     /// Audit 6 (C6-m2, C6-M2): a new folder at the path of a trashed one gets a record of its own; a folder the store

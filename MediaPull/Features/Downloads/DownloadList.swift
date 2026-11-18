@@ -89,7 +89,9 @@ extension DownloadsModel {
 
     /// Download All: one address after another, each with its kind's remembered options, into the window's save folder.
     func runAll(window: WindowModel) {
-        guard !batchRunning, let root = window.saveFolder.map(app.destination(for:)) else { return }
+        guard !batchRunning, let chosen = window.saveFolder else { return }
+        // The folder chosen at the click, wherever it goes while the list runs (audit 7, C7-M4).
+        let folder = FollowedFolder(chosen)
         batchRunning = true
         batchStopping = false
         // The list belongs to its window: closing the window ends it after the download running now.
@@ -106,8 +108,12 @@ extension DownloadsModel {
                     if !entry.canRun { self.batch[index].progress = .skipped }
                     continue
                 }
+                guard let now = await folder.now() else {
+                    self.batch[index].progress = .failed(FollowedFolder.goneMessage(chosen))
+                    return
+                }
                 self.batch[index].progress = .running
-                let job = await self.start(entry, root: root, window: window)
+                let job = await self.start(entry, root: self.app.destination(for: now), window: window)
                 if let job {
                     // A job held by Instagram (a check, a wait) is left in Activity to resume; the list goes on.
                     while !job.state.isFinished {

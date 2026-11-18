@@ -595,6 +595,7 @@ final class SelfTestRunner {
         }
         let count = { (FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)?.allObjects.count) ?? 0 }
         let filesBefore = count()
+        let originalState = model.states[savedItem.id]
         let itemEditor = EditorModel(request: EditorRequest(subject: .item(savedItem.id)), window: model)
         await itemEditor.load()
         itemEditor.rotate(clockwise: true)
@@ -602,7 +603,10 @@ final class SelfTestRunner {
         let started = await itemEditor.saveItem(to: folder)
         await waitUntil(timeout: 60) { AppModel.shared.jobs.activeCount == 0 }
         let added = count() - filesBefore
-        note("editor: \(started && added > 0 ? "PASS" : "FAIL") an edited copy of a saved item is saved (\(added) files added)")
+        // The original is still itself: saved where it was, not taken for its copy (audit 7, C7-M2).
+        let originalKept = model.states[savedItem.id] == originalState
+        note("editor: \(started && added > 0 && originalKept ? "PASS" : "FAIL") an edited copy of a saved item is saved "
+            + "(\(added) files added), the original keeps its own state \(originalKept)")
     }
 
     /// Sockets the app process has open; analysis must not open any (R-513).
@@ -957,8 +961,53 @@ final class SelfTestRunner {
             + "(\(queuedAgain?.state.label ?? "no job"))")
         note("update: name taken by someone else refused \(refusedOther), folder renamed while queued followed \(followed), "
             + "renamed in MediaPull followed \(followedOwn), trashed stopped \(stoppedForTrash)")
+        // Audit 7: items of whoever has the name now are refused on every route (A7-M2, C7-M3): saving listed items and a
+        // single post. The folder knows its account as id 42.
+        let filesIn = { (fm.enumerator(atPath: folder.path)?.allObjects.count) ?? 0 }
+        let beforeRefusals = filesIn()
+        let stranger = fixtures.appendingPathComponent("stranger.jpg")
+        try? Self.jpeg(41).write(to: stranger)
+        var strangerContext = EngineContext(key: "ig:stranger1", category: "instagram", subcategory: "posts")
+        strangerContext.username = "alice"
+        strangerContext.ownerID = "99"
+        let strangerItem = MediaItem(id: "ig:stranger1", kind: .image,
+                                     variants: [MediaVariant(id: stranger.absoluteString, url: stranger, format: .jpeg, origin: .img)],
+                                     source: .engine(strangerContext), discoveryIndex: 0, group: "g", groupTitle: "t")
+        let refusedSave = app.save([strangerItem], from: model, to: folder)
+        await waitUntil(timeout: 60) { refusedSave?.state.isFinished ?? true }
+        var post = replay
+        post["account"] = ["username": "alice", "user_id": "99", "post_count": 1, "is_private": false]
+        var postMeta = meta(2)
+        postMeta["owner_id"] = "99"
+        postMeta["media_id"] = "3400000000000000001"
+        postMeta["post_id"] = "3400000000000000002"
+        post["items"] = [["key": "ig:3400000000000000001", "source": stranger.path, "meta": postMeta]]
+        writeReplay(post)
+        let single = app.engines.startPull(app.engines.draft(username: "", postURL: URL(string: "https://www.instagram.com/p/strange/")),
+                                           scanOnly: false, window: model, saveFolder: library)
+        await waitUntil(timeout: 120) { single?.state.isFinished ?? true }
+        let refusedRoutes = refusedSave?.saved == 0 && (refusedSave?.skipped ?? 0) >= 1 && single?.saved == 0
+            && (single?.skipped ?? 0) >= 1 && filesIn() == beforeRefusals
+        note("update: another owner's items refused when saving listed items \(refusedSave?.skipped ?? -1) "
+            + "and as a single post \(single?.skipped ?? -1); folder unchanged \(filesIn() == beforeRefusals)")
+        // A save folder renamed after a download was queued is followed (C6-M3).
+        let saves = library.appendingPathComponent("Saves", isDirectory: true)
+        try? fm.createDirectory(at: saves, withIntermediateDirectories: true)
+        writeReplay(account("gus", id: "47", count: 3))
+        var gusDraft = app.engines.draft(username: "gus")
+        gusDraft.content = [.posts]
+        let gusJob = app.engines.startPull(gusDraft, scanOnly: false, window: model, saveFolder: saves)
+        let savesRenamed = library.appendingPathComponent("Saves renamed", isDirectory: true)
+        try? fm.moveItem(at: saves, to: savesRenamed)
+        await waitUntil(timeout: 120) { gusJob?.state.isFinished ?? true }
+        let savedFollowed = gusJob?.saved == 3 && !fm.fileExists(atPath: saves.path)
+            && fm.fileExists(atPath: savesRenamed.appendingPathComponent("gus").path)
+        note("update: a save folder renamed while the download was queued was followed \(savedFollowed) "
+            + "(\(gusJob?.state.label ?? "no job"), saved \(gusJob?.saved ?? -1))")
+        writeReplay(replay)
         let placesPass = placeKept && resumedFromPlace && bobDone && staleIdle && noPlaceAfterLateFailure && updateContinued && aliceDone
-            && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash
+            && retried && resumedRetry && resumedOwn && refusedOther && followed && followedOwn && stoppedForTrash && refusedRoutes
+            && savedFollowed
         let passed = shown?.folder.standardizedFileURL == folder.standardizedFileURL && first?.saved == 2 && story && !nested && !numbered
             && after == before && second?.saved == 0 && stoppedEarly && missing?.saved == 1 && restored == true && continued && cleared
             && keptPlace && placesPass

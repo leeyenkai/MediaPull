@@ -75,6 +75,11 @@ struct VideoForm: View {
                 }
             } else if let failure {
                 Label(failure, systemImage: "film.stack").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if model.downloads.lookUpsHeld {
+                HStack(spacing: 8) {
+                    Text("Sent from another app. Nothing is asked of the site until you look it up.").foregroundStyle(.secondary)
+                    Button("Look Up") { model.downloads.lookUpsHeld = false }
+                }
             } else {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -85,7 +90,11 @@ struct VideoForm: View {
         .onChange(of: format) { _, newFormat in
             if let info, let height, !heights(newFormat, info).contains(height) { self.height = nil }
         }
-        .task(id: url) { await lookUp() }
+        .task(id: "\(url.absoluteString)|\(model.downloads.lookUpsHeld)") {
+            // An address another app sent is looked up only when the person asks (D-82, audit 7, C7-M5).
+            guard !model.downloads.lookUpsHeld else { return }
+            await lookUp()
+        }
     }
 
     private var moreOptions: some View {

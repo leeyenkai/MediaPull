@@ -10,6 +10,8 @@ struct QueryBar: View {
     var entries: [MediaEntry]
     /// ⌘F focuses this field when its pane is the one being worked in (SPEC 21); the token changes on each ⌘F.
     var focusToken: Int = 0
+    /// Told when the search field takes the keyboard, so ⌘F and ⌘R stay with this pane while typing (audit 7, B7-m4).
+    var onFocus: () -> Void = {}
     @FocusState private var searchFocused: Bool
     /// The values the filters offer, worked out off the main actor when the files or their analysis change, not on
     /// every redraw (typing in the search field redraws the bar).
@@ -28,6 +30,7 @@ struct QueryBar: View {
                     .focused($searchFocused)
                     .onExitCommand { query.search = "" }
                     .onChange(of: focusToken) { _, _ in searchFocused = true }
+                    .onChange(of: searchFocused) { _, focused in if focused { onFocus() } }
                 if !query.search.isEmpty {
                     Button { query.search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                         .accessibilityLabel("Clear Search")

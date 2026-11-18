@@ -36,6 +36,9 @@ final class DownloadsModel {
     var include: Set<String> = []
     var switches: [String: Bool] = [:]
     @ObservationIgnored var checkTask: Task<Void, Never>?
+    /// An address another app sent (Services, R-1111c) only fills in the pane: nothing is looked up on the network until
+    /// the person asks (D-82, audit 7, C7-M5).
+    var lookUpsHeld = false
     /// Several addresses at once (R-1111d): each one and what it is, and whether Download All is running.
     var batch: [BatchEntry] = []
     var batchRunning = false
@@ -50,7 +53,7 @@ final class DownloadsModel {
 
     /// Sets the address and works out how to download it: Instagram, a video, or any other site gallery-dl supports.
     /// Several addresses typed or pasted at once become a list (R-1111d).
-    func use(_ text: String, fromBrowser: Bool = false) {
+    func use(_ text: String, fromBrowser: Bool = false, fromOutside: Bool = false) {
         // While Download All runs, its list stays: nothing typed, sent or dropped replaces it, and the pane says so.
         if batchRunning {
             if !fromBrowser { batchNotice = "Download All is running. Add \(text) when it has finished." }
@@ -58,6 +61,7 @@ final class DownloadsModel {
         }
         if fromBrowser, !followsBrowser { return }
         if !fromBrowser { followsBrowser = text.isEmpty }
+        if !fromBrowser { lookUpsHeld = fromOutside }
         address = text
         checkTask?.cancel()
         checking = false

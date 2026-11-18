@@ -124,11 +124,8 @@ final class VideoEditorModel: UnsavedEditing {
                 var variant = MediaVariant(id: still.absoluteString, url: still, format: .png, origin: video.best?.origin ?? .video)
                 variant.pixelSize = size
                 // A separate item: the video keeps its own name, saved state and preview.
-                let frameID = "\(id)#frame-\(Int((time * 1000).rounded()))"
-                let frame = MediaItem(id: frameID, kind: .image, variants: [variant], source: video.source,
-                                      discoveryIndex: video.discoveryIndex, group: video.group, groupTitle: video.groupTitle,
-                                      alt: video.alt)
-                window.customNames[frameID] = stem
+                let frame = video.madeCopy(variant, kind: .image, suffix: "frame-\(Int((time * 1000).rounded()))")
+                window.customNames[frame.id] = stem
                 guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
                     return
@@ -189,15 +186,14 @@ final class VideoEditorModel: UnsavedEditing {
                 window?.editorRequest = nil
                 window?.previewSubject = .file(target)
             case let .item(id):
-                guard let window, var item = window.itemsByID[id] else { return }
+                guard let window, let video = window.itemsByID[id] else { return }
                 var variant = MediaVariant(id: trimmed.absoluteString, url: trimmed, format: fileExtension == "mov" ? .mov : .mp4,
-                                           origin: item.best?.origin ?? .video)
+                                           origin: video.best?.origin ?? .video)
                 variant.duration = length
-                variant.pixelSize = item.best?.pixelSize
-                item.variants = [variant]
-                item.bestID = variant.id
-                // The trimmed file is a temporary one: name the saved copy after the video, not after it.
-                window.customNames[id] = cleanName
+                variant.pixelSize = video.best?.pixelSize
+                // A copy of its own (audit 7, C7-M2), named after the video, not after the temporary file.
+                let item = video.madeCopy(variant, suffix: "trimmed")
+                window.customNames[item.id] = cleanName
                 guard let destination = window.saveFolder else {
                     fail("Choose a library folder first.")
                     return

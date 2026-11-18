@@ -819,7 +819,13 @@ final class LibraryModel: MediaGridOwner {
         }
         let rest = urls.filter { !converts.contains($0) }
         if !rest.isEmpty {
-            perform(move ? FolderOperations.move(rest, to: folder) : FolderOperations.copy(rest, to: folder))
+            // Planned off the main actor: each item's free name is looked up on disk (audit 7, B7-m3).
+            Task { [weak self] in
+                let plan = await Task.detached(priority: .userInitiated) {
+                    move ? FolderOperations.move(rest, to: folder) : FolderOperations.copy(rest, to: folder)
+                }.value
+                self?.perform(plan)
+            }
         }
         guard !converts.isEmpty else { return }
         Task {

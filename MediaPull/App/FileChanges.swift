@@ -162,9 +162,15 @@ extension WindowModel {
         registerUndo(entry)
         Task {
             let report = await app.redoChange(entry.id)
-            showFileMessage(report.skipped.isEmpty
-                ? "Redid “\(entry.title)”."
-                : "Redid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "))
+            // Nothing done again is said as such (audit 7, B7-m6).
+            if report.restored == 0, report.moves.isEmpty {
+                showFileMessage("Nothing of “\(entry.title)” could be done again"
+                    + (report.skipped.isEmpty ? "." : ": " + report.skipped.prefix(2).joined(separator: "; ")))
+            } else {
+                showFileMessage(report.skipped.isEmpty
+                    ? "Redid “\(entry.title)”."
+                    : "Redid “\(entry.title)” except \(report.skipped.count): " + report.skipped.prefix(2).joined(separator: "; "))
+            }
         }
     }
 

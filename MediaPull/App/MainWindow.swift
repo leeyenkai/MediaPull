@@ -80,7 +80,7 @@ struct MainWindow: View {
             app.openMainWindow = { [openWindow] in openWindow(id: "main") }
             if let address = app.pendingDownloadAddress {
                 app.pendingDownloadAddress = nil
-                model.showDownloads(address)
+                model.showDownloads(address, fromOutside: true)
             }
             SelfTestRunner.startIfRequested(model)
         }

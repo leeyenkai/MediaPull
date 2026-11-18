@@ -355,7 +355,7 @@ struct FolderContents: View {
             .padding(.vertical, 6)
             if library.selectedFolder != nil, !columns {
                 QueryBar(query: $library.query, includeSubfolders: $library.includeSubfolders, entries: library.entries,
-                         focusToken: model.searchFocusTokens[.library] ?? 0)
+                         focusToken: model.searchFocusTokens[.library] ?? 0, onFocus: { model.noteLibraryFocus() })
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
             }

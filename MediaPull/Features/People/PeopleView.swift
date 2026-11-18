@@ -74,7 +74,14 @@ struct PeopleView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let id = selected, let person = app.analysis.people.first(where: { $0.id == id }), person.faceCount == 0 {
+        if let id = selected, let person = app.analysis.people.first(where: { $0.id == id }), person.faceCount == 0,
+           person.heldCount > 0
+        {
+            // Photos MediaPull moved to the Trash are still theirs while Undo can bring them back (audit 7, B7-m5).
+            Text("The photos of \(person.displayName) are in the Trash. Undo puts them back.")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let id = selected, let person = app.analysis.people.first(where: { $0.id == id }), person.faceCount == 0 {
             VStack(spacing: 10) {
                 Text("No photos of \(person.displayName) are left.").foregroundStyle(.secondary)
                 Button("Forget \(person.displayName)") {

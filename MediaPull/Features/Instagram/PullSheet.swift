@@ -25,6 +25,10 @@ struct InstagramForm: View {
             } else {
                 HStack(alignment: .center) {
                     AccountCard(username: draft.username, showErrors: app.engines.signedIn)
+                    if model.downloads.lookUpsHeld {
+                        Button("Look Up") { model.downloads.lookUpsHeld = false }
+                            .help("Asks Instagram about @\(draft.username). Sent from another app, so nothing was asked yet.")
+                    }
                     Button("Download") { app.engines.startPull(draft, scanOnly: false, window: model) }
                         .buttonStyle(.borderedProminent)
                         .disabled(!canStart || model.saveFolder == nil)
@@ -101,11 +105,13 @@ struct InstagramForm: View {
                 }
             }
         }
-        .task(id: draft.username) {
+        .task(id: "\(draft.username)|\(model.downloads.lookUpsHeld)") {
             guard !draft.username.isEmpty else { return }
             var copy = draft
             await app.engines.applyStoredOptions(to: &copy)
             if copy.username == draft.username { draft = copy }
+            // An address another app sent is looked up only when the person asks (D-82, audit 7, C7-M5).
+            guard !model.downloads.lookUpsHeld else { return }
             await app.engines.lookup(draft.username)
         }
         .task(id: "\(draft.username)|\(draft.folderName)|\(model.saveFolder?.path ?? "")") { await findPlace() }

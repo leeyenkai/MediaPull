@@ -152,7 +152,8 @@ final class ConformanceTests: XCTestCase {
             files.append(file)
         }
         let journal = OperationJournal(folder: root.appendingPathComponent("journal", isDirectory: true))
-        let plan = FolderOperations.move(files, to: root.appendingPathComponent("out", isDirectory: true))
+        var plan = FolderOperations.move(files, to: root.appendingPathComponent("out", isDirectory: true))
+        plan.createsRoot = true
         let task = Task { await journal.run(plan) { done, _ in if done == 50 { withUnsafeCurrentTask { $0?.cancel() } } } }
         let entry = await task.value
         XCTAssertFalse(entry.finished, "the run stopped when cancelled")

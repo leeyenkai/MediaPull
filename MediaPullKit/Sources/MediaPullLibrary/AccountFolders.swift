@@ -329,8 +329,9 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
     /// The Instagram user id of the account this folder holds: a name taken over by someone else is never pulled into it
     /// (SPEC 23, audit 4, C4-M4).
     public var userID: String?
-    /// The folder's identity on its disk (device and file number), which stays through renames and moves and the Trash:
-    /// another folder made later at the same path is told apart from it (audit 6, C6-m2). Nil for older records.
+    /// The folder's identity: its volume's UUID and its file number, which stay through renames, moves on its disk, the
+    /// Trash and reconnecting the disk (a device number would not, audit 7, A7-M1). Another folder made later at the same
+    /// path is told apart from it (audit 6, C6-m2). Nil for older records and volumes without a UUID.
     public var folderNumber: String?
 
     /// Whether an update or Find Missing stopped part way and can be continued.
@@ -347,8 +348,15 @@ public struct AccountFolderRecord: Codable, Sendable, Identifiable {
 
     static func number(of folder: URL) -> String? {
         var info = stat()
-        guard stat(folder.path, &info) == 0 else { return nil }
-        return "\(info.st_dev):\(info.st_ino)"
+        guard stat(folder.path, &info) == 0,
+              let volume = try? folder.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString
+        else { return nil }
+        return "\(volume):\(info.st_ino)"
+    }
+
+    /// The volume part of a folder number.
+    static func volume(of number: String) -> Substring {
+        number.split(separator: ":").first ?? ""
     }
 }
 
@@ -420,6 +428,7 @@ public actor AccountFolderStore {
             // A job queued with the old path still finds it (audit 6, C6-M2).
             formerPaths[Self.key(record.path)] = id
             record.path = path
+            record.folderNumber = AccountFolderRecord.number(of: url)
             record.bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             records[id] = record
             save(record)
@@ -452,7 +461,14 @@ public actor AccountFolderStore {
         followMoves()
         guard let record = records[id], FileManager.default.fileExists(atPath: record.path),
               !FileFlags.isInTrash(URL(fileURLWithPath: record.path)) else { return nil }
-        return URL(fileURLWithPath: record.path, isDirectory: true)
+        let url = URL(fileURLWithPath: record.path, isDirectory: true)
+        // Another folder made at the path of one that went to the Trash is not this one (audit 7, A7-m7).
+        if let old = record.folderNumber, let now = AccountFolderRecord.number(of: url), old != now,
+           AccountFolderRecord.volume(of: old) == AccountFolderRecord.volume(of: now)
+        {
+            return nil
+        }
+        return url
     }
 
     /// Where the folder a job was given is now. A folder MediaPull renamed or moved since is found by its former path
@@ -493,14 +509,16 @@ public actor AccountFolderStore {
         // A record of another folder that was at this path (since trashed or deleted) belongs to that folder: a new folder
         // made at the path starts afresh, with none of its places, items or account id (audit 6, C6-m2). The old record
         // goes: nothing can be put back at a path another folder now holds.
+        // Only a different folder on the same volume is another folder: one copied to a new disk or restored from a
+        // backup keeps its memory.
         let number = AccountFolderRecord.number(of: url)
-        for other in records.values where Self.key(other.path) == key && other.account == account.lowercased()
-            && other.folderNumber != nil && number != nil && other.folderNumber != number
-        {
+        for other in records.values where Self.key(other.path) == key && other.account == account.lowercased() {
+            guard let old = other.folderNumber, let number, old != number,
+                  AccountFolderRecord.volume(of: old) == AccountFolderRecord.volume(of: number) else { continue }
             forget(other.id)
         }
         if var existing = records.values.first(where: { Self.key($0.path) == key && $0.account == account.lowercased() }) {
-            if existing.folderNumber == nil, let number {
+            if existing.folderNumber != number, let number {
                 existing.folderNumber = number
                 records[existing.id] = existing
                 save(existing)
@@ -592,6 +610,8 @@ public actor AccountFolderStore {
                 record.path = below.reduce(URL(fileURLWithPath: to, isDirectory: true)) { $0.appendingPathComponent($1) }.path
                 record.bookmark = try? URL(fileURLWithPath: record.path).bookmarkData(options: [], includingResourceValuesForKeys: nil,
                                                                                         relativeTo: nil)
+                // A move to another disk copies the folder: its number is new (audit 7, A7-M1).
+                record.folderNumber = AccountFolderRecord.number(of: URL(fileURLWithPath: record.path))
                 records[id] = record
                 save(record)
             }

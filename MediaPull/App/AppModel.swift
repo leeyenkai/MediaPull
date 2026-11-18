@@ -83,7 +83,8 @@ final class AppModel {
         engineManager = paths.map { EngineManager(paths: $0) }
         ffmpeg = paths.map { FFmpeg(paths: $0) }
         let support = EnginePaths.defaultSupport
-        index = FingerprintIndex(storeURL: support.appendingPathComponent("fingerprints.json"))
+        // The self-test keeps its checksums to itself, as it does its duplicates (audit 7, C7-m1).
+        index = FingerprintIndex(storeURL: SelfTestRunner.isActive ? nil : support.appendingPathComponent("fingerprints.json"))
         duplicates = DuplicateFinder(storeURL: SelfTestRunner.isActive ? nil : support.appendingPathComponent("duplicates.json"))
         prober = MediaProber(gate: .shared)
         thumbnails = ThumbnailLoader(gate: .shared)
@@ -469,7 +470,14 @@ final class AppModel {
     }
 
     func refreshAccountFolders() async {
+        let before = Dictionary(accountFolderList.map { ($0.id, $0.path) }, uniquingKeysWith: { a, _ in a })
         accountFolderList = await accountFolders.all()
+        // Folders followed after a Finder rename: queued and running jobs show where they are now (audit 7, A7-m9).
+        let moved = accountFolderList.compactMap { record -> (from: String, to: String)? in
+            guard let old = before[record.id], AccountFolderStore.key(old) != AccountFolderStore.key(record.path) else { return nil }
+            return (old, record.path)
+        }
+        if !moved.isEmpty { LibraryModel.followQueuedDestinations(moved) }
         // Each Library pane shows the account of its folder as it is now: renamed in the Finder, or made by a first pull
         // (audit 4, C4-m9).
         for window in windows { window.library.findAccount() }
@@ -516,11 +524,22 @@ final class AppModel {
         }
         window?.markQueued(items.map(\.id).filter { savedEarlier[$0] == nil })
         let alreadySaved = savedEarlier
+        // Retry saves where the folder is then, and takes the failures over from this job (audit 7, A7-m3, A7-m5).
+        let followed = FollowedFolder(folder)
         job.retry = { [weak self, weak window, weak job] in
             guard let self, let job else { return }
             let failedIDs = Set(job.failures.map(\.id))
             let retryItems = items.filter { failedIDs.contains($0.id) }
-            self.save(retryItems, from: window, to: folder, title: "Retrying \(retryItems.count) item\(retryItems.count == 1 ? "" : "s")")
+            job.failed = 0
+            job.failures = []
+            Task { [weak self, weak window] in
+                guard let self else { return }
+                guard let now = await followed.now() else {
+                    job.notes.append(FollowedFolder.goneMessage(folder))
+                    return
+                }
+                self.save(retryItems, from: window, to: now, title: "Retrying \(retryItems.count) item\(retryItems.count == 1 ? "" : "s")")
+            }
         }
         let settings = saveSettings
         let pipeline = pipeline { [weak self] kind, url in
@@ -561,20 +580,26 @@ final class AppModel {
                 guard let (existing, byType) = found else { continue }
                 // Items of whoever has the name now never go into the folder of the account that had it (D-88, audit 6,
                 // A6-M2): the folder's account id against each item's owner.
+                // A folder from before 1.8 with no id of its own is compared with the id its name was first seen with
+                // (audit 7, A7-M2); one with no record yet is the folder's own as found.
                 let existingKey = AccountFolderStore.key(existing.path)
-                let folderID = await self.accountFolders.all().first {
+                let record = await self.accountFolders.all().first {
                     AccountFolderStore.key($0.path) == existingKey && $0.account == account
-                }?.userID
+                }
+                var folderID = await self.engines.folderAccountID(record, account: account)
+                if folderID == nil { folderID = await self.store?.account(account)?.userID.nonEmpty }
                 var group = group
                 if let folderID {
                     let others = group.filter { ($0.source.engine?.ownerID).map { $0 != folderID } ?? false }
+                    let reason = "@\(account) is now a different Instagram account, so this was not saved into "
+                        + "“\(existing.lastPathComponent)”."
                     for item in others {
-                        job.failed += 1
-                        job.failures.append((item.id, "@\(account) is now a different Instagram account, so this was not saved "
-                                + "into “\(existing.lastPathComponent)”."))
+                        // Skipped, not failed: Retry would refuse it again (audit 7, A7-m4); shown on the item too (C7-m3).
+                        job.skipped += 1
+                        window?.apply(.finished(itemID: item.id, outcome: .skipped(reason), note: nil))
                     }
                     if !others.isEmpty {
-                        window?.clearQueued(others.map(\.id))
+                        job.notes.append(reason)
                         placed.formUnion(others.map(\.id))
                         group.removeAll { item in others.contains { $0.id == item.id } }
                     }

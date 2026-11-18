@@ -387,10 +387,9 @@ final class EditorModel: UnsavedEditing {
                 let edited = try await writeEdited()
                 var variant = MediaVariant(id: edited.absoluteString, url: edited, format: format, origin: item.best?.origin ?? .img)
                 variant.pixelSize = outputSize
-                toSave.variants = [variant]
-                toSave.bestID = variant.id
-                // The edited file is a temporary one: name the saved copy after the original, not after it.
-                window.customNames[id] = cleanName
+                // A copy of its own (audit 7, C7-M2), named after the original, not after the temporary file.
+                toSave = item.madeCopy(variant)
+                window.customNames[toSave.id] = cleanName
             } catch {
                 message = error.localizedDescription
                 return false

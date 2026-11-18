@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         let app = AppModel.shared
         if let window = app.frontWindow {
-            window.showDownloads(text)
+            window.showDownloads(text, fromOutside: true)
         } else {
             app.pendingDownloadAddress = text
             app.openMainWindow?()

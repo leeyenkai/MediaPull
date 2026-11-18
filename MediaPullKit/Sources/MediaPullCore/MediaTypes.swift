@@ -445,3 +445,27 @@ public struct MediaItem: Identifiable, Sendable {
         return usable.first { $0.origin == .engineThumbnail } ?? usable.first
     }
 }
+
+public extension MediaItem {
+    /// An edited or trimmed copy, or a frame grab: a file of its own under an id of its own. It never stands for the item
+    /// it was made from: not as saved, not as in the library, and not as that Instagram item in an account folder (its
+    /// metadata names no media of its own), so the original is still saved, shown and fetched as itself (audit 7, C7-M2).
+    func madeCopy(_ variant: MediaVariant, kind: MediaKind? = nil, suffix: String = "edited") -> MediaItem {
+        let mark = "#\(suffix)-\(UUID().uuidString)"
+        var source = source
+        if case var .engine(context) = source {
+            context.key += mark
+            context.mediaID = nil
+            context.shortcode = nil
+            context.postShortcode = nil
+            context.postID = nil
+            context.num = nil
+            context.count = nil
+            source = .engine(context)
+        }
+        var copy = MediaItem(id: id + mark, kind: kind ?? self.kind, variants: [variant], source: source, discoveryIndex: discoveryIndex,
+                             group: group, groupTitle: groupTitle, alt: alt)
+        copy.bestID = variant.id
+        return copy
+    }
+}

@@ -37,7 +37,8 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
-        steps.filter {
+        // An undone change still names the files it moved (audit 7, B7-m7).
+        (undone ? undoneSteps ?? steps : steps).filter {
             switch $0 {
             case let .move(from, _, _, _), let .clone(from, _, _): !from.hasSuffix(".json")
             default: false
@@ -100,27 +101,47 @@ public actor OperationJournal {
     }
 
     /// Folders renamed or moved since (by another change, or a library folder followed after a Finder rename): the
-    /// paths in every other journal follow them, so Undo and Redo work where the folder is now (audit 6, B6-M1). Moves of
-    /// single files leave other journals alone; only folders are followed.
+    /// paths in every other journal follow them, so Undo and Redo work where the folder is now (audit 6, B6-M1). Only
+    /// what is inside the moved folder follows: an item's own path when the item is in it, and an empty place (where
+    /// Undo or Redo would put something back) only through its parent folder, since another folder may have taken the
+    /// moved folder's name since (audit 7, B7-M1). Moves of single files leave other journals alone.
     public func followFolderMoves(_ moves: [(from: String, to: String)], except id: UUID?) {
         let folders = moves.filter { Self.isFolder(URL(fileURLWithPath: $0.to)) }
         guard !folders.isEmpty else { return }
-        func moved(_ path: String) -> String {
+        // Something that is at `path` now.
+        func item(_ path: String) -> String {
             for move in folders where path == move.from || path.hasPrefix(move.from + "/") {
                 return move.to + path.dropFirst(move.from.count)
             }
             return path
         }
-        func moved(_ step: JournalStep) -> JournalStep {
+        // A place nothing is at now: its folder follows, its own name stays.
+        func place(_ path: String) -> String {
+            let url = URL(fileURLWithPath: path)
+            let parent = url.deletingLastPathComponent().path
+            let followed = item(parent)
+            return followed == parent ? path : URL(fileURLWithPath: followed).appendingPathComponent(url.lastPathComponent).path
+        }
+        // Steps not undone: what they moved, copied or made is at its new place; their old places are empty.
+        func done(_ step: JournalStep) -> JournalStep {
             switch step {
-            case let .makeFolder(path): .makeFolder(moved(path))
-            case let .move(from, to, size, modified): .move(from: moved(from), to: moved(to), size: size, modified: modified)
-            case let .clone(from, to, files): .clone(from: moved(from), to: moved(to), files: files)
-            case let .trash(original, trashed): .trash(original: moved(original), trashed: trashed)
+            case let .makeFolder(path): .makeFolder(item(path))
+            case let .move(from, to, size, modified): .move(from: place(from), to: item(to), size: size, modified: modified)
+            case let .clone(from, to, files): .clone(from: item(from), to: item(to), files: files)
+            case let .trash(original, trashed): .trash(original: place(original), trashed: trashed)
+            }
+        }
+        // Steps undone (for Redo): things are back at their old places, and the new places are empty.
+        func undone(_ step: JournalStep) -> JournalStep {
+            switch step {
+            case let .makeFolder(path): .makeFolder(place(path))
+            case let .move(from, to, size, modified): .move(from: item(from), to: place(to), size: size, modified: modified)
+            case let .clone(from, to, files): .clone(from: item(from), to: place(to), files: files)
+            case let .trash(original, trashed): .trash(original: item(original), trashed: trashed)
             }
         }
         for var entry in entries() where entry.id != id {
-            let steps = entry.steps.map(moved), undoneSteps = entry.undoneSteps?.map(moved), root = moved(entry.root)
+            let steps = entry.steps.map(done), undoneSteps = entry.undoneSteps?.map(undone), root = item(entry.root)
             guard steps != entry.steps || undoneSteps != entry.undoneSteps || root != entry.root else { continue }
             entry.steps = steps
             entry.undoneSteps = undoneSteps
@@ -180,14 +201,16 @@ public actor OperationJournal {
         // A folder the plan relies on that went away since its preview is never made again (audit 4, B4-M1). Every plan
         // works inside its root, so a root renamed, moved or trashed since (in the Finder or in another pane) stops it
         // too: making the missing folders would recreate it at its old path (audit 5, B5-M1, B5-M2).
-        // A root nobody had made yet is made, but never the folders above it: a folder already gone when the plan was made
-        // (a save folder whose parent was renamed in the Finder) is not made again either (audit 6, B6-m1).
-        let required = [plan.rootExisted ? plan.root : plan.root.deletingLastPathComponent()] + plan.requiredFolders
+        // A plan that makes its root makes only that, never the folders above it (audit 6, B6-m1).
+        let required = [plan.createsRoot ? plan.root.deletingLastPathComponent() : plan.root] + plan.requiredFolders
         if let missing = required.first(where: { !Self.isFolder($0) }) {
             entry.failures = ["“\(missing.lastPathComponent)” is no longer there, so nothing was changed."]
             entry.finished = true
             return entry
         }
+        // Only the folders the plan makes (and its root, when nobody had made it yet) may be made; any other destination
+        // folder that went away since the preview (renamed, moved, trashed) fails its items instead (audit 7, B7-M2).
+        let allowed = Set((plan.foldersToCreate + (plan.createsRoot ? [plan.root] : [])).map(\.standardizedFileURL.path))
         let total = plan.foldersToCreate.count + plan.moves.count + plan.itemsToTrash.count + plan.foldersToTrash.count
         var done = 0
         var lastSave = Date()
@@ -223,7 +246,7 @@ public actor OperationJournal {
                 break
             }
             do {
-                try makeMissingFolders(move.destination.deletingLastPathComponent(), entry: &entry)
+                try makeMissingFolders(move.destination.deletingLastPathComponent(), allowed: allowed, entry: &entry)
                 let sidecar = MediaFiles.companion(of: move.source)
                 switch move.kind {
                 case .move:
@@ -294,10 +317,15 @@ public actor OperationJournal {
 
     /// Creates a destination folder that is not there (deleted after the preview) and journals each folder it makes, so
     /// Undo removes them again once they are empty.
-    func makeMissingFolders(_ folder: URL, entry: inout JournalEntry) throws {
+    func makeMissingFolders(_ folder: URL, allowed: Set<String>, entry: inout JournalEntry) throws {
         var missing: [URL] = []
         var current = folder.standardizedFileURL
         while !fm.fileExists(atPath: current.path), current.path != "/" {
+            guard allowed.contains(current.path) else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [
+                    NSLocalizedDescriptionKey: "“\(current.lastPathComponent)” is no longer there, so this was not changed.",
+                ])
+            }
             missing.append(current)
             current = current.deletingLastPathComponent()
         }
@@ -411,14 +439,19 @@ public actor OperationJournal {
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
         // As when it first ran: a folder it worked in that went away since is never made again (audit 6, B6-M1).
-        guard Self.isFolder(URL(fileURLWithPath: entry.root)) else {
+        // Folders the change made itself (its root among them) are made again; no others (audit 7, B7-m1).
+        let allowed = Set(steps.compactMap { step -> String? in
+            if case let .makeFolder(path) = step { URL(fileURLWithPath: path).standardizedFileURL.path } else { nil }
+        })
+        let root = URL(fileURLWithPath: entry.root).standardizedFileURL
+        guard Self.isFolder(root) || (allowed.contains(root.path) && Self.isFolder(root.deletingLastPathComponent())) else {
             report.skipped.append("“\(URL(fileURLWithPath: entry.root).lastPathComponent)” is no longer there, so nothing was done again.")
             return report
         }
         for unit in Self.units(steps) {
-            guard redo(unit[0], entry: &entry, report: &report) else { continue }
+            guard redo(unit[0], allowed: allowed, entry: &entry, report: &report) else { continue }
             for step in unit.dropFirst() {
-                redo(step, entry: &entry, report: &report)
+                redo(step, allowed: allowed, entry: &entry, report: &report)
             }
         }
         entry.undone = false
@@ -428,7 +461,7 @@ public actor OperationJournal {
     }
 
     @discardableResult
-    func redo(_ step: JournalStep, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
+    func redo(_ step: JournalStep, allowed: Set<String>, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
         do {
             switch step {
             case let .makeFolder(path):
@@ -446,7 +479,7 @@ public actor OperationJournal {
                     report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): another file now has that name")
                     return false
                 }
-                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), entry: &entry)
+                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), allowed: allowed, entry: &entry)
                 try moveItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
                 if !to.hasSuffix(".json") { report.restored += 1 }
                 report.moves.append((from, to))
@@ -456,7 +489,7 @@ public actor OperationJournal {
                     report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) could not be copied again")
                     return false
                 }
-                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), entry: &entry)
+                try makeMissingFolders(URL(fileURLWithPath: to).deletingLastPathComponent(), allowed: allowed, entry: &entry)
                 try cloneItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
                 if !to.hasSuffix(".json") { report.restored += 1 }
                 return true
