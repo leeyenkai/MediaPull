@@ -54,6 +54,11 @@ final class AppModel {
     let accountFolders = AccountFolderStore(folder: SelfTestRunner.isActive
         ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-accounts-\(UUID().uuidString)")
         : AccountFolderStore.defaultFolder)
+    /// What each Saved posts folder remembers of the posts saved into it, so one deleted from it is not fetched again (D-106).
+    /// Kept apart from account folders: Saved posts is not an account to update.
+    let savedPostsMemory = AccountFolderStore(folder: SelfTestRunner.isActive
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-saved-\(UUID().uuidString)")
+        : AccountFolderStore.defaultFolder.deletingLastPathComponent().appendingPathComponent("SavedPosts", isDirectory: true))
     /// An address sent from another app while no window was open, for the next window that opens (R-1111c).
     @ObservationIgnored var pendingDownloadAddress: String?
     @ObservationIgnored var openMainWindow: (() -> Void)?

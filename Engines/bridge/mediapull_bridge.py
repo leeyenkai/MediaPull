@@ -760,19 +760,22 @@ class KnownTracker:
 
 
 def known_sets(request):
-    """What a pull knows: the folder's items, the job's own items (Retry, Resume), and the owners' items (the tray)."""
+    """What a pull knows: the folder's items, the job's own items (Retry, Resume), the owners' items (the tray) and the
+    Saved posts folders' items (D-106)."""
     return (load_known(request), load_known({"known_ids": request.get("retry_ids")}),
-            load_known({"known_ids": request.get("owners_known_ids")}))
+            load_known({"known_ids": request.get("owners_known_ids")}),
+            load_known({"known_ids": request.get("saved_known_ids")}))
 
 
-def tracker_for(collection, known, retry, limit, owners=frozenset()):
+def tracker_for(collection, known, retry, limit, owners=frozenset(), saved=frozenset()):
     """Saved posts and others' stories are not the account's: its folder's known items and early stop do not apply, but a
     Retry's own saved items do (D-103), and the tray knows what its owners' folders remember (D-104). A job's own items
     never count towards the early stop (audit 20, A20-M1)."""
     if collection == "stories-tray":
         return KnownTracker(owners, None, retry)
     if collection:
-        return KnownTracker(retry, None)
+        # Saved posts know what their Saved posts folders remember, when the person keeps that on (D-106).
+        return KnownTracker(saved, None, retry)
     return KnownTracker(known, limit, retry)
 
 
@@ -794,7 +797,7 @@ def make_jobs(request):
 
     # What a Retry's own job saved is known to every listing it walks, collections too, so a file deleted since is not
     # fetched again (D-103, audit 18, A18-M1, C18-M1).
-    known, retry, owners = known_sets(request)
+    known, retry, owners, saved = known_sets(request)
     limit = int(request.get("stop_after_known") or 0)
     KnownTracker.date_from = _parse_date(request.get("date_from"))
     KnownTracker.date_to = _parse_date(request.get("date_to"))
@@ -841,7 +844,7 @@ def make_jobs(request):
             job.DownloadJob.__init__(self, url, parent)
             # Saved posts and others' stories are not the account's: its folder's known items and early stop do not
             # apply to them.
-            self.tracker = tracker_for(STATE.get("collection"), known, retry, limit, owners)
+            self.tracker = tracker_for(STATE.get("collection"), known, retry, limit, owners, saved)
 
         def dispatch(self, extractor):
             # A listing that broke off (an error, not the early stop) is told apart from files that failed one by one: only

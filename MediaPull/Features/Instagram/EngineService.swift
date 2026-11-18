@@ -639,6 +639,23 @@ final class EngineService {
                     + "so every item is checked.")
             }
         }
+        // Saved posts know what their Saved posts folders remember, unless the person turned that off (D-106).
+        if !scanOnly, app.preferences.savedPostsRemember,
+           draft.content.contains(.saved) || (!isAccount && draft.postURL == nil && draft.hashtag == nil)
+        {
+            let saved = await app.savedPostsMemory.all().filter { $0.account == account.lowercased() }
+                .reduce(into: Set<String>()) { $0.formUnion($1.keys) }
+            let savedFile = staging.appendingPathComponent("saved.json")
+            if !saved.isEmpty {
+                do {
+                    try JSONEncoder().encode(Array(saved)).write(to: savedFile)
+                    request.savedKnownIDs = savedFile.path
+                } catch {
+                    job.notes.append("Saved posts could not be listed for the engine (\(error.localizedDescription)), "
+                        + "so every saved post is checked.")
+                }
+            }
+        }
         // The stories tray knows what its owners' folders remember, so a story deleted from one is not fetched again (D-104,
         // audit 20, C20-M2).
         if !scanOnly, draft.content.contains(.storiesTray) || (!isAccount && draft.postURL == nil && draft.hashtag == nil) {
@@ -908,6 +925,12 @@ final class EngineService {
                         job.failed = max(0, job.failed - 1)
                     }
                     let firstTime = run.counted.insert(file.key).inserted
+                    // A saved post is remembered by its Saved posts folder, so one deleted from it is not fetched again
+                    // (D-106).
+                    if ["saved", "collection"].contains(context.subcategory), let url = outcome.url {
+                        let memory = await app.savedPostsMemory.record(account: account, folder: url.deletingLastPathComponent())
+                        await app.savedPostsMemory.addKeys([file.key], to: memory.id)
+                    }
                     switch outcome {
                     case let .saved(url):
                         job.saved += 1

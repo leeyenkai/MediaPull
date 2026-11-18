@@ -101,9 +101,11 @@ final class Audit20Tests: XCTestCase {
         request.knownIDs = "/k"
         request.retryIDs = "/r"
         request.ownersKnownIDs = "/o"
+        request.savedKnownIDs = "/s"
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
         XCTAssertEqual(json["known_ids"] as? String, "/k")
         XCTAssertEqual(json["retry_ids"] as? String, "/r")
         XCTAssertEqual(json["owners_known_ids"] as? String, "/o")
+        XCTAssertEqual(json["saved_known_ids"] as? String, "/s")
     }
 }

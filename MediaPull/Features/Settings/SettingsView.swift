@@ -307,6 +307,9 @@ struct InstagramSettings: View {
                     .foregroundStyle(.secondary)
                 Stepper("Stop a sync after \(preferences.stopAfterKnown) posts already saved",
                         value: $preferences.stopAfterKnown, in: 3 ... 60)
+                // D-106: on by default; off fetches a saved post again after it was deleted from Saved posts.
+                Toggle("Don't download saved posts again after you delete them from Saved posts",
+                       isOn: $preferences.savedPostsRemember)
             }
             Section {
                 Text("""

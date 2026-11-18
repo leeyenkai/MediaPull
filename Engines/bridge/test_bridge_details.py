@@ -359,8 +359,8 @@ def test_a_pull_reads_its_three_known_lists():
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(keys, handle)
             paths.append(handle.name)
-    request = {"known_ids": paths[0], "retry_ids": paths[1], "owners_known_ids": paths[2]}
-    assert bridge.known_sets(request) == ({"ig:1"}, {"ig:2"}, {"ig:3"})
+    request = {"known_ids": paths[0], "retry_ids": paths[1], "owners_known_ids": paths[2], "saved_known_ids": paths[2]}
+    assert bridge.known_sets(request) == ({"ig:1"}, {"ig:2"}, {"ig:3"}, {"ig:3"})
     for path in paths:
         os.remove(path)
 
@@ -371,6 +371,17 @@ def test_the_tray_knows_what_its_owners_folders_remember():
     tray = bridge.tracker_for("stories-tray", set(), set(), 12, {"ig:99"})
     assert tray.observe(story, bridge.item_key(story, "u")) is True
     assert bridge.tracker_for("saved", set(), set(), 12, {"ig:99"}).observe(story, bridge.item_key(story, "u")) is False
+
+
+def test_saved_posts_remember_what_was_deleted():
+    """D-106: a pull of saved posts skips what its Saved posts folders remember; with the setting off nothing is sent and
+    every saved post is listed."""
+    post = {"category": "instagram", "subcategory": "saved", "post_id": "7", "num": 1, "media_id": "77"}
+    remembering = bridge.tracker_for("saved", set(), set(), 12, set(), {"ig:77"})
+    assert remembering.observe(post, bridge.item_key(post, "u")) is True
+    assert remembering.limit is None
+    off = bridge.tracker_for("saved", set(), set(), 12, set(), set())
+    assert off.observe(post, bridge.item_key(post, "u")) is False
 
 
 def test_files_from_the_stories_tray_and_saved_posts_say_so():

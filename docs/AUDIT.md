@@ -21,7 +21,9 @@ How MediaPull is audited, so that coverage accumulates and each audit finds what
 
 ## Scope (from round 18 of the 1.8 audit)
 
-Scope is frozen: rounds only fix. A fix bigger than a few lines needs a simpler rule written in the spec first (a D-nn
+Scope is frozen: rounds only fix. In the closing rounds (from round 23) only majors are fixed, with wording, docs and
+tests; a minor that would change behaviour is recorded in the ledger and left, since two such fixes in a row caused
+majors (A21-m3, B22-m1). A fix bigger than a few lines needs a simpler rule written in the spec first (a D-nn
 entry), not another patch to the last one. Earlier rules that were patched round after round were replaced by simpler
 ones (D-93 Undo, D-98 earlier versions' memory, D-102 playlist Retry); an auditor does not re-report those designs, only
 code that does not do what they say.
