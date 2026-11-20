@@ -278,6 +278,9 @@ struct FileMediaPreview: View {
 struct FileDetails: View {
     @Bindable var model: WindowModel
     var file: URL
+    /// Where its copies come from and how one is shown: the Library's unless an Organise pane passes its own (D-114).
+    var duplicates: DuplicateScan?
+    var reveal: ((URL) -> Void)?
     @State private var rows: [(String, String)] = []
     @State private var caption: String?
     /// What the file itself records (D-110, R-1009b).
@@ -307,7 +310,9 @@ struct FileDetails: View {
             VStack(alignment: .leading, spacing: 14) {
                 InfoGrid(rows: rows)
                 if let recorded { recordedSections(recorded) }
-                if let group = model.library.duplicateGroup(for: file), let report = model.library.duplicates {
+                if let scan = duplicates ?? model.library.duplicateScan as DuplicateScan?, let group = scan.group(for: file),
+                   let report = scan.report
+                {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Copies and look-alikes")
                             .font(.caption.weight(.semibold))
@@ -315,7 +320,7 @@ struct FileDetails: View {
                         ForEach(group.members.filter { $0 != file.standardizedFileURL }, id: \.self) { other in
                             let identical = report.areIdentical(file, other)
                             Button {
-                                model.library.reveal(other)
+                                if let reveal { reveal(other) } else { model.library.reveal(other) }
                             } label: {
                                 Label(String(other.path.dropFirst(report.root.standardizedFileURL.path.count))
                                     .trimmingCharacters(in: CharacterSet(charactersIn: "/")),
@@ -326,7 +331,7 @@ struct FileDetails: View {
                             .font(.caption)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .help("Show this copy in the Library")
+                            .help("Show this copy")
                         }
                     }
                 }

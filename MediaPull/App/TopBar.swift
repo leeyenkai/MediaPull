@@ -110,5 +110,11 @@ enum TopBarStyle {
 }
 
 extension WindowSection {
-    var symbol: String { self == .collect ? "square.and.arrow.down.on.square" : "folder" }
+    var symbol: String {
+        switch self {
+        case .collect: "square.and.arrow.down.on.square"
+        case .organise: "folder"
+        case .devices: "iphone"
+        }
+    }
 }

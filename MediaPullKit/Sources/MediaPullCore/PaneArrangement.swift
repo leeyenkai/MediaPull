@@ -1,14 +1,15 @@
 import Foundation
 
-/// The two sections of the window, each with its own panes (D-62).
+/// The sections of the window, each with its own panes (D-62, D-115).
 public enum PaneGroup: String, Codable, Sendable, Hashable {
-    case collect, organise
+    case collect, organise, devices
 }
 
 /// The window's panes (SPEC sections 7 and 38).
 public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
     case source, extracted, preview, library, downloads
     case organiseSource, organiseWork, organiseTarget
+    case devicesList, devicesMedia, devicesImport
 
     public var title: String {
         switch self {
@@ -20,12 +21,16 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
         case .organiseSource: "Source"
         case .organiseWork: "Organise"
         case .organiseTarget: "Target"
+        case .devicesList: "Devices"
+        case .devicesMedia: "Media"
+        case .devicesImport: "Import"
         }
     }
 
     public var group: PaneGroup {
         switch self {
         case .organiseSource, .organiseWork, .organiseTarget: .organise
+        case .devicesList, .devicesMedia, .devicesImport: .devices
         default: .collect
         }
     }
@@ -81,8 +86,20 @@ public struct PaneArrangement: Codable, Equatable, Sendable, Hashable {
         ("Target Below Source", .organiseTargetBelow),
     ]
 
+    public static let devicesStandard = PaneArrangement(columns: [[.devicesList], [.devicesMedia], [.devicesImport]])
+    public static let devicesImportBelow = PaneArrangement(columns: [[.devicesList, .devicesImport], [.devicesMedia]])
+
+    public static let devicesPresets: [(name: String, arrangement: PaneArrangement)] = [
+        ("Standard", .devicesStandard),
+        ("Import Below Devices", .devicesImportBelow),
+    ]
+
     public static func presets(for group: PaneGroup) -> [(name: String, arrangement: PaneArrangement)] {
-        group == .collect ? presets : organisePresets
+        switch group {
+        case .collect: presets
+        case .organise: organisePresets
+        case .devices: devicesPresets
+        }
     }
 
     /// A stable name for this arrangement, used to keep divider positions per arrangement.

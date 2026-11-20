@@ -3,6 +3,7 @@ import AppKit
 import ImageIO
 import Foundation
 import MediaPullCore
+import MediaPullDevices
 import MediaPullEngines
 import MediaPullLibrary
 import MediaPullMedia
@@ -125,8 +126,14 @@ final class SelfTestRunner {
             quit()
             return
         }
+        if CommandLine.arguments.contains("--selftest-devices") {
+            await exerciseDevices(out: out)
+            quit()
+            return
+        }
         if CommandLine.arguments.contains("--selftest-details") {
             await exerciseDetails(library: library, out: out)
+            await exerciseOrganiseParity(out: out)
             quit()
             return
         }
@@ -1066,6 +1073,190 @@ final class SelfTestRunner {
         }
         let near = recorded.locationRows.first { $0.0 == "Near" }?.1 ?? "none"
         note("details: \(missing.isEmpty ? "PASS" : "FAIL missing \(missing)") rows \(rows), near \(near)")
+    }
+
+    /// Devices (section 41), offline: a folder stands in for an iPhone and a simulated MTP phone for an Android one. Browses
+    /// both, imports with Live Photo clips, runs Import New again (nothing new), and checks names, dates, originals kept byte
+    /// for byte, the device left as it was, only read operations sent and no sockets opened.
+    private func exerciseDevices(out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("devices: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        let phone = out.appendingPathComponent("iPhone", isDirectory: true)
+        let camera = phone.appendingPathComponent("DCIM/100APPLE", isDirectory: true)
+        try? fm.createDirectory(at: camera, withIntermediateDirectories: true)
+        let taken = Date(timeIntervalSince1970: 1_717_266_605)
+        if let image = NSImage(data: Self.jpeg(4)).flatMap({ $0.cgImage(forProposedRect: nil, context: nil, hints: nil) }),
+           let heic = CGImageDestinationCreateWithURL(camera.appendingPathComponent("IMG_0001.HEIC") as CFURL,
+                                                      "public.heic" as CFString, 1, nil)
+        {
+            CGImageDestinationAddImage(heic, image, nil)
+            CGImageDestinationFinalize(heic)
+        }
+        try? await Self.writeTestClip(to: camera.appendingPathComponent("IMG_0001.MOV"))
+        try? Self.jpeg(6).write(to: camera.appendingPathComponent("IMG_0002.JPG"))
+        try? await Self.writeTestClip(to: camera.appendingPathComponent("IMG_0003.MOV"), seed: 3)
+        try? Data("<plist/>".utf8).write(to: camera.appendingPathComponent("IMG_0002.AAE"))
+        for name in (try? fm.contentsOfDirectory(atPath: camera.path)) ?? [] {
+            try? fm.setAttributes([.modificationDate: taken], ofItemAtPath: camera.appendingPathComponent(name).path)
+        }
+        func checksums(_ folder: URL) -> [String: String] {
+            var sums: [String: String] = [:]
+            for name in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] {
+                sums[name] = try? FileHasher.sha256(of: folder.appendingPathComponent(name))
+            }
+            return sums
+        }
+        let before = checksums(camera)
+
+        let simulator = MTPResponderSimulator(serial: "SELFTEST-PIXEL")
+        let dcim = await simulator.add("DCIM")
+        let pixelCamera = await simulator.add("Camera", in: dcim)
+        await simulator.add("PXL_20240601_183005.jpg", in: pixelCamera, data: Self.jpeg(8), captured: taken)
+        await simulator.add("Download")
+        let session = MTPSession(transport: simulator)
+        let info = try? await session.open()
+        let pixelIdentity = DeviceIdentity(name: "Pixel", serial: info?.serial, vendorID: 0x18D1, productID: 0x4EE1)
+        let pixel = MTPSource(identity: pixelIdentity, session: session)
+        let iphone = FolderDeviceSource(root: phone, identity: DeviceIdentity(name: "iPhone", serial: "SELFTEST-IPHONE", vendorID: 0x05AC,
+                                                                                productID: 0x12A8))
+        let destination = out.appendingPathComponent("Imported", isDirectory: true)
+        try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        let savedFolder = app.preferences.deviceImportFolder, savedClips = app.preferences.includeLivePhotoClips
+        defer {
+            app.preferences.deviceImportFolder = savedFolder
+            app.preferences.includeLivePhotoClips = savedClips
+        }
+        app.preferences.deviceImportFolder = destination.path
+        app.preferences.includeLivePhotoClips = true
+        let socketsBefore = Self.socketCount()
+
+        app.deviceCenter.standIns = [
+            ConnectedDevice(id: "iphone", name: "iPhone", symbol: "iphone", isApple: true, state: .ready(iphone)),
+            ConnectedDevice(id: "pixel", name: "Pixel", symbol: "smartphone", isApple: false, state: .ready(pixel)),
+        ]
+        let devices = model.devices
+        model.section = .devices
+        await waitUntil(timeout: 30) { devices.deviceID == "iphone" && !devices.loading && !devices.entries.isEmpty }
+        check(devices.entries.map(\.name) == ["DCIM"], "the iPhone opens at its top folder (\(devices.entries.map(\.name)))")
+        if let folder = devices.entries.first { devices.open(folder) }
+        await waitUntil(timeout: 30) { !devices.loading && devices.entries.first?.name == "100APPLE" }
+        if let folder = devices.entries.first { devices.open(folder) }
+        await waitUntil(timeout: 30) { !devices.loading && devices.media.count == 4 }
+        check(devices.media.map(\.name).sorted() == ["IMG_0001.HEIC", "IMG_0001.MOV", "IMG_0002.JPG", "IMG_0003.MOV"],
+              "only photos and videos are listed (\(devices.media.map(\.name)))")
+        try? await Task.sleep(for: .seconds(1.5))
+        snapshot(to: out.appendingPathComponent("devices.png"))
+
+        devices.importNew()
+        await waitUntil(timeout: 60) { devices.importJob?.state.isFinished == true }
+        let names = Set((try? fm.contentsOfDirectory(atPath: destination.path)) ?? [])
+        check(names == ["IMG_0001.HEIC", "IMG_0001.MOV", "IMG_0002.JPG", "IMG_0003.MOV"],
+              "imported under the device's names (\(names.sorted()))")
+        let copied = checksums(destination)
+        check(["IMG_0001.HEIC", "IMG_0002.JPG", "IMG_0001.MOV"].allSatisfy { copied[$0] != nil && copied[$0] == before[$0] },
+              "originals kept byte for byte, HEIC included")
+        let date = (try? fm.attributesOfItem(atPath: destination.appendingPathComponent("IMG_0002.JPG").path))?[.modificationDate] as? Date
+        check(date == taken, "dated when taken")
+        check(!names.contains { $0.hasSuffix(".json") }, "no metadata files (D-117)")
+        try? await Task.sleep(for: .seconds(1))
+        snapshot(to: out.appendingPathComponent("devices-imported.png"))
+
+        let firstJob = devices.importJob
+        devices.importNew()
+        await waitUntil(timeout: 60) { devices.importJob !== firstJob && devices.importJob?.state.isFinished == true }
+        check(devices.importJob?.saved == 0 && (try? fm.contentsOfDirectory(atPath: destination.path).count) == 4,
+              "Import New again brings nothing (\(devices.importJob?.saved ?? -1) imported)")
+        check(checksums(camera) == before, "the device is left exactly as it was")
+
+        devices.deviceID = "pixel"
+        await waitUntil(timeout: 30) { !devices.loading && devices.entries.map(\.name) == ["DCIM", "Download"] }
+        check(devices.entries.map(\.name) == ["DCIM", "Download"], "the Android phone shows its whole storage")
+        let secondJob = devices.importJob
+        devices.importNew()
+        await waitUntil(timeout: 60) { devices.importJob !== secondJob && devices.importJob?.state.isFinished == true }
+        check(fm.fileExists(atPath: destination.appendingPathComponent("PXL_20240601_183005.jpg").path),
+              "Import New from the top of the phone finds the camera folder's photo")
+        let received = await simulator.received
+        check(Set(received).isSubset(of: MTPOperation.allowedCodes), "only read operations reached the phone")
+        check(Self.socketCount() <= socketsBefore, "no sockets opened")
+        app.deviceCenter.standIns = []
+        model.section = .collect
+        note("devices: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Organise has the Library's duplicates and the Preview pane's details (D-114), offline, in a folder outside the library:
+    /// marks, Only Duplicates, Trash Extra Copies as one change ⌘Z takes back, and the Details tab.
+    private func exerciseOrganiseParity(out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        let folder = out.appendingPathComponent("Phone dump", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let original = folder.appendingPathComponent("IMG_0001.jpg")
+        let copy = folder.appendingPathComponent("IMG_0001 copy.jpg")
+        let other = folder.appendingPathComponent("IMG_0002.jpg")
+        try? Self.jpeg(3).write(to: original)
+        try? Self.jpeg(3).write(to: copy)
+        try? Self.jpeg(9).write(to: other)
+        let savedHighlight = app.preferences.highlightDuplicates
+        defer { app.preferences.highlightDuplicates = savedHighlight }
+        app.preferences.highlightDuplicates = true
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("organise: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        let organise = model.organise
+        let pane = organise.source
+        organise.open(folder)
+        await waitUntil(timeout: 60) {
+            pane.duplicates.report != nil && pane.duplicates.progress == nil && pane.entries.count == 3 && !pane.filtering
+                && pane.shown.count == 3
+        }
+        // Panes list files by their real paths (/private/var, not /var), so ids are taken from the listing.
+        let listed = Dictionary(pane.shown.map { ($0.name, $0.path) }, uniquingKeysWith: { first, _ in first })
+        check(app.root(containing: folder) == nil, "the folder is outside the library")
+        check(pane.duplicatesHere == 2, "two files marked as copies (\(pane.duplicatesHere))")
+        let id = { (url: URL) in listed[url.lastPathComponent] ?? url.path }
+        check(pane.gridInfo(id(original))?.highlight != nil && pane.gridInfo(id(other))?.highlight == nil,
+              "the copies are marked and the other file is not")
+        check(!pane.duplicates.inLibrary, "the bar speaks of this folder, not a library folder")
+        pane.duplicates.showOnly = true
+        check(pane.gridSections.flatMap(\.ids).count == 2, "Only Duplicates shows the two copies")
+        try? await Task.sleep(for: .seconds(1))
+        snapshot(to: out.appendingPathComponent("organise-duplicates.png"))
+        pane.duplicates.showOnly = false
+        let changes = organise.history.count
+        var asked = false
+        pane.trashExtraCopies { _, _ in
+            asked = true
+            return true
+        }
+        await waitUntil(timeout: 60) { organise.history.count > changes && organise.working == nil }
+        let left = [original, copy].filter { fm.fileExists(atPath: $0.path) }
+        check(asked && left.count == 1 && fm.fileExists(atPath: other.path), "Trash Extra Copies keeps one copy (\(left.count) left)")
+        if let entry = organise.history.first {
+            organise.undo(entry)
+            await waitUntil(timeout: 60) {
+                organise.working == nil && fm.fileExists(atPath: original.path) && fm.fileExists(atPath: copy.path)
+            }
+        }
+        check(fm.fileExists(atPath: original.path) && fm.fileExists(atPath: copy.path), "Undo puts the copy back")
+        await waitUntil(timeout: 30) { pane.entries.count == 3 && !pane.filtering && pane.shown.count == 3 }
+        pane.gridSelectionChanged([id(other)])
+        organise.tab = .details
+        check(organise.details?.url.path == id(other) && organise.details?.pane == .source, "the Details tab shows the chosen file")
+        try? await Task.sleep(for: .seconds(1.5))
+        snapshot(to: out.appendingPathComponent("organise-details.png"))
+        organise.tab = .sort
+        model.section = .collect
+        note("organise: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
     }
 
     /// Profile views (D-113, section 40), offline: which folders offer the Profile view, how their files group, that nothing

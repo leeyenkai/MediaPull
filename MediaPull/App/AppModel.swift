@@ -47,6 +47,8 @@ final class AppModel {
     let duplicates: DuplicateFinder
     /// On-device analysis for search, sorting, Organise and people (SPEC sections 36 to 39).
     let analysis = AnalysisService()
+    /// Phones and cameras plugged in (SPEC section 41).
+    let deviceCenter = DeviceCenter()
     /// Undo history for Organise (D-63).
     let journal = OperationJournal(folder: SelfTestRunner.isActive
         ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-journal-\(UUID().uuidString)")

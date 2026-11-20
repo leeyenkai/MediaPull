@@ -406,6 +406,10 @@ extension WindowModel {
     /// A result of a file change, shown in the section the person is looking at.
     func showFileMessage(_ text: String, unsaved: Bool = false) {
         let text = unsaved ? text + " " + OperationJournal.unsavedNote : text
-        if section == .organise { organise.message = text } else { library.message = text }
+        switch section {
+        case .organise: organise.message = text
+        case .collect: library.message = text
+        case .devices: devices.message = text
+        }
     }
 }

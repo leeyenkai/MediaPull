@@ -337,6 +337,7 @@ struct FolderContents: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                AnalysisStatus()
                 if let match = library.account {
                     Button("Update @\(match.account)") { library.update(match) }
                         .controlSize(.small)
@@ -378,7 +379,7 @@ struct FolderContents: View {
             if app.preferences.highlightDuplicates, library.selectedFolder != nil, !columns,
                library.duplicateProgress != nil || library.duplicatesHere > 0 || library.showOnlyDuplicates
             {
-                DuplicateBar(library: library)
+                DuplicateBar(scan: library.duplicateScan, here: library.duplicatesHere) { library.trashExtraCopies() }
             }
             Divider()
             if columns {
@@ -477,7 +478,11 @@ struct DuplicateCommands: View {
     }
 
     private func rescan() {
-        for window in app.windows { window.library.scanDuplicates() }
+        for window in app.windows {
+            window.library.scanDuplicates()
+            window.organise.source.scanDuplicates()
+            window.organise.target.scanDuplicates()
+        }
     }
 }
 
@@ -547,18 +552,20 @@ struct CheckBar: View {
 }
 
 struct DuplicateBar: View {
-    @Bindable var library: LibraryModel
+    @Bindable var scan: DuplicateScan
+    /// Files shown here that have copies.
+    var here: Int
+    var trashExtraCopies: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            if let progress = library.duplicateProgress {
+            if let progress = scan.progress {
                 ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
                     .progressViewStyle(.linear)
                     .frame(width: 60)
                 Text("Checking for duplicates, \(progress.done) of \(progress.total)")
                     .lineLimit(1)
-            } else if let report = library.duplicates {
-                let here = library.duplicatesHere
+            } else if let report = scan.report {
                 // One line when the pane is wide enough, two when it is narrow.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
@@ -596,18 +603,19 @@ struct DuplicateBar: View {
     private var controls: some View {
         Legend(color: .orange, label: "Identical")
         Legend(color: .purple, label: "Look alike")
-        Toggle("Only Duplicates", isOn: $library.showOnlyDuplicates)
+        Toggle("Only Duplicates", isOn: $scan.showOnly)
             .toggleStyle(.button)
             .controlSize(.mini)
-        Button("Trash Extra Copies…") { library.trashExtraCopies() }
+        Button("Trash Extra Copies…") { trashExtraCopies() }
             .controlSize(.mini)
             .help("Keep one file of each group (the largest picture) and move the others to the Trash. Undo puts them back.")
     }
 
     private func summary(here: Int, total: Int) -> String {
-        if total == 0 { return "No duplicates in this library folder" }
+        let scope = scan.inLibrary ? "this library folder" : "this folder"
+        if total == 0 { return "No duplicates in \(scope)" }
         if here == 0 { return "None here · \(total) elsewhere" }
-        return "\(here) here · \(total) in this library folder"
+        return "\(here) here · \(total) in \(scope)"
     }
 }
 

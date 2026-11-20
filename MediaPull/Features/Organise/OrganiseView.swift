@@ -75,6 +75,7 @@ struct OrganiseFolderPane: View {
                         HStack(spacing: 6) {
                             Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             Spacer(minLength: 4)
+                            AnalysisStatus()
                         }
                         .padding(.horizontal, 12)
                         .padding(.top, 6)
@@ -83,6 +84,12 @@ struct OrganiseFolderPane: View {
                                      focusToken: model.searchFocusTokens[pane.paneID] ?? 0, onFocus: { pane.gridFocused() })
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
+                            // Duplicates only take a line when there are some here, or while checking (R-3301, D-114).
+                            if app.preferences.highlightDuplicates,
+                               pane.duplicates.progress != nil || pane.duplicatesHere > 0 || pane.duplicates.showOnly
+                            {
+                                DuplicateBar(scan: pane.duplicates, here: pane.duplicatesHere) { pane.trashExtraCopies() }
+                            }
                         }
                         Divider()
                         if columns {
@@ -91,7 +98,10 @@ struct OrganiseFolderPane: View {
                             ZStack {
                                 PaneMediaView(mode: mode, sections: pane.gridSections, selection: pane.selection, cellSize: pane.cellSize,
                                               revision: pane.revision, owner: pane)
-                                if pane.shown.isEmpty, !pane.loading, mode == .icon || pane.listTopFolders.isEmpty {
+                                if pane.duplicates.showOnly, pane.duplicatesHere == 0, !pane.entries.isEmpty {
+                                    Text("No duplicates in this folder.")
+                                        .font(.callout).foregroundStyle(.secondary).allowsHitTesting(false)
+                                } else if pane.shown.isEmpty, !pane.loading, mode == .icon || pane.listTopFolders.isEmpty {
                                     Text(pane.entries.isEmpty ? "No media in this folder." : "Nothing matches the search and filters.")
                                         .font(.callout).foregroundStyle(.secondary).allowsHitTesting(false)
                                 }
@@ -296,7 +306,7 @@ struct OrganiseWorkPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // The Sort, People and History tabs name the pane.
+            // The Sort, People, Details and History tabs name the pane.
             PaneHeader(title: "", pane: .organiseWork, model: model) {
                 ChipTabs(selection: $organise.tab, items: OrganiseTab.allCases, label: \.label)
                     .fixedSize()
@@ -309,6 +319,7 @@ struct OrganiseWorkPane: View {
             switch organise.tab {
             case .sort: sortTab
             case .people: PeopleView(inline: true).padding(12)
+            case .details: detailsTab
             case .history: historyTab
             }
             if let message = organise.message {
@@ -399,6 +410,21 @@ struct OrganiseWorkPane: View {
             : "the \(count) selected file\(count == 1 ? "" : "s")"
         guard let destination = organise.destination else { return "Choose a target folder first." }
         return "Sort \(what) into folders in “\(destination.lastPathComponent)” by"
+    }
+
+    /// Camera, date, place and the map for the file chosen in the Source or Target pane (D-114).
+    @ViewBuilder private var detailsTab: some View {
+        if let details = organise.details {
+            let pane = details.pane == .source ? organise.source : organise.target
+            FileDetails(model: model, file: details.url, duplicates: pane.duplicates, reveal: { pane.reveal($0) })
+                .id(details.url)
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "info.circle").font(.system(size: 26, weight: .light)).foregroundStyle(.tertiary)
+                Text("Select a file to see its details.").font(.callout).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     @ViewBuilder

@@ -20,6 +20,8 @@ struct MainWindow: View {
 
     /// Organise is created when first shown, then kept so its state survives switching back and forth.
     @State private var organiseShown = false
+    /// Devices, like Organise, is made when first shown and then kept.
+    @State private var devicesShown = false
     @State private var showActivity = false
     @State private var showNotes = false
 
@@ -60,6 +62,22 @@ struct MainWindow: View {
                     organiseShown = true
                     model.organise.prepare()
                 }
+            }
+            if devicesShown || model.section == .devices {
+                PaneSplit(
+                    arrangement: app.preferences.devicesArrangement,
+                    visible: model.devicesVisiblePanes,
+                    panes: [
+                        .devicesList: AnyView(DevicesListPane(model: model, devices: model.devices)),
+                        .devicesMedia: AnyView(DeviceMediaPane(model: model, devices: model.devices)),
+                        .devicesImport: AnyView(DeviceImportPane(model: model, devices: model.devices)),
+                    ]
+                )
+                .background(Color(nsColor: .windowBackgroundColor))
+                .opacity(model.section == .devices ? 1 : 0)
+                .allowsHitTesting(model.section == .devices)
+                .accessibilityHidden(model.section != .devices)
+                .onAppear { devicesShown = true }
             }
         }
         .tint(app.preferences.theme.accent)
@@ -112,7 +130,10 @@ struct MainWindow: View {
         }
         .sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.flexible)
-        if model.section == .organise {
+        if model.section == .devices {
+            ToolbarItem(placement: .automatic) { activityButton }
+                .sharedBackgroundVisibility(.hidden)
+        } else if model.section == .organise {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 2) {
                     TopBarButton(title: "Undo", symbol: "arrow.uturn.backward") { model.organise.undoLast() }
@@ -146,8 +167,11 @@ struct MainWindow: View {
     }
 
     private var windowName: String {
-        model.section == .organise ? (model.organise.source.root?.lastPathComponent ?? "Organise")
-            : (model.browser.title.isEmpty ? "MediaPull" : model.browser.title)
+        switch model.section {
+        case .organise: model.organise.source.root?.lastPathComponent ?? "Organise"
+        case .devices: model.devices.device?.name ?? "Devices"
+        case .collect: model.browser.title.isEmpty ? "MediaPull" : model.browser.title
+        }
     }
 
     private var activityButton: some View {

@@ -77,12 +77,13 @@ struct PendingPlan: Identifiable {
 }
 
 enum OrganiseTab: String, CaseIterable {
-    case sort, people, history
+    case sort, people, details, history
 
     var label: String {
         switch self {
         case .sort: "Sort"
         case .people: "People"
+        case .details: "Details"
         case .history: "History"
         }
     }
@@ -194,9 +195,51 @@ final class OrganisePane: MediaGridOwner {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var filterTask: Task<Void, Never>?
 
+    /// Duplicates in the folder this pane has open (R-3301, D-114).
+    let duplicates = DuplicateScan()
+    @ObservationIgnored private var pendingReveal: URL?
+
     init(role: Role) {
-        defer { treeCache.onLoaded = { [weak self] in self?.treeRevision += 1 } }
+        defer {
+            treeCache.onLoaded = { [weak self] in self?.treeRevision += 1 }
+            duplicates.onChange = { [weak self] in self?.revision += 1 }
+        }
         self.role = role
+    }
+
+    func scanDuplicates() {
+        let inLibrary = root.map { app.root(containing: $0)?.url.standardizedFileURL == $0.standardizedFileURL } ?? false
+        duplicates.scan(root: root, inLibrary: inLibrary)
+    }
+
+    /// Files shown here that have copies.
+    var duplicatesHere: Int { duplicates.count(in: entries.map(\.url)) }
+
+    func trashExtraCopies(confirm: @escaping @MainActor (String, String) -> Bool = DuplicateScan.ask) {
+        guard let owner else { return }
+        if let note = duplicates.trashExtraCopies(here: entries.map(\.url), confirm: confirm, perform: { owner.run($0) }) {
+            owner.message = note
+        }
+    }
+
+    /// Shows a file in this pane: opens its folder when it is inside the pane's folder, then selects it.
+    func reveal(_ url: URL) {
+        guard let root, url.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/") else { return }
+        let parent = url.deletingLastPathComponent().standardizedFileURL
+        if folder?.standardizedFileURL == parent, !includeSubfolders || entry(url.standardizedFileURL.path) != nil {
+            selectRevealed(url)
+        } else {
+            pendingReveal = url
+            folder = parent
+        }
+    }
+
+    private func selectRevealed(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        guard let match = entries.first(where: { $0.url.standardizedFileURL.path == path }) else { return }
+        if duplicates.showOnly, duplicates.group(for: url) == nil { duplicates.showOnly = false }
+        selection = [match.path]
+        revision += 1
     }
 
     isolated deinit {
@@ -249,8 +292,18 @@ final class OrganisePane: MediaGridOwner {
             self.subfolderCount = folders
             self.listFolders.reset(top: subfolders)
             self.selection = self.selection.intersection(Set(attached.map(\.path)))
+            if let shown = self.owner?.details, shown.pane == self.role,
+               !FileManager.default.fileExists(atPath: shown.url.path)
+            {
+                self.owner?.details = nil
+            }
             self.loading = false
             self.refilter()
+            self.scanDuplicates()
+            if let pending = self.pendingReveal {
+                self.pendingReveal = nil
+                self.selectRevealed(pending)
+            }
         }
     }
 
@@ -293,7 +346,12 @@ final class OrganisePane: MediaGridOwner {
     }
 
     var gridSections: [GridSection] {
-        sections.enumerated().map { GridSection(id: "\($0.offset)", title: $0.element.title ?? "", ids: $0.element.items.map(\.path)) }
+        if duplicates.showOnly, duplicates.report != nil {
+            return [GridSection(id: "duplicates", title: "", ids: duplicates.onlyDuplicates(shown, url: \.url).map(\.path))]
+        }
+        return sections.enumerated().map {
+            GridSection(id: "\($0.offset)", title: $0.element.title ?? "", ids: $0.element.items.map(\.path))
+        }
     }
 
     func entry(_ path: String) -> MediaEntry? { shownIndex[path].map { shown[$0] } ?? listFolders.entry(path) }
@@ -316,6 +374,7 @@ final class OrganisePane: MediaGridOwner {
         if entry.kind == .video { info.kindSymbol = "play.fill"; info.placeholderSymbol = "film" }
         if entry.source != nil { info.stateSymbol = "text.badge.checkmark"; info.stateColor = .secondaryLabelColor }
         info.tagColors = GridCellInfo.tagColors(entry.finderTags)
+        duplicates.mark(&info, for: entry.url)
         return info
     }
 
@@ -323,7 +382,15 @@ final class OrganisePane: MediaGridOwner {
         await app.thumbnails.localThumbnail(for: URL(fileURLWithPath: id), maxPixel: maxPixel)?.image
     }
 
-    func gridSelectionChanged(_ ids: Set<String>) { selection = ids }
+    func gridSelectionChanged(_ ids: Set<String>) {
+        selection = ids
+        // The Details tab shows the one file chosen last in either pane (D-114).
+        if ids.count == 1, let id = ids.first, !listFolders.isFolder(id), let entry = entry(id) {
+            owner?.details = (entry.url, role)
+        } else if owner?.details?.pane == role {
+            owner?.details = nil
+        }
+    }
 
     /// A folder (a row of the list or column view) opens in the pane, as in the Finder.
     func gridActivate(_ id: String) {
@@ -384,6 +451,11 @@ final class OrganisePane: MediaGridOwner {
         menu.addItem(ActionMenuItem("Open") { chosen.forEach { NSWorkspace.shared.open($0) } })
         menu.addItem(ActionMenuItem("Quick Look") { [weak self] in self?.gridQuickLook() })
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen) })
+        if chosen.count == 1, let file = chosen.first,
+           let copies = duplicates.copiesMenuItem(for: file, reveal: { [weak self] in self?.reveal($0) })
+        {
+            menu.addItem(copies)
+        }
         menu.addItem(.separator())
         if role == .source, let target = owner.targetFolder, target.standardizedFileURL != folder?.standardizedFileURL {
             menu.addItem(ActionMenuItem("Copy to “\(target.lastPathComponent)”") {
@@ -453,6 +525,7 @@ extension OrganisePane: MediaListOwner {
     /// Subfolders come first, as in the Finder, unless the list is flat: search, Include Subfolders or groups.
     var listTopFolders: [String] {
         let flat = !query.search.trimmingCharacters(in: .whitespaces).isEmpty || includeSubfolders || sections.count > 1
+            || duplicates.showOnly
         return flat ? [] : listFolders.top
     }
 
@@ -531,6 +604,8 @@ final class OrganiseModel {
     var history: [JournalEntry] = []
     var working: String?
     var tab: OrganiseTab = .sort
+    /// The file the Details tab shows and the pane it was chosen in.
+    var details: (url: URL, pane: OrganisePane.Role)?
     /// The folder being renamed in place.
     var renaming: String?
     /// With a target other than the source: move files there instead of copying them.

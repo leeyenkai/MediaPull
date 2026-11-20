@@ -173,7 +173,7 @@ struct AppCommands: Commands {
                     PDFPicker.choose(window: window?.hostWindow) { files in files.forEach { window?.extractPDF(local: $0) } }
                 }
                 .keyboardShortcut("o")
-                .disabled(window == nil)
+                .disabled(window?.section != .collect)
             }
             Divider()
             Button(window.map { "Save to “\($0.saveFolderName)”" } ?? "Save") { window?.saveItems() }
@@ -207,9 +207,11 @@ struct AppCommands: Commands {
                 .keyboardShortcut("1", modifiers: [.command, .control])
             Button("Organise") { window?.section = .organise }
                 .keyboardShortcut("2", modifiers: [.command, .control])
+            Button("Devices") { window?.section = .devices }
+                .keyboardShortcut("3", modifiers: [.command, .control])
             Divider()
-            if window?.section == .organise {
-                ForEach(Array(PaneID.panes(in: .organise).enumerated()), id: \.element) { index, pane in
+            if let section = window?.section, section != .collect {
+                ForEach(Array(PaneID.panes(in: section == .organise ? .organise : .devices).enumerated()), id: \.element) { index, pane in
                     paneToggle(pane, key: Character("\(index + 1)"))
                 }
             } else {
@@ -223,7 +225,11 @@ struct AppCommands: Commands {
                     .keyboardShortcut("i")
             }
             Menu("Arrange Panes") {
-                let group: PaneGroup = window?.section == .organise ? .organise : .collect
+                let group: PaneGroup = switch window?.section {
+                case .organise: .organise
+                case .devices: .devices
+                default: .collect
+                }
                 LayoutPresetCommands(group: group)
                 Divider()
                 ForEach(PaneID.panes(in: group), id: \.self) { pane in
@@ -263,7 +269,7 @@ struct AppCommands: Commands {
             Divider()
             Button("Find") { window?.find() }
                 .keyboardShortcut("f")
-                .disabled(window?.section == .organise && window?.keyboardFolderPane == nil)
+                .disabled(window?.section != .collect && window?.keyboardFolderPane == nil)
             Button("Clear Extracted Media") { window?.clear() }
                 .keyboardShortcut("k")
                 .disabled(window?.section != .collect)
@@ -279,7 +285,7 @@ struct AppCommands: Commands {
             Button(window?.keyboardFolderPane != nil ? "Show in Finder" : "Reload Page") { window?.revealOrReload() }
                 .keyboardShortcut("r")
                 // Nothing to show or reload in Organise with both panes hidden (audit 11, B11-m6).
-                .disabled(window?.section == .organise && window?.keyboardFolderPane == nil)
+                .disabled(window?.section != .collect && window?.keyboardFolderPane == nil)
             Button("Stop") { window?.stop() }
                 .keyboardShortcut(".")
                 .disabled(!browsing || window?.section == .organise)

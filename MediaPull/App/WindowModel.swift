@@ -41,10 +41,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
     let library: LibraryModel
     /// The Organise section of this window (SPEC section 38).
     let organise: OrganiseModel
+    /// The Devices section of this window (SPEC section 41).
+    let devices: DevicesModel
     /// Which section the window shows: Collect (browser, extracted media, preview, library) or Organise (D-62).
     var section: WindowSection = .collect {
         didSet {
             if section == .organise { organise.updateAnalysisFolders() }
+            if section == .devices { devices.shown() }
             // The hidden section stays in place (opacity, D-62): nothing in it may keep the keyboard, or Space, Return
             // and ⌘⌫ would act on a selection the person cannot see, and typing would go to a field they cannot see.
             if section != oldValue { hostWindow?.makeFirstResponder(nil) }
@@ -103,6 +106,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var showOrganiseSource = true
     var showOrganiseWork = true
     var showOrganiseTarget = true
+    var showDevicesList = true
+    var showDevicesMedia = true
+    var showDevicesImport = true
     /// What the Preview pane shows: the last item or file selected on its own.
     var previewSubject: PreviewSubject?
     var showFilters = false
@@ -178,11 +184,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
     init() {
         library = LibraryModel()
         organise = OrganiseModel()
+        devices = DevicesModel()
         let first = BrowserController()
         tabs = [first]
         selectedTabID = first.id
         library.window = self
         organise.window = self
+        devices.window = self
         if !SelfTestRunner.isActive { filter = AppModel.shared.preferences.extractedFilter }
         wire(first)
         let stream = ingestor.snapshots
@@ -776,6 +784,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
         return panes
     }
 
+    var devicesVisiblePanes: Set<PaneID> {
+        var panes = Set<PaneID>()
+        if showDevicesList { panes.insert(.devicesList) }
+        if showDevicesMedia { panes.insert(.devicesMedia) }
+        if showDevicesImport { panes.insert(.devicesImport) }
+        return panes
+    }
+
     // MARK: Views (R-1708)
 
     func viewMode(for pane: PaneID) -> PaneViewMode {
@@ -808,6 +824,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// pane last clicked, unless the web page or a text field outside the Library has the keyboard now. In Organise, the
     /// pane holding a text field that has the keyboard, else the pane last clicked, else its Source.
     var keyboardFolderPane: PaneID? {
+        // Devices are read-only: no folder pane there takes ⌘F, ⌘R or New Folder, and the hidden Library never does.
+        if section == .devices { return nil }
         if section == .organise {
             let panes: [PaneID] = [.organiseSource, .organiseTarget]
             if let responder = hostWindow?.firstResponder, responder is NSText || responder is NSTextField,
@@ -897,6 +915,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
             }
         case .collect:
             isShowing(.library) ? library.selectedFolder : nil
+        case .devices:
+            nil
         }
     }
 
@@ -914,13 +934,21 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// The pane the View menu's view commands act on: the focused one when it is on screen in this section, else the
     /// main pane of the section.
     var viewModeTarget: PaneID {
-        let candidates: [PaneID] = section == .collect ? [.library, .extracted] : [.organiseSource, .organiseTarget]
+        let candidates: [PaneID] = switch section {
+        case .collect: [.library, .extracted]
+        case .organise: [.organiseSource, .organiseTarget]
+        case .devices: [.devicesMedia]
+        }
         if let focusedPane, candidates.contains(focusedPane), isShowing(focusedPane) { return focusedPane }
         return candidates.first(where: isShowing) ?? candidates[0]
     }
 
     func isShowing(_ pane: PaneID) -> Bool {
-        pane.group == .collect ? visiblePanes.contains(pane) : organiseVisiblePanes.contains(pane)
+        switch pane.group {
+        case .collect: visiblePanes.contains(pane)
+        case .organise: organiseVisiblePanes.contains(pane)
+        case .devices: devicesVisiblePanes.contains(pane)
+        }
     }
 
     func setShowing(_ pane: PaneID, _ show: Bool) {
@@ -933,9 +961,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
         case .organiseSource: showOrganiseSource = show
         case .organiseWork: showOrganiseWork = show
         case .organiseTarget: showOrganiseTarget = show
+        case .devicesList: showDevicesList = show
+        case .devicesMedia: showDevicesMedia = show
+        case .devicesImport: showDevicesImport = show
         }
         if visiblePanes.subtracting([.downloads]).isEmpty { showExtracted = true }
         if organiseVisiblePanes.isEmpty { showOrganiseSource = true }
+        if devicesVisiblePanes.isEmpty { showDevicesMedia = true }
     }
 
     /// Switches the Preview pane to a new subject, unless an edit with unsaved changes is open.
@@ -1355,9 +1387,15 @@ struct WeakView {
 }
 
 enum WindowSection: String, CaseIterable {
-    case collect, organise
+    case collect, organise, devices
 
-    var label: String { self == .collect ? "Collect" : "Organise" }
+    var label: String {
+        switch self {
+        case .collect: "Collect"
+        case .organise: "Organise"
+        case .devices: "Devices"
+        }
+    }
 }
 
 /// Extracted Media as a list (R-1709): one row per item, sorted by the pane's own sort.

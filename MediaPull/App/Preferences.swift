@@ -35,11 +35,25 @@ final class Preferences {
     var saveConcurrency: Int { didSet { set(saveConcurrency, "saveConcurrency") } }
     var paneArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(paneArrangement), "paneArrangement") } }
     var organiseArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(organiseArrangement), "organiseArrangement") } }
+    var devicesArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(devicesArrangement), "devicesArrangement") } }
+    /// Where imports from devices go; nil for the default library folder (R-4104).
+    var deviceImportFolder: String? { didSet { set(deviceImportFolder, "deviceImportFolder") } }
+    var includeLivePhotoClips: Bool { didSet { set(includeLivePhotoClips, "includeLivePhotoClips") } }
 
-    func arrangement(for group: PaneGroup) -> PaneArrangement { group == .collect ? paneArrangement : organiseArrangement }
+    func arrangement(for group: PaneGroup) -> PaneArrangement {
+        switch group {
+        case .collect: paneArrangement
+        case .organise: organiseArrangement
+        case .devices: devicesArrangement
+        }
+    }
 
     func setArrangement(_ arrangement: PaneArrangement) {
-        if arrangement.group == .collect { paneArrangement = arrangement } else { organiseArrangement = arrangement }
+        switch arrangement.group {
+        case .collect: paneArrangement = arrangement
+        case .organise: organiseArrangement = arrangement
+        case .devices: devicesArrangement = arrangement
+        }
     }
     var rememberHistory: Bool { didSet { set(rememberHistory, "rememberHistory") } }
     /// Maps of where photos were taken load map images from Apple, so they are off until the person asks (D-110, R-514).
@@ -108,6 +122,10 @@ final class Preferences {
             .flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) } ?? .standard
         organiseArrangement = d.data(forKey: "organiseArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
             .flatMap { $0.group == .organise ? $0 : nil } ?? .organiseStandard
+        devicesArrangement = d.data(forKey: "devicesArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
+            .flatMap { $0.group == .devices ? $0 : nil } ?? .devicesStandard
+        deviceImportFolder = d.string(forKey: "deviceImportFolder")
+        includeLivePhotoClips = d.bool(forKey: "includeLivePhotoClips")
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true
         showMaps = d.object(forKey: "showMaps") as? Bool ?? false
         highlightDuplicates = d.object(forKey: "highlightDuplicates") as? Bool ?? true

@@ -130,6 +130,7 @@ final class LibraryModel: MediaGridOwner {
 
     init() {
         treeCache.onLoaded = { [weak self] in self?.treeRevision += 1 }
+        duplicateScan.onChange = { [weak self] in self?.revision += 1 }
         // The folder's own watch sees only its direct contents; analysis watches the library recursively (FSEvents),
         // which covers subfolders when they are included (R-1704).
         AppModel.shared.analysis.onFolderChange[listenerID] = { [weak self] paths in self?.foldersChanged(paths) }
@@ -141,7 +142,7 @@ final class LibraryModel: MediaGridOwner {
         Task { @MainActor in AppModel.shared.analysis.updateWatch() }
         // A closed window's work stops with it; the watcher's cancel handler closes its file descriptor.
         watcher?.cancel()
-        for task in [changeTask, filterTask, reloadTask, duplicateTask, treeRefresh, checkTask] {
+        for task in [changeTask, filterTask, reloadTask, treeRefresh, checkTask] {
             task?.cancel()
         }
     }
@@ -200,39 +201,10 @@ final class LibraryModel: MediaGridOwner {
 
     @ObservationIgnored private var checkTask: Task<Void, Never>?
 
-    /// Trash Extra Copies (R-3305): one file of each duplicate group here stays, the others go to the Trash as one
-    /// operation, after a confirmation; ⌘Z puts them all back.
+    /// Trash Extra Copies (R-3305), as one operation ⌘Z takes back.
     func trashExtraCopies() {
-        guard let report = duplicates else { return }
-        let here = Set(files.map(\.url.standardizedFileURL.path))
-        // Copies of each other side by side in one folder: one of them stays there, and copies in other folders (another
-        // account's folder, a collab post saved twice, a subfolder shown with Include Subfolders) are never touched
-        // (audits 2 and 3, C2-M6, B3-M5).
-        let groups = report.groups.flatMap { group -> [(members: [URL], identical: Bool)] in
-            let inHere = group.members.filter { here.contains($0.standardizedFileURL.path) }
-            return Dictionary(grouping: inHere) { $0.deletingLastPathComponent().standardizedFileURL.path }.values
-                .filter { $0.count > 1 }.map { ($0, group.identical) }
-        }
-        guard !groups.isEmpty else {
-            message = "No file here has a copy in this same folder."
-            return
-        }
-        let members = groups.map(\.members)
-        let alike = groups.filter { !$0.identical }.count
-        Task { [weak self] in
-            let plan = await Task.detached(priority: .userInitiated) { ExtraCopies.plan(members) }.value
-            guard let self, !plan.trash.isEmpty else { return }
-            let alert = NSAlert()
-            alert.messageText = "Move \(plan.trash.count) extra cop\(plan.trash.count == 1 ? "y" : "ies") in this folder to the Trash?"
-            alert.informativeText = "One file of each of the \(groups.count) groups stays: the largest picture, then one with a "
-                + "metadata file, then the oldest. This frees \(Format.bytes(plan.bytes))."
-                + (alike > 0 ? " \(alike) of the groups only look alike, so their files are not identical." : "")
-                + " Undo puts everything back."
-            alert.addButton(withTitle: "Move to Trash")
-            alert.addButton(withTitle: "Cancel")
-            alert.buttons.first?.hasDestructiveAction = true
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            self.perform(FolderOperations.trash(plan.trash))
+        if let note = duplicateScan.trashExtraCopies(here: files.map(\.url), perform: { [weak self] in self?.perform($0) }) {
+            message = note
         }
     }
 
@@ -464,24 +436,20 @@ final class LibraryModel: MediaGridOwner {
     var app: AppModel { .shared }
 
     /// Duplicates found under the library folder that holds the selected folder (SPEC section 33).
-    var duplicates: DuplicateFinder.Report?
-    var duplicateProgress: (done: Int, total: Int)?
-    var showOnlyDuplicates = false {
-        didSet { revision += 1 }
+    let duplicateScan = DuplicateScan()
+    var duplicates: DuplicateFinder.Report? { duplicateScan.report }
+    var duplicateProgress: (done: Int, total: Int)? { duplicateScan.progress }
+    func duplicateGroup(for file: URL) -> DuplicateFinder.Group? { duplicateScan.group(for: file) }
+    var showOnlyDuplicates: Bool {
+        get { duplicateScan.showOnly }
+        set { duplicateScan.showOnly = newValue }
     }
-    @ObservationIgnored private var duplicateTask: Task<Void, Never>?
-    /// The scan whose progress may show; a scan that was replaced or stopped reports into nothing.
-    @ObservationIgnored private var duplicateScanID = UUID()
 
     var shownFiles: [LibraryFile] {
         let queried = built.flatMap(\.items).compactMap { file($0.path) }
-        guard showOnlyDuplicates, let duplicates else { return queried }
+        guard showOnlyDuplicates, duplicates != nil else { return queried }
         // Copies sit next to each other.
-        return queried.filter { duplicates.group(for: $0.url) != nil }
-            .sorted {
-                (duplicates.groupOf[$0.url.standardizedFileURL.path] ?? 0, $0.name)
-                    < (duplicates.groupOf[$1.url.standardizedFileURL.path] ?? 0, $1.name)
-            }
+        return duplicateScan.onlyDuplicates(queried, url: \.url)
     }
 
     var sections: [GridSection] {
@@ -511,16 +479,8 @@ final class LibraryModel: MediaGridOwner {
         }
     }
 
-    func duplicateGroup(for file: URL) -> DuplicateFinder.Group? {
-        guard app.preferences.highlightDuplicates else { return nil }
-        return duplicates?.group(for: file)
-    }
-
     /// Duplicates in the folder being shown.
-    var duplicatesHere: Int {
-        guard let duplicates else { return 0 }
-        return files.count { duplicates.group(for: $0.url) != nil }
-    }
+    var duplicatesHere: Int { duplicateScan.count(in: files.map(\.url)) }
 
     @ObservationIgnored private var pendingReveal: URL?
 
@@ -544,32 +504,7 @@ final class LibraryModel: MediaGridOwner {
     }
 
     func scanDuplicates() {
-        duplicateTask?.cancel()
-        let scanID = UUID()
-        duplicateScanID = scanID
-        guard app.preferences.highlightDuplicates, let folder = selectedFolder, let root = app.root(containing: folder)?.url else {
-            duplicates = nil
-            duplicateProgress = nil
-            showOnlyDuplicates = false
-            revision += 1
-            return
-        }
-        let finder = app.duplicates
-        let sensitivity = app.preferences.duplicateSensitivity
-        duplicateTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled else { return }
-            let report = await finder.scan(root: root, sensitivity: sensitivity) { done, total in
-                Task { @MainActor in
-                    guard let self, self.duplicateScanID == scanID else { return }
-                    self.duplicateProgress = total > 30 && done < total ? (done, total) : nil
-                }
-            }
-            guard !Task.isCancelled, let self else { return }
-            self.duplicates = report
-            self.duplicateProgress = nil
-            self.revision += 1
-        }
+        duplicateScan.scan(root: selectedFolder.flatMap { app.root(containing: $0)?.url }, inLibrary: true)
     }
 
     func reload() {
@@ -927,14 +862,7 @@ final class LibraryModel: MediaGridOwner {
             info.stateSymbol = "text.badge.checkmark"
             info.stateColor = .secondaryLabelColor
         }
-        if let group = duplicateGroup(for: file.url), let duplicates {
-            let identical = duplicates.isIdentical(file.url)
-            let color: NSColor = identical ? .systemOrange : .systemPurple
-            info.highlight = color
-            info.stateSymbol = identical ? "doc.on.doc.fill" : "square.on.square"
-            info.stateColor = color
-            info.secondary += " · \(group.members.count - 1) other\(group.members.count == 2 ? "" : "s")"
-        }
+        duplicateScan.mark(&info, for: file.url)
         return info
     }
 
@@ -1039,21 +967,10 @@ final class LibraryModel: MediaGridOwner {
         menu.addItem(ActionMenuItem("Open") { chosen.forEach { NSWorkspace.shared.open($0.url) } })
         menu.addItem(ActionMenuItem("Quick Look") { [weak self] in self?.gridQuickLook() })
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen.map(\.url)) })
-        if chosen.count == 1, let file = chosen.first, let group = duplicateGroup(for: file.url),
-           let root = duplicates?.root
+        if chosen.count == 1, let file = chosen.first,
+           let copies = duplicateScan.copiesMenuItem(for: file.url, reveal: { [weak self] in self?.reveal($0) })
         {
-            let copies = NSMenu()
-            for other in group.members where other != file.url.standardizedFileURL {
-                let relative = String(other.path.dropFirst(root.standardizedFileURL.path.count))
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                let kind = duplicates?.areIdentical(file.url, other) == true ? "Identical" : "Looks alike"
-                copies.addItem(ActionMenuItem("\(relative.isEmpty ? other.lastPathComponent : relative) (\(kind))") { [weak self] in
-                    self?.reveal(other)
-                })
-            }
-            let item = NSMenuItem(title: "Copies and Look-alikes", action: nil, keyEquivalent: "")
-            item.submenu = copies
-            menu.addItem(item)
+            menu.addItem(copies)
         }
         if chosen.count == 1, let file = chosen.first {
             menu.addItem(ActionMenuItem(

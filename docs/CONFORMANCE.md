@@ -22,7 +22,7 @@ change as the code.
 | R-306 | amended | `scripts/make-dmg.sh` | — | D-77: applies to a public release only |
 | R-307 | built | `scripts/bundle-engines.sh`, `EngineSettings` | `scripts/check.sh` | Licences and SOURCES.txt with every bundled version are in the app (1.8) |
 | R-308 | amended | `Config/Info.plist`, `RequestPolicy.evaluate` | `testOnlyReadsAreAllowed` | D-77: arbitrary loads allowed for http media from any host; the gate still allows only GET and HEAD |
-| R-401 | amended | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans; MapKit only in `LocationMap` (D-110) |
+| R-401 | amended | `MediaPullKit/Package.swift`, `scripts/check.sh` | `scripts/check.sh` | Lint enforces SwiftData, WebKit, URLSession, Process, Vision and Core ML boundaries and D-59 bans; MapKit only in `LocationMap` (D-110); ImageCaptureCore only in `MediaPullDevices` (D-115) |
 | R-402 | built | `scripts/lint_invariants.py`, `LibraryModel.offMain`, `MediaListing.load` | `scripts/lint_invariants.py` | The main-io lint fails on file moves, copies, listings and reads in the app target unless justified (1.8) |
 | R-403 | person | `BridgeClient.run`, `FFmpeg.run`, `CookieFile.cleanUpAll` | `testFinalEventsAreNeverLost` | Helpers run per job and stop with it; Activity Monitor check needs a person |
 | R-501 | amended | `GatedRequest`, `NetworkGate`, `RedirectGuard`, `RedirectPolicy.nextHeaders` | `testRedirectsKeepCookiesOnlyOnTheSameOriginAndRecomputeTheReferer`, `testCookiesStayBehindAndEveryHopIsLogged`, `testACutShortDownloadIsNotKept` | Per-hop Referer and same-origin cookies since 1.8; per-host limits follow redirects; D-110: the one exception is the location map MapKit draws after the person allows maps |
@@ -40,11 +40,11 @@ change as the code.
 | R-514 | person | `LocationMap`, `Preferences.showMaps`, `FileDetails` | `--selftest-details` | No map loads until Show Map or the Privacy setting (D-110); the map itself needs a person to look at |
 | R-513 | built | `AnalysisService`, `SelfTestRunner.socketCount` | `--selftest-analyse` | Self-test records socket count while analysing |
 | R-601 | built | `OperationJournal`, `AnalysisStore`, `FingerprintIndex` | `--selftest-analyse` | Journals, analysis and fingerprints in Application Support; self-test checks the tree is restored exactly |
-| R-701 | built | `PaneArrangement.standard`, `PaneSplit`, `MainWindow` | `testMovesAndStacks`, `--selftest-layout` | Five panes, Downloads below Browser by repair, min widths and 1100 x 700 window |
+| R-701 | built | `PaneArrangement.standard`, `PaneSplit`, `MainWindow` | `testMovesAndStacks`, `--selftest-layout` | Five panes, Downloads below Browser by repair, min widths and 1100 x 700 window; a third section, Devices (D-115) |
 | R-701a | built | `PaneArrangement`, `PaneMenu`, `PaneMoveCommands`, `LayoutPresetCommands`, `PaneSplitController.resetSavedSizes` | `testMovesAndStacks`, `testDecodingRepairsMissingAndDuplicatePanes`, `--selftest-layout` | Presets, per-arrangement divider autosave, hosts kept so the page never reloads |
-| R-702 | person | `AppCommands`, `WindowModel.setShowing` | none | Checked: Opt-Cmd-1 to 3, Cmd-I, Ctrl-Cmd-1 and 2 wired in the View menu; keyboard needs a person |
+| R-702 | person | `AppCommands`, `WindowModel.setShowing` | none | Checked: Opt-Cmd-1 to 3, Cmd-I, Ctrl-Cmd-1, 2 and 3 wired in the View menu; keyboard needs a person |
 | R-703 | person | `MediaPullApp`, `MainWindow`, `AppModel` | none | Checked: WindowGroup gives Cmd-N; each window has its own WindowModel, shared store, roots and jobs |
-| R-704 | amended | `MainWindow`, `SectionTabs`, `TopBarButton` | none | Compact toolbar with section tabs, Notes (D-109), Downloads, Activity and Undo; visual check only |
+| R-704 | amended | `MainWindow`, `SectionTabs`, `TopBarButton` | none | Compact toolbar with section tabs, Notes (D-109), Downloads, Activity and Undo; Devices shows Activity only (D-115); visual check only |
 | R-706 | built | `NotesView`, `NotesStore`, `NoteCollection` | `--selftest-update`, `testNotesKeepNewestFirstAndNameThemselves` | Notes in Collect's title bar: add, edit, delete, saved to Application Support and read back (D-109); the popover's feel needs a person |
 | R-705 | person | `ExtractedStatusBar`, `SaveFolderMenu` | none | Counts, selection size, save folder menu and Save button; visual check only |
 | R-710 | built | `TourPage`, `WalkthroughView`, `GeneralSettings` | `--selftest-browser` | Eight tour pages; reopened from Settings and Help; self-test opens the tour sheet |
@@ -167,7 +167,7 @@ change as the code.
 | R-1706 | built | `WindowModel.saveFolder` | `--selftest-analyse`, `--selftest-views` | The Library pane's folder is Collect's save folder (D-70) |
 | R-1801 | person | `LibraryModel.handleDrop`, `LibraryModel.importFiles`, `MediaPull/Platform/DragSupport.swift` | none | Drag and drop needs a person |
 | R-1802 | person | `ItemDragPayload`, `MediaPull/Platform/DragSupport.swift` | none | Large drags and file promises need a person to check |
-| R-1901 | built | `JobKind` | `--selftest-analyse`, `--selftest-galleries`, `--selftest-video-download` | All eight kinds exist; Convert and Engine Update not run by a self-test |
+| R-1901 | built | `JobKind` | `--selftest-analyse`, `--selftest-galleries`, `--selftest-video-download` | All nine kinds exist (Import, D-115, run by `--selftest-devices`); Convert and Engine Update not run by a self-test |
 | R-1902 | person | `JobState`, `ActivityView` | `--selftest-url` | Waiting shows a countdown (1.8); needs a real wait to see |
 | R-1903 | amended | `ActivityView`, `Job` | `--selftest-analyse` | D-77: Pause for Analyse jobs; Cancel and Retry Failed elsewhere; no speed column |
 | R-1904 | built | `ActivityView`, `AccountFolderRecord`, `EngineService.startUpdate` | `--selftest-update` | D-80: the place is kept per account folder; Activity offers Resume, and any update continues it after pulling the newest posts |
@@ -181,11 +181,11 @@ change as the code.
 | R-3201 | built | `EditorModel`, `CropAspect`, `CropCanvas` | `--selftest-edit`, `testRotateFlipAndCrop` | Crop box dragging itself is checked by a person |
 | R-3202 | built | `EditorModel.saveFile`, `ImageEditing.writeReoriented`, `ImageEditing.Reorientation`, `OperationJournal.replace`, `AppModel.replaceFile` | `testRotationAndFlipComposeAndStayLossless`, `--selftest-edit`, `testUndoAndRedoOfAReplace`, `testACaseOnlyRenameOnReplaceKeepsItsMetadataFile` | D-34 amended: rotate or flip of a JPEG is lossless; sidecar follows; copies drop the identity keys (D-105); Save is journaled, ⌘Z takes it back (D-107) |
 | R-3203 | person | `EditorModel.saveItem` | `--selftest-edit` | Saving an edited extracted item and Keep Name Only need a person; copies drop the identity keys (D-105) |
-| R-3301 | built | `DuplicateCommands`, `LibraryModel` | `--selftest-duplicates` | Frames, badges, bar with colour key, Only Duplicates, context menu and Preview list |
+| R-3301 | built | `DuplicateCommands`, `DuplicateScan`, `LibraryModel`, `OrganisePane.scanDuplicates` | `--selftest-duplicates`, `--selftest-details` | Frames, badges, bar with colour key, Only Duplicates, context menu and Preview list; in Organise panes too (D-114) |
 | R-3302 | built | `DuplicateFinder`, `PerceptualHash` | `testFingerprintsMatchResizedCopiesButNotOtherPictures`, `testGroupsIdenticalAndSimilarFilesAcrossFolders` | Size-gated SHA-256, pHash, dHash, colour grid, 8 bands |
 | R-3303 | built | `DuplicateSensitivity`, `DuplicateCommands` | `testColourVersionsOfOnePhotoAreNotDuplicates` | Three sensitivities with the stated thresholds; highlight on by default |
 | R-3304 | built | `DuplicateFinder` | `testGroupsIdenticalAndSimilarFilesAcrossFolders` | Cached in duplicates.json; four files at a time off the main actor |
-| R-3305 | built | `ExtraCopies.plan`, `ExtraCopies.keeper`, `LibraryModel.trashExtraCopies` | `testTheCopyKeptHasTheMostPixelsThenMetadataThenAge` | D-83; the confirmation and Undo need a person |
+| R-3305 | built | `ExtraCopies.plan`, `ExtraCopies.keeper`, `DuplicateScan.trashExtraCopies`, `OrganisePane.trashExtraCopies` | `testTheCopyKeptHasTheMostPixelsThenMetadataThenAge`, `--selftest-details` | D-83; in Organise with Undo (D-114, self-tested); the confirmation's wording needs a person |
 | R-3401 | built | `VideoEditorModel`, `VideoEditorView` | `--selftest-video` | Video editor in the Preview pane with frame stepping, Save Frame, Trim, rename |
 | R-3402 | built | `VideoEditorModel.saveFrame`, `VideoTools.frame` | `testFrameGrabIsFullSizeAndTrimKeepsTheSelection`, `--selftest-video` | Exact frame, full size, PNG named with _frame_ time |
 | R-3403 | person | `VideoEditorModel.saveTrim`, `VideoTools.trim`, `OperationJournal.replace` | `testFrameGrabIsFullSizeAndTrimKeepsTheSelection`, `--selftest-video`, `testAFailurePartWayRestoresTheOriginal` | Passthrough trim is tested; replacing the original is journaled (D-107); choosing the range in the player's trim bar needs a person |
@@ -197,7 +197,7 @@ change as the code.
 | R-3504 | amended | `YOUTUBE_PATHS` | `test_youtube_video_reads_are_allowed_and_nothing_else`, `test_youtube_channel_pages_are_read` | D-72 adds /youtubei/v1/browse beside player and next |
 | R-3601 | built | `Analyzer.analyse`, `Thumbnailer.videoFrame` | `--selftest-analyse` | Videos are analysed a tenth of the way in (1.8) |
 | R-3602 | built | `Analyzer`, `scripts/models.lock` | `--selftest-analyse` | Bundled pinned models on Neural Engine and CPU; duplicates stay model-free |
-| R-3603 | built | `AnalysisService.openStore`, `Analyzer.recogniseText` | `--selftest-analyse` | A damaged store is set aside and analysis starts again; Settings says so (1.8) |
+| R-3603 | built | `AnalysisService.openStore`, `Analyzer.recogniseText`, `AnalysisStatus` | `--selftest-analyse` | A damaged store is set aside and analysis starts again; Settings says so (1.8); progress in pane headers (D-114) |
 | R-3604 | built | `ScreenshotRule` | `testScreenshotRule` | Marker, file name and screen-size rules only |
 | R-3605 | built | `OfflineGeocoder` | `testGeocoderFindsTheNearestPlaceWithinFiftyKilometres` | Bundled GeoNames index, nearest place within 50 km |
 | R-3606 | built | `ColourName.dominant` | `testDominantColour` | Saturation-weighted 8x8 grid, fixed palette of twelve names |
@@ -209,7 +209,7 @@ change as the code.
 | R-3705 | built | `SimilarSets`, `LibraryFilter.similarOnly` | `testCloseVectorsFormSets`, `--selftest-analyse` | Filter and Group Similar sort; not marked in the grid |
 | R-3706 | built | `SubjectClassifier`, `OrganiseModel.autoSort` | `--selftest-analyse` | Fixed list plus added words, threshold, Unsorted; Library menu opens Organise generally |
 | R-3801 | built | `WindowSection`, `OrganiseModel.open` | `--selftest-analyse` | Collect and Organise tabs, Cmd-Ctrl-1 and 2, Open Folder, drops, panes stay mounted |
-| R-3802 | built | `OrganiseModel`, `OrganisePane` | `--selftest-analyse`, `--selftest-views`, `testOrganiseArrangementsHoldOnlyOrganisePanes` | Source, Organise, Target panes; in place, copy or move to an opt-in target (D-68, D-76) |
+| R-3802 | built | `OrganiseModel`, `OrganisePane`, `OrganiseTab` | `--selftest-analyse`, `--selftest-views`, `--selftest-details`, `testOrganiseArrangementsHoldOnlyOrganisePanes` | Source, Organise, Target panes; in place, copy or move to an opt-in target (D-68, D-76); Details tab (D-114) |
 | R-3803 | person | `FolderOperations`, `OrganisePane.gridMenu` | `testRunMovesSidecarsAndUndoRestoresTheTree`, `testMergeCombinesSameNamedFolders` | Move To... added (1.8); the panel needs a person |
 | R-3804 | built | `FolderOperations.sort`, `FolderOperations.samePlace`, `OperationJournal.run` | `testCaseOnlyFolderDifferenceRenamesTheFolderOnce`, `testFlattenNumbersCollisionsAndKeepsDatePrefix` | Case-only folder differences rename the folder once (1.8) |
 | R-3805 | built | `OrganiseModel.autoSort`, `OrganisePlan` | `--selftest-analyse` | Sorts only what the Source shows; no matches means no plan and a message (1.8) |
@@ -225,6 +225,13 @@ change as the code.
 | R-3907 | built | `FaceOptIn.limits` | `--selftest-analyse` | Full limits text (1.8) |
 | R-4001 | built | `ProfileDetector.detect`, `PaneViewMode.profile`, `WindowModel.availableViewModes`, `OrganisePane.detectProfile` | `testAFolderOfAccountsAndOtherSites`, `testMixedAndPlainFoldersAreNotProfiles`, `--selftest-profile` | Offered only for folders the views can show (D-113) |
 | R-4002 | built | `ProfileBuilder.build`, `ProfileThumb`, `ProfileFormat.copy` | `testTheLimitIsSaid`, `--selftest-profile` | Nothing fetched (no sockets opened in the self-test); the look needs a person |
+| R-4101 | built | `WindowSection`, `DevicesModel`, `DevicesListPane`, `DeviceMediaPane`, `DeviceImportPane`, `PaneArrangement.devicesStandard` | `--selftest-devices` | Third section, three panes, Ctrl-Cmd-3; Browser not reloaded (panes kept by opacity) |
+| R-4102 | person | `DeviceBrowser`, `DeviceRouting.backend`, `MTPPassThroughTransport`, `ImageCaptureSource` | `testRouting`, `docs/spikes/device-probe.swift` | Routing tested; how real phones are handed over needs a person with an iPhone, a Pixel and a Samsung (D-116) |
+| R-4103 | built | `MTPSource.children`, `ImageCaptureSource`, `DeviceEntry.isMedia`, `DevicesModel.gridThumbnail` | `testTheSessionListsReadsAndSendsOnlyReads`, `--selftest-devices` | Only photos, videos and folders listed; `.AAE` and other files stay on the device |
+| R-4104 | built | `DeviceImporter.run`, `ImportPlan.make`, `FileOps.place` | `testTheImporterCopiesNamesAndDatesWithoutOverwriting`, `testClipsTakeTheirPhotosPlacedName`, `--selftest-devices` | Originals byte for byte, names made safe, dates set, no metadata file, Live Photo clips by option |
+| R-4105 | built | `ImportedIndex`, `ImportPlan.existingKey`, `DevicesModel.importNew`, `DevicesModel.forgetImports` | `testTheRecordOfImportsSurvivesAndSetsABadFileAside`, `testTheImportPlan`, `--selftest-devices` | Import New the second time brings nothing |
+| R-4106 | built | `JobKind`, `DevicesModel.startImport`, `DeviceImporter.isDisconnect` | `testUnpluggingFailsWhatIsLeft`, `--selftest-devices` | Import job with Cancel and Retry Failed; unplugging fails what is left |
+| R-4107 | built | `MTPOperation`, `MTPTransport`, `MTPSession.run`, `scripts/check.sh` | `testOnlyReadOperationsCanBeBuilt`, `testCommandsCarryTheirParametersLittleEndian`, `--selftest-devices` | Allow-list of reads; no data-out; framework write requests barred by lint |
 | R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
 | R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
 | R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |

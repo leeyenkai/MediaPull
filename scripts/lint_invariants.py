@@ -67,10 +67,10 @@ RULES = [
 # module here is a decision for the spec (CLAUDE.md: no third-party Swift packages).
 APPLE_AND_OWN = {
     "AVFoundation", "AVKit", "Accelerate", "AppKit", "CoreGraphics", "CoreML", "CoreServices", "CryptoKit", "Foundation",
-    "IOKit", "ImageIO", "MapKit", "Observation", "PackageDescription", "Quartz", "QuartzCore", "Security", "SwiftData", "SwiftUI",
+    "IOKit", "ImageCaptureCore", "ImageIO", "MapKit", "Observation", "PackageDescription", "Quartz", "QuartzCore", "Security", "SwiftData", "SwiftUI",
     "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "Vision", "WebKit", "XCTest", "os",
     "MediaPullAnalysis", "MediaPullBrowser", "MediaPullCore", "MediaPullEngines", "MediaPullLibrary", "MediaPullMedia",
-    "MediaPullNet", "MediaPullStore",
+    "MediaPullNet", "MediaPullStore", "MediaPullDevices",
 }
 RULES.append({
     "id": "framework",

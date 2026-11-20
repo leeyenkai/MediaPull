@@ -65,6 +65,11 @@ if [[ -n "$webkit" ]]; then
   FAILED=1
 fi
 check_only_in '^import (Vision|CoreML)' 'MediaPullKit/Sources/MediaPullAnalysis/' 'Vision and Core ML'
+# Devices are only read (R-4107, D-116): the camera framework only in MediaPullDevices, its pass-through only in the file
+# that sends allow-listed reads, and none of its requests that change a device anywhere.
+check_only_in '^(@[A-Za-z]+ +)*import +ImageCaptureCore\b' 'MediaPullKit/Sources/MediaPullDevices/' 'ImageCaptureCore'
+check_only_in 'requestSendPTPCommand' 'MediaPullKit/Sources/MediaPullDevices/ImageCaptureDevices.swift' 'PTP pass-through'
+check_only_in 'requestDelete|requestUpload|requestSyncClock|requestTakePicture|deleteAfterSuccessfulDownload|truncateAfterSuccessfulDownload|ICDeleteAfter|ICTruncateAfter|import +IOUSBHost' 'NONE' 'Writes to a device'
 # Analysis runs offline (D-59): no online geocoding, map search, model downloads or Vision asset downloads.
 check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|MKGeocod|MKMapItem|MKDirections|MKLookAround|downloadAssets|MLModelCollection|import CoreLocation' 'NONE' 'Online analysis'
 # The one map (D-110): drawn in one file, only after the person allows maps.
@@ -150,11 +155,17 @@ else
     echo "error: the app was not built, so the self-test did not run"
     FAILED=1
   fi
-  # A file's recorded details, offline, with maps left off (D-110, R-1009b).
+  # A file's recorded details, offline, with maps left off (D-110, R-1009b); Organise's duplicates and Details tab (D-114).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
   if [[ -x "$APP" ]]; then
     NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-details 2>&1 \
-      | grep -E "details: (PASS|FAIL)" | tee /dev/stderr | grep -q "details: PASS" || FAILED=1
+      | grep -E "(details|organise): (PASS|FAIL)" | tee /dev/stderr | grep -c ": PASS" | grep -q "^2$" || FAILED=1
+  fi
+  # Devices with a stand-in iPhone and a simulated Android phone, offline (section 41).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-devices 2>&1 \
+      | grep -E "devices: (PASS|FAIL)" | tee /dev/stderr | grep -q "devices: PASS" || FAILED=1
   fi
   # Profile views read saved folders only, offline (D-113).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"

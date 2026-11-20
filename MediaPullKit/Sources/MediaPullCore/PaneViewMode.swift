@@ -29,7 +29,7 @@ public enum PaneViewMode: String, Codable, Sendable, CaseIterable, Hashable {
         switch pane {
         case .organiseSource, .organiseTarget: [.icon, .list, .column, .profile]
         case .library: [.icon, .list, .column]
-        case .extracted: [.icon, .list]
+        case .extracted, .devicesMedia: [.icon, .list]
         default: [.icon]
         }
     }

@@ -10,7 +10,8 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.8 implemented (account folder updates, conformance ledger, invariant lints and audit protocol; then FileOps,
+Status: version 1.8 implemented, plus the Devices section (section 41, D-115 to D-118: phones and cameras over USB, read-only)
+and Organise parity (D-114: duplicates, analysis progress and a Details tab in Organise); version 1.8 itself (account folder updates, conformance ledger, invariant lints and audit protocol; then FileOps,
 Save As, notes, file details with a map, post details kept and Profile views, D-107 to D-113; on top of 1.7: on-device analysis, Library search and filters, the Organise section, people, Icon, List and Column views). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull and update).
 
 ## Stack
@@ -40,7 +41,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
                                   Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView),
                                   Analysis (AnalysisService, MediaListing, QueryBar, ViewModePicker, PaneMediaView, FolderChildren), Organise (OrganiseModel, OrganiseView: Source, Organise, Target panes),
                                   People, Downloads (DownloadsPane: Instagram, video and gallery forms), Notes (NotesView),
-                                  Profile (ProfilePane, ProfileLayouts, ProfileOverlays: Profile, Channel, Timeline, Board)
+                                  Profile (ProfilePane, ProfileLayouts, ProfileOverlays: Profile, Channel, Timeline, Board),
+                                  Devices (DeviceCenter, DevicesModel, DevicesView: Devices, Media, Import panes)
     Platform/                     AppKit: ReadOnlyWebView, MediaGridView (NSCollectionView), MediaListView (NSOutlineView),
                                   MediaColumnsView (NSBrowser), PaneSplit (nested split views per arrangement), LocationMap (MapKit),
                                   MediaPreviewViews (player, animated image), VideoStage (editor player, trim bar), DragSupport, QuickLook, SVGRasterizer
@@ -55,6 +57,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     Sources/MediaPullBrowser/     web view setup, extract.js, guard.js, cookie bridge
     Sources/MediaPullAnalysis/    Vision and Core ML: Analyzer, image–text and face encoders, SCRFD detector, CLIP tokenizer, vector store,
                                   face grouping, similar sets, subjects, offline geocoder
+    Sources/MediaPullDevices/     read-only MTP codec and allow-list, MTPSession, device sources (ImageCaptureCore, MTP through its
+                                  PTP pass-through), routing, ImportPlan, ImportedIndex, DeviceImporter, stand-ins for tests
     Tests/MediaPullKitTests/
   Engines/bridge/                 mediapull_bridge.py, egress_guard.py, test_egress_guard.py
   scripts/                        fetch-engines.sh, build-ffmpeg.sh, bundle-engines.sh, check.sh, install-app.sh,
@@ -77,14 +81,16 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `--selftest-analyse <folder>` (copies the folder into the test library, analyses it with faces on, checks no sockets open, searches,
   filters, sorts it in Organise and undoes the sort, comparing checksums), `--selftest-save-as` (offline: Save As of Instagram,
   video and gallery downloads, never redirected), `--selftest-details` (a photo's camera, date and place, maps off; add
-  `--selftest-map` to load the map), `--selftest-profile` (offline: Profile, Channel, Timeline and Board views)
+  `--selftest-map` to load the map; also Organise's duplicates and Details tab), `--selftest-profile` (offline: Profile, Channel,
+  Timeline and Board views), `--selftest-devices` (offline: a stand-in iPhone and a simulated Android phone, browse and import)
   (theme and layout are restored afterwards).
 
 ## Rules
 
 - **Read-only contract (SPEC section 5) is non-negotiable.** MediaPull never uploads files from the Mac (the library or anything else) and never performs write actions on any account. The browser pane is the exception for what pages themselves send (sign-in forms, searches), never files. All Swift network traffic goes through `NetworkGate` (GET and HEAD only). Engine traffic goes through the bridge's egress guard. The browser pane has no file upload path. Every change that touches networking keeps the egress tests passing.
 - **Module boundaries (SPEC 4.2):** SwiftData only in `MediaPullStore`, WebKit only in `MediaPullBrowser` and the browser pane (`Features/Browser`, `Platform/ReadOnlyWebView`), `URLSession`/`URLRequest` only in `MediaPullNet`, `Process` only in `MediaPullEngines`, Vision and Core ML only in `MediaPullAnalysis`, AppKit only in the app target (views built on it in `Platform/`),
-  MapKit only in `Platform/LocationMap.swift` and only to draw a map, after the person allows maps (D-110). `scripts/check.sh` enforces these. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
+  MapKit only in `Platform/LocationMap.swift` and only to draw a map, after the person allows maps (D-110), ImageCaptureCore only in
+  `MediaPullDevices` (D-115). `scripts/check.sh` enforces these. Dependencies point one way. No online geocoding, map search, model or Vision asset downloads anywhere (D-59).
 - **No third-party Swift packages.** Third-party code is limited to the pinned bundled engines and their runtime. Adding anything else needs explicit approval and a spec decision.
 - **Never name or reference other applications** in code, comments, docs, UI copy, identifiers or test fixtures. The Archive layout is described only as a gallery-dl-compatible metadata archive (SPEC section 15).
 - **Archive layout is a contract.** Do not change sidecar keys, date format, naming rules, the forbidden name pattern (R-1504) or reserved folder names (R-1505) without a decision entry and updated golden tests.
@@ -129,6 +135,12 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 - `model.browser` is the selected tab; per-page callbacks must use the tab they came from, not `model.browser`.
 - The inline editor must not use Return, Escape or bare-key shortcuts: they would fire while typing in the web page.
 - AppKit grids read the theme accent from `AppTheme.currentAccent`; bump the grid revision when the theme changes.
+
+- Devices are only read (R-4107): MTP requests are built only through `MTPOperation`'s allow-list and carry no data; the
+  framework's delete, upload, clock and capture requests are barred by `check.sh`, and `requestSendPTPCommand` lives only in
+  `ImageCaptureDevices.swift`. The camera framework starts only when the Devices section is first shown.
+- How real Android phones in File transfer mode are handed over is settled by `docs/spikes/device-access.md` (run
+  `swift docs/spikes/device-probe.swift usb|icc` with a phone plugged in); record the results there and in D-116.
 
 ## Environment notes
 
