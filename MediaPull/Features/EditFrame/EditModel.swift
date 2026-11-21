@@ -323,7 +323,7 @@ final class EditModel: MediaGridOwner {
             Task {
                 let kept = await AppModel.shared.recipes.store(recipe)
                 reloadCurrentRecipe()
-                if let kept { Self.recipesChanged([kept.source.path], by: self) }
+                if let kept { Self.recipesChanged([kept.source.path], ids: [kept.id], by: self) }
             }
         }
     }
@@ -348,7 +348,7 @@ final class EditModel: MediaGridOwner {
             if let kept = await AppModel.shared.recipes.store(recipe) {
                 if self?.saveGeneration == generation { self?.unsaved = false }
                 self?.adopt(kept, for: recipe)
-                Self.recipesChanged([kept.source.path], by: self)
+                Self.recipesChanged([kept.source.path], ids: [kept.id], by: self)
             } else {
                 self?.message = "The edits could not be saved: the file is no longer there, or the disk is full."
             }
@@ -376,7 +376,12 @@ final class EditModel: MediaGridOwner {
             self.folder = URL(fileURLWithPath: moved, isDirectory: true)
             app.preferences.editFolder = moved
         }
-        if let current, let moved = destination(current) {
+        if let current, let moved = destination(current), moved == current.standardizedFileURL.path {
+            // Replaced at its own name (the quick editor's Replace): another picture now. The recipe stays with the original
+            // (D-127), and the new file opens as itself (audit 2026-11-21-10, B10-3).
+            self.current = nil
+            load(current)
+        } else if let current, let moved = destination(current) {
             self.current = URL(fileURLWithPath: moved)
             recipe?.source.path = moved
             // Moved to another disk, the file has a new creation date and reference; the recipe must say so, or it would
@@ -385,6 +390,15 @@ final class EditModel: MediaGridOwner {
             recipe?.source.reference = RecipeStore.reference(moved) ?? recipe?.source.reference
         }
         selection = Set(selection.map { remap.destination(of: $0) ?? $0 })
+        // Copied settings' picture layers follow their files, so a paste never names a moved logo (B10-4).
+        if var copied = copiedSettings {
+            for index in copied.layers.indices {
+                if case let .image(path) = copied.layers[index].kind, let moved = remap.destination(of: path) {
+                    copied.layers[index].kind = .image(path: moved)
+                }
+            }
+            copiedSettings = copied
+        }
         if let exportFolder, let moved = destination(exportFolder) { self.exportFolder = URL(fileURLWithPath: moved, isDirectory: true) }
     }
 
@@ -399,17 +413,31 @@ final class EditModel: MediaGridOwner {
     /// The store kept `saved` as `kept`: a file has one recipe at a time, so a new recipe for a file that had one takes
     /// that one's id (B7-3). The open recipe takes it too, so its next save and ⌘Z name the same recipe.
     private func adopt(_ kept: EditRecipe, for saved: EditRecipe) {
-        guard kept.id != saved.id, recipe?.id == saved.id else { return }
+        guard recipe?.id == saved.id else { return }
         recipe?.id = kept.id
+        // The store knows where the file is now (a Finder rename it followed): the window follows it too, so Export, the
+        // title and notices name the file as it is (audit 2026-11-21-10, B10-2).
+        recipe?.source = kept.source
+        if current?.standardizedFileURL.path != kept.source.path, FileManager.default.fileExists(atPath: kept.source.path) {
+            current = URL(fileURLWithPath: kept.source.path)
+        }
     }
 
     /// Recipes of these files were written (a save, a paste, a revert, ⌘Z): every other window showing one of them shows
     /// it as kept, unless it has a change of its own not yet saved (audit 2026-11-21-6, B6-2; round 7, B7-4).
-    static func recipesChanged(_ paths: Set<String>, by model: EditModel?) {
+    /// By recipe id as well as by path, so a window still naming a file's old name is told too (B10-2).
+    static func recipesChanged(_ paths: Set<String>, ids: Set<UUID> = [], by model: EditModel?) {
         let standardized = Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
         for window in AppModel.shared.windows where window.edit !== model {
-            window.edit.recipeChanged(standardized)
+            window.edit.recipeChanged(standardized, ids: ids)
         }
+    }
+
+    /// Files rewritten in place (a metadata edit): an open recipe not yet kept takes the file's new reference, so a later
+    /// rename in the Finder is followed (audit 2026-11-21-10, B10-1).
+    func filesRewritten(_ paths: Set<String>) {
+        guard let path = recipe?.source.path, paths.contains(path) else { return }
+        recipe?.source.reference = RecipeStore.reference(path) ?? recipe?.source.reference
     }
 
     /// At quit: the last change is written at once.
@@ -428,7 +456,7 @@ final class EditModel: MediaGridOwner {
         Task {
             if let kept = await AppModel.shared.recipes.store(recipe) {
                 self.adopt(kept, for: recipe)
-                Self.recipesChanged([kept.source.path], by: self)
+                Self.recipesChanged([kept.source.path], ids: [kept.id], by: self)
             } else {
                 // Still unsaved, so quit tries again.
                 if self.recipe?.id == recipe.id { self.unsaved = true }
@@ -680,9 +708,9 @@ final class EditModel: MediaGridOwner {
     /// Files dragged here open in the section (R-4601); nothing is copied.
     func gridAcceptDrop(_ pasteboard: NSPasteboard, operation _: NSDragOperation) -> Bool {
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-        let media = Self.editable(urls)
-        guard !media.isEmpty else { return false }
-        open(media)
+        guard !urls.isEmpty else { return false }
+        // Through the window, which says why when nothing can be opened (B10-6).
+        window?.openInEdit(urls)
         return true
     }
 

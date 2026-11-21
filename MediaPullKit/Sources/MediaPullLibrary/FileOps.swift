@@ -40,13 +40,23 @@ public enum FileOps {
     /// A free name for `wanted`: neither the file nor a metadata file of that name may be there, so a later metadata write
     /// never replaces an orphaned one (R-1402). `replacing` is a file a change replaces: its own name and its own metadata
     /// file do not count as taken, compared as the volume compares, so a case-only rename keeps its metadata file.
-    public static func freeName(for wanted: URL, replacing: URL? = nil) -> URL {
+    /// A name another shot in the folder holds (a photo, clip or edit file of that stem, any case) is taken too: same-named
+    /// files in one folder are one shot (D-120, audit 2026-11-21-10, A10-3). `joining`: the wanted name's own shot may be
+    /// there (a clip imported with its photo).
+    public static func freeName(for wanted: URL, replacing: URL? = nil, joining: Bool = false) -> URL {
         let fm = FileManager.default
+        let isFile = MediaUnits.takesPartInUnits(wanted.lastPathComponent)
+        let shots = FolderOperations.shotStems(in: wanted.deletingLastPathComponent(),
+                                               leaving: replacing.map { [$0.lastPathComponent] } ?? [], isFile: isFile,
+                                               editFiles: replacing == nil)
+        let own = wanted.deletingPathExtension().lastPathComponent.lowercased()
         func ours(_ candidate: URL, _ own: URL?) -> Bool { own.map { sameName(candidate, $0) } ?? false }
         func free(_ candidate: URL) -> Bool {
             let sidecar = Sidecar.sidecarURL(for: candidate)
+            let stem = candidate.deletingPathExtension().lastPathComponent.lowercased()
             return (!fm.fileExists(atPath: candidate.path) || ours(candidate, replacing))
                 && (!fm.fileExists(atPath: sidecar.path) || ours(sidecar, replacing.map(Sidecar.sidecarURL(for:))))
+                && (!shots.contains(stem) || joining && stem == own)
         }
         for candidate in candidates(for: wanted) where free(candidate) {
             return candidate
@@ -178,17 +188,20 @@ public enum FileOps {
     /// Puts a new file (an edit, a frame, a conversion, a side file) under a free name at `wanted` with its metadata, and
     /// returns where it went. `keepSource` copies instead of moving. A name taken meanwhile by another save is skipped, and
     /// a failure leaves the source where it was.
+    /// `joining`: the file is meant to join the shot of that name (a clip imported with its photo).
     @concurrent
     public static func place(_ file: URL, as wanted: URL, with companion: Companion, keepSource: Bool = false,
-                             makingFolder: Bool = false) async throws -> Placed
+                             makingFolder: Bool = false, joining: Bool = false) async throws -> Placed
     {
         if makingFolder {
             try FileManager.default.createDirectory(at: wanted.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
-        return try placeNow(file, as: wanted, with: companion, keepSource: keepSource)
+        return try placeNow(file, as: wanted, with: companion, keepSource: keepSource, joining: joining)
     }
 
-    static func placeNow(_ file: URL, as wanted: URL, with companion: Companion, keepSource: Bool) throws -> Placed {
+    static func placeNow(_ file: URL, as wanted: URL, with companion: Companion, keepSource: Bool, joining: Bool = false) throws
+        -> Placed
+    {
         let fm = FileManager.default
         let folder = wanted.deletingLastPathComponent()
         // Staged on the destination's volume first, so the final step is an exclusive rename that never replaces a file
@@ -200,7 +213,7 @@ public enum FileOps {
         var placed: URL?
         do {
             for _ in 0 ..< 50 {
-                let candidate = freeName(for: wanted)
+                let candidate = freeName(for: wanted, joining: joining)
                 if renamex_np(staged.path, candidate.path, UInt32(RENAME_EXCL)) == 0 {
                     placed = candidate
                     break

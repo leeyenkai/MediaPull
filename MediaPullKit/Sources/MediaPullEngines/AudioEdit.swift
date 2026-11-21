@@ -100,6 +100,13 @@ public enum AudioEdit {
     /// The sample rates the Mac's AAC encoder takes; a source above them is resampled (96 kHz to 48 kHz).
     public static let aacRates = "aformat=sample_rates=48000|44100|32000|24000|22050|16000"
 
+    /// The rate an AAC export is written at: the source's when AAC takes it, else the next one up (at most 48 kHz).
+    static func aacRate(for rate: Int) -> Int? {
+        let rates = [16000, 22050, 24000, 32000, 44100, 48000]
+        if rates.contains(rate) { return rate }
+        return rates.first { $0 >= rate } ?? 48000
+    }
+
     /// The concat list that cuts by stream copy: each part of the source with its in and out points.
     public static func concatList(_ plan: AudioEditPlan) -> String {
         var lines = ["ffconcat version 1.0"]
@@ -142,7 +149,10 @@ public enum AudioEdit {
         // A source above 48 kHz is resampled by name first: ffmpeg cannot choose a rate for AAC after a volume change
         // (audit 2026-11-21-9, C9-3).
         if plan.format == .aac {
-            if (plan.sourceFormat?.sampleRate ?? 0) > 48000 { effects.append("aresample=48000") }
+            // Named for any rate AAC does not take, and never after loudness, which already gives 44.1 kHz (C10-2, C10-3).
+            if !plan.normalize, let rate = plan.sourceFormat?.sampleRate, let wanted = aacRate(for: rate), wanted != rate {
+                effects.append("aresample=\(wanted)")
+            }
             effects.append(aacRates)
         }
         // Frames no longer than an encoder takes (loudness normalisation hands on one long frame; FLAC takes 65,535 samples).

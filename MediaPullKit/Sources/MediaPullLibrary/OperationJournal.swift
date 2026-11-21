@@ -552,6 +552,23 @@ public actor OperationJournal {
         return noted == now
     }
 
+    /// Whether another shot now holds the name `path` would take (a photo, clip or edit file of that stem, any case), not
+    /// counting the item itself where it is now (`current`) or files of its own unit beside it: then Undo, Redo or
+    /// putting back from the Trash leaves the item where it is, as for a taken name (D-93, D-120, audit 2026-11-21-10,
+    /// A10-4).
+    func anotherShot(at path: String, current: String?) -> Bool {
+        let target = URL(fileURLWithPath: path)
+        guard MediaUnits.takesPartInUnits(target.lastPathComponent), !Self.isTemporary(path) else { return false }
+        let folder = target.deletingLastPathComponent()
+        let stem = target.deletingPathExtension().lastPathComponent.lowercased()
+        var leaving: [String] = []
+        if let current, URL(fileURLWithPath: current).deletingLastPathComponent().path == folder.path {
+            let own = URL(fileURLWithPath: current).deletingPathExtension().lastPathComponent.lowercased()
+            leaving = listing(of: folder).filter { ($0 as NSString).deletingPathExtension.lowercased() == own }
+        }
+        return FolderOperations.shotStems(in: folder, leaving: leaving, isFile: true, editFiles: false).contains(stem)
+    }
+
     /// Whether the file at `path` is the one the change noted there only through MediaPull's own rewrites of it.
     func rewrittenByMediaPull(_ path: String, in entry: JournalEntry) -> Bool {
         guard let noted = entry.identities?[path], let now = AccountFolderRecord.number(of: URL(fileURLWithPath: path)) else {
@@ -1081,11 +1098,16 @@ public actor OperationJournal {
                     try makeMissingFolders(folder, allowed: allowed, entry: &entry)
                 }
                 var target = URL(fileURLWithPath: to)
+                let shotThere = !companion && anotherShot(at: to, current: from)
+                if shotThere, !Self.isTemporary(from) {
+                    report.skipped.append("\(target.lastPathComponent): another photo now has that name")
+                    return false
+                }
                 if companion, let media = fallbacks.first(where: { Self.isCompanion(to, of: $0.key) }) {
                     target = folder.appendingPathComponent(MediaUnits.renamed(target.lastPathComponent,
                                                                               lead: (media.key as NSString).lastPathComponent,
                                                                               newLead: (media.value as NSString).lastPathComponent))
-                } else if fm.fileExists(atPath: to), !Self.sameFile(from, to) {
+                } else if fm.fileExists(atPath: to) && !Self.sameFile(from, to) || shotThere {
                     // As on Undo: an item under a temporary name is never left hidden (audit 11, B11-M1).
                     guard Self.isTemporary(from) else {
                         report.skipped.append("\(target.lastPathComponent): another file now has that name")
@@ -1241,12 +1263,18 @@ public actor OperationJournal {
                 return false
             }
             var back = URL(fileURLWithPath: from)
+            // An item under a temporary name is never left hidden: it takes a free name below instead.
+            let shotThere = !companion && anotherShot(at: from, current: to)
+            if shotThere, !Self.isTemporary(to) {
+                report.skipped.append("\(dest.lastPathComponent) was left where it is: another photo now has its old name")
+                return false
+            }
             // A companion (metadata file, unit member, R-4206) goes with its file, under the name its file went back to.
             if companion, let media = fallbacks.first(where: { Self.isCompanion(from, of: $0.key) }) {
                 back = home.appendingPathComponent(MediaUnits.renamed(back.lastPathComponent,
                                                                      lead: (media.key as NSString).lastPathComponent,
                                                                      newLead: (media.value as NSString).lastPathComponent))
-            } else if fm.fileExists(atPath: from), !Self.sameFile(from, to) {
+            } else if fm.fileExists(atPath: from) && !Self.sameFile(from, to) || shotThere {
                 // Its old name is taken. An item under a temporary name (a rename that swapped names) is never left hidden:
                 // it gets a free name beside its old one (audit 10, B10-M1); anything else stays where it is.
                 guard Self.isTemporary(to) else {
@@ -1331,6 +1359,10 @@ public actor OperationJournal {
             }
             guard !fm.fileExists(atPath: original) else {
                 report.skipped.append("\(name) exists again")
+                return false
+            }
+            if !companion, anotherShot(at: original, current: nil) {
+                report.skipped.append("\(name) was left in the Trash: another photo now has its name")
                 return false
             }
             do {

@@ -64,6 +64,7 @@ extension AppModel {
         analysis.forgetXMP(result.xmpWritten)
         await analysis.followEdit(result.rewritten, previous: previous, editing: files)
         await recipes.refreshReferences(result.rewritten.map(\.path))
+        for window in windows { window.edit.filesRewritten(Set(result.rewritten.map(\.path))) }
         fileChangeRevision += 1
         return result
     }
@@ -157,6 +158,7 @@ extension AppModel {
         analysis.forgetXMP(Self.xmpPaths(entry.steps))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await recipes.refreshReferences(report.rewritten.map(\.path))
+        for window in windows { window.edit.filesRewritten(Set(report.rewritten.map(\.path))) }
         await followMoves(report.moves, changedBy: id, recipesAway: away)
         foldersGone(foldersRemoved(by: entry.steps))
         await refreshAfterTrash(entry.steps, moved: report.moves)
@@ -178,6 +180,7 @@ extension AppModel {
         analysis.forgetXMP(Self.xmpPaths(before?.undoneSteps ?? []))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await recipes.refreshReferences(report.rewritten.map(\.path))
+        for window in windows { window.edit.filesRewritten(Set(report.rewritten.map(\.path))) }
         await followMoves(report.moves, changedBy: id, recipesAway: away)
         if let entry = await journal.entry(id) {
             foldersGone(foldersRemoved(by: entry.steps))

@@ -21,6 +21,15 @@ public enum UnitKind: String, Codable, Sendable, Hashable {
 public enum MediaUnits {
     static let photoExtensions: Set<String> = ["jpg", "jpeg", "heic", "heif", "hif"]
     static let clipExtensions: Set<String> = ["mov"]
+
+    /// Whether a file of this name is one shot with others of its name in a folder, or shares their `.xmp`: a photo of
+    /// any format (a PNG reads the `.xmp` of its name too), a RAW, a clip, or an edit file (D-120). Audio and other videos
+    /// never are, so their names never clash as shots (an MP3 and a FLAC of one song stay as they are).
+    public static func takesPartInUnits(_ name: String) -> Bool {
+        let e = ext(name)
+        return MediaFormat.fromExtension(e)?.kind == .image || MediaFormat.rawExtensions.contains(e) || clipExtensions.contains(e)
+            || ["xmp", "aae"].contains(e)
+    }
     static let sideExtensions: Set<String> = ["xmp", "aae"]
 
     static func stem(_ name: String) -> String { (name as NSString).deletingPathExtension.lowercased() }

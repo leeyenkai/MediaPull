@@ -134,6 +134,19 @@ final class AudioEditTests: XCTestCase {
         XCTAssertTrue(AudioEdit.filterGraph(loud).contains("volume=0.500,aresample=48000,aformat"), AudioEdit.filterGraph(loud))
     }
 
+    func testAACRatesAreNamedForOddRatesAndNeverAfterLoudness() {
+        // 8 kHz with a volume change: up to 16 kHz by name (C10-2).
+        var low = plan("a.wav", .aac)
+        low.sourceFormat = AudioSourceFormat(duration: 10, sampleRate: 8000, codec: "pcm_s16le")
+        low.volume = 0.5
+        XCTAssertTrue(AudioEdit.filterGraph(low).contains("aresample=16000"), AudioEdit.filterGraph(low))
+        // Loudness gives 44.1 kHz; no second resampling to 48 kHz (C10-3).
+        var normalised = plan("a.flac", .aac)
+        normalised.sourceFormat = AudioSourceFormat(duration: 10, sampleRate: 96000, codec: "flac")
+        normalised.normalize = true
+        XCTAssertFalse(AudioEdit.filterGraph(normalised).contains("aresample=48000"), AudioEdit.filterGraph(normalised))
+    }
+
     func testTheLastFortyMillisecondsCanBeCut() {
         // Only the last part ending at the measured end runs open; 40 ms before it is cut there (C8-4).
         var cut = plan("a.flac", .flac, kept: [TimeRange(start: 0, end: 9.96)])

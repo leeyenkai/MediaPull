@@ -255,7 +255,15 @@ public enum FolderOperations {
         let ns = name as NSString
         let stem = ns.deletingPathExtension, ext = ns.pathExtension
         let fm = FileManager.default
-        let shots = shotStems(in: folder, leaving: leaving, isFile: !ext.isEmpty)
+        // Listed once per folder for a whole plan (its names kept in `taken`), not once per file (A10-m1).
+        var shots: Set<String> = []
+        if !leaving.isEmpty {
+            shots = shotStems(in: folder, leaving: leaving, isFile: MediaUnits.takesPartInUnits(name))
+        } else if MediaUnits.takesPartInUnits(name), taken.insert("listed:" + OrganisePlan.key(folder)).inserted {
+            for found in shotStems(in: folder, leaving: [], isFile: true) {
+                taken.insert(shotKey(folder, found))
+            }
+        }
         var n = 1
         while true {
             let candidateStem = n == 1 ? stem : "\(stem) \(n)"
@@ -265,11 +273,12 @@ public enum FolderOperations {
             let others = alsoFree.map { folder.appendingPathComponent(candidateStem + $0) }
             if !taken.contains(key), !fm.fileExists(atPath: url.path),
                !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path) || ext.isEmpty,
-               ext.isEmpty || !shots.contains(candidateStem.lowercased()) && !taken.contains(shotKey(folder, candidateStem)),
+               !MediaUnits.takesPartInUnits(name) || !shots.contains(candidateStem.lowercased())
+               && !taken.contains(shotKey(folder, candidateStem)),
                others.allSatisfy({ !taken.contains(OrganisePlan.key($0)) && !fm.fileExists(atPath: $0.path) })
             {
                 taken.insert(key)
-                if !ext.isEmpty { taken.insert(shotKey(folder, candidateStem)) }
+                if MediaUnits.takesPartInUnits(name) { taken.insert(shotKey(folder, candidateStem)) }
                 for other in others {
                     taken.insert(OrganisePlan.key(other))
                 }
@@ -283,14 +292,16 @@ public enum FolderOperations {
     /// stem, any case), and same-named files in one folder are one shot (D-120). Without this a phone's IMG_1.JPG sorted
     /// beside a camera's IMG_1.CR3 became one RAW+JPEG unit, and a photo shared another's `.xmp` (audit 2026-11-21-9,
     /// A9-3). `leaving`: names of the item itself and its unit, renamed in their own folder.
-    static func shotStems(in folder: URL, leaving: [String], isFile: Bool) -> Set<String> {
+    /// `editFiles`: whether a lone `.xmp` or `.aae` counts; a photo put back or replaced at its own name finds its own edit
+    /// files there, so those paths count photos and clips only.
+    static func shotStems(in folder: URL, leaving: [String], isFile: Bool, editFiles: Bool = true) -> Set<String> {
         guard isFile else { return [] }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
         let skip = Set(leaving.map { $0.lowercased() })
         return Set(names.compactMap { name -> String? in
             guard !name.hasPrefix("."), !skip.contains(name.lowercased()) else { return nil }
             let ext = (name as NSString).pathExtension.lowercased()
-            guard MediaFormat.fromExtension(ext) != nil || ["xmp", "aae"].contains(ext) else { return nil }
+            guard MediaUnits.takesPartInUnits(name), editFiles || !["xmp", "aae"].contains(ext) else { return nil }
             return (name as NSString).deletingPathExtension.lowercased()
         })
     }
@@ -488,12 +499,18 @@ public enum FolderOperations {
             others[folder.path] = found
             return found
         }
+        // Stems the files of this rename have taken, so two of its shots never share one (A10-1).
+        var chosenShots = Set(wanted.filter { keeping.contains(OrganisePlan.key($0.file)) }.map {
+            shotKey($0.file.deletingLastPathComponent(), $0.file.deletingPathExtension().lastPathComponent)
+        })
         // A unit's other files take the same new name (R-4206), so theirs must be free too.
         func free(_ url: URL, alsoFree suffixes: [String]) -> Bool {
             let key = OrganisePlan.key(url)
             guard !chosen.contains(key) else { return false }
             let stem = url.deletingPathExtension().lastPathComponent, folder = url.deletingLastPathComponent()
-            guard !otherShots(folder).contains(stem.lowercased()) else { return false }
+            if MediaUnits.takesPartInUnits(url.lastPathComponent) {
+                guard !otherShots(folder).contains(stem.lowercased()), !chosenShots.contains(shotKey(folder, stem)) else { return false }
+            }
             if vacated.contains(key) { return true }
             return !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
                 && suffixes.allSatisfy { !fm.fileExists(atPath: folder.appendingPathComponent(stem + $0).path) }
@@ -511,6 +528,9 @@ public enum FolderOperations {
                 counter += 1
             }
             chosen.insert(OrganisePlan.key(destination))
+            if MediaUnits.takesPartInUnits(file.lastPathComponent) {
+                chosenShots.insert(shotKey(folder, destination.deletingPathExtension().lastPathComponent))
+            }
             if destination.lastPathComponent == file.lastPathComponent {
                 plan.unchanged += 1
                 continue
@@ -519,8 +539,15 @@ public enum FolderOperations {
             plan.renamed += 1
         }
         // A destination another file still holds when it is reached needs two steps: everything to a temporary name first.
+        // By shot too: a file renamed onto the stem another file of the rename still has would join that one's unit on the
+        // way (A10-2).
         let sources = Set(renames.map { OrganisePlan.key($0.source) })
-        let swaps = renames.contains { sources.contains(OrganisePlan.key($0.destination)) }
+        func shot(_ url: URL) -> String { shotKey(url.deletingLastPathComponent(), url.deletingPathExtension().lastPathComponent) }
+        let sourceShots = Set(renames.map { shot($0.source) })
+        let swaps = renames.contains { rename in
+            sources.contains(OrganisePlan.key(rename.destination))
+                || sourceShots.contains(shot(rename.destination)) && shot(rename.destination) != shot(rename.source)
+        }
         if swaps {
             let stamp = UUID().uuidString.prefix(8)
             let temporary = renames.enumerated().map { index, rename in

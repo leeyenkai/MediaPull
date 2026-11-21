@@ -63,8 +63,9 @@ public enum VideoComposer {
     }
 
     /// The composition, picture handler and sound for `recipe`. Off the main actor: it loads tracks and draws the layers.
+    /// `soundAtSpeed`: the sound already rendered at the recipe's speed (`SoundAtSpeed`), put under the picture as it is.
     @concurrent
-    public static func build(_ asset: AVURLAsset, recipe: EditRecipe) async throws -> Built {
+    public static func build(_ asset: AVURLAsset, recipe: EditRecipe, soundAtSpeed: URL? = nil) async throws -> Built {
         guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
         let audio = try await asset.loadTracks(withMediaType: .audio).first
         let duration = try await asset.load(.duration).seconds
@@ -129,6 +130,19 @@ public enum VideoComposer {
         if sound == nil, let empty = audioTrack {
             composition.removeTrack(empty)
             audioTrack = nil
+        }
+        // The sound rendered at the speed takes the scaled sound's place, unscaled (C10-1).
+        if let soundAtSpeed, speed != 1, let scaled = audioTrack {
+            composition.removeTrack(scaled)
+            audioTrack = nil
+            let file = AVURLAsset(url: soundAtSpeed)
+            if let rendered = try await file.loadTracks(withMediaType: .audio).first,
+               let fresh = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+            {
+                let length = min(try await file.load(.duration), CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
+                try fresh.insertTimeRange(CMTimeRange(start: .zero, duration: length), of: rendered, at: .zero)
+                audioTrack = fresh
+            }
         }
         let (pictureStart, pictureEnd) = (picture.start.seconds / speed, picture.end.seconds / speed)
         // Fades longer together than their media are shortened alike, so they meet and never overlap (C6-1).
@@ -265,6 +279,7 @@ public enum VideoComposer {
         let item = AVPlayerItem(asset: built.composition)
         item.videoComposition = built.videoComposition
         item.audioMix = built.audioMix
+        // Played live, the system's own time-stretch, pitch kept; the export renders the sound first (C10-1).
         if built.speed != 1 { item.audioTimePitchAlgorithm = .spectral }
         return item
     }
@@ -274,7 +289,13 @@ public enum VideoComposer {
     public static func export(_ source: URL, recipe: EditRecipe, to output: URL,
                               progress: @escaping @Sendable (Double) -> Void) async throws -> Built
     {
-        let built = try await build(AVURLAsset(url: source), recipe: recipe)
+        let asset = AVURLAsset(url: source)
+        let timeline = recipe.timeline ?? EditTimeline()
+        let speed = min(max(timeline.speed, 0.25), 4)
+        // At another speed the sound is rendered first, its pitch kept and exactly as long as the picture (C10-1).
+        let sound = speed != 1 && timeline.volume > 0 ? try await SoundAtSpeed.render(asset, recipe: recipe, speed: speed) : nil
+        defer { if let sound { try? FileManager.default.removeItem(at: sound) } }
+        let built = try await build(asset, recipe: recipe, soundAtSpeed: sound)
         let preset = built.lossless ? AVAssetExportPresetPassthrough
             : recipe.export.videoCodec == .h264 ? AVAssetExportPresetHighestQuality : AVAssetExportPresetHEVCHighestQuality
         guard let session = AVAssetExportSession(asset: built.composition, presetName: preset) else {
@@ -289,7 +310,7 @@ public enum VideoComposer {
         }
         session.videoComposition = built.videoComposition
         session.audioMix = built.audioMix
-        if built.speed != 1 { session.audioTimePitchAlgorithm = .spectral }
+        if built.speed != 1, sound == nil { session.audioTimePitchAlgorithm = .varispeed }
         let type: AVFileType = output.pathExtension.lowercased() == "mov" ? .mov : .mp4
         // A video MP4 cannot hold (ProRes, say) is refused with the reason rather than failing part way.
         if await !session.compatibleFileTypes.contains(type) {
@@ -349,8 +370,10 @@ public enum VideoComposer {
         var time = seconds
         if let track = try? await asset.loadTracks(withMediaType: .video).first {
             let frame = 1 / max(Double((try? await track.load(.nominalFrameRate)) ?? 30), 1)
-            let segments = await mediaSegments(of: track).map { ($0.start.seconds, max($0.start.seconds, $0.end.seconds - frame)) }
-            if !segments.contains(where: { time >= $0.0 && time <= $0.1 }), let nearest = segments.min(by: { a, b in
+            let ranges = await mediaSegments(of: track)
+            let segments = ranges.map { ($0.start.seconds, max($0.start.seconds, $0.end.seconds - frame)) }
+            // Inside a segment's real span (its last frame included) the picture shown is taken as it is (C10-4).
+            if !ranges.contains(where: { time >= $0.start.seconds && time < $0.end.seconds }), let nearest = segments.min(by: { a, b in
                 min(abs(time - a.0), abs(time - a.1)) < min(abs(time - b.0), abs(time - b.1))
             }) {
                 time = abs(time - nearest.0) < abs(time - nearest.1) ? nearest.0 : nearest.1

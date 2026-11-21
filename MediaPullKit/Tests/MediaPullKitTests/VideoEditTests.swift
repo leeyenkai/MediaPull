@@ -435,6 +435,57 @@ final class VideoEditTests: XCTestCase {
         let early = try XCTUnwrap(earlyFrame), later = try XCTUnwrap(laterFrame)
         XCTAssertLessThan(Double(pixel(early, 2, 2).b), Double(pixel(later, 2, 2).b) * 0.5)
     }
+
+    // MARK: Audit round 10
+
+    /// The 4 s clip with a sound of clicks at `clicks` seconds, sampled at `rate`.
+    func clickClip(rate: Double, clicks: [Double]) async throws -> URL {
+        let source = AVURLAsset(url: try await clip())
+        let sound = folder.appendingPathComponent("clicks-\(UUID().uuidString).caf")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
+        let file = try AVAudioFile(forWriting: sound, settings: format.settings)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 4)))
+        buffer.frameLength = buffer.frameCapacity
+        for click in clicks {
+            for i in 0 ..< Int(rate * 0.02) {
+                buffer.floatChannelData![0][Int(click * rate) + i] = Float(sin(Double(i) * 2 * .pi * 1000 / rate) * 0.8)
+            }
+        }
+        try file.write(from: buffer)
+        let composition = AVMutableComposition()
+        let range = CMTimeRange(start: .zero, duration: CMTime(seconds: 4, preferredTimescale: 600))
+        let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try video.insertTimeRange(range, of: try await source.loadTracks(withMediaType: .video)[0], at: .zero)
+        let audio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try audio.insertTimeRange(range, of: try await AVURLAsset(url: sound).loadTracks(withMediaType: .audio)[0], at: .zero)
+        let output = folder.appendingPathComponent("clicks-\(UUID().uuidString).mov")
+        let session = try XCTUnwrap(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4V720pHD))
+        try await session.export(to: output, as: .m4v)
+        return output
+    }
+
+    func testAtAnotherSpeedTheSoundKeepsItsEndAndItsTime() async throws {
+        // Clicks at 1 s and 3.8 s, at 8 kHz and 48 kHz, sped up and slowed (C10-1).
+        for rate in [8000.0, 48000] {
+            let source = try await clickClip(rate: rate, clicks: [1, 3.8])
+            let original = try await clickTimes(source)
+            XCTAssertEqual(original.count, 2, "the fixture has its clicks")
+            for speed in [0.5, 2, 4] {
+                var edit = recipe(source)
+                edit.adjust.exposure = 0.01
+                var time = EditTimeline()
+                time.speed = speed
+                edit.timeline = time
+                let output = folder.appendingPathComponent("speed-\(Int(rate))-\(speed).mp4")
+                _ = try await VideoComposer.export(source, recipe: edit, to: output) { _ in }
+                let got = try await clickTimes(output)
+                XCTAssertEqual(got.count, original.count, "\(rate) Hz at \(speed)×: \(got)")
+                for (heard, due) in zip(got, original.map { $0 / speed }) {
+                    XCTAssertEqual(heard, due, accuracy: 0.08, "\(rate) Hz at \(speed)×")
+                }
+            }
+        }
+    }
 }
 
 /// The loudest sample from `start` seconds to the end of the file's sound.
@@ -459,4 +510,36 @@ private func loudestSample(_ url: URL, from start: Double) async throws -> Float
         loudest = max(loudest, samples.map(abs).max() ?? 0)
     }
     return loudest
+}
+
+/// When each click of a file's sound starts (a jump above a level after quiet).
+private func clickTimes(_ url: URL) async throws -> [Double] {
+    let asset = AVURLAsset(url: url)
+    let track = try await asset.loadTracks(withMediaType: .audio)[0]
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+        AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
+        AVLinearPCMIsNonInterleaved: false, AVNumberOfChannelsKey: 1, AVSampleRateKey: 48000,
+    ])
+    reader.add(output)
+    reader.startReading()
+    var onsets: [Double] = []
+    var quiet = Int.max
+    while let buffer = output.copyNextSampleBuffer() {
+        guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+        let length = CMBlockBufferGetDataLength(block)
+        var samples = [Float](repeating: 0, count: length / 4)
+        _ = samples.withUnsafeMutableBytes { bytes in
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length / 4 * 4, destination: bytes.baseAddress!)
+        }
+        for (index, value) in samples.enumerated() {
+            if abs(value) > 0.05 {
+                if quiet > 4800 { onsets.append(buffer.presentationTimeStamp.seconds + Double(index) / 48000) }
+                quiet = 0
+            } else if quiet < Int.max {
+                quiet += 1
+            }
+        }
+    }
+    return onsets
 }

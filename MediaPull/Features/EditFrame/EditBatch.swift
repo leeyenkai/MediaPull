@@ -162,9 +162,10 @@ extension EditModel {
 
     /// Another window wrote the recipe of one of `paths`: shown again here when it is the open file's, unless this window
     /// has a change of its own not yet saved.
-    func recipeChanged(_ paths: Set<String>) {
-        guard let current, paths.contains(current.standardizedFileURL.path) || recipe.map({ paths.contains($0.source.path) }) == true,
-              !hasUnsavedChange else { return }
+    func recipeChanged(_ paths: Set<String>, ids: Set<UUID> = []) {
+        guard let current, paths.contains(current.standardizedFileURL.path) || recipe.map({ paths.contains($0.source.path) }) == true
+            || recipe.map({ ids.contains($0.id) }) == true,
+            !hasUnsavedChange else { return }
         reloadCurrentRecipe()
     }
 

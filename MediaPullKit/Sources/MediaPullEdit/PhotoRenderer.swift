@@ -337,7 +337,12 @@ public enum FrameRenderer {
         }
         var result = background
         if frame.shadow {
-            let shadowShape = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.45)).cropped(to: placed)
+            // The photo's own shape, rounded corners and all (audit 2026-11-21-10, B10-5).
+            let shape = CIFilter.roundedRectangleGenerator()
+            shape.extent = placed
+            shape.radius = Float(frame.cornerRadius > 0 ? min(placed.width, placed.height) * min(frame.cornerRadius, 0.5) : 0)
+            shape.color = CIColor(red: 0, green: 0, blue: 0, alpha: 0.45)
+            let shadowShape = (shape.outputImage ?? CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.45)).cropped(to: placed))
                 .transformed(by: CGAffineTransform(translationX: 0, y: -min(canvas.width, canvas.height) * 0.008))
             let blur = CIFilter.gaussianBlur()
             blur.inputImage = shadowShape

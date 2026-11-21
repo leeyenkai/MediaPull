@@ -9,13 +9,14 @@ import UniformTypeIdentifiers
 /// Writes an edited photo as a new file (R-4608). The original is only read.
 public enum PhotoExporter {
     public enum Failure: Error, LocalizedError {
-        case unreadable, notWritten, tooLargeForLayers
+        case unreadable, notWritten, tooLargeForLayers, missingPicture(String)
 
         public var errorDescription: String? {
             switch self {
             case .unreadable: "The photo could not be read."
             case .notWritten: "The edited photo could not be written."
             case .tooLargeForLayers: "This picture is too large to draw text and shapes on. Choose a smaller export size."
+            case let .missingPicture(name): "The picture “\(name)” of a layer is no longer there."
             }
         }
     }
@@ -23,6 +24,12 @@ public enum PhotoExporter {
     /// The edited result of `source` at the recipe's export size, as a bitmap.
     public static func rendered(_ source: URL, recipe: EditRecipe, exact: Bool = false) throws -> CGImage {
         guard let input = PhotoRenderer.source(source) else { throw Failure.unreadable }
+        // Never written without a picture layer the person sees missing (audit 2026-11-21-10, B10-4).
+        for layer in recipe.layers where !layer.hidden {
+            if case let .image(path) = layer.kind, !FileManager.default.fileExists(atPath: path) {
+                throw Failure.missingPicture((path as NSString).lastPathComponent)
+            }
+        }
         let full = PhotoRenderer.render(input, recipe: recipe)
         let target = recipe.export.size.pixels(for: full.extent.size)
         var layersDrawn = true
