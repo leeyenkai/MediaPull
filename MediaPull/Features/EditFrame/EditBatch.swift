@@ -58,6 +58,8 @@ extension EditModel {
             var before: [(path: String, recipe: EditRecipe?)] = []
             for file in files {
                 let kind = MediaFormat.fromExtension(file.pathExtension)?.kind ?? .image
+                // A look, frame or layers mean nothing to audio.
+                guard kind != .audio else { continue }
                 let stored = await AppModel.shared.recipes.recipe(for: file)
                 before.append((file.standardizedFileURL.path, stored))
                 var recipe = stored ?? EditRecipe(source: EditSource(path: file.standardizedFileURL.path, kind: kind))
@@ -69,7 +71,8 @@ extension EditModel {
             guard let self else { return }
             registerBatchUndo(before, name: "Paste Settings")
             reloadCurrentRecipe()
-            message = "Settings pasted onto \(files.count) file\(files.count == 1 ? "" : "s")."
+            message = before.isEmpty ? "These settings do not apply to audio."
+                : "Settings pasted onto \(before.count) file\(before.count == 1 ? "" : "s")."
         }
     }
 
@@ -81,7 +84,8 @@ extension EditModel {
             for item in before {
                 after.append((item.path, await AppModel.shared.recipes.recipe(for: URL(fileURLWithPath: item.path))))
             }
-            guard let self else { return }
+            // Left the section meanwhile: ⌘Z elsewhere must never undo this out of sight (R-4602).
+            guard let self, window?.section == .edit else { return }
             manager.registerUndo(withTarget: self) { model in
                 MainActor.assumeIsolated { model.restoreRecipes(before, redo: after) }
             }

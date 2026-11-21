@@ -183,10 +183,10 @@ public enum AudioEdit {
             case .aac: args += ["-c:a", "aac_at", "-b:a", "256k"]
             case .alac: args += ["-c:a", "alac"]
             case .flac: args += ["-c:a", "flac"]
-            // The source's depth is kept: 24-bit stays 24-bit.
-            // Floating-point sources stay floating point (values over full scale are kept, not clipped).
-            case .wav: args += ["-c:a", plan.isFloat ? "pcm_f32le" : (plan.sourceFormat?.bits ?? 16) > 16 ? "pcm_s24le" : "pcm_s16le"]
-            case .aiff: args += ["-c:a", plan.isFloat ? "pcm_f32be" : (plan.sourceFormat?.bits ?? 16) > 16 ? "pcm_s24be" : "pcm_s16be"]
+            // The source's depth is kept (16, 24 or 32-bit), and floating point stays floating point at its own width
+            // (values over full scale are kept, not clipped).
+            case .wav: args += ["-c:a", pcm(plan, endian: "le")]
+            case .aiff: args += ["-c:a", pcm(plan, endian: "be")]
             }
         }
         switch plan.format {
@@ -198,6 +198,13 @@ public enum AudioEdit {
         }
         args.append(plan.output.path)
         return args
+    }
+
+    /// The PCM encoder that keeps the source's depth (audit 2026-11-21-3, C3-7).
+    static func pcm(_ plan: AudioEditPlan, endian: String) -> String {
+        let bits = plan.sourceFormat?.bits ?? 16
+        if plan.isFloat { return "pcm_f\(bits > 32 ? 64 : 32)\(endian)" }
+        return "pcm_s\(bits > 24 ? 32 : bits > 16 ? 24 : 16)\(endian)"
     }
 
     /// The highest level in each of `buckets` equal slices of `samples`, 0 to 1.

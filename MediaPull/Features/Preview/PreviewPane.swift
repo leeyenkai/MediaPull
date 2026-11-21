@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import MediaPullAnalysis
 import MediaPullCore
 import MediaPullLibrary
@@ -230,11 +231,18 @@ struct ItemMediaPreview: View {
 enum AudioPreview {
     static let folder = FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-audio-preview", isDirectory: true)
 
-    static func playable(_ url: URL) async -> URL? {
-        guard [.ogg, .opus].contains(MediaFormat.fromExtension(url.pathExtension)) else { return url }
-        guard let ffmpeg = AppModel.shared.ffmpeg else { return nil }
+    /// `measured`: the file's true length; when the system's own length is off by more than half a second, it plays from a
+    /// decoded copy too, since the system's player stops at its guess.
+    static func playable(_ url: URL, measured: Double? = nil) async -> URL? {
+        guard let ffmpeg = AppModel.shared.ffmpeg else {
+            return [.ogg, .opus].contains(MediaFormat.fromExtension(url.pathExtension)) ? nil : url
+        }
         let folder = folder
         return await Task.detached(priority: .userInitiated) { () -> URL? in
+            if ![.ogg, .opus].contains(MediaFormat.fromExtension(url.pathExtension)) {
+                guard let measured, let system = try? await AVURLAsset(url: url).load(.duration).seconds,
+                      abs(system - measured) > 0.5 else { return url }
+            }
             // Keyed by the file's size and date too, so another file later at this path is not played as this one.
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let stamp = "\(values?.fileSize ?? 0)-\(Int(values?.contentModificationDate?.timeIntervalSince1970 ?? 0))"

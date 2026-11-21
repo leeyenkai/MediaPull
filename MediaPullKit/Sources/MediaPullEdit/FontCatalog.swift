@@ -46,7 +46,7 @@ public enum FontCatalog {
 
     /// Asks macOS to fetch a downloadable family from Apple (D-129). Only call once the person allowed font downloads.
     /// True when the family is installed afterwards.
-    public static func download(_ family: String) async -> Bool {
+    @concurrent public static func download(_ family: String) async -> Bool {
         let wanted = downloadableDescriptors().filter { familyName($0) == family }
         guard !wanted.isEmpty else { return isInstalled(family) }
         let finished: Bool = await withCheckedContinuation { continuation in

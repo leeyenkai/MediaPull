@@ -23,9 +23,13 @@ extension EditModel {
             player.load(current)
             return
         }
-        // Ogg and Opus play from a copy the system can play (R-4205).
+        // Ogg and Opus play from a copy the system can play (R-4205), as does a file whose length the system guesses wrong:
+        // its player could not reach past the guess (audit 2026-11-21-3, C3-2, C3-10).
+        let measured = audioSource?.duration
         Task { [weak self] in
-            guard let playable = await AudioPreview.playable(current), let self, self.current == current else { return }
+            guard let playable = await AudioPreview.playable(current, measured: measured), let self, self.current == current else {
+                return
+            }
             player.load(playable)
         }
     }
@@ -162,13 +166,25 @@ extension EditModel {
             let ext = VideoComposer.container(for: url, recipe: recipe).rawValue
             let stem = url.deletingPathExtension().lastPathComponent
             let staged = staging.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
-            _ = try await VideoComposer.export(url, recipe: recipe, to: staged, progress: progress)
+            let built = try await VideoComposer.export(url, recipe: recipe, to: staged, progress: progress)
+            let size = built.renderSize
             let metadata = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
-                let values: [String: FileOps.MetadataValue] = ["edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: staged))]
-                return try FileOps.metadata(of: url, applying: .init(values: values, dropping: ["duration"], isCopy: true))
+                let values: [String: FileOps.MetadataValue] = [
+                    "edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: staged)),
+                    "width": .int(Int(size.width)), "height": .int(Int(size.height)),
+                ]
+                // As for photos: the size it has now, and no place when the location is left out (audit C3-5).
+                let place = recipe.export.keepLocation ? [] : ["location_name", "location_id", "location", "latitude", "longitude"]
+                return try FileOps.metadata(of: url, applying: .init(values: values, dropping: ["duration"] + place, isCopy: true))
             }.value
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
             let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
+            if let problem = placed.metadataProblem {
+                return .failure(CocoaError(.fileWriteUnknown, userInfo: [
+                    NSLocalizedDescriptionKey: "Exported “\(placed.url.lastPathComponent)”, but its metadata file could not be "
+                        + "written: \(problem)",
+                ]))
+            }
             return .success(placed.url)
         } catch {
             return .failure(error)

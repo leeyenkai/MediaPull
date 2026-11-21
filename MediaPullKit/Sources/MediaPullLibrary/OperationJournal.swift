@@ -58,15 +58,22 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
         // An undone change still names the files it moved (audit 7, B7-m7).
         // A partly undone change counts both parts (audit 15, B15-m6).
         // A unit (a file with its metadata file, or a RAW+JPEG pair) is one (R-4206).
-        OperationJournal.units(undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])).filter {
+        let all = undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])
+        // A metadata edit of a unit (a pair written in place, a photo and its .xmp) is one photo (audit A3-7).
+        let edited = Set(all.compactMap { step -> String? in
+            guard case let .metadata(path, _, _, _) = step else { return nil }
+            let url = URL(fileURLWithPath: path)
+            let name = url.lastPathComponent
+            return url.deletingLastPathComponent().path + "/" + (name.split(separator: ".").first.map(String.init) ?? name)
+        })
+        return OperationJournal.units(all).filter {
             switch $0[0] {
             // A rename through a temporary name is one file, not two (audit 12, B12-m2).
             case let .move(from, to, _, _): !from.hasSuffix(".json") && !OperationJournal.isTemporary(to)
             case let .clone(from, _, _): !from.hasSuffix(".json")
-            case .metadata: true
             default: false
             }
-        }.count
+        }.count + edited.count
     }
 
     /// Paths that moved, so records keyed by path can follow them.
@@ -484,6 +491,14 @@ public actor OperationJournal {
                 if (entry.swaps ?? [:]).keys.contains(where: { fm.fileExists(atPath: $0) }) { settleSwaps(&entry) }
                 continue
             }
+            // A metadata edit stopped during one photo's swap: that swap is settled and the edit kept, never the whole
+            // batch taken back (R-4503, audit 2026-11-21-3, A3-9).
+            if Self.temporaryPathsPresent(entry.steps).isEmpty, !(entry.edits ?? []).contains(where: { fm.fileExists(atPath: $0) }),
+               (entry.swaps ?? [:]).keys.contains(where: { fm.fileExists(atPath: $0) })
+            {
+                settleSwaps(&entry)
+                continue
+            }
             if Self.hiddenPresent(entry) { out.append(entry.id) }
         }
         return out
@@ -510,6 +525,8 @@ public actor OperationJournal {
 
     /// During one Undo: items put back under another name because theirs was taken, by the path they came from.
     private var fallbacks: [String: String] = [:]
+    /// Told of each file an Undo or Redo of a metadata edit replaces, as it is replaced (D-126).
+    var onReplaced: (@Sendable (RewrittenFile) -> Void)?
 
     /// Whether the file or folder at `path` is the one the change noted there. A path with nothing noted (older journals,
     /// volumes without a UUID) is taken as it is.
@@ -665,8 +682,14 @@ public actor OperationJournal {
     // MARK: Undo
 
     /// Reverses an entry's steps, newest first. Files changed or moved since are left where they are and reported.
-    public func undo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
-        undo(id, park: true, progress: progress)
+    /// `replaced`: each file a metadata step replaces, as soon as it is replaced, so analysis follows it even if the Undo
+    /// is stopped part way (D-126).
+    public func undo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil,
+                     replaced: (@Sendable (RewrittenFile) -> Void)? = nil) -> UndoReport
+    {
+        onReplaced = replaced
+        defer { onReplaced = nil }
+        return undo(id, park: true, progress: progress)
     }
 
     /// `park`: an edit a Replace placed goes to the Trash once it is back under its hidden name (D-107). A Replace that
@@ -762,7 +785,11 @@ public actor OperationJournal {
 
     /// Redo: does again what the last undo of `id` put back, recording the new steps so it can be undone once more. Items
     /// that changed or are in the way since are left and reported.
-    public func redo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
+    public func redo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil,
+                     replaced: (@Sendable (RewrittenFile) -> Void)? = nil) -> UndoReport
+    {
+        onReplaced = replaced
+        defer { onReplaced = nil }
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
         settleSwaps(&entry)

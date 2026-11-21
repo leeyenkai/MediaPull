@@ -28,12 +28,13 @@ public enum VideoComposer {
         public let speed: Double
     }
 
-    /// Whether the recipe only cuts, turns, flips or mutes: then nothing is re-encoded (D-130).
-    public static func isLossless(_ recipe: EditRecipe) -> Bool {
+    /// Whether the recipe only cuts, turns, flips or mutes: then nothing is re-encoded (D-130). `size`: the picture as
+    /// shown; a size setting that would not make it smaller changes nothing either (audit 2026-11-21-3, C3-8).
+    public static func isLossless(_ recipe: EditRecipe, size: CGSize? = nil) -> Bool {
         let time = recipe.timeline ?? EditTimeline()
+        let sized = recipe.export.size == .original || size.map { recipe.export.size.pixels(for: $0) == $0 } == true
         return time.cutsOnly && recipe.adjust == Adjustments() && recipe.look == nil && recipe.frame == nil
-            && recipe.layers.allSatisfy(\.hidden) && recipe.geometry.crop == nil && recipe.geometry.straighten == 0
-            && recipe.export.size == .original
+            && recipe.layers.allSatisfy(\.hidden) && recipe.geometry.crop == nil && recipe.geometry.straighten == 0 && sized
     }
 
     /// The container an export is written in: the one chosen, else like the original (a MOV stays MOV).
@@ -69,7 +70,8 @@ public enum VideoComposer {
         let preferred = try await video.load(.preferredTransform)
         let fps = try await video.load(.nominalFrameRate)
         let timeline = recipe.timeline ?? EditTimeline()
-        let lossless = isLossless(recipe)
+        let display = CGRect(origin: .zero, size: natural).applying(preferred).standardized.size
+        let lossless = isLossless(recipe, size: display)
 
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
@@ -77,11 +79,22 @@ public enum VideoComposer {
         }
         let audioTrack = audio != nil && timeline.volume > 0
             ? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) : nil
+        // Each track only where it has media: the file's length is its longest track, and a picture that ends before the
+        // sound (or starts after it) has no frames there (audit 2026-11-21-3, C3-1).
+        let videoRange = try await video.load(.timeRange)
+        let audioRange = try await audio?.load(.timeRange)
+        func insert(_ part: CMTimeRange, of source: AVAssetTrack, within range: CMTimeRange, into track: AVMutableCompositionTrack,
+                    at cursor: CMTime) throws
+        {
+            let clamped = part.intersection(range)
+            guard clamped.duration > .zero else { return }
+            try track.insertTimeRange(clamped, of: source, at: cursor + (clamped.start - part.start))
+        }
         var cursor = CMTime.zero
         for range in timeline.keptRanges(duration: duration) {
             let part = CMTimeRange(start: seconds(range.start), end: seconds(range.end))
-            try videoTrack.insertTimeRange(part, of: video, at: cursor)
-            if let audio, let audioTrack { try audioTrack.insertTimeRange(part, of: audio, at: cursor) }
+            try insert(part, of: video, within: videoRange, into: videoTrack, at: cursor)
+            if let audio, let audioTrack, let audioRange { try insert(part, of: audio, within: audioRange, into: audioTrack, at: cursor) }
             // CMTime has no +=.
             cursor = cursor + part.duration // swiftlint:disable:this shorthand_operator
         }
@@ -91,7 +104,6 @@ public enum VideoComposer {
                                        toDuration: CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
         }
         let total = cursor.seconds / speed
-        let display = CGRect(origin: .zero, size: natural).applying(preferred).standardized.size
 
         let audioMix: AVAudioMix? = {
             guard let audioTrack, timeline.volume != 1 || timeline.fadeIn > 0 || timeline.fadeOut > 0 else { return nil }
@@ -128,8 +140,15 @@ public enum VideoComposer {
         let fadeIn = timeline.fadeIn, fadeOut = timeline.fadeOut
         let plain = { var copy = recipe; copy.layers = []; return copy }()
         videoTrack.preferredTransform = preferred
+        let frame = CGRect(origin: .zero, size: renderSize)
+        let black = CIImage(color: .black).cropped(to: frame)
         let videoComposition = try await AVMutableVideoComposition.videoComposition(with: composition) { request in
             let source = request.sourceImage
+            // No picture at this time (sound past the picture's end): a black frame, never nothing.
+            guard !source.extent.isEmpty, !source.extent.isInfinite else {
+                request.finish(with: black, context: nil)
+                return
+            }
             let upright = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
             var image = PhotoRenderer.render(upright, recipe: plain)
             let extent = image.extent
@@ -151,7 +170,8 @@ public enum VideoComposer {
                 }
                 image = dim?.outputImage ?? image
             }
-            request.finish(with: image.cropped(to: CGRect(origin: .zero, size: renderSize)), context: nil)
+            let result = image.cropped(to: frame)
+            request.finish(with: result.extent.isEmpty ? black : result.composited(over: black), context: nil)
         }
         videoComposition.renderSize = renderSize
         let rate = fps > 0 ? Double(fps) : 30
@@ -159,6 +179,29 @@ public enum VideoComposer {
         videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, min(240, rate.rounded()))))
         return Built(composition: composition, videoComposition: videoComposition, audioMix: audioMix, renderSize: renderSize,
                      lossless: false, speed: speed)
+    }
+
+    /// The original's metadata to keep, with what `metadata` leaves out of an MP4: the capture date of the movie header and
+    /// a location in user data (as Android phones write it), so an edited copy keeps its date (audit 2026-11-21-3, C3-6).
+    static func keptMetadata(_ asset: AVURLAsset) async -> [AVMetadataItem] {
+        var kept = (try? await asset.load(.metadata)) ?? []
+        let identifiers = Set(kept.compactMap(\.identifier))
+        if let formats = try? await asset.load(.availableMetadataFormats), formats.contains(.quickTimeUserData) {
+            let userData = (try? await asset.loadMetadata(for: .quickTimeUserData)) ?? []
+            kept += userData.filter { item in
+                guard let identifier = item.identifier, !identifiers.contains(identifier) else { return false }
+                return identifier == .quickTimeUserDataLocationISO6709
+            }
+        }
+        if !kept.contains(where: { $0.commonKey == .commonKeyCreationDate }), let date = try? await asset.load(.creationDate),
+           let value = try? await date.load(.value)
+        {
+            let item = AVMutableMetadataItem()
+            item.identifier = .commonIdentifierCreationDate
+            item.value = value
+            kept.append(item)
+        }
+        return kept
     }
 
     /// A player item for the canvas: the result as it will be exported.
@@ -184,7 +227,7 @@ public enum VideoComposer {
             throw Failure.notWritten("no exporter for this video")
         }
         // The original's metadata (date, location, camera) is kept, as for photos; the location only when asked.
-        let kept = (try? await AVURLAsset(url: source).load(.metadata)) ?? []
+        let kept = await keptMetadata(AVURLAsset(url: source))
         session.metadata = recipe.export.keepLocation ? kept : kept.filter { item in
             let identifier = item.identifier?.rawValue.lowercased() ?? ""
             return !identifier.contains("location") && !identifier.contains("iso6709") && !identifier.contains("%a9xyz")

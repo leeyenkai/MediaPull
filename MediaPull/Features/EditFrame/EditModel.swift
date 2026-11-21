@@ -100,6 +100,10 @@ final class EditModel: MediaGridOwner {
     @ObservationIgnored private(set) var session: PhotoSession?
     @ObservationIgnored private var renderTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    /// A change not yet saved, so leaving or quitting writes only this window's own changes, never a stale copy over
+    /// another window's newer edits.
+    @ObservationIgnored private var unsaved = false
+    @ObservationIgnored private var saveGeneration = 0
     @ObservationIgnored private var openTask: Task<Void, Never>?
     @ObservationIgnored private var gestureStart: EditRecipe?
     @ObservationIgnored private var renderGeneration = 0
@@ -135,6 +139,8 @@ final class EditModel: MediaGridOwner {
     var currentTags: AudioTags?
     /// What the audio holds, by ffprobe (length, codec, depth).
     var audioSource: AudioSourceFormat?
+    /// The audio's true length is known (or cannot be): cuts wait for it, so none is taken from the system's guess.
+    var audioLengthKnown = false
     /// The waveform could not be read (a format the build cannot decode, or no ffmpeg).
     var waveformFailed = false
     @ObservationIgnored var waveformTask: Task<Void, Never>?
@@ -237,10 +243,9 @@ final class EditModel: MediaGridOwner {
             recipe = stored ?? EditRecipe(source: EditSource(path: url.standardizedFileURL.path, kind: kind))
             // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
             if previousKind != kind || !tabs.contains(tab), let first = tabs.first { tab = first }
-            if kind == .video || kind == .audio {
-                loadPlayer()
-                if kind == .audio { loadWaveform() }
-            }
+            // Audio's player waits for its true length (`loadWaveform`): a file the system measures short plays from a copy.
+            if kind == .video { loadPlayer() }
+            if kind == .audio { loadWaveform() }
             if kind == .image || kind == .video {
                 guard let opened else {
                     loadError = kind == .video ? "This video could not be read." : "This picture could not be read."
@@ -313,11 +318,16 @@ final class EditModel: MediaGridOwner {
     private func scheduleSave() {
         saveTask?.cancel()
         guard let recipe else { return }
+        unsaved = true
+        saveGeneration += 1
+        let generation = saveGeneration
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
             if await !AppModel.shared.recipes.save(recipe) {
                 self?.message = "The edits could not be saved. Check that the disk has space."
+            } else if self?.saveGeneration == generation {
+                self?.unsaved = false
             }
             // The look thumbnails show the photo as it is now.
             if self?.tab == .adjust { self?.renderLooks() }
@@ -346,6 +356,10 @@ final class EditModel: MediaGridOwner {
         if let current, let moved = destination(current) {
             self.current = URL(fileURLWithPath: moved)
             recipe?.source.path = moved
+            // Moved to another disk, the file has a new creation date and reference; the recipe must say so, or it would
+            // no longer be found for it.
+            recipe?.source.created = RecipeStore.created(moved) ?? recipe?.source.created
+            recipe?.source.reference = RecipeStore.reference(moved) ?? recipe?.source.reference
         }
         selection = Set(selection.map { remap.destination(of: $0) ?? $0 })
         if let exportFolder, let moved = destination(exportFolder) { self.exportFolder = URL(fileURLWithPath: moved, isDirectory: true) }
@@ -362,14 +376,16 @@ final class EditModel: MediaGridOwner {
     /// At quit: the last change is written at once.
     func saveBeforeQuit() {
         saveTask?.cancel()
-        if let recipe { AppModel.shared.recipes.saveNow(recipe) }
+        if unsaved, let recipe { AppModel.shared.recipes.saveNow(recipe) }
+        unsaved = false
     }
 
     /// Saves now (another file is opened, the window closes).
     func flushSave() {
-        guard saveTask != nil, let recipe else { return }
+        guard unsaved, let recipe else { return }
         saveTask?.cancel()
         saveTask = nil
+        unsaved = false
         Task {
             if await !AppModel.shared.recipes.save(recipe) {
                 self.message = "The edits could not be saved. Check that the disk has space."

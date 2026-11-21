@@ -574,10 +574,11 @@ final class AnalysisService {
 
     /// After a metadata edit, Undo or Redo: each file written in place keeps its results, faces, people and corrections
     /// at its new content (copied from `previous`, its content before), and its facts are read again (R-4506, D-126).
-    func followEdit(_ rewritten: [RewrittenFile], previous: [String: FileState], editing paths: [String]) async {
+    /// `quietly`: one file followed as it is replaced; listings and people are refreshed once, by the batch's last call.
+    func followEdit(_ rewritten: [RewrittenFile], previous: [String: FileState], editing paths: [String], quietly: Bool = false) async {
         defer {
             endEdit(paths)
-            revision += 1
+            if !quietly { revision += 1 }
         }
         guard let store else { return }
         // Vectors are copied only once their stores are loaded (an edit taken back at launch comes before that).
@@ -606,7 +607,7 @@ final class AnalysisService {
                 await store.save(await analyzer.refreshFacts(URL(fileURLWithPath: file.path), record: record))
             }
         }
-        if !rewritten.isEmpty { await refreshPeople() }
+        if !rewritten.isEmpty, !quietly { await refreshPeople() }
     }
 
     /// What the store knows of these paths now, kept only where it is still the file on disk (its size and date), so an

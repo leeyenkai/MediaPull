@@ -1,12 +1,12 @@
 import Foundation
 import MediaPullCore
 
-/// Edit/Frame recipes (R-4602, D-127), one file each in Application Support, never in a library folder. Found by the
-/// file's path, or by a reference that follows it through renames and moves on its disk; kept current as MediaPull
-/// moves files.
+/// Edit/Frame recipes (R-4602, D-127), one file each in Application Support, never in a library folder. Kept by their own
+/// id, so one path can hold several (two cards with one name): a file is shown the newest recipe made for it, found by its
+/// path and creation date, or by a reference that follows it through renames and moves on its disk.
 public actor RecipeStore {
     public nonisolated let folder: URL
-    private var byPath: [String: EditRecipe] = [:]
+    private var byID: [UUID: EditRecipe] = [:]
     private var loaded = false
 
     public init(folder: URL) {
@@ -25,16 +25,14 @@ public actor RecipeStore {
         // A recipe is never deleted here: only Revert removes one (D-127). A drive that is away, a card of the same name or
         // a file renamed outside MediaPull must never cost the person their edits.
         for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file), let recipe = EditRecipe.decode(data) else { continue }
-            let path = Self.key(recipe.source.path)
-            // Two recipes for one path (a crash between writes): the newer one is kept.
-            if let other = byPath[path], other.modified > recipe.modified { continue }
-            byPath[path] = recipe
+            guard let data = try? Data(contentsOf: file), var recipe = EditRecipe.decode(data) else { continue }
+            recipe.source.path = Self.key(recipe.source.path)
+            byID[recipe.id] = recipe
         }
     }
 
     /// The file's creation date, which tells it apart from another file later given its name.
-    static func created(_ path: String) -> Date? {
+    public static func created(_ path: String) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: path))?[.creationDate] as? Date
     }
 
@@ -48,40 +46,44 @@ public actor RecipeStore {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
-    /// The recipe for the file at `url`: by its path, else by a reference that now leads to it (it was moved or renamed
-    /// outside MediaPull), whose path is then brought up to date.
+    /// The newest recipe at `path` that was made for the file there.
+    private func belonging(at path: String) -> EditRecipe? {
+        byID.values.filter { $0.source.path == path && Self.belongs($0, to: path) }.max { $0.modified < $1.modified }
+    }
+
+    /// Whether the recipe's file is still where it says: there, and the same file.
+    private static func inPlace(_ recipe: EditRecipe) -> Bool {
+        FileManager.default.fileExists(atPath: recipe.source.path) && belongs(recipe, to: recipe.source.path)
+    }
+
+    /// Recipes whose file was moved or renamed outside MediaPull are brought to where their reference leads now. Only
+    /// those not in place are looked up, and none is ever written over another.
+    private func relocate(only target: String? = nil) {
+        for (id, recipe) in byID where !Self.inPlace(recipe) {
+            guard let reference = recipe.source.reference, let moved = Self.resolve(reference), moved != recipe.source.path,
+                  target == nil || moved == target else { continue }
+            var followed = recipe
+            followed.source.path = moved
+            byID[id] = followed
+            write(followed)
+        }
+    }
+
+    /// The recipe for the file at `url`: the newest made for it at its path, else one whose reference now leads to it
+    /// (it was moved or renamed outside MediaPull). A recipe of another file once at this path is kept and never shown.
     public func recipe(for url: URL) -> EditRecipe? {
         load()
         let path = Self.key(url.path)
-        if let recipe = byPath[path] {
-            if Self.belongs(recipe, to: path) { return recipe }
-            // Another file with this name. The recipe is the other file's: where its reference leads now, if anywhere,
-            // else it is kept as it is (that file may come back), and never shown for this one.
-            if let reference = recipe.source.reference, let moved = Self.resolve(reference), moved != path {
-                var followed = recipe
-                followed.source.path = moved
-                byPath[path] = nil
-                byPath[moved] = followed
-                write(followed)
-            }
-            return nil
-        }
-        for (oldPath, recipe) in byPath where !FileManager.default.fileExists(atPath: oldPath) {
-            guard let reference = recipe.source.reference, Self.resolve(reference) == path else { continue }
-            var moved = recipe
-            moved.source.path = path
-            byPath[oldPath] = nil
-            byPath[path] = moved
-            write(moved)
-            return moved
-        }
-        return nil
+        if let recipe = belonging(at: path) { return recipe }
+        relocate(only: path)
+        return belonging(at: path)
     }
 
-    /// Paths with a recipe, so the Media pane can mark them.
+    /// Paths whose file has a recipe made for it, so the Media pane can mark them.
     public func editedPaths() -> Set<String> {
         load()
-        return Set(byPath.keys)
+        relocate()
+        return Set(byID.values.filter { Self.belongs($0, to: $0.source.path) }.map(\.source.path))
     }
 
     /// Keeps an edited recipe; a recipe with nothing edited is removed (Revert). False when it could not be written.
@@ -91,14 +93,19 @@ public actor RecipeStore {
         var recipe = recipe
         let path = Self.key(recipe.source.path)
         recipe.source.path = path
+        // The store knows the file best: a move may have given it a new creation date the caller's copy does not have.
+        if let stored = byID[recipe.id], stored.source.path == path {
+            recipe.source.created = stored.source.created ?? recipe.source.created
+            recipe.source.reference = stored.source.reference ?? recipe.source.reference
+        }
         if recipe.source.reference == nil { recipe.source.reference = Self.reference(path) }
         if recipe.source.created == nil { recipe.source.created = Self.created(path) }
         guard recipe.isEdited else {
-            remove(path)
+            remove(id: recipe.id)
             return true
         }
         recipe.modified = Date()
-        byPath[path] = recipe
+        byID[recipe.id] = recipe
         return write(recipe)
     }
 
@@ -115,11 +122,19 @@ public actor RecipeStore {
         _ = Self.write(recipe, to: folder.appendingPathComponent("\(recipe.id.uuidString).json"), folder: folder)
     }
 
+    /// Revert of a file not open: only the recipes made for the file at `path` go, never another file's.
     public func remove(_ path: String) {
         load()
         let path = Self.key(path)
-        guard let recipe = byPath.removeValue(forKey: path) else { return }
-        try? FileManager.default.removeItem(at: url(for: recipe.id))
+        for recipe in byID.values where recipe.source.path == path && Self.belongs(recipe, to: path) {
+            remove(id: recipe.id)
+        }
+    }
+
+    public func remove(id: UUID) {
+        load()
+        byID[id] = nil
+        try? FileManager.default.removeItem(at: url(for: id))
     }
 
     /// Recipes follow files MediaPull moved or renamed (R-4602).
@@ -127,18 +142,22 @@ public actor RecipeStore {
         load()
         guard !moves.isEmpty else { return }
         let remap = PathMoves(moves.map { (Self.key($0.from), Self.key($0.to)) })
-        // Built anew, so a recipe moving onto another's old path never pushes that one out.
-        var next: [String: EditRecipe] = [:]
-        for (path, recipe) in byPath {
+        for (id, recipe) in byID {
             var moved = recipe
             var changed = false
-            // As stored, or with links resolved (the journal records /private/var where a pane may show /var).
+            let path = recipe.source.path
+            // As stored, or with links resolved (the journal records /private/var where a pane may show /var). A recipe of
+            // another file once at that path stays where it was: on one disk the moved file is known by its reference or
+            // its creation date; to another disk neither survives, so the recipe goes with it.
             if let destination = remap.destination(of: path)
-                ?? remap.destination(of: URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+                ?? remap.destination(of: URL(fileURLWithPath: path).resolvingSymlinksInPath().path),
+                recipe.source.reference.flatMap(Self.resolve) == Self.key(destination) || Self.belongs(recipe, to: destination)
+                || Self.volume(path) != Self.volume(destination)
             {
                 moved.source.path = Self.key(destination)
                 // Moved to another disk, a file gets a new creation date: MediaPull moved it, so it is still this file.
                 moved.source.created = Self.created(destination) ?? moved.source.created
+                moved.source.reference = Self.reference(destination) ?? moved.source.reference
                 changed = true
             }
             // Picture layers follow their files too.
@@ -148,10 +167,18 @@ public actor RecipeStore {
                     changed = true
                 }
             }
-            next[moved.source.path] = moved
+            byID[id] = moved
             if changed { write(moved) }
         }
-        byPath = next
+    }
+
+    /// The disk a path is on, from its nearest folder that is still there.
+    static func volume(_ path: String) -> String? {
+        var url = URL(fileURLWithPath: path)
+        while !FileManager.default.fileExists(atPath: url.path), url.path != "/" {
+            url.deleteLastPathComponent()
+        }
+        return ((try? url.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier).map { "\($0)" }
     }
 
     private func url(for id: UUID) -> URL {
@@ -178,7 +205,7 @@ public actor RecipeStore {
     }
 
     /// A reference to the file at `path` that keeps naming it through renames and moves on its disk.
-    static func reference(_ path: String) -> String? {
+    public static func reference(_ path: String) -> String? {
         guard let ref = CFURLCreateFileReferenceURL(nil, URL(fileURLWithPath: path) as CFURL, nil)?.takeRetainedValue() else {
             return nil
         }

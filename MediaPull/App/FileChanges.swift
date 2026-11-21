@@ -52,7 +52,7 @@ extension AppModel {
         // Each file is followed as soon as it is replaced, so a stop part way never leaves analysis behind (D-126).
         let analysis = analysis
         let result = await journal.editMetadata(items, edit, title: title, progress: progress) { file in
-            Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: []) }
+            Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: [], quietly: true) }
         }
         analysis.forgetXMP(result.xmpWritten)
         await analysis.followEdit(result.rewritten, previous: previous, editing: files)
@@ -140,7 +140,11 @@ extension AppModel {
         let edited = Self.editedPaths(entry.steps)
         analysis.beginEdit(edited)
         let previous = await analysis.currentStates(edited)
-        let report = await journal.undo(id, progress: progress)
+        // Each file is followed as soon as it is replaced, as for the edit itself (D-126).
+        let analysis = analysis
+        let report = await journal.undo(id, progress: progress) { file in
+            Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: [], quietly: true) }
+        }
         analysis.forgetXMP(Self.xmpPaths(entry.steps))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await followMoves(report.moves, changedBy: id)
@@ -156,7 +160,10 @@ extension AppModel {
         let edited = Self.editedPaths(before?.undoneSteps ?? [])
         analysis.beginEdit(edited)
         let previous = await analysis.currentStates(edited)
-        let report = await journal.redo(id, progress: progress)
+        let analysis = analysis
+        let report = await journal.redo(id, progress: progress) { file in
+            Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: [], quietly: true) }
+        }
         analysis.forgetXMP(Self.xmpPaths(before?.undoneSteps ?? []))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await followMoves(report.moves, changedBy: id)

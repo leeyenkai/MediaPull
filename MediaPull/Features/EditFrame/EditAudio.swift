@@ -14,23 +14,30 @@ extension EditModel {
         waveformFailed = false
         currentTags = nil
         audioSource = nil
+        audioLengthKnown = false
         guard let current, kind == .audio else { return }
         guard let ffmpeg = AppModel.shared.ffmpeg else {
             waveformFailed = true
+            audioLengthKnown = true
+            loadPlayer()
             return
         }
         // One at a time: moving through files stops the decode of the one left (cancelling ends its ffmpeg).
         waveformTask = Task { [weak self] in
+            // The true length first, not the system's guess, which can be short or long (VBR MP3, ADTS AAC, Opus): cuts
+            // and the player wait for it (audit 2026-11-21-3, C3-2).
             let source = await ffmpeg.audioFormat(current)
+            guard let self, !Task.isCancelled, self.current == current else { return }
+            audioSource = source
+            if let length = source?.duration, length > 0 { mediaDuration = length }
+            audioLengthKnown = true
+            loadPlayer()
             let read = await ffmpeg.audioTags(current)
             let peaks = try? await ffmpeg.waveform(current, buckets: 1200)
-            guard let self, !Task.isCancelled, self.current == current else { return }
+            guard !Task.isCancelled, self.current == current else { return }
             waveform = peaks ?? []
             waveformFailed = peaks?.isEmpty ?? true
             currentTags = read?.tags
-            audioSource = source
-            // ffprobe's length, not the system's guess, which can be short or long (VBR MP3, ADTS AAC, Opus).
-            if let length = source?.duration, length > 0 { mediaDuration = length }
         }
     }
 
@@ -114,6 +121,12 @@ extension EditModel {
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: format.fileExtension))
             let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
             progress(1)
+            if let problem = placed.metadataProblem {
+                return .failure(CocoaError(.fileWriteUnknown, userInfo: [
+                    NSLocalizedDescriptionKey: "Exported “\(placed.url.lastPathComponent)”, but its metadata file could not be "
+                        + "written: \(problem)",
+                ]))
+            }
             return .success(placed.url)
         } catch {
             return .failure(error)
@@ -203,18 +216,22 @@ struct SoundTab: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Cut").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Text("Click the waveform to move the playhead; drag across it to select.").font(.caption).foregroundStyle(.secondary)
+            if !edit.audioLengthKnown {
+                Text("Measuring the file…").font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Button("Play Selection") { edit.playSelection() }
                 Button("Keep Selection") { edit.keepSelection() }
                 Button("Remove Selection") { edit.removeSelection() }
             }
             .controlSize(.small)
-            .disabled(edit.audioSelection == nil)
+            .disabled(edit.audioSelection == nil || !edit.audioLengthKnown)
             HStack {
                 Button("Start Here") { edit.trimStart(at: edit.player.time) }
                 Button("End Here") { edit.trimEnd(at: edit.player.time) }
             }
             .controlSize(.small)
+            .disabled(!edit.audioLengthKnown)
             let parts = edit.keptRanges
             ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                 HStack {
@@ -273,11 +290,24 @@ struct AudioExportSettings: View {
         field("Title", \.title, current: edit.currentTags?.title)
         field("Artist", \.artist, current: edit.currentTags?.artist)
         field("Album", \.album, current: edit.currentTags?.album)
-        field("Album Artist", \.albumArtist, current: edit.currentTags?.albumArtist)
+        if output.holdsAlbumArtist {
+            field("Album Artist", \.albumArtist, current: edit.currentTags?.albumArtist)
+        }
         field("Year", \.year, current: edit.currentTags?.year.map { "\($0)" })
         field("Genre", \.genre, current: edit.currentTags?.genre)
         field("Track", \.track, current: edit.currentTags?.track.map { "\($0)" })
         Text("Artwork").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        if !output.holdsArtwork {
+            Text("\(output.label) files cannot hold artwork.").font(.caption).foregroundStyle(.secondary)
+        } else {
+            artwork
+        }
+    }
+
+    /// The format the export will be written in.
+    private var output: AudioOutput { edit.recipe?.export.audioFormat ?? source }
+
+    private var artwork: some View {
         HStack {
             Text(edit.recipe?.tags?.artworkPath.map { ($0 as NSString).lastPathComponent }
                 ?? (edit.recipe?.tags?.removeArtwork == true ? "None" : "As it is")).font(.callout)

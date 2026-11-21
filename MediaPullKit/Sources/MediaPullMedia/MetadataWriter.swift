@@ -43,6 +43,7 @@ public enum MetadataWriter {
         let iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
         let metadata = CGImageSourceCopyMetadataAtIndex(source, index, nil)
         out.rating = metadata.flatMap { rating(in: $0) } ?? (iptc[kCGImagePropertyIPTCStarRating] as? Int).flatMap { $0 > 0 ? $0 : nil }
+        if out.rating == nil { out.ratingText = metadata.flatMap { otherRating(in: $0) } }
         out.keywords = metadata.flatMap { strings(in: $0, path: "dc:subject") } ?? (iptc[kCGImagePropertyIPTCKeywords] as? [String])
         if out.keywords?.isEmpty == true { out.keywords = nil }
         let taken = TakenDate(
@@ -79,6 +80,7 @@ public enum MetadataWriter {
         if CGImageMetadataCopyTagWithPath(metadata, nil, "xmp:Rating" as CFString) != nil {
             out.fields.insert(.rating)
             out.rating = rating(in: metadata)
+            out.ratingText = otherRating(in: metadata)
         }
         if let words = strings(in: metadata, path: "dc:subject") {
             out.fields.insert(.keywords)
@@ -107,6 +109,12 @@ public enum MetadataWriter {
     public static func values(ofXMPAt url: URL) -> MetadataValues? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return values(ofXMP: data)
+    }
+
+    /// The rating's text when it is not one to five stars (a rejected photo's `-1`), kept so Undo can write it back.
+    static func otherRating(in metadata: CGImageMetadata) -> String? {
+        guard let text = string(in: metadata, path: "xmp:Rating") else { return nil }
+        return rating(in: metadata) == nil ? text : nil
     }
 
     static func rating(in metadata: CGImageMetadata) -> Int? {
@@ -161,7 +169,11 @@ public enum MetadataWriter {
         if values.fields.contains(.rating) {
             remove(metadata, kCGImagePropertyIPTCDictionary, kCGImagePropertyIPTCStarRating)
             CGImageMetadataRemoveTagWithPath(metadata, nil, "xmp:Rating" as CFString)
-            if let stars = values.rating { _ = CGImageMetadataSetValueWithPath(metadata, nil, "xmp:Rating" as CFString, stars as CFNumber) }
+            if let stars = values.rating {
+                _ = CGImageMetadataSetValueWithPath(metadata, nil, "xmp:Rating" as CFString, stars as CFNumber)
+            } else if let text = values.ratingText {
+                _ = CGImageMetadataSetValueWithPath(metadata, nil, "xmp:Rating" as CFString, text as CFString)
+            }
         }
         if values.fields.contains(.keywords) {
             CGImageMetadataRemoveTagWithPath(metadata, nil, "dc:subject" as CFString)
@@ -169,6 +181,12 @@ public enum MetadataWriter {
         }
         if values.fields.contains(.taken) {
             let taken = values.taken ?? TakenDate()
+            // The photo's XMP copies of the dates, written in XMP form below (ImageIO would leave them in EXIF form).
+            let copies = [("photoshop:DateCreated", taken.original, taken.originalOffset),
+                          ("xmp:CreateDate", taken.digitized, taken.digitizedOffset)]
+            let fractions = copies.map { copy in
+                string(in: metadata, path: copy.0).flatMap(Self.fraction)
+            }
             set(kCGImagePropertyExifDictionary, kCGImagePropertyExifDateTimeOriginal, taken.original as CFString?)
             set(kCGImagePropertyExifDictionary, kCGImagePropertyExifOffsetTimeOriginal,
                 MetadataEdit.offset(taken.originalOffset) as CFString?)
@@ -178,6 +196,16 @@ public enum MetadataWriter {
             // The general offset would otherwise stand for a date that no longer has it.
             if taken.originalOffset == nil || taken.digitizedOffset == nil {
                 remove(metadata, kCGImagePropertyExifDictionary, kCGImagePropertyExifOffsetTime)
+            }
+            // Kept in XMP form with their zone and fractions of a second (audit 2026-11-21-3, A3-4).
+            for (copy, fraction) in zip(copies, fractions) {
+                guard CGImageMetadataCopyTagWithPath(metadata, nil, copy.0 as CFString) != nil else { continue }
+                CGImageMetadataRemoveTagWithPath(metadata, nil, copy.0 as CFString)
+                guard let date = copy.1, var text = XMPText.date(exif: date, offset: copy.2) else { continue }
+                if let fraction, let index = text.index(text.startIndex, offsetBy: 19, limitedBy: text.endIndex) {
+                    text.insert(contentsOf: fraction, at: index)
+                }
+                _ = CGImageMetadataSetValueWithPath(metadata, nil, copy.0 as CFString, text as CFString)
             }
         }
         if values.fields.contains(.location) {
@@ -189,6 +217,15 @@ public enum MetadataWriter {
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLongitude, has ? abs(lon!) as CFNumber : nil)
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLongitudeRef, has ? (lon! < 0 ? "W" : "E") as CFString : nil)
         }
+    }
+
+    /// The fraction of a second in an XMP date (`.918` of `2026-05-16T10:23:07.918+10:00`).
+    static func fraction(_ text: String) -> String? {
+        guard text.count > 20, text.dropFirst(10).first == "T" else { return nil }
+        let rest = text.dropFirst(19)
+        guard rest.first == "." else { return nil }
+        let digits = rest.dropFirst().prefix { $0.isNumber }
+        return digits.isEmpty ? nil : "." + digits
     }
 
     /// Removes the tag ImageIO keeps for an image property (and any alias of it).
@@ -294,7 +331,7 @@ public enum MetadataWriter {
             if let value { _ = CGImageMetadataSetValueWithPath(metadata, nil, path as CFString, value) }
         }
         if values.fields.contains(.rating) {
-            set("xmp:Rating", values.rating.map { "\($0)" as CFString })
+            set("xmp:Rating", (values.rating.map { "\($0)" } ?? values.ratingText).map { $0 as CFString })
         }
         if values.fields.contains(.keywords) {
             CGImageMetadataRemoveTagWithPath(metadata, nil, "dc:subject" as CFString)

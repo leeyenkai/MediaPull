@@ -1589,6 +1589,19 @@ final class SelfTestRunner {
         let stored = await app.recipes.recipe(for: photo)
         check(stored?.layers.count == 5 && stored?.look?.name == .film, "the recipe is kept as it was made")
         check(((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []) == ["street.jpg"], "nothing is written beside the photo")
+        // Another window saved newer edits of this photo: leaving the section or quitting here writes nothing over them,
+        // since this window has no change of its own unsaved (B3-6).
+        if let stored {
+            var newer = stored
+            newer.adjust.contrast = 77
+            await app.recipes.save(newer)
+            edit.leftSection()
+            edit.saveBeforeQuit()
+            try? await Task.sleep(for: .milliseconds(300))
+            let kept = await app.recipes.recipe(for: photo)
+            check(kept?.adjust.contrast == 77, "leaving or quitting writes only this window's own changes")
+            await app.recipes.save(stored)
+        }
 
         // Export for a post: 4:5 at most, a 2:3 poster inside it.
         edit.change { $0.export.size = .post45 }
@@ -1836,6 +1849,8 @@ final class SelfTestRunner {
         await waitUntil(timeout: 30) { edit.kind == .audio && !edit.waveform.isEmpty && edit.mediaDuration > 5 }
         check(edit.tab == .sound && edit.waveform.count > 100, "the MP3 opened with its waveform (\(edit.waveform.count) slices)")
         check(edit.currentTags?.title == "Tone", "its own tags are shown")
+        check(edit.audioLengthKnown && edit.audioSource.map { abs($0.duration - edit.mediaDuration) < 0.001 } == true,
+              "cuts use the measured length (\(edit.mediaDuration) s), not the system's guess")
 
         // Keep 1 s to 3 s: the MP3's frames are copied, not encoded again.
         edit.audioSelection = TimeRange(start: 1, end: 3)

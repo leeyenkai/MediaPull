@@ -334,7 +334,8 @@ private struct LayerEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             switch layer.kind {
-            case let .text(style): TextEditorFields(edit: edit, style: Binding(get: { style }, set: { layer.kind = .text($0) }))
+            case let .text(style):
+                TextEditorFields(edit: edit, layerID: layer.id, style: Binding(get: { style }, set: { layer.kind = .text($0) }))
             case let .shape(style): shapeFields(style)
             case let .image(path): Text((path as NSString).lastPathComponent).font(.callout)
             }
@@ -361,6 +362,7 @@ private struct LayerEditor: View {
 /// Text, font, size, colour and spacing.
 private struct TextEditorFields: View {
     @Bindable var edit: EditModel
+    let layerID: UUID
     @Binding var style: TextStyle
     @State private var search = ""
     @State private var faces: [String] = []
@@ -371,9 +373,15 @@ private struct TextEditorFields: View {
             .frame(minHeight: 54, maxHeight: 110)
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
             .accessibilityLabel("Text")
-        FontPicker(edit: edit, family: style.family) { family in
-            style.family = family
-            style.face = nil
+        // A download can finish much later: only the family of the layer as it is then changes, never its text.
+        FontPicker(edit: edit, family: style.family) { [edit, layerID] family in
+            edit.change { recipe in
+                guard let index = recipe.layers.firstIndex(where: { $0.id == layerID }),
+                      case var .text(current) = recipe.layers[index].kind else { return }
+                current.family = family
+                current.face = nil
+                recipe.layers[index].kind = .text(current)
+            }
         }
         if !faces.isEmpty {
             Picker("Style", selection: Binding(get: { style.face ?? faces.first ?? "" }, set: { style.face = $0 })) {
@@ -542,7 +550,7 @@ private struct ExportTab: View {
         }
         Toggle("Keep the location", isOn: edit.value(\.export.keepLocation, fallback: true))
         if let recipe = edit.recipe {
-            Text(VideoComposer.isLossless(recipe)
+            Text(VideoComposer.isLossless(recipe, size: edit.session?.size)
                 ? "Only cuts, turns or muting: the picture is not encoded again. The first sound track is kept."
                 : "The picture or the sound changes, so it is encoded again with \(recipe.export.videoCodec.label).")
                 .font(.caption).foregroundStyle(.secondary)

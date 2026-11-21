@@ -30,6 +30,9 @@ public struct TakenDate: Codable, Sendable, Hashable {
 public struct MetadataValues: Codable, Sendable, Hashable {
     public var fields: Set<MetadataField>
     public var rating: Int?
+    /// The rating as written when it is not one to five stars (`-1`, which marks a rejected photo, or `0`), so an Undo
+    /// writes it back as it was (audit 2026-11-21-3, A3-2). Read and written with the rating only.
+    public var ratingText: String?
     public var keywords: [String]?
     public var taken: TakenDate?
     public var latitude: Double?
@@ -49,7 +52,10 @@ public struct MetadataValues: Codable, Sendable, Hashable {
     /// The same values, keeping only `wanted` fields.
     public func only(_ wanted: Set<MetadataField>) -> MetadataValues {
         var out = MetadataValues(fields: fields.intersection(wanted))
-        if out.fields.contains(.rating) { out.rating = rating }
+        if out.fields.contains(.rating) {
+            out.rating = rating
+            out.ratingText = ratingText
+        }
         if out.fields.contains(.keywords) { out.keywords = keywords }
         if out.fields.contains(.taken) { out.taken = taken }
         if out.fields.contains(.location) {
@@ -63,7 +69,10 @@ public struct MetadataValues: Codable, Sendable, Hashable {
     public func merging(_ other: MetadataValues) -> MetadataValues {
         var out = self
         out.fields.formUnion(other.fields)
-        if other.fields.contains(.rating) { out.rating = other.rating }
+        if other.fields.contains(.rating) {
+            out.rating = other.rating
+            out.ratingText = other.ratingText
+        }
         if other.fields.contains(.keywords) { out.keywords = other.keywords }
         if other.fields.contains(.taken) { out.taken = other.taken }
         if other.fields.contains(.location) {

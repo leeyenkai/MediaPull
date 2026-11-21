@@ -4,6 +4,7 @@ import CoreImage
 import Foundation
 @testable import MediaPullCore
 @testable import MediaPullEdit
+@testable import MediaPullEngines
 import XCTest
 
 /// Section 46, video (R-4609, D-130).
@@ -20,7 +21,8 @@ final class VideoEditTests: XCTestCase {
     }
 
     /// A 4 s, 640 × 360, 25 fps H.264 clip with a key frame every second and a tone, shown turned when `portrait`.
-    func clip(portrait: Bool = false) async throws -> URL {
+    /// `soundLonger`: seconds of sound past the picture's end, as some cameras and edits leave.
+    func clip(portrait: Bool = false, soundLonger: Double = 0) async throws -> URL {
         let video = folder.appendingPathComponent("video-\(UUID().uuidString).mp4")
         let writer = try AVAssetWriter(outputURL: video, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -59,8 +61,8 @@ final class VideoEditTests: XCTestCase {
         let tone = folder.appendingPathComponent("tone-\(UUID().uuidString).caf")
         let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
         let file = try AVAudioFile(forWriting: tone, settings: format.settings)
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100 * 4)!
-        buffer.frameLength = 44100 * 4
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100 * 5)!
+        buffer.frameLength = 44100 * 5
         for i in 0 ..< Int(buffer.frameLength) {
             buffer.floatChannelData![0][i] = Float(sin(Double(i) * 2 * .pi * 440 / 44100) * 0.3)
         }
@@ -73,7 +75,8 @@ final class VideoEditTests: XCTestCase {
         try v.insertTimeRange(range, of: videoTrack, at: .zero)
         v.preferredTransform = try await videoTrack.load(.preferredTransform)
         let a = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
-        try a.insertTimeRange(range, of: try await audioAsset.loadTracks(withMediaType: .audio)[0], at: .zero)
+        let sound = CMTimeRange(start: .zero, duration: CMTime(seconds: 4 + soundLonger, preferredTimescale: 600))
+        try a.insertTimeRange(sound, of: try await audioAsset.loadTracks(withMediaType: .audio)[0], at: .zero)
         let output = folder.appendingPathComponent("clip-\(UUID().uuidString).mov")
         let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough)!
         try await session.export(to: output, as: .mov)
@@ -221,5 +224,52 @@ final class VideoEditTests: XCTestCase {
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         context.draw(image, in: CGRect(x: -x, y: -(image.height - 1 - y), width: image.width, height: image.height))
         return (Int(data[0]), Int(data[1]), Int(data[2]))
+    }
+
+    // MARK: Audit round 3
+
+    func testSoundPastThePictureNeverStopsAnExport() async throws {
+        let source = try await clip(soundLonger: 0.6)
+        // Exposure alone, then cuts with fades and speed: every frame without a picture is black (C3-1).
+        var edit = recipe(source)
+        edit.adjust.exposure = 0.3
+        let output = folder.appendingPathComponent("longer.mp4")
+        let built = try await VideoComposer.export(source, recipe: edit, to: output) { _ in }
+        XCTAssertFalse(built.lossless)
+        let result = try await facts(output)
+        XCTAssertEqual(result.duration, 4.6, accuracy: 0.15)
+        var time = EditTimeline()
+        time.kept = [TimeRange(start: 0.5, end: 2), TimeRange(start: 3, end: 4.6)]
+        time.fadeIn = 0.3
+        time.fadeOut = 0.3
+        time.speed = 2
+        edit.timeline = time
+        let cut = folder.appendingPathComponent("cut.mp4")
+        _ = try await VideoComposer.export(source, recipe: edit, to: cut) { _ in }
+        let cutFacts = try await facts(cut)
+        XCTAssertEqual(cutFacts.duration, 1.55, accuracy: 0.15)
+    }
+
+    func testAnMP4KeepsItsCaptureDate() async throws {
+        let engine = TestEngines.ffmpegFolder.appendingPathComponent("ffmpeg")
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: engine.path), "ffmpeg is not built")
+        // An MP4 as a phone writes it: the date only in the movie header.
+        let clip = try await clip()
+        let phone = folder.appendingPathComponent("phone.mp4")
+        _ = try await FFmpeg.run(engine, ["-hide_banner", "-v", "error", "-y", "-i", clip.path, "-c", "copy", "-map", "0",
+                                          "-metadata", "creation_time=2024-05-01T10:00:00Z", phone.path])
+        let before = try await AVURLAsset(url: phone).load(.creationDate)?.load(.dateValue)
+        XCTAssertNotNil(before, "the fixture has a date")
+        for keep in [true, false] {
+            var edit = recipe(phone)
+            edit.adjust.exposure = 0.2
+            edit.export.keepLocation = keep
+            let output = folder.appendingPathComponent("phone-\(keep).mp4")
+            _ = try await VideoComposer.export(phone, recipe: edit, to: output) { _ in }
+            let asset = AVURLAsset(url: output)
+            let date = try await asset.load(.creationDate)?.load(.dateValue)
+            XCTAssertEqual(date?.timeIntervalSince1970 ?? 0, before?.timeIntervalSince1970 ?? 1, accuracy: 1,
+                           "the capture date is kept (C3-6)")
+        }
     }
 }

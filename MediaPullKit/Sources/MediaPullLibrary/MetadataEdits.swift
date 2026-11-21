@@ -101,7 +101,7 @@ public extension OperationJournal {
                 result.skipped.append("“\(lead.lastPathComponent)” keeps the date of its post.")
                 continue
             }
-            if let locked = (place.files + [place.xmp].compactMap(\.self)).first(where: Self.isLocked) {
+            if let locked = ([lead] + place.files + [place.xmp].compactMap(\.self)).first(where: Self.isLocked) {
                 result.skipped.append("“\(locked.lastPathComponent)” is locked in the Finder; unlock it to change its details.")
                 continue
             }
@@ -111,7 +111,11 @@ public extension OperationJournal {
                 continue
             }
             let current = Self.currentValues(of: lead, place: place)
-            guard edit.apply(to: current) != nil else {
+            // Written in place, each member that holds the values is judged on its own (R-4501, audit A3-7).
+            let changes = place.xmp == nil && place.files.count > 1
+                ? place.files.contains { edit.apply(to: MetadataWriter.values(of: $0)) != nil }
+                : edit.apply(to: current) != nil
+            guard changes else {
                 // Said, so a photo in a batch is never left without a word.
                 if case .shiftDate = edit, current.taken?.isEmpty ?? true {
                     result.skipped.append("“\(lead.lastPathComponent)” records no date to shift.")
@@ -255,7 +259,15 @@ extension OperationJournal {
                 _ = try putInPlace(copy, over: xmp, step: step, entry: &entry)
             } else {
                 if let step { record(step, entry: &entry) }
-                try FileOps.renameExclusive(copy, to: xmp)
+                do {
+                    try FileOps.renameExclusive(copy, to: xmp)
+                } catch {
+                    if step != nil {
+                        entry.steps.removeLast()
+                        save(entry)
+                    }
+                    throw error
+                }
                 note(xmp.path, in: &entry)
             }
         } catch {
@@ -303,19 +315,36 @@ extension OperationJournal {
             }
             lastEditSave = Date()
         }
+        // Nothing moved after all (a rename refused): the step goes, so History never lists a change that was not made
+        // (audit 2026-11-21-3, A3-6).
+        func forget() {
+            if step != nil { entry.steps.removeLast() }
+            entry.swaps?[copy.path] = nil
+            entry.swaps?[was.path] = nil
+            save(entry)
+        }
         if renamex_np(copy.path, file.path, UInt32(RENAME_SWAP)) != 0 {
             let code = errno
-            guard code == ENOTSUP || code == EINVAL else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
+            guard code == ENOTSUP || code == EINVAL else {
+                forget()
+                throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            }
             // exFAT, FAT: the file steps aside under a hidden name, so the record is saved first, always.
             guard save(entry) else {
                 if step != nil { entry.steps.removeLast() }
                 throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "The undo record could not be saved."])
             }
-            try FileOps.renameExclusive(file, to: was)
+            do {
+                try FileOps.renameExclusive(file, to: was)
+            } catch {
+                forget()
+                throw error
+            }
             do {
                 try FileOps.renameExclusive(copy, to: file)
             } catch {
-                try? FileOps.renameExclusive(was, to: file) // lint:allow silent-write the error being thrown is reported
+                // Put back: then nothing changed. Else the swap stays recorded, to be settled. The error thrown is reported.
+                if (try? FileOps.renameExclusive(was, to: file)) != nil { forget() } // lint:allow silent-write reported below
                 throw error
             }
         }
@@ -447,7 +476,9 @@ extension OperationJournal {
                 try MetadataWriter.writeCopy(of: url, setting: values, to: copy)
                 let step = again.map { JournalStep.metadata(path: path, before: $0.before, after: values, made: false) }
                 do {
-                    report.rewritten.append(try putInPlace(copy, over: url, step: step, entry: &entry))
+                    let file = try putInPlace(copy, over: url, step: step, entry: &entry)
+                    report.rewritten.append(file)
+                    onReplaced?(file)
                 } catch {
                     try? fm.removeItem(at: copy)
                     throw error

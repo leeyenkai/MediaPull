@@ -549,7 +549,10 @@ public enum AudioOutput: String, Codable, Sendable, CaseIterable {
     }
 
     /// Whether a picture can be stored with it.
-    public var holdsArtwork: Bool { [.mp3, .aac, .alac, .flac].contains(self) }
+    public var holdsArtwork: Bool { [.mp3, .aac, .alac, .flac, .aiff].contains(self) }
+
+    /// Whether an album artist can be stored with it (WAV's tags have no such field).
+    public var holdsAlbumArtist: Bool { self != .wav }
 
     /// The output like the original where MediaPull can write that format; Ogg and Opus become AAC. An M4A holding
     /// Apple Lossless (`codec` "alac") stays lossless.

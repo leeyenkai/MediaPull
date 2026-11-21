@@ -458,13 +458,19 @@ public actor AnalysisStore {
 
     public func people() -> [PersonInfo] {
         var counts: [UUID: Int] = [:]
-        // Checksums some file on disk holds; nil when nothing is held, so every face counts.
-        let shown: Set<String>? = heldPaths.isEmpty ? nil : Set(((try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? [])
-            .filter { !heldPaths.contains($0.path) }.map(\.sha256))
+        // Only checksums some file holds count: an edited photo's earlier content keeps its faces until the next scan
+        // prunes them, and must not be counted twice (audit 2026-11-21-3, A3-8).
+        let rows = (try? modelContext.fetch(FetchDescriptor<FilePathModel>())) ?? []
+        let shown = Set(rows.filter { !heldPaths.contains($0.path) }.map(\.sha256))
+        let inTrash = Set(rows.filter { heldPaths.contains($0.path) }.map(\.sha256))
         var held: [UUID: Int] = [:]
         for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] {
             guard let id = face.personID else { continue }
-            if shown?.contains(face.sha256) ?? true { counts[id, default: 0] += 1 } else { held[id, default: 0] += 1 }
+            if shown.contains(face.sha256) {
+                counts[id, default: 0] += 1
+            } else if inTrash.contains(face.sha256) {
+                held[id, default: 0] += 1
+            }
         }
         return ((try? modelContext.fetch(FetchDescriptor<PersonModel>(sortBy: [SortDescriptor(\.number)]))) ?? []).map {
             var person = PersonInfo(

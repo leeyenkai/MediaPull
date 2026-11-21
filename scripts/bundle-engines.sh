@@ -50,18 +50,21 @@ done
 cp "$CACHE/python/lib/python3.13/LICENSE.txt" "$LICENSES/python-LICENSE.txt" 2>/dev/null || true
 
 # R-307: where the source code of every bundled component can be obtained, with the exact versions bundled.
-"$CACHE/python/bin/python3" -I - "$CACHE/versions.json" "$CACHE/ffmpeg/VERSION" "$LICENSES/SOURCES.txt" <<'PY'
-import json, sys
+"$CACHE/python/bin/python3" -I - "$CACHE/versions.json" "$CACHE/ffmpeg/VERSION" "$LICENSES/SOURCES.txt" "$CACHE/ffmpeg/LAME_VERSION" <<'PY'
+import json, os, sys
 versions = json.load(open(sys.argv[1]))
-ffmpeg = open(sys.argv[2]).read().strip() if __import__("os").path.exists(sys.argv[2]) else "not bundled"
+ffmpeg = open(sys.argv[2]).read().strip() if os.path.exists(sys.argv[2]) else "not bundled"
+lame = open(sys.argv[4]).read().strip() if os.path.exists(sys.argv[4]) else "3.100"
 lines = [
-    "MediaPull bundles these components unmodified. Their source code is available at:",
+    "MediaPull bundles these components unmodified, except that LAME's export list (include/libmp3lame.sym) drops",
+    "lame_init_old, a function its own source no longer has (scripts/build-ffmpeg.sh). Their source code is available at:",
     "",
     f"gallery-dl {versions.get('gallery_dl')} (GPL-2.0): https://github.com/mikf/gallery-dl and https://pypi.org/project/gallery-dl/",
     f"yt-dlp {versions.get('yt_dlp')} (Unlicense): https://github.com/yt-dlp/yt-dlp and https://pypi.org/project/yt-dlp/",
     f"Python {versions.get('python')} (PSF): https://www.python.org/downloads/source/ (built by python-build-standalone)",
     f"ffmpeg {ffmpeg} (LGPL-2.1): https://ffmpeg.org/releases/ffmpeg-{ffmpeg}.tar.xz, configured by scripts/build-ffmpeg.sh",
-    "LAME 3.100 (LGPL-2.0), built into ffmpeg for MP3 output: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
+    f"LAME {lame} (LGPL-2.0), built into ffmpeg for MP3 output: "
+    f"https://downloads.sourceforge.net/project/lame/lame/{lame}/lame-{lame}.tar.gz",
 ]
 for name in ("requests", "urllib3", "idna", "charset_normalizer", "certifi"):
     lines.append(f"{name} {versions.get(name)}: https://pypi.org/project/{name.replace('_', '-')}/{versions.get(name)}/")

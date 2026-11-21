@@ -126,6 +126,28 @@ final class AudioEditTests: XCTestCase {
         XCTAssertEqual(AudioOutput.like("oga", codec: "flac"), .flac)
     }
 
+    func testRoundThreeArguments() {
+        func encoder(_ ext: String, _ format: AudioOutput, bits: Int, codec: String) -> String? {
+            var made = plan(ext, format)
+            made.sourceFormat = AudioSourceFormat(duration: 10, bits: bits, codec: codec)
+            let args = AudioEdit.arguments(made, list: nil)
+            return args.firstIndex(of: "-c:a").map { args[$0 + 1] }
+        }
+        // The source's depth is kept, 32-bit and 64-bit float included (C3-7).
+        XCTAssertEqual(encoder("a.wav", .wav, bits: 32, codec: "pcm_s32le"), "pcm_s32le")
+        XCTAssertEqual(encoder("a.wav", .aiff, bits: 32, codec: "pcm_s32le"), "pcm_s32be")
+        XCTAssertEqual(encoder("a.wav", .wav, bits: 64, codec: "pcm_f64le"), "pcm_f64le")
+        XCTAssertEqual(encoder("a.wav", .wav, bits: 24, codec: "pcm_s24le"), "pcm_s24le")
+        XCTAssertEqual(encoder("a.wav", .wav, bits: 16, codec: "pcm_s16le"), "pcm_s16le")
+        // AIFF keeps artwork; WAV holds neither artwork nor an album artist (C3-3).
+        XCTAssertTrue(AudioOutput.aiff.holdsArtwork)
+        XCTAssertFalse(AudioOutput.wav.holdsArtwork)
+        XCTAssertFalse(AudioOutput.wav.holdsAlbumArtist)
+        var art = plan("a.aiff", .aiff)
+        art.tags.artworkPath = "/m/cover.jpg"
+        XCTAssertTrue(AudioEdit.arguments(art, list: nil).contains("attached_pic"))
+    }
+
     /// The real engine: a tone cut losslessly, faded, normalised and converted (skipped when ffmpeg is not built).
     func testTheBundledEngineEditsAudio() async throws {
         let ffmpeg = FFmpeg(ffmpeg: TestEngines.ffmpegFolder.appendingPathComponent("ffmpeg"),

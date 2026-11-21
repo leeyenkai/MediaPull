@@ -355,11 +355,15 @@ final class MetadataEditTests: XCTestCase {
         try bytes.write(to: copy)
         entry.swaps = [was.path: photo.path, copy.path: photo.path]
         await journal.save(entry)
+        // Settled at launch: the photo has its name back and the edit is kept, not taken back (A3-9).
         let stranded = await journal.stranded()
-        XCTAssertEqual(stranded, [entry.id])
-        _ = await journal.undo(entry.id)
+        XCTAssertEqual(stranded, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: photo.path))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photos.path), ["IMG_2.JPG"])
+        let kept = await journal.entry(entry.id)
+        XCTAssertEqual(kept?.undone, false)
+        XCTAssertNil(kept?.swaps)
+        _ = await journal.undo(entry.id)
         XCTAssertNil(MetadataWriter.values(of: photo).rating)
     }
 
@@ -472,4 +476,108 @@ final class MetadataEditTests: XCTestCase {
         let hidden = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix(".mediapull-edit-") }
         XCTAssertTrue(hidden.isEmpty, "\(hidden)")
     }
+
+    // MARK: Audit round 3
+
+    func testARejectedMarkComesBackOnUndoAndUndoFollowsEachFile() async throws {
+        // A JPEG another app marked rejected (xmp:Rating -1).
+        let photo = folder.appendingPathComponent("rejected.jpg")
+        let plain = folder.appendingPathComponent("plain.jpg")
+        Self.photo(plain, type: .jpeg)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(plain as CFURL, nil))
+        let metadata = try XCTUnwrap(CGImageMetadataCreateMutable())
+        XCTAssertTrue(CGImageMetadataSetValueWithPath(metadata, nil, "xmp:Rating" as CFString, "-1" as CFString))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(photo as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImageAndMetadata(destination, try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil)), metadata, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        XCTAssertEqual(MetadataWriter.values(of: photo).ratingText, "-1")
+
+        let journal = journal()
+        let result = await journal.editMetadata([photo], .rating(3), title: "Rate")
+        XCTAssertEqual(MetadataWriter.values(of: photo).rating, 3)
+        let followed = Followed()
+        _ = await journal.undo(try XCTUnwrap(result.entry?.id), replaced: { followed.add($0.path) })
+        XCTAssertEqual(MetadataWriter.values(of: photo).ratingText, "-1", "A3-2")
+        XCTAssertNil(MetadataWriter.values(of: photo).rating)
+        XCTAssertEqual(followed.paths, [photo.path], "each file is followed as Undo replaces it (A3-1)")
+
+        // The same in a .xmp beside a file that cannot hold the values in place.
+        let png = folder.appendingPathComponent("shot.png")
+        Self.photo(png, type: .png)
+        let xmp = folder.appendingPathComponent("shot.xmp")
+        let packet = #"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">"#
+            + #"<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="-1"/></rdf:RDF></x:xmpmeta>"#
+        try Data(packet.utf8).write(to: xmp)
+        let rated = await journal.editMetadata([png], .rating(4), title: "Rate")
+        XCTAssertEqual(MetadataWriter.values(ofXMPAt: xmp)?.rating, 4)
+        _ = await journal.undo(try XCTUnwrap(rated.entry?.id))
+        XCTAssertEqual(MetadataWriter.values(ofXMPAt: xmp)?.ratingText, "-1")
+    }
+}
+
+extension MetadataEditTests {
+    func testXMPDateCopiesStayInXMPFormAndALockedLeadIsRefusedAndMembersAreJudgedAlone() async throws {
+        // The photo's XMP copy of its date keeps XMP form, its zone and its fraction of a second (A3-4).
+        let plain = folder.appendingPathComponent("plain.jpg")
+        Self.photo(plain, type: .jpeg)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(plain as CFURL, nil))
+        let metadata = try XCTUnwrap(CGImageSourceCopyMetadataAtIndex(source, 0, nil).flatMap { CGImageMetadataCreateMutableCopy($0) })
+        XCTAssertTrue(CGImageMetadataSetValueWithPath(metadata, nil, "photoshop:DateCreated" as CFString,
+                                                      "2020-01-02T03:04:05.918+01:00" as CFString))
+        // As a camera writes it: the fraction of a second in EXIF too, from which ImageIO writes the XMP copy.
+        XCTAssertTrue(CGImageMetadataSetValueMatchingImageProperty(metadata, kCGImagePropertyExifDictionary,
+                                                                   kCGImagePropertyExifSubsecTimeOriginal, "918" as CFString))
+        let dated = folder.appendingPathComponent("dated.jpg")
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(dated as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImageAndMetadata(destination, try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil)), metadata, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let read = try XCTUnwrap(CGImageSourceCreateWithURL(dated as CFURL, nil).flatMap { CGImageSourceCopyMetadataAtIndex($0, 0, nil) })
+        XCTAssertEqual(MetadataWriter.string(in: read, path: "photoshop:DateCreated"), "2020-01-02T03:04:05.918+01:00")
+        let journal = journal()
+        let shifted = await journal.editMetadata([dated], .shiftDate(seconds: 60), title: "Shift")
+        XCTAssertEqual(shifted.changed, 1, "\(shifted.skipped)")
+        let written = try XCTUnwrap(CGImageSourceCreateWithURL(dated as CFURL, nil)
+            .flatMap { CGImageSourceCopyMetadataAtIndex($0, 0, nil) })
+        XCTAssertEqual(MetadataWriter.string(in: written, path: "photoshop:DateCreated"), "2020-01-02T03:05:05.918+01:00")
+
+        // A locked photo is refused even where its values would go to a .xmp, as the Edit section says (A3-5).
+        let png = folder.appendingPathComponent("locked.png")
+        Self.photo(png, type: .png)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: png.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: png.path) }
+        let refused = await journal.editMetadata([png], .rating(2), title: "Rate")
+        XCTAssertNil(refused.entry)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("locked.xmp").path))
+
+        // A unit written in place: a member without the value gets it though the lead has it (A3-7).
+        let pair = folder.appendingPathComponent("pair")
+        try FileManager.default.createDirectory(at: pair, withIntermediateDirectories: true)
+        let heic = pair.appendingPathComponent("IMG_5.HEIC"), jpeg = pair.appendingPathComponent("IMG_5.JPG")
+        Self.photo(heic, type: .heic)
+        Self.photo(jpeg, type: .jpeg)
+        let names = try FileManager.default.contentsOfDirectory(atPath: pair.path)
+        let place = OperationJournal.place(of: heic, names: names)
+        guard place.xmp == nil, place.files.count == 2 else { return }
+        _ = await journal.editMetadata([heic], .rating(3), title: "Rate")
+        // The member alone loses its rating (as another app might leave it).
+        let reset = await journal.editMetadata([jpeg], .rating(nil), title: "Rate")
+        if reset.changed == 1, MetadataWriter.values(of: jpeg).rating == nil {
+            let again = await journal.editMetadata([heic], .rating(3), title: "Rate")
+            XCTAssertEqual(again.changed, 1, "\(again.skipped)")
+            XCTAssertEqual(MetadataWriter.values(of: jpeg).rating, 3)
+            XCTAssertEqual(again.entry?.fileCount, 1)
+        }
+    }
+}
+
+/// Paths a callback was told of, from any thread.
+private final class Followed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [String] = []
+
+    func add(_ path: String) {
+        lock.withLock { list.append(path) }
+    }
+
+    var paths: [String] { lock.withLock { list } }
 }

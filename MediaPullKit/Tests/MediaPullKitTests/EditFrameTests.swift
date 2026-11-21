@@ -313,7 +313,7 @@ final class EditFrameTests: XCTestCase {
         XCTAssertTrue(read.isEdited)
     }
 
-    func testMovesThatSwapPathsKeepBothRecipes() async {
+    func testMovesThatSwapPathsKeepBothRecipes() async throws {
         let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
         let one = photo("1.jpg"), two = photo("2.jpg")
         var first = recipe(for: one)
@@ -323,6 +323,8 @@ final class EditFrameTests: XCTestCase {
         await store.save(first)
         await store.save(second)
         let three = folder.appendingPathComponent("3.jpg").standardizedFileURL.path
+        try FileManager.default.moveItem(atPath: two.path, toPath: three)
+        try FileManager.default.moveItem(at: one, to: two)
         await store.movePaths([(two.standardizedFileURL.path, three), (one.standardizedFileURL.path, two.standardizedFileURL.path)])
         let atTwo = await store.recipe(for: two)
         let paths = await store.editedPaths()
@@ -389,5 +391,124 @@ final class EditFrameTests: XCTestCase {
         _ = await reopened.editedPaths()
         let files = try FileManager.default.contentsOfDirectory(atPath: folderEdits.path)
         XCTAssertEqual(files.count, 2, "\(files)")
+    }
+
+    // MARK: Audit round 3
+
+    /// A file at `name` with its creation date set, as a card's file would have.
+    func dated(_ name: String, created: Date) throws -> URL {
+        let url = photo(name)
+        try FileManager.default.setAttributes([.creationDate: created], ofItemAtPath: url.path)
+        return url
+    }
+
+    func edited(_ url: URL, contrast: Double) -> EditRecipe {
+        var made = recipe(for: url)
+        made.adjust.contrast = contrast
+        return made
+    }
+
+    func testTwoCardsWithOneNameKeepTheirOwnEdits() async throws {
+        let edits = folder.appendingPathComponent("Edits")
+        let store = RecipeStore(folder: edits)
+        let cardA = Date().addingTimeInterval(-86400), cardB = Date().addingTimeInterval(-3600)
+        let path = try dated("IMG_0001.JPG", created: cardA)
+        await store.save(edited(path, contrast: 15))
+        // Card B in its place: nothing shown or marked, and Revert there removes nothing of card A's (B3-1, B3-2).
+        try FileManager.default.removeItem(at: path)
+        _ = try dated("IMG_0001.JPG", created: cardB)
+        let onB = await store.recipe(for: path)
+        XCTAssertNil(onB)
+        let marked = await store.editedPaths()
+        XCTAssertFalse(marked.contains(path.standardizedFileURL.path))
+        await store.remove(path.path)
+        await store.save(edited(path, contrast: 70))
+        let editedB = await store.recipe(for: path)
+        XCTAssertEqual(editedB?.adjust.contrast, 70)
+        // Card A back: its own edits, now and after a relaunch.
+        try FileManager.default.removeItem(at: path)
+        _ = try dated("IMG_0001.JPG", created: cardA)
+        let onA = await store.recipe(for: path)
+        XCTAssertEqual(onA?.adjust.contrast, 15)
+        let relaunched = await RecipeStore(folder: edits).recipe(for: path)
+        XCTAssertEqual(relaunched?.adjust.contrast, 15)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: edits.path).count, 2)
+    }
+
+    func testARenamedFileOpenedFirstKeepsItsEditsAndNothingIsWrittenOver() async throws {
+        let edits = folder.appendingPathComponent("Edits")
+        let store = RecipeStore(folder: edits)
+        let old = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        await store.save(edited(old, contrast: 15))
+        let renamed = folder.appendingPathComponent("b.jpg")
+        try FileManager.default.moveItem(at: old, to: renamed)
+        _ = try dated("a.jpg", created: Date())
+        // The renamed file is found by its reference though a newcomer has its old name (B3-4).
+        let forRenamed = await store.recipe(for: renamed)
+        XCTAssertEqual(forRenamed?.adjust.contrast, 15)
+        let marked = await store.editedPaths()
+        XCTAssertEqual(marked, [renamed.standardizedFileURL.path])
+        var newer = try XCTUnwrap(forRenamed)
+        newer.adjust.contrast = 70
+        await store.save(newer)
+        let forNewcomer = await store.recipe(for: old)
+        XCTAssertNil(forNewcomer)
+        let again = await store.recipe(for: renamed)
+        XCTAssertEqual(again?.adjust.contrast, 70)
+        let relaunched = await RecipeStore(folder: edits).recipe(for: renamed)
+        XCTAssertEqual(relaunched?.adjust.contrast, 70)
+    }
+
+    func testAMoveOntoAPathWithAKeptRecipeShowsTheMovedFilesEdits() async throws {
+        for round in 0 ..< 10 {
+            let store = RecipeStore(folder: folder.appendingPathComponent("Edits\(round)"))
+            let kept = try dated("x\(round).jpg", created: Date().addingTimeInterval(-86400))
+            await store.save(edited(kept, contrast: 11))
+            try FileManager.default.removeItem(at: kept)
+            let other = try dated("y\(round).jpg", created: Date().addingTimeInterval(-3600))
+            await store.save(edited(other, contrast: 22))
+            try FileManager.default.moveItem(at: other, to: kept)
+            await store.movePaths([(other.path, kept.path)])
+            let found = await store.recipe(for: kept)
+            XCTAssertEqual(found?.adjust.contrast, 22, "round \(round) (B3-5)")
+        }
+    }
+
+    func testASaveAfterAMoveToAnotherDiskKeepsTheNewCreationDate() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let original = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        await store.save(edited(original, contrast: 15))
+        let stored = await store.recipe(for: original)
+        var open = try XCTUnwrap(stored)
+        let destination = folder.appendingPathComponent("moved.jpg")
+        try FileManager.default.moveItem(at: original, to: destination)
+        try FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: destination.path)
+        await store.movePaths([(original.path, destination.path)])
+        // The open file's copy only knows the new path (B3-3).
+        open.source.path = destination.standardizedFileURL.path
+        open.adjust.exposure = 0.5
+        await store.save(open)
+        let found = await store.recipe(for: destination)
+        XCTAssertEqual(found?.adjust.exposure, 0.5)
+    }
+
+    func testTheCanvasKeepsDisplayP3Colours() throws {
+        let url = folder.appendingPathComponent("p3.png")
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3))
+        let context = try XCTUnwrap(CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(colorSpace: space, components: [1, 0, 0, 1])!)
+        context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        CGImageDestinationFinalize(destination)
+        let session = try XCTUnwrap(PhotoSession(url: url))
+        let canvas = try XCTUnwrap(session.preview(recipe(for: url), fit: CGSize(width: 64, height: 64)))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let reader = try XCTUnwrap(CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: space,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        reader.draw(canvas, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        XCTAssertGreaterThan(pixel[0], 250, "\(pixel) (B3-m1)")
+        XCTAssertLessThan(pixel[1], 5, "\(pixel)")
     }
 }
