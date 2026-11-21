@@ -16,6 +16,7 @@
 - **Organise any folder** by date, event, subject, person, place, artist or album, in place or into a new folder. Undo with ⌘Z. Duplicates and look-alikes are marked in Organise too.
 - **Bring in from phones and cameras.** The Devices section (⌃⌘3) shows an iPhone or Android phone like a drive and copies only what is new.
 - **Every format, kept as it is.** HEIC (including Fujifilm .hif), camera RAW, Live Photos and audio (MP3, M4A, FLAC, WAV, AIFF, Ogg) are listed, previewed and searched. A RAW and its JPEG, or a Live Photo's photo and clip, are one item that always moves together; your own files are never converted.
+- **Fix ratings, keywords, dates and places.** Star photos, add keywords, shift a camera's wrong clock or set the time zone, and set or remove a location, for one photo or many. JPEG and HEIC are changed in the file without touching the picture; RAW and other files get a `.xmp` beside them. Undo with ⌘Z.
 - **Instagram posts stay together.** Sorting puts every picture of a post in the same folder, and grids show "2 of 5".
 - **View folders as icons, a list or columns**, as in the Finder (⌘1, ⌘2, ⌘3). Each pane keeps its own view.
 - **See saved accounts as they looked.** In Organise, a saved Instagram account, YouTube channel, X, Bluesky or Reddit feed or Pinterest board opens as a profile, a channel, a timeline or a board (⌘4), from the saved files only. Captions, places, playlists and highlight covers are kept with new downloads.

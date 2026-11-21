@@ -14,6 +14,8 @@ public struct MediaEntry: Sendable, Hashable {
     /// When the file leads a unit (R-4206): what kind, and its other media files' names.
     public var unit: UnitKind?
     public var unitMembers: [String] = []
+    /// The `.xmp` beside the file, whose values lie over its own (R-4502).
+    public var xmp: URL?
 
     public init(url: URL, size: Int64, created: Date?, modified: Date, format: MediaFormat?, source: SourceInfo? = nil,
                 record: AnalysisRecord? = nil)
@@ -52,6 +54,8 @@ public enum LibrarySort: String, Codable, Sendable, CaseIterable {
     case date, name, fileSize, pixelSize, videoLength, source, camera, events, similar
     /// Audio (R-4205): by artist then album and track, or by album then track.
     case artist, album
+    /// Stars, most first (R-4507).
+    case rating
 
     public var label: String {
         switch self {
@@ -66,11 +70,12 @@ public enum LibrarySort: String, Codable, Sendable, CaseIterable {
         case .similar: "Group Similar"
         case .artist: "Artist"
         case .album: "Album"
+        case .rating: "Rating"
         }
     }
 
     public var needsAnalysis: Bool {
-        [.pixelSize, .videoLength, .camera, .similar, .artist, .album].contains(self)
+        [.pixelSize, .videoLength, .camera, .similar, .artist, .album, .rating].contains(self)
     }
 }
 
@@ -114,6 +119,10 @@ public struct LibraryFilter: Codable, Sendable, Hashable {
     public var similarOnly = false
     /// Finder tags (R-1715): a file with any of them passes.
     public var finderTags: Set<String> = []
+    /// At least this many stars (R-4507).
+    public var minRating: Int?
+    /// Keywords (R-4507): a file with any of them passes.
+    public var keywords: Set<String> = []
 
     public init() {}
 
@@ -125,13 +134,14 @@ public struct LibraryFilter: Codable, Sendable, Hashable {
     public var count: Int {
         [!kinds.isEmpty, !formats.isEmpty, !orientations.isEmpty, minPixels != nil, minDuration != nil || maxDuration != nil,
          !cameras.isEmpty, !sources.isEmpty, screenshots != nil, !colours.isEmpty, !places.isEmpty, !tags.isEmpty, faces != nil,
-         !people.isEmpty, similarOnly, !finderTags.isEmpty].filter(\.self).count
+         !people.isEmpty, similarOnly, !finderTags.isEmpty, minRating != nil, !keywords.isEmpty].filter(\.self).count
     }
 
     /// Filters that only work once a file has been analysed.
     public var needsAnalysis: Bool {
         !orientations.isEmpty || minPixels != nil || minDuration != nil || maxDuration != nil || !cameras.isEmpty || screenshots != nil
             || !colours.isEmpty || !places.isEmpty || !tags.isEmpty || faces != nil || !people.isEmpty || similarOnly
+            || minRating != nil || !keywords.isEmpty
     }
 }
 
@@ -212,6 +222,13 @@ public struct LibraryQuery: Codable, Sendable, Hashable {
         if !f.finderTags.isEmpty, f.finderTags.isDisjoint(with: item.finderTags) {
             return false
         }
+        if let minRating = f.minRating, (facts?.rating ?? 0) < minRating {
+            return false
+        }
+        if !f.keywords.isEmpty {
+            let wanted = Set(f.keywords.map(Self.fold))
+            if wanted.isDisjoint(with: (facts?.keywords ?? []).map(Self.fold)) { return false }
+        }
         if !f.orientations.isEmpty, !(facts?.orientation.map(f.orientations.contains) ?? false) {
             return false
         }
@@ -288,6 +305,7 @@ public struct LibraryQuery: Codable, Sendable, Hashable {
             (Self.fold([item.source?.username, item.source?.category].compactMap(\.self).joined(separator: " ")), 2),
             (Self.fold(item.record?.text ?? ""), 2),
             (Self.fold(item.record?.place?.display ?? ""), 1),
+            (Self.fold((item.facts?.keywords ?? []).joined(separator: " ")), 3),
         ]
         var score = 0.0
         for word in words {
@@ -342,6 +360,11 @@ public struct LibraryQuery: Codable, Sendable, Hashable {
                 let (pa, pb) = (a.source?.postID ?? "", b.source?.postID ?? "")
                 if pa != pb { return pa < pb }
                 return (a.source?.num ?? 0, a.name) < (b.source?.num ?? 0, b.name)
+            }
+        case .rating:
+            return items.sorted { a, b in
+                let (ra, rb) = (a.facts?.rating ?? 0, b.facts?.rating ?? 0)
+                return ra == rb ? a.date > b.date : ordered(ra, rb)
             }
         case .camera:
             func key(_ i: MediaEntry) -> String {

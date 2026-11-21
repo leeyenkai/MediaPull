@@ -32,6 +32,9 @@ public struct MediaFacts: Codable, Sendable, Hashable {
     public var audio: AudioTags?
     /// A Live Photo's content identifier, shared by its still and its clip (R-4206).
     public var contentIdentifier: String?
+    /// Stars (1 to 5) and keywords, from the file or its `.xmp` (R-4507).
+    public var rating: Int?
+    public var keywords: [String]?
 
     public init() {}
 
@@ -243,7 +246,7 @@ public struct AnalysisRecord: Codable, Sendable, Hashable {
     /// Bump when a model or rule changes, so files are analysed again in the background (R-3603).
     public static let currentVersion = 1
     /// Bump when reading facts from files changes: facts are read again, no model runs again (R-4210).
-    public static let currentFactsVersion = 2
+    public static let currentFactsVersion = 3
 
     public var sha256: String
     public var version: Int
@@ -360,5 +363,26 @@ public enum MediaDates {
     /// The date used for sorting: the capture date, then the metadata file's date, then the file's creation date (R-3702).
     public static func effective(facts: MediaFacts?, source: SourceInfo?, created: Date?, modified: Date) -> Date {
         facts?.captureDate ?? source?.date ?? created ?? modified
+    }
+}
+
+public extension MediaFacts {
+    /// These facts with a `.xmp`'s values over them (R-4502).
+    func applying(_ values: MetadataValues) -> MediaFacts {
+        var out = self
+        if values.fields.contains(.rating) { out.rating = values.rating }
+        if values.fields.contains(.keywords) { out.keywords = values.keywords }
+        if values.fields.contains(.taken), let taken = values.taken {
+            if let date = taken.original.flatMap({ MetadataEdit.moment($0, offset: taken.originalOffset) })
+                ?? taken.digitized.flatMap({ MetadataEdit.moment($0, offset: taken.digitizedOffset) })
+            {
+                out.captureDate = date
+            }
+        }
+        if values.fields.contains(.location) {
+            out.latitude = values.latitude
+            out.longitude = values.longitude
+        }
+        return out
     }
 }

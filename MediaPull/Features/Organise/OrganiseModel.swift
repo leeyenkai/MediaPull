@@ -392,6 +392,7 @@ final class OrganisePane: MediaGridOwner {
 
     func gridSelectionChanged(_ ids: Set<String>) {
         selection = ids
+        owner?.window?.editTargets = nil
         // The Details tab shows the one file chosen last in either pane (D-114).
         if ids.count == 1, let id = ids.first, !listFolders.isFolder(id), let entry = entry(id) {
             owner?.details = (entry.url, role)
@@ -463,6 +464,13 @@ final class OrganisePane: MediaGridOwner {
            let copies = duplicates.copiesMenuItem(for: file, reveal: { [weak self] in self?.reveal($0) })
         {
             menu.addItem(copies)
+        }
+        let role = role
+        for item in owner.window?.metadataMenuItems(for: chosen, showDetails: { [weak owner] photos in
+            owner?.details = (photos[0], role)
+            owner?.tab = .details
+        }) ?? [] {
+            menu.addItem(item)
         }
         menu.addItem(.separator())
         if role == .source, let target = owner.targetFolder, target.standardizedFileURL != folder?.standardizedFileURL {

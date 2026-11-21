@@ -115,6 +115,8 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var showDevicesImport = true
     /// What the Preview pane shows: the last item or file selected on its own.
     var previewSubject: PreviewSubject?
+    /// The photos Edit Details was chosen for (R-4508), until the selection changes.
+    var editTargets: [URL]?
     var showFilters = false
     var extractionEnabled = true
     var siteExtractorCategory: String?

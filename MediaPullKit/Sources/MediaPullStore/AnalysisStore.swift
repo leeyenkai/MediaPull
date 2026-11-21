@@ -375,6 +375,44 @@ public actor AnalysisStore {
         try? modelContext.save()
     }
 
+    /// A file edited in place (R-4506, D-126): its results, faces, people and corrections are copied from its old content to
+    /// its new one, so no model runs again; the copy's facts are marked to be read again. Copied, not moved: another file
+    /// with the old content keeps its own, and pruning removes what no file holds. Returns the face keys copied, old to
+    /// new, so their vectors can be copied too (`setFaceRows`).
+    public func rekey(from old: String, to new: String) -> [(old: String, new: String)] {
+        guard old != new, var record = record(sha256: old) else { return [] }
+        record.sha256 = new
+        record.factsVersion = 0
+        if self.record(sha256: new) == nil { save(record) }
+        var pairs: [(old: String, new: String)] = []
+        let predicate = #Predicate<FaceModel> { $0.sha256 == old }
+        for face in (try? modelContext.fetch(FetchDescriptor(predicate: predicate))) ?? [] {
+            let suffix = face.key.split(separator: "|", maxSplits: 1).last.map(String.init) ?? face.key
+            let key = "\(new)|\(suffix)"
+            let existing = #Predicate<FaceModel> { $0.key == key }
+            guard (try? modelContext.fetch(FetchDescriptor(predicate: existing)).first) == nil else { continue }
+            let copy = FaceModel(key: key, sha256: new, vectorRow: face.vectorRow, quality: face.quality, pixelSize: face.pixelSize)
+            copy.personID = face.personID
+            copy.pinned = face.pinned
+            copy.rejected = face.rejected
+            modelContext.insert(copy)
+            pairs.append((face.key, key))
+        }
+        try? modelContext.save()
+        return pairs
+    }
+
+    /// Vector rows of copied faces, by key.
+    public func setFaceRows(_ rows: [String: Int]) {
+        guard !rows.isEmpty else { return }
+        let keys = Array(rows.keys)
+        let predicate = #Predicate<FaceModel> { keys.contains($0.key) }
+        for face in (try? modelContext.fetch(FetchDescriptor(predicate: predicate))) ?? [] {
+            if let row = rows[face.key] { face.vectorRow = row }
+        }
+        try? modelContext.save()
+    }
+
     // MARK: Faces and people (section 39)
 
     public func addFaces(_ faces: [NewFace], sha256: String) {

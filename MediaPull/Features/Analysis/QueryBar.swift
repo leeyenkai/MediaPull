@@ -160,6 +160,14 @@ struct FilterMenu: View {
             valueMenu("Source", values: facets.sources, set: $query.filter.sources) { $0 }
             valueMenu("Camera", values: facets.cameras, set: $query.filter.cameras) { $0 }
             valueMenu("Finder Tags", values: facets.finderTags, set: $query.filter.finderTags) { $0 }
+            Menu("Rating") {
+                ForEach([0, 1, 2, 3, 4, 5], id: \.self) { stars in
+                    Button(Self.ratingLabel(stars) + (query.filter.minRating == (stars == 0 ? nil : stars) ? " ✓" : "")) {
+                        query.filter.minRating = stars == 0 ? nil : stars
+                    }
+                }
+            }
+            valueMenu("Keywords", values: facets.keywords, set: $query.filter.keywords) { $0 }
             Toggle("Only Visually Similar Sets", isOn: $query.filter.similarOnly)
             Divider()
             Button("Clear Filters") { query.filter = LibraryFilter() }
@@ -171,6 +179,15 @@ struct FilterMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Filter by kind, size, faces, colour, content, place and more")
+    }
+
+    /// "Any Rating", "1 Star or More", "5 Stars".
+    static func ratingLabel(_ stars: Int) -> String {
+        switch stars {
+        case 0: "Any Rating"
+        case 5: "5 Stars"
+        default: "\(stars) Star\(stars == 1 ? "" : "s") or More"
+        }
     }
 
     private func toggle<T: Hashable>(_ label: String, _ set: Binding<Set<T>>, _ value: T) -> some View {
@@ -222,6 +239,7 @@ struct FilterFacets: Sendable {
     var sources: [(String, Int)] = []
     var cameras: [(String, Int)] = []
     var finderTags: [(String, Int)] = []
+    var keywords: [(String, Int)] = []
 
     init() {}
 
@@ -233,6 +251,7 @@ struct FilterFacets: Sendable {
         sources = Self.counted(entries.compactMap { $0.source?.sourceName })
         cameras = Self.counted(entries.compactMap { $0.facts?.camera })
         finderTags = Self.counted(entries.flatMap(\.finderTags))
+        keywords = Self.counted(entries.flatMap { $0.facts?.keywords ?? [] })
     }
 
     nonisolated static func counted(_ values: [String]) -> [(String, Int)] {

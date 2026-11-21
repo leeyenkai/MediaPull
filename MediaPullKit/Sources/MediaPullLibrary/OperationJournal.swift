@@ -9,6 +9,9 @@ public enum JournalStep: Codable, Sendable, Hashable {
     /// copies nobody changed since. Journals from before 1.8 have none.
     case clone(from: String, to: String, files: [CopyStamp]?)
     case trash(original: String, trashed: String)
+    /// A metadata edit (R-4505): `path` is the photo written in place, or its `.xmp`; `before` and `after` are the values of
+    /// the fields edited there. `made`: the `.xmp` did not exist before the edit.
+    case metadata(path: String, before: MetadataValues, after: MetadataValues, made: Bool)
 }
 
 public struct CopyStamp: Codable, Sendable, Hashable {
@@ -46,6 +49,9 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var edits: [String]?
     /// What Undo of a Replace sent to the Trash from those names, by name, so Redo can bring it back first.
     public var parked: [String: String]?
+    /// A metadata edit part way (R-4503): each hidden name beside a photo, by the photo's path. Settled before anything
+    /// else is done with the change, so a stop part way never leaves a photo missing.
+    public var swaps: [String: String]?
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
@@ -57,6 +63,7 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
             // A rename through a temporary name is one file, not two (audit 12, B12-m2).
             case let .move(from, to, _, _): !from.hasSuffix(".json") && !OperationJournal.isTemporary(to)
             case let .clone(from, _, _): !from.hasSuffix(".json")
+            case .metadata: true
             default: false
             }
         }.count
@@ -85,6 +92,8 @@ public struct UndoReport: Sendable {
     public var unsaved = false
     /// Stopped part way (cancelled, or the app quit): what was done is recorded, the rest can be done later (R-3807).
     public var stopped = false
+    /// Files written again in place (metadata edits), so analysis follows them to their new content (R-4506).
+    public var rewritten: [RewrittenFile] = []
 
     public init(restored: Int, skipped: [String], moves: [(from: String, to: String)]) {
         self.restored = restored
@@ -369,6 +378,19 @@ public actor OperationJournal {
         }
     }
 
+    /// A file written again in place (a metadata edit, R-4503): its new identity stands for the one it had, so earlier
+    /// changes that rely on it still find it.
+    func noteReplaced(_ path: String, was old: String?, in entry: inout JournalEntry) {
+        note(path, in: &entry)
+        guard let old, let new = entry.identities?[path], old != new else { return }
+        loadRemade()
+        if remade[old] == nil { remadeOrder.append(old) }
+        remade[old] = new
+        remadeDates[old] = Date()
+        remadeChanged = true
+        saveRemade()
+    }
+
     /// The map outlives the session: History's Redo can run after a relaunch (audit 14, B14-M1). Pairs are kept in the
     /// order they were made, with when, and go with the journals they serve (audit 15, B15-m2, B15-m7).
     private func loadRemade() {
@@ -470,6 +492,7 @@ public actor OperationJournal {
     /// Hidden names of a change that hold an item now: a swap of names part way, or a Replace part way.
     static func hiddenPresent(_ entry: JournalEntry) -> Bool {
         !temporaryPathsPresent(entry.steps).isEmpty || (entry.edits ?? []).contains { FileManager.default.fileExists(atPath: $0) }
+            || (entry.swaps ?? [:]).keys.contains { FileManager.default.fileExists(atPath: $0) }
     }
 
     /// The name to show for a step's item: never a temporary name, but the name it had (`otherwise`) (B11-m2).
@@ -645,6 +668,7 @@ public actor OperationJournal {
             moves: []
         ) }
         var report = UndoReport(restored: 0, skipped: [], moves: [])
+        settleSwaps(&entry)
         // A change that changed nothing (its files went away before it ran) has nothing to undo: it is simply undone
         // (audit 14, B14-m2).
         guard !entry.steps.isEmpty else {
@@ -729,6 +753,7 @@ public actor OperationJournal {
     public func redo(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) -> UndoReport {
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
+        settleSwaps(&entry)
         fallbacks = [:]
         // As when it first ran: a folder it worked in that went away since is never made again (audit 6, B6-M1).
         // Folders the change made itself (its root among them) are made again; no others (audit 7, B7-m1).
@@ -875,6 +900,8 @@ public actor OperationJournal {
                 if !companion { report.restored += 1 }
                 report.done += 1
                 return true
+            case let .metadata(path, before, after, made):
+                return rewrite(path, with: after, again: (before, made), entry: &entry, report: &report)
             case let .trash(original, _):
                 guard fm.fileExists(atPath: original) else { return true }
                 guard isSame(original, in: entry) else {
@@ -907,6 +934,7 @@ public actor OperationJournal {
                 || !fm.fileExists(atPath: URL(fileURLWithPath: from).deletingLastPathComponent().path)
         case let .clone(_, to, _): !fm.fileExists(atPath: URL(fileURLWithPath: to).deletingLastPathComponent().path)
         case let .trash(original, _): !fm.fileExists(atPath: URL(fileURLWithPath: original).deletingLastPathComponent().path)
+        case let .metadata(path, _, _, _): !fm.fileExists(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path)
         case .makeFolder: false
         }
     }
@@ -923,6 +951,7 @@ public actor OperationJournal {
             switch step {
             case let .move(from, _, _, _), let .clone(from, _, _): from
             case let .trash(original, _): original
+            case let .metadata(path, _, _, _): path
             case .makeFolder: nil
             }
         }
@@ -1056,6 +1085,8 @@ public actor OperationJournal {
                 : changed.count == 1 ? "1 file in \(target.lastPathComponent) changed or was added since, so it was kept"
                     : "\(changed.count) files in \(target.lastPathComponent) changed or were added since, so they were kept")
             return false
+        case let .metadata(path, before, _, made):
+            return rewrite(path, with: before, removing: made, entry: &entry, report: &report)
         case let .trash(original, trashed):
             let name = URL(fileURLWithPath: original).lastPathComponent
             // The item this change put in the Trash, not another one trashed later under that name (audit 9, B9-M2).

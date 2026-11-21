@@ -60,6 +60,14 @@ public enum MediaFactsReader {
             facts.latitude = (gps[kCGImagePropertyGPSLatitudeRef] as? String) == "S" ? -lat : lat
             facts.longitude = (gps[kCGImagePropertyGPSLongitudeRef] as? String) == "W" ? -lon : lon
         }
+        // Stars and keywords (R-4507): XMP first, IPTC as older writers left them.
+        let iptc = props[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
+        let metadata = CGImageSourceCopyMetadataAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil)
+        facts.rating = metadata.flatMap { MetadataWriter.rating(in: $0) }
+            ?? (iptc[kCGImagePropertyIPTCStarRating] as? Int).flatMap { $0 > 0 ? min($0, 5) : nil }
+        let words = metadata.flatMap { MetadataWriter.strings(in: $0, path: "dc:subject") }
+            ?? iptc[kCGImagePropertyIPTCKeywords] as? [String]
+        facts.keywords = words?.isEmpty == false ? words : nil
         return facts
     }
 

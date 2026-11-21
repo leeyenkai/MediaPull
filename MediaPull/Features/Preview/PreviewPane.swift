@@ -339,6 +339,7 @@ struct FileDetails: View {
             VStack(alignment: .leading, spacing: 14) {
                 InfoGrid(rows: rows)
                 if let recorded { recordedSections(recorded) }
+                MetadataEditSection(model: model, file: file)
                 if let scan = duplicates ?? model.library.duplicateScan as DuplicateScan?, let group = scan.group(for: file),
                    let report = scan.report
                 {

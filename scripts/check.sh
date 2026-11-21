@@ -181,6 +181,12 @@ else
     NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-formats 2>&1 \
       | grep -E "formats: (PASS|FAIL)" | tee /dev/stderr | grep -q "formats: PASS" || FAILED=1
   fi
+  # Metadata edits, offline (section 45).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-edits 2>&1 \
+      | grep -E "edits: (PASS|FAIL)" | tee /dev/stderr | grep -q "edits: PASS" || FAILED=1
+  fi
   # Devices with a stand-in iPhone and a simulated Android phone, offline (section 41).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
   if [[ -x "$APP" ]]; then

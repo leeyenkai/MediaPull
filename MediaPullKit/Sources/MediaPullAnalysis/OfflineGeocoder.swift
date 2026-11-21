@@ -80,6 +80,22 @@ public final class OfflineGeocoder: Sendable {
         return PlaceName(city: p.name, region: p.region.isEmpty ? nil : p.region, country: p.country)
     }
 
+    /// Places whose name starts with `text` (any case or accent), largest first: to set a photo's location without a map
+    /// or any online search (R-4508, D-59).
+    public func search(_ text: String, limit: Int = 8) -> [(place: PlaceName, latitude: Double, longitude: Double)] {
+        let wanted = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).trimmingCharacters(in: .whitespaces)
+        guard wanted.count >= 2 else { return [] }
+        var found: [Place] = []
+        for place in places where place.name.count >= wanted.count {
+            if place.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).hasPrefix(wanted) {
+                found.append(place)
+            }
+        }
+        return found.sorted { $0.population > $1.population }.prefix(limit).map {
+            (PlaceName(city: $0.name, region: $0.region.isEmpty ? nil : $0.region, country: $0.country), Double($0.lat), Double($0.lon))
+        }
+    }
+
     public var count: Int {
         places.count
     }

@@ -251,6 +251,14 @@ change as the code.
 | R-4402 | person | `MapClusters.clusters`, `LocationClusterMap` | `testPinsJoinWhenZoomedOutAndSplitWhenZoomedIn` | Clustering tested; the live map loads Apple's images, so its look and Select Area need a person |
 | R-4403 | built | `Timeline.buckets`, `Timeline.scale`, `LibraryQuery.events` | `testTimelineBucketsKeepGaps` | Dragging across the strip needs a person |
 | R-4404 | person | `OrganiseMapPane` | none | Choosing a pin, an area, a range or an event selects in the pane; needs a person |
+| R-4501 | built | `MetadataEdit`, `OperationJournal.editMetadata`, `WindowModel.editablePhotos` | `testEditsApplyToCurrentValues`, `--selftest-edits` | Photos only; videos, audio and Live Photo clips wait for spike S1 |
+| R-4502 | built | `MetadataWriter.writeCopy`, `MetadataWriter.samePicture`, `MetadataWriter.xmpData`, `OperationJournal.place` | `testJPEGAndHEICAreWrittenInPlaceLosslesslyAndBack`, `testOtherFormatsAndRawPairsUseOneXMPAndUndoTrashesAMadeOne`, `testXMPKeepsWhatElseItHoldsAndLiesOverTheFile` | A real iPhone portrait HEIC kept pixels, gain maps, depth, mattes and maker notes (D-125) |
+| R-4503 | built | `OperationJournal.putInPlace`, `OperationJournal.carryAttributes`, `OperationJournal.settleSwaps`, `OperationJournal.updateMetadataChecksum` | `testAnEditReplacesThePhotoKeepingItsAttributesAndUndoAndRedoWriteTheValues`, `testAnEditStoppedPartWayIsSettled` | The swap without RENAME_SWAP (exFAT) is the hidden-name path; not run on a card here |
+| R-4504 | built | `OperationJournal.editMetadata`, `MetadataEditSection` | `testPostFilesKeepTheirDateAndTheirChecksumFollows` | |
+| R-4505 | built | `JournalStep.metadata`, `OperationJournal.rewrite` | `testAnEditReplacesThePhotoKeepingItsAttributesAndUndoAndRedoWriteTheValues`, `--selftest-edits` | |
+| R-4506 | built | `AnalysisStore.rekey`, `AnalysisService.followEdit`, `AnalysisService.beginEdit` | `--selftest-edits` | The record, faces and vectors are copied; facts are read again |
+| R-4507 | built | `MediaFacts.rating`, `LibraryFilter.minRating`, `LibrarySort.rating`, `MediaFacts.applying` | `--selftest-edits` | Keywords also match search |
+| R-4508 | person | `WindowModel.metadataMenuItems`, `MetadataEditSection`, `LocationPicker`, `OfflineGeocoder.search` | `--selftest-edits` | The menus, the Edit section and the map picker need a person |
 | R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
 | R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
 | R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |

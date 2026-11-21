@@ -82,6 +82,11 @@ nonisolated enum MediaListing {
                 entry.unit = unit.kind
                 entry.unitMembers = unit.members
             }
+            // Its `.xmp`, whose values lie over the file's (R-4502); one look, whatever the case of its extension on most disks.
+            if format.kind == .image {
+                let xmp = url.deletingPathExtension().appendingPathExtension("xmp")
+                if fm.fileExists(atPath: xmp.path) { entry.xmp = xmp }
+            }
             entries.append(entry)
         }
         return entries

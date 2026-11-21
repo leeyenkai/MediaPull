@@ -51,6 +51,10 @@ final class AnalysisService {
     @ObservationIgnored private var scheduled: Task<Void, Never>?
     @ObservationIgnored private var rescanRequested = false
     @ObservationIgnored private var job: Job?
+    /// Files a metadata edit is writing: no scan reads them until their results have followed them (R-4506).
+    @ObservationIgnored private var editing: Set<String> = []
+    /// `.xmp` values by the `.xmp`'s path, with its date then (R-4502).
+    @ObservationIgnored private var xmpCache: [String: (modified: Date, values: MetadataValues)] = [:]
     @ObservationIgnored private lazy var watcher = FolderWatcher { [weak self] paths in self?.foldersChanged(paths) }
     /// Extra folders to analyse and watch: folders open in Organise.
     @ObservationIgnored var extraFolders: Set<String> = [] {
@@ -235,8 +239,9 @@ final class AnalysisService {
         let volumes = app.driveCenter.volumes.snapshot
         scanTask = Task { [weak self] in
             let skip = self?.noPicture ?? []
+            let editing = self?.editing ?? []
             var (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
-                                                   noPicture: skip, keep: keep, holding: holding, volumes: volumes)
+                                                   noPicture: skip, keep: keep, holding: holding, volumes: volumes, editing: editing)
             // Files MediaPull moved to the Trash that Undo can still put back keep their faces and corrections until the
             // Trash lets them go (audit 5, B5-M3).
             var held = Set<String>()
@@ -264,7 +269,11 @@ final class AnalysisService {
             var iterator = work.makeIterator()
             await withTaskGroup(of: (path: String, faces: Int, noPicture: Bool).self) { group in
                 func next() async -> Bool {
-                    guard let item = iterator.next() else { return false }
+                    var candidate = iterator.next()
+                    while let item = candidate, await self.isEditing(item.url.path) {
+                        candidate = iterator.next()
+                    }
+                    guard let item = candidate else { return false }
                     await self.waitWhilePaused()
                     if Task.isCancelled {
                         return false
@@ -325,7 +334,7 @@ final class AnalysisService {
     @concurrent
     private static func findWork(folders: [URL], store: AnalysisStore, wantFaces: Bool, embeddings: Bool,
                                  noPicture: Set<String>, keep: [String], holding: [String],
-                                 volumes: [String: Set<String>]) async -> ([Work], [String])
+                                 volumes: [String: Set<String>], editing: Set<String>) async -> ([Work], [String])
     {
         var files: [Work] = []
         for folder in folders {
@@ -340,7 +349,7 @@ final class AnalysisService {
         let states = await store.states(for: paths)
         var work: [Work] = []
         // A file kept only in iCloud is on the list (so it is not taken for deleted) but not read: reading downloads it.
-        for file in files where !FileFlags.isDataless(file.url) {
+        for file in files where !FileFlags.isDataless(file.url) && !editing.contains(file.url.path) {
             guard let state = states[file.url.path], state.size == file.size, abs(state.modified.timeIntervalSince(file.modified)) < 1,
                   state.version == AnalysisRecord.currentVersion else { work.append(file); continue }
             if (state.factsVersion ?? 0) < AnalysisRecord.currentFactsVersion {
@@ -365,7 +374,7 @@ final class AnalysisService {
         let known = await store.allPaths().keys
         let onDisk = Set(paths)
         let gone = known.filter { path in
-            guard !onDisk.contains(path) else { return false }
+            guard !onDisk.contains(path), !editing.contains(path) else { return false }
             if reachable.contains(where: { path.hasPrefix($0.path + "/") }) { return true }
             if unreachable.contains(where: { path.hasPrefix($0.path + "/") }) { return false }
             if holding.contains(where: { path.hasPrefix($0 + "/") }) { return false }
@@ -476,15 +485,120 @@ final class AnalysisService {
 
     // MARK: Answers for the views
 
-    /// Adds analysis results to listed files.
+    /// Adds analysis results to listed files, with the values of a `.xmp` beside a file over its own (R-4502).
     func attach(_ entries: [MediaEntry]) async -> [MediaEntry] {
         guard let store, !entries.isEmpty else { return entries }
         let records = await store.records(for: entries.map(\.path))
+        let overlays = await xmpValues(entries.compactMap(\.xmp))
+        let geocoder = analyzer?.geocoder
         return entries.map { entry in
             var e = entry
             e.record = records[entry.path]
+            if var record = e.record, let xmp = entry.xmp, let values = overlays[xmp.path] {
+                let facts = record.facts.applying(values)
+                if facts.latitude != record.facts.latitude || facts.longitude != record.facts.longitude {
+                    record.place = facts.latitude.flatMap { lat in
+                        facts.longitude.flatMap { geocoder?.place(latitude: lat, longitude: $0) }
+                    }
+                }
+                record.facts = facts
+                e.record = record
+            }
             return e
         }
+    }
+
+    /// The values of these `.xmp` files, read off the main actor when they are new or changed.
+    private func xmpValues(_ files: [URL]) async -> [String: MetadataValues] {
+        guard !files.isEmpty else { return [:] }
+        let known = xmpCache
+        let read = await Task.detached(priority: .userInitiated) { () -> [String: (modified: Date, values: MetadataValues)] in
+            var out: [String: (modified: Date, values: MetadataValues)] = [:]
+            for file in files {
+                guard let date = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date else {
+                    continue
+                }
+                if let cached = known[file.path], cached.modified == date {
+                    out[file.path] = cached
+                } else if let values = MetadataWriter.values(ofXMPAt: file) {
+                    out[file.path] = (date, values)
+                }
+            }
+            return out
+        }.value
+        for (path, value) in read {
+            xmpCache[path] = value
+        }
+        return read.mapValues(\.values)
+    }
+
+    /// Places from the bundled list for a typed name (R-4508); empty while the models are loading.
+    func searchPlaces(_ text: String) async -> [(place: PlaceName, latitude: Double, longitude: Double)] {
+        guard let geocoder = analyzer?.geocoder else { return [] }
+        return await Task.detached(priority: .userInitiated) { geocoder.search(text) }.value
+    }
+
+    /// The place name for a position, from the bundled list.
+    func placeName(latitude: Double, longitude: Double) -> PlaceName? {
+        analyzer?.geocoder?.place(latitude: latitude, longitude: longitude)
+    }
+
+    private func isEditing(_ path: String) -> Bool {
+        editing.contains(path)
+    }
+
+    /// A metadata edit is about to write these files: scans leave them alone until `followEdit` (R-4506).
+    func beginEdit(_ paths: [String]) {
+        editing.formUnion(paths)
+    }
+
+    /// After a metadata edit, Undo or Redo: each file written in place keeps its results, faces, people and corrections
+    /// at its new content (copied from `previous`, its content before), and its facts are read again (R-4506, D-126).
+    func followEdit(_ rewritten: [RewrittenFile], previous: [String: FileState], editing paths: [String]) async {
+        defer {
+            editing.subtract(paths)
+            revision += 1
+        }
+        guard let store else { return }
+        for file in rewritten {
+            if let old = previous[file.path]?.sha256, old != file.sha256 {
+                let pairs = await store.rekey(from: old, to: file.sha256)
+                if let faceVectors, !pairs.isEmpty {
+                    var rows: [String: Int] = [:]
+                    for pair in pairs {
+                        if let vector = await faceVectors.vector(pair.old), let row = await faceVectors.put(pair.new, vector) {
+                            rows[pair.new] = row
+                        }
+                    }
+                    await store.setFaceRows(rows)
+                }
+                if let imageVectors, let vector = await imageVectors.vector(old) {
+                    await imageVectors.put(file.sha256, vector)
+                }
+            }
+            await store.setPath(file.path, sha256: file.sha256, size: file.size, modified: file.modified)
+            if let analyzer, let record = await store.record(sha256: file.sha256),
+               (record.factsVersion ?? 0) < AnalysisRecord.currentFactsVersion
+            {
+                await store.save(await analyzer.refreshFacts(URL(fileURLWithPath: file.path), record: record))
+            }
+        }
+        if !rewritten.isEmpty { await refreshPeople() }
+    }
+
+    /// What the store knows of these paths now, kept only where it is still the file on disk (its size and date), so an
+    /// edit carries over results that belong to the file.
+    func currentStates(_ paths: [String]) async -> [String: FileState] {
+        guard let store, !paths.isEmpty else { return [:] }
+        let states = await store.states(for: paths)
+        return await Task.detached(priority: .userInitiated) {
+            states.filter { path, state in
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                      let size = (attributes[.size] as? NSNumber)?.int64Value, let date = attributes[.modificationDate] as? Date
+                else { return false }
+                return size == state.size && abs(date.timeIntervalSince(state.modified)) < 1
+            }
+        }.value
     }
 
     /// Similarity of each file to a free-text query (R-3704).

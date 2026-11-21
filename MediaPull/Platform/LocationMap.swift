@@ -33,6 +33,52 @@ struct LocationMap: View {
     }
 }
 
+/// Choosing where photos were taken (R-4508): a click on the map sets the pin; Use This Place hands it back. Drawn only
+/// after the person allows maps, as `LocationMap` is (D-110); nothing is searched.
+struct LocationPicker: View {
+    var onPick: (Double, Double) -> Void
+    var onCancel: () -> Void
+    @State private var position: MapCameraPosition
+    @State private var chosen: CLLocationCoordinate2D?
+
+    init(latitude: Double?, longitude: Double?, onPick: @escaping (Double, Double) -> Void, onCancel: @escaping () -> Void) {
+        self.onPick = onPick
+        self.onCancel = onCancel
+        if let latitude, let longitude {
+            let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            _position = State(initialValue: .region(MKCoordinateRegion(center: center,
+                                                                       span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2))))
+            _chosen = State(initialValue: center)
+        } else {
+            _position = State(initialValue: .automatic)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            MapReader { proxy in
+                Map(position: $position, interactionModes: [.pan, .zoom]) {
+                    if let chosen { Marker("", coordinate: chosen) }
+                }
+                .mapStyle(.standard(pointsOfInterest: .excludingAll))
+                .onTapGesture { point in
+                    if let coordinate = proxy.convert(point, from: .local) { chosen = coordinate }
+                }
+            }
+            .frame(minHeight: 220)
+            HStack {
+                Text(chosen.map { String(format: "%.5f, %.5f", $0.latitude, $0.longitude) } ?? "Click the map where they were taken.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Use This Place") { if let chosen { onPick(chosen.latitude, chosen.longitude) } }
+                    .disabled(chosen == nil)
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
 /// Where many files were taken (R-4402): pins clustered by MediaPull's own grid as the map moves, a count on each, and an
 /// area drawn with Select Area. Drawn only after the person allows maps, as `LocationMap` is (D-110); nothing is searched.
 struct LocationClusterMap: View {

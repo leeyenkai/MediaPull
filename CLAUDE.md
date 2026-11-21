@@ -83,8 +83,9 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   video and gallery downloads, never redirected), `--selftest-details` (a photo's camera, date and place, maps off; add
   `--selftest-map` to load the map; also Organise's duplicates and Details tab), `--selftest-profile` (offline: Profile, Channel,
   Timeline and Board views), `--selftest-devices` (offline: a stand-in iPhone and a simulated Android phone, browse and import),
-  `--selftest-formats` (offline: RAW+JPEG and Live Photo units, .hif, tagged audio, a post kept together,
-  `--selftest-drives <mount>` (an exFAT image check.sh attaches: a camera card imported, a pair moved and undone, Eject))
+  `--selftest-formats` (offline: RAW+JPEG and Live Photo units, .hif, tagged audio, a post kept together),
+  `--selftest-edits` (offline: a rating written into a HEIC losslessly with its analysis kept, a RAW pair's `.xmp`, a
+  date shift, the Rating filter and Undo), `--selftest-drives <mount>` (an exFAT image check.sh attaches: a camera card imported, a pair moved and undone, Eject))
   (theme and layout are restored afterwards).
 
 ## Rules
@@ -151,6 +152,11 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   folders; only phones and cameras that connect as devices are read-only.
 - How real Android phones in File transfer mode are handed over is settled by `docs/spikes/device-access.md` (run
   `swift docs/spikes/device-probe.swift usb|icc` with a phone plugged in); record the results there and in D-116.
+
+- Metadata edits (section 45, D-125, D-126) write JPEG and HEIC in place only through `MetadataWriter.writeCopy`, which
+  proves the same picture and the values read back; everything else, and any file with a `.xmp`, uses the `.xmp`. A
+  file is replaced only by `OperationJournal.putInPlace`. An in-place edit changes the checksum, so analysis must follow
+  it (`AnalysisService.beginEdit` / `followEdit`); never let a scan read a file mid-edit.
 
 ## Environment notes
 

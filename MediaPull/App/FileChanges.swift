@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MediaPullCore
 import MediaPullLibrary
 
 /// Every change MediaPull makes to files in place (Library and Organise: rename, move, copy in, new folder, Move to Trash,
@@ -34,6 +35,29 @@ extension AppModel {
         await followMoves([(from: original.path, to: placed)], changedBy: entry.id)
         fileChangeRevision += 1
         return (entry, URL(fileURLWithPath: placed))
+    }
+
+    /// A metadata edit (section 45) as one journaled change ⌘Z takes back: analysis follows each file written in place to
+    /// its new content (R-4506), and listings read `.xmp` files again.
+    func editMetadata(_ items: [URL], _ edit: MetadataEdit, title: String) async -> MetadataEditResult {
+        let files = await Task.detached(priority: .userInitiated) {
+            items.flatMap { item in
+                [item] + UnitFiles.companions(of: item).filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .image }
+            }.map(\.path)
+        }.value
+        analysis.beginEdit(files)
+        let previous = await analysis.currentStates(files)
+        let result = await journal.editMetadata(items, edit, title: title)
+        await analysis.followEdit(result.rewritten, previous: previous, editing: files)
+        fileChangeRevision += 1
+        return result
+    }
+
+    /// The files metadata steps write, so analysis waits for them and follows them (R-4506).
+    private static func editedPaths(_ steps: [JournalStep]) -> [String] {
+        steps.compactMap { step in
+            if case let .metadata(path, _, _, _) = step, !path.lowercased().hasSuffix(".xmp") { path } else { nil }
+        }
     }
 
     /// Folders gone from where windows show or save to (trashed, or removed by Undo): the save folder and Organise panes
@@ -99,7 +123,11 @@ extension AppModel {
         // ⌘Z and the History's Undo can both reach an entry: the second one does nothing.
         guard let entry = await journal.entry(id), !entry.undone else { return nil }
         if let refusal = libraryFolderRefusal(entry.steps) { return refusal }
+        let edited = Self.editedPaths(entry.steps)
+        analysis.beginEdit(edited)
+        let previous = await analysis.currentStates(edited)
         let report = await journal.undo(id, progress: progress)
+        await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await followMoves(report.moves, changedBy: id)
         foldersGone(foldersRemoved(by: entry.steps))
         await refreshAfterTrash(entry.steps, moved: report.moves)
@@ -110,7 +138,11 @@ extension AppModel {
     func redoChange(_ id: UUID, progress: (@Sendable (Double) -> Void)? = nil) async -> UndoReport {
         let before = await journal.entry(id)
         if let entry = before, let refusal = libraryFolderRefusal(entry.undoneSteps ?? []) { return refusal }
+        let edited = Self.editedPaths(before?.undoneSteps ?? [])
+        analysis.beginEdit(edited)
+        let previous = await analysis.currentStates(edited)
         let report = await journal.redo(id, progress: progress)
+        await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await followMoves(report.moves, changedBy: id)
         if let entry = await journal.entry(id) {
             foldersGone(foldersRemoved(by: entry.steps))
@@ -135,6 +167,7 @@ extension AppModel {
             // A folder made or copied that became a library folder is never removed or trashed by Undo (B10-m2).
             case let .clone(_, to, _): holdsRoot(to)
             case let .makeFolder(path): holdsRoot(path)
+            case .metadata: false
             }
         }
         guard touches else { return nil }

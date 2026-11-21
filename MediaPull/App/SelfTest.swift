@@ -132,6 +132,11 @@ final class SelfTestRunner {
             quit()
             return
         }
+        if CommandLine.arguments.contains("--selftest-edits") {
+            await exerciseEdits(out: out)
+            quit()
+            return
+        }
         if CommandLine.arguments.contains("--selftest-formats") {
             await exerciseFormats(library: library, out: out)
             quit()
@@ -1387,6 +1392,102 @@ final class SelfTestRunner {
         organise.pending = nil
         model.section = .collect
         note("formats: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Metadata edits (section 45), offline: a rating written into a HEIC with its picture unchanged and its analysis kept,
+    /// a keyword in a RAW pair's `.xmp` shown over the files, a date shift, the Rating filter, and ⌘Z taking each back.
+    private func exerciseEdits(out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("edits: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        let folder = out.appendingPathComponent("Edits", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        func picture(_ name: String, type: UTType, colour: Int) {
+            guard let image = NSImage(data: Self.jpeg(colour)).flatMap({ $0.cgImage(forProposedRect: nil, context: nil, hints: nil) }),
+                  let destination = CGImageDestinationCreateWithURL(folder.appendingPathComponent(name) as CFURL,
+                                                                     type.identifier as CFString, 1, nil) else { return }
+            let exif: [CFString: Any] = [kCGImagePropertyExifDateTimeOriginal: "2020:01:02 03:04:05",
+                                         kCGImagePropertyExifOffsetTimeOriginal: "+01:00"]
+            CGImageDestinationAddImage(destination, image, [kCGImagePropertyExifDictionary: exif] as CFDictionary)
+            CGImageDestinationFinalize(destination)
+        }
+        picture("IMG_1.HEIC", type: .heic, colour: 1)
+        picture("DSC_2.NEF", type: .tiff, colour: 2)
+        picture("DSC_2.JPG", type: .jpeg, colour: 2)
+        let made = folder.appendingPathComponent("IMG_1.HEIC")
+        let original = out.appendingPathComponent("IMG_1-original.HEIC")
+        try? fm.copyItem(at: made, to: original)
+        let jpegBytes = try? Data(contentsOf: folder.appendingPathComponent("DSC_2.JPG"))
+
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        let organise = model.organise, pane = organise.source
+        organise.open(folder)
+        await waitUntil(timeout: 60) { !pane.loading && !pane.filtering && pane.entries.count == 2 }
+        app.analysis.schedule(after: .milliseconds(100))
+        await waitUntil(timeout: 120) { pane.entries.allSatisfy { $0.record != nil } }
+        func entry(_ name: String) -> MediaEntry? { pane.entries.first { $0.name == name } }
+        // As the panes give them (a temporary folder is under /var, which is /private/var), as the person chooses them.
+        let heic = entry("IMG_1.HEIC")?.url ?? made
+        let raw = entry("DSC_2.NEF")?.url ?? folder.appendingPathComponent("DSC_2.NEF")
+        let shaBefore = (try? FileHasher.sha256(of: heic)) ?? ""
+        let analysedAt = await app.analysis.store?.record(sha256: shaBefore)?.analysedAt
+        check(analysedAt != nil, "the photo was analysed first")
+
+        func edit(_ files: [URL], _ change: MetadataEdit, until condition: @escaping () -> Bool) async {
+            let before = organise.history.count
+            model.editMetadata(files, change)
+            await waitUntil(timeout: 60) { organise.history.count > before }
+            await waitUntil(timeout: 60) { !pane.loading && !pane.filtering && condition() }
+        }
+
+        await edit([heic], .rating(4)) { entry("IMG_1.HEIC")?.facts?.rating == 4 }
+        check(MetadataWriter.values(of: heic).rating == 4, "the rating is in the HEIC itself")
+        check(MetadataWriter.samePicture(original, heic), "its picture is unchanged")
+        let shaAfter = (try? FileHasher.sha256(of: heic)) ?? ""
+        let carried = await app.analysis.store?.record(sha256: shaAfter)
+        check(shaAfter != shaBefore && carried?.analysedAt == analysedAt, "its analysis followed it without running again")
+        check(entry("IMG_1.HEIC")?.facts?.rating == 4, "the pane shows its stars")
+        check(((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).allSatisfy { !$0.hasPrefix(".mediapull-edit-") },
+              "nothing hidden is left beside it")
+
+        await edit([raw], .keywords(add: ["birds"], remove: [])) { entry("DSC_2.NEF")?.facts?.keywords == ["birds"] }
+        let xmp = folder.appendingPathComponent("DSC_2.xmp")
+        check(MetadataWriter.values(ofXMPAt: xmp)?.keywords == ["birds"], "the RAW pair's keyword is in its .xmp")
+        check((try? Data(contentsOf: folder.appendingPathComponent("DSC_2.JPG"))) == jpegBytes, "the pair's JPEG is untouched")
+        check(entry("DSC_2.NEF")?.facts?.keywords == ["birds"], "the pane shows the .xmp's keyword over the files")
+
+        let takenBefore = entry("IMG_1.HEIC")?.facts?.captureDate
+        await edit([heic], .shiftDate(seconds: 3600)) {
+            entry("IMG_1.HEIC")?.facts?.captureDate != takenBefore
+        }
+        let takenAfter = entry("IMG_1.HEIC")?.facts?.captureDate
+        check(takenBefore.flatMap { before in takenAfter.map { $0.timeIntervalSince(before) == 3600 } } == true,
+              "the date moved by an hour (\(String(describing: takenAfter)))")
+
+        pane.query.filter.minRating = 4
+        await waitUntil(timeout: 30) { !pane.filtering && pane.shown.count == 1 }
+        check(pane.shown.map(\.name) == ["IMG_1.HEIC"], "the Rating filter keeps the rated photo (\(pane.shown.map(\.name)))")
+        pane.query.filter.minRating = nil
+
+        // ⌘Z, newest first: date, keyword, rating.
+        for _ in 0 ..< 3 {
+            guard let last = organise.history.first(where: { !$0.undone }) else { break }
+            organise.undo(last)
+            await waitUntil(timeout: 60) { organise.working == nil && organise.history.first { $0.id == last.id }?.undone == true }
+        }
+        let back = MetadataWriter.values(of: heic)
+        check(back.rating == nil && back.taken?.original == "2020:01:02 03:04:05", "Undo wrote the old rating and date back")
+        check(!fm.fileExists(atPath: xmp.path), "Undo sent the .xmp it made to the Trash")
+        check(MetadataWriter.samePicture(original, heic), "the picture is still the same")
+        await waitUntil(timeout: 60) { entry("IMG_1.HEIC")?.facts?.rating == nil && entry("DSC_2.NEF")?.facts?.keywords == nil }
+        check(entry("IMG_1.HEIC")?.record?.analysedAt == analysedAt, "the analysis is still the first one")
+        model.section = .collect
+        note("edits: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
     }
 
     /// A short tagged AAC file, made with the system's encoder (no ffmpeg needed).

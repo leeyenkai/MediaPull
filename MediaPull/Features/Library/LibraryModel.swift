@@ -855,6 +855,7 @@ final class LibraryModel: MediaGridOwner {
 
     func gridSelectionChanged(_ ids: Set<String>) {
         selection = ids
+        window?.editTargets = nil
         if ids.count == 1, let id = ids.first, let url = fileURL(id) { window?.showInPreview(.file(url)) }
     }
 
@@ -941,6 +942,14 @@ final class LibraryModel: MediaGridOwner {
            let copies = duplicateScan.copiesMenuItem(for: file.url, reveal: { [weak self] in self?.reveal($0) })
         {
             menu.addItem(copies)
+        }
+        if let window {
+            for item in window.metadataMenuItems(for: chosen.map(\.url), showDetails: { [weak window] photos in
+                window?.showPreview = true
+                window?.showInPreview(.file(photos[0]))
+            }) {
+                menu.addItem(item)
+            }
         }
         if chosen.count == 1, let file = chosen.first {
             menu.addItem(ActionMenuItem(

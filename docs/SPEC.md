@@ -81,6 +81,7 @@ Decisions that changed during implementation are D-13 and D-24 to D-56 (and D-68
 42. Formats, units and posts
 43. Drives
 44. Map and Timeline
+45. Metadata edits
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -990,7 +991,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1702** Library roots are added with "Add Folder…" (an open panel) and stored as bookmarks (`LibraryRoot`). Each root has a default layout. Roots can be renamed (display name only), removed from the list (files untouched) and revealed in Finder.
 
-**R-1703** Folder operations: New Folder (⇧⌘N), Rename (Return), Move to Trash (⌘⌫). MediaPull never deletes permanently. Renaming or moving a media file renames or moves its sidecar with it. Moving to Trash moves the sidecar too.
+**R-1703** Folder operations: New Folder (⇧⌘N), Rename (Return), Move to Trash (⌘⌫). MediaPull never deletes permanently (the one exception: a metadata edit replaces a file's bytes once its picture is proven the same, R-4503). Renaming or moving a media file renames or moves its sidecar with it. Moving to Trash moves the sidecar too.
 
 **R-1704** The pane updates live when files change on disk (FSEvents, recursive per library root), including changes made in Finder. Up to version 1.5 only the selected folder was watched; version 1.6 builds the FSEvents watch that analysis needs (R-3603).
 
@@ -1328,6 +1329,8 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-122 | MediaPull is presented as collecting, bringing in and organising (§1.1). Instagram posts stay together in Organise (R-4208, R-4209): sorts place a whole post, copies inside an account folder stop posing as the post, Trash Extra Copies spares a post's own pictures, Find Missing does not fetch items moved elsewhere in the library, and grids show "2 of 5" | Requested; an audit found sorts by Subject or Person splitting carousels, copies duplicating a post's items in Profile views, and moved items downloaded again |
 | D-123 | Drives and camera cards appear by themselves in Organise and, with a DCIM folder, in Devices (section 43). They are ordinary folders, read and written like any other, so §5.1's read-only rule now covers only phones and cameras that connect as devices. Volumes are known by UUID (D-91), which exFAT cards have and keep across unplugging (spike S3) | Requested: DSLR cards and external drives should be organised directly; an audit found two cards with one name could drop each other's analysis and people |
 | D-124 | Organise gains a Map & Timeline pane (section 44): an optional pane rather than a view mode, so the grid stays beside it, following the Source or Target pane last worked in. Pins are clustered by MediaPull's own grid (no map search), and the map stays behind the existing opt-in (D-110). The timeline is drawn by MediaPull itself; no charting framework is added | Requested: see where and when photos were taken, and pick them from there to organise |
+| D-125 | Metadata edits (section 45) write JPEG and HEIC in place, losslessly, through ImageIO's copy of the image data with a full copy of the file's metadata and removals made explicitly; measured (2026-11-21): a real iPhone portrait HEIC kept its pixels, gain maps, depth, mattes and all 58 maker-note entries, while PNG and TIFF dropped tags on that route, so they and every other format use a `.xmp` beside the file. Each write is checked by decoding and reading back. The new version replaces the file by a name swap (or hidden names), and the old bytes are not kept (amends "nothing is deleted permanently" for this one case, as the person chose): Undo writes the old values back. Videos and audio wait for spike S1 | Requested: fix dates, places, ratings and keywords on the person's own photos, in the files, without re-encoding and without a second copy of every photo |
+| D-126 | An edit changes a file's checksum, which keys analysis (D-60), so the edit carries the results across: the record, its faces with their people and corrections, and their vectors are copied to the new checksum before the file is replaced (copied, not moved, so other copies keep theirs; pruning removes what no file holds), the facts are read again, and analysis does not pick the file up while the edit is under way. `.xmp` values are read per path when files are listed, never stored in the shared record, since copies share it | Otherwise every edit would rerun every model and drop the person's face corrections |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1506,7 +1509,7 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 - Metadata files (`<file>.json`) always move, rename and go to the Trash with their media.
 - Name collisions get a number (`name 2.jpg`); in Archive folders the number goes after the name so the date prefix stays first (R-1503, R-1504).
 - Reserved folder names (R-1505) get a leading underscore, including folder names made from a person's name or a subject.
-- Nothing is ever deleted permanently.
+- Nothing is ever deleted permanently (except the old bytes of a metadata edit, R-4503).
 - A folder's layout is its library root's. A folder outside every root counts as Archive when it holds metadata files, otherwise as Plain.
 - Moves inside a library root keep MediaPull's records (archive entries, checksums, analysis) pointing at the new paths.
 
@@ -1613,6 +1616,26 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 **R-4403** The Timeline is a strip of bars, one per day, month or year (chosen to fit the span shown, or by the person), each as tall as its number of files; dragging across the strip selects the files in that range. Below it, the events (R-3702: files taken close together, with their place) are listed newest first with their count; choosing an event selects its files.
 
 **R-4404** Selecting in the Map or Timeline is selecting in the pane: the files are ready to sort, move, copy, rename, look at or send to the Trash there.
+
+---
+
+## 45. Metadata edits
+
+**R-4501** *(D-125)* The person can change a photo's **rating** (no rating, or one to five stars), its **keywords**, its **date taken** (shifted by days, hours and minutes, or given a time zone while its clock time stays) and its **location** (set on the map, set to a place from the bundled place list, or removed), for one file or many at once, in the Library and in Organise. A unit (R-4206) is changed as one: every member that holds the values gets them, or none does. Videos, audio and a Live Photo's clip keep their own values until spike S1 (`docs/spikes/media-rewrite.md`) settles how they are rewritten without touching their streams; until then their edits are not offered.
+
+**R-4502** Where the values are written: JPEG and HEIC/HEIF inside the file itself, and only when the new file is proven to hold the same picture: every image decodes to the same pixels, the same auxiliary images (gain maps, depth, mattes) and maker notes are there, and the new file reads back with exactly the values intended. Otherwise, always for camera RAW, PNG, TIFF, GIF, WebP, AVIF and JPEG XL, and for any file that already has a `.xmp` beside it, they are written in `<name>.xmp` beside the file (made, or updated keeping what else it holds); the members of a unit share its `.xmp`, so a RAW pair's JPEG is not rewritten. MediaPull reads a file's `.xmp` over the file's own values, and the `.xmp` travels with its file (R-4206). RAW files are never rewritten (R-4203).
+
+**R-4503** *(D-125)* Writing into a file: the new version is written beside it under a hidden name and checked (R-4502), then takes the file's place in one step where the drive can swap two names, else through hidden names, recorded so a stop part way is put right at the next launch. The old bytes are then removed: this is the one place MediaPull replaces a file without the Trash, and only once the picture is proven the same; Undo writes the old values back. Finder tags and other extended attributes, the creation date and the permissions are kept; the modification date becomes now. A metadata file's `sha256` follows the new content.
+
+**R-4504** A date shift or time zone is not offered for a file that has a MediaPull metadata file: its date is the post's (R-1504). Its rating, keywords and location can be changed.
+
+**R-4505** An edit of many files is one change, listed in History and taken back with ⌘Z: Undo writes back the values each file had before (the values only; the earlier bytes are not kept), Redo writes the new values again. A file changed or moved by something else since is left as it is and reported.
+
+**R-4506** *(D-126)* An edited file keeps its analysis: results, faces, people and corrections follow it to its new content, no learned model runs again, and its facts (R-4210) are read again. A copy elsewhere with the old content keeps its own results.
+
+**R-4507** Ratings and keywords are facts read from the file or its `.xmp` (XMP rating and subject, IPTC keywords). They show in a file's details; the filters offer **Rating** (at least one to five stars) and **Keywords**, and the sorts offer **Rating**, in the Library and in Organise.
+
+**R-4508** The context menu of a file in the Library and in Organise has **Rating** (No Rating, one to five stars) and **Edit Details**, which opens the Edit section of the file's details (Preview pane, Organise's Details tab): stars, keywords, a date shift or time zone, and the location (**Set on Map** once maps are allowed, R-514; otherwise a search of the bundled place list; **Remove Location**). No sheet opens (D-69). What cannot be changed for a file is shown with the reason.
 
 ---
 
