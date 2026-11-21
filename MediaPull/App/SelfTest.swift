@@ -1570,7 +1570,7 @@ final class SelfTestRunner {
             for index in recipe.layers.indices {
                 guard case var .text(style) = recipe.layers[index].kind else { continue }
                 if style.text == "The Title" { style.text = "The Post" }
-                if style.text.hasPrefix("First Name") { style.text = "Streep\nHanks" }
+                if style.text.hasPrefix("First Name") { style.text = "Mara Holt\nJonah Pike" }
                 recipe.layers[index].kind = .text(style)
             }
         }
