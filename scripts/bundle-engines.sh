@@ -63,9 +63,11 @@ lines = [
     f"yt-dlp {versions.get('yt_dlp')} (Unlicense): https://github.com/yt-dlp/yt-dlp and https://pypi.org/project/yt-dlp/",
     f"Python {versions.get('python')} (PSF): https://www.python.org/downloads/source/ (built by python-build-standalone)",
     f"ffmpeg {ffmpeg} (LGPL-2.1): https://ffmpeg.org/releases/ffmpeg-{ffmpeg}.tar.xz, configured by scripts/build-ffmpeg.sh",
-    f"LAME {lame} (LGPL-2.0), built into ffmpeg for MP3 output: "
-    f"https://downloads.sourceforge.net/project/lame/lame/{lame}/lame-{lame}.tar.gz",
 ]
+# LAME is part of the ffmpeg build only (audit 2026-11-21-4, C4-10).
+if ffmpeg != "not bundled":
+    lines.append(f"LAME {lame} (LGPL-2.0), built into ffmpeg for MP3 output: "
+                 f"https://downloads.sourceforge.net/project/lame/lame/{lame}/lame-{lame}.tar.gz")
 for name in ("requests", "urllib3", "idna", "charset_normalizer", "certifi"):
     lines.append(f"{name} {versions.get(name)}: https://pypi.org/project/{name.replace('_', '-')}/{versions.get(name)}/")
 lines += ["", "To ask for a copy of the exact sources used in this build, contact the person who gave you this copy of MediaPull."]

@@ -95,8 +95,9 @@ extension EditModel {
     }
 
     /// Writes the edited audio with the bundled ffmpeg (stream copy where only cuts are asked for), then places it.
-    static func exportAudio(_ url: URL, recipe: EditRecipe, into folder: URL,
-                            progress: @escaping @Sendable (Double) -> Void) async -> Result<URL, Error>
+    @concurrent
+    nonisolated static func exportAudio(_ url: URL, recipe: EditRecipe, into folder: URL,
+                                        progress: @escaping @Sendable (Double) -> Void) async -> Result<URL, Error>
     {
         guard let ffmpeg = await MainActor.run(body: { AppModel.shared.ffmpeg }) else {
             return .failure(FFmpegError.missing)
@@ -122,10 +123,8 @@ extension EditModel {
             let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
             progress(1)
             if let problem = placed.metadataProblem {
-                return .failure(CocoaError(.fileWriteUnknown, userInfo: [
-                    NSLocalizedDescriptionKey: "Exported “\(placed.url.lastPathComponent)”, but its metadata file could not be "
-                        + "written: \(problem)",
-                ]))
+                return .failure(ExportedWithProblem(url: placed.url, errorDescription: "Exported “\(placed.url.lastPathComponent)”, "
+                    + "but its metadata file could not be written: \(problem)"))
             }
             return .success(placed.url)
         } catch {
@@ -218,6 +217,8 @@ struct SoundTab: View {
             Text("Click the waveform to move the playhead; drag across it to select.").font(.caption).foregroundStyle(.secondary)
             if !edit.audioLengthKnown {
                 Text("Measuring the file…").font(.caption).foregroundStyle(.secondary)
+            } else if edit.preparingPlayback {
+                Text("Preparing to play…").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Button("Play Selection") { edit.playSelection() }
@@ -240,12 +241,15 @@ struct SoundTab: View {
                     if parts.count > 1 {
                         Button { edit.removePart(part) } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless)
+                            .disabled(!edit.audioLengthKnown)
                             .accessibilityLabel("Remove this part")
                             .help("Remove this part")
                     }
                 }
             }
-            Button("Keep All") { edit.resetCuts() }.controlSize(.small).disabled(edit.recipe?.timeline?.kept.isEmpty ?? true)
+            // Nothing is cut against the system's guess of the length (audit 2026-11-21-4, C4-4).
+            Button("Keep All") { edit.resetCuts() }.controlSize(.small)
+                .disabled(edit.recipe?.timeline?.kept.isEmpty ?? true || !edit.audioLengthKnown)
         }
         VStack(alignment: .leading, spacing: 8) {
             Text("Fades and Volume").font(.caption.weight(.semibold)).foregroundStyle(.secondary)

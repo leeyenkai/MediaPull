@@ -390,7 +390,15 @@ public actor AnalysisStore {
             let suffix = face.key.split(separator: "|", maxSplits: 1).last.map(String.init) ?? face.key
             let key = "\(new)|\(suffix)"
             let existing = #Predicate<FaceModel> { $0.key == key }
-            guard (try? modelContext.fetch(FetchDescriptor(predicate: existing)).first) == nil else { continue }
+            if let stale = try? modelContext.fetch(FetchDescriptor(predicate: existing)).first {
+                // The content is held already (an edit, Undo or Redo writes the same bytes again; those records go only
+                // when a scan prunes them): the people and corrections made since are what count (audit 2026-11-21-4,
+                // A4-2).
+                stale.personID = face.personID
+                stale.pinned = face.pinned
+                stale.rejected = face.rejected
+                continue
+            }
             let copy = FaceModel(key: key, sha256: new, vectorRow: face.vectorRow, quality: face.quality, pixelSize: face.pixelSize)
             copy.personID = face.personID
             copy.pinned = face.pinned

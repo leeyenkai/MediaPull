@@ -10,8 +10,9 @@ extension AppModel {
     func applyChange(_ plan: OrganisePlan, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> JournalEntry {
         var plan = plan
         plan.accountFolders = accountFolderList.map { URL(fileURLWithPath: $0.path, isDirectory: true) }
+        let inPlace = await recipes.inPlaceIDs()
         let entry = await journal.run(plan, progress: progress)
-        await followMoves(entry.moves, changedBy: entry.id)
+        await followMoves(entry.moves, changedBy: entry.id, recipesInPlace: inPlace)
         // A window's save folder or Organise folder that went to the Trash is left for the folder above (audit 4, B4-m2).
         let trashed = entry.steps.compactMap { step -> String? in
             if case let .trash(original, _) = step { original } else { nil }
@@ -30,9 +31,10 @@ extension AppModel {
     func replaceFile(_ original: URL, identity: String?, with edit: URL, named wanted: URL, metadata: Data?, title: String)
         async throws -> (entry: JournalEntry, url: URL)
     {
+        let inPlace = await recipes.inPlaceIDs()
         let entry = try await journal.replace(original, identity: identity, with: edit, named: wanted, metadata: metadata, title: title)
         let placed = entry.moves.last { !$0.to.hasSuffix(".json") }?.to ?? wanted.path
-        await followMoves([(from: original.path, to: placed)], changedBy: entry.id)
+        await followMoves([(from: original.path, to: placed)], changedBy: entry.id, recipesInPlace: inPlace)
         fileChangeRevision += 1
         return (entry, URL(fileURLWithPath: placed))
     }
@@ -56,6 +58,7 @@ extension AppModel {
         }
         analysis.forgetXMP(result.xmpWritten)
         await analysis.followEdit(result.rewritten, previous: previous, editing: files)
+        await recipes.refreshReferences(result.rewritten.map(\.path))
         fileChangeRevision += 1
         return result
     }
@@ -142,12 +145,14 @@ extension AppModel {
         let previous = await analysis.currentStates(edited)
         // Each file is followed as soon as it is replaced, as for the edit itself (D-126).
         let analysis = analysis
+        let inPlace = await recipes.inPlaceIDs()
         let report = await journal.undo(id, progress: progress) { file in
             Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: [], quietly: true) }
         }
         analysis.forgetXMP(Self.xmpPaths(entry.steps))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
-        await followMoves(report.moves, changedBy: id)
+        await recipes.refreshReferences(report.rewritten.map(\.path))
+        await followMoves(report.moves, changedBy: id, recipesInPlace: inPlace)
         foldersGone(foldersRemoved(by: entry.steps))
         await refreshAfterTrash(entry.steps, moved: report.moves)
         fileChangeRevision += 1
@@ -161,12 +166,14 @@ extension AppModel {
         analysis.beginEdit(edited)
         let previous = await analysis.currentStates(edited)
         let analysis = analysis
+        let inPlace = await recipes.inPlaceIDs()
         let report = await journal.redo(id, progress: progress) { file in
             Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: [], quietly: true) }
         }
         analysis.forgetXMP(Self.xmpPaths(before?.undoneSteps ?? []))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
-        await followMoves(report.moves, changedBy: id)
+        await recipes.refreshReferences(report.rewritten.map(\.path))
+        await followMoves(report.moves, changedBy: id, recipesInPlace: inPlace)
         if let entry = await journal.entry(id) {
             foldersGone(foldersRemoved(by: entry.steps))
             await refreshAfterTrash(entry.steps, moved: report.moves)
@@ -198,10 +205,12 @@ extension AppModel {
                 + "or Locate in its menu instead."], moves: [])
     }
 
-    private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID) async {
+    /// `recipesInPlace`: the recipes whose files were where they say before the change, so a move to another disk takes
+    /// only those along (audit 2026-11-21-4, B4-1).
+    private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID, recipesInPlace: Set<UUID>? = nil) async {
         guard !moves.isEmpty else { return }
         await analysis.noteMoves(moves)
-        await recipes.movePaths(moves)
+        await recipes.movePaths(moves, inPlaceBefore: recipesInPlace)
         await store?.moveArchivePaths(moves)
         await accountFolders.moveFolders(moves)
         // Queued and running jobs show where their folder is now (audit 6, B6-m8), once (audit 8, B8-m6).

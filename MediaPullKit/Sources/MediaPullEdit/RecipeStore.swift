@@ -56,16 +56,46 @@ public actor RecipeStore {
         FileManager.default.fileExists(atPath: recipe.source.path) && belongs(recipe, to: recipe.source.path)
     }
 
+    /// Where each recipe not in place now leads (nil: nowhere), worked out at most every few seconds: recipes are never
+    /// deleted, so a batch would otherwise look every one of them up for each file (audit 2026-11-21-4, B4-m3).
+    private var away: [UUID: String?]?
+    private var awayChecked = Date.distantPast
+
+    private func awayTargets() -> [UUID: String?] {
+        if let away, Date().timeIntervalSince(awayChecked) < 10 { return away }
+        var found: [UUID: String?] = [:]
+        for (id, recipe) in byID where !Self.inPlace(recipe) {
+            found[id] = recipe.source.reference.flatMap(Self.resolve)
+        }
+        away = found
+        awayChecked = Date()
+        return found
+    }
+
     /// Recipes whose file was moved or renamed outside MediaPull are brought to where their reference leads now. Only
     /// those not in place are looked up, and none is ever written over another.
     private func relocate(only target: String? = nil) {
-        for (id, recipe) in byID where !Self.inPlace(recipe) {
-            guard let reference = recipe.source.reference, let moved = Self.resolve(reference), moved != recipe.source.path,
-                  target == nil || moved == target else { continue }
-            var followed = recipe
+        for (id, leads) in awayTargets() {
+            guard let moved = leads, var followed = byID[id], moved != followed.source.path, target == nil || moved == target
+            else { continue }
             followed.source.path = moved
             byID[id] = followed
+            away?[id] = nil
             write(followed)
+        }
+    }
+
+    /// Files rewritten in place (a metadata edit swaps in a new file): their recipes take the new file's reference, so a
+    /// later rename in the Finder is still followed (audit 2026-11-21-4, B4-m1).
+    public func refreshReferences(_ paths: [String]) {
+        load()
+        let wanted = Set(paths.map(Self.key))
+        for (id, recipe) in byID where wanted.contains(recipe.source.path) && Self.belongs(recipe, to: recipe.source.path) {
+            guard let reference = Self.reference(recipe.source.path), reference != recipe.source.reference else { continue }
+            var updated = recipe
+            updated.source.reference = reference
+            byID[id] = updated
+            write(updated)
         }
     }
 
@@ -106,6 +136,7 @@ public actor RecipeStore {
         }
         recipe.modified = Date()
         byID[recipe.id] = recipe
+        away?[recipe.id] = nil
         return write(recipe)
     }
 
@@ -134,13 +165,22 @@ public actor RecipeStore {
     public func remove(id: UUID) {
         load()
         byID[id] = nil
+        away?[id] = nil
         try? FileManager.default.removeItem(at: url(for: id))
     }
 
-    /// Recipes follow files MediaPull moved or renamed (R-4602).
-    public func movePaths(_ moves: [(from: String, to: String)]) {
+    /// The recipes whose files are where they say (there, and the same file), asked just before MediaPull moves files.
+    public func inPlaceIDs() -> Set<UUID> {
+        load()
+        return Set(byID.filter { Self.inPlace($0.value) }.keys)
+    }
+
+    /// Recipes follow files MediaPull moved or renamed (R-4602). `inPlaceBefore`: `inPlaceIDs()` from before the moves,
+    /// which tells, on a move to another disk, the file's own recipe from one of another file once at that path.
+    public func movePaths(_ moves: [(from: String, to: String)], inPlaceBefore: Set<UUID>? = nil) {
         load()
         guard !moves.isEmpty else { return }
+        away = nil
         let remap = PathMoves(moves.map { (Self.key($0.from), Self.key($0.to)) })
         for (id, recipe) in byID {
             var moved = recipe
@@ -148,11 +188,11 @@ public actor RecipeStore {
             let path = recipe.source.path
             // As stored, or with links resolved (the journal records /private/var where a pane may show /var). A recipe of
             // another file once at that path stays where it was: on one disk the moved file is known by its reference or
-            // its creation date; to another disk neither survives, so the recipe goes with it.
+            // its creation date; to another disk neither survives, so whether it was in place before the move decides.
             if let destination = remap.destination(of: path)
                 ?? remap.destination(of: URL(fileURLWithPath: path).resolvingSymlinksInPath().path),
-                recipe.source.reference.flatMap(Self.resolve) == Self.key(destination) || Self.belongs(recipe, to: destination)
-                || Self.volume(path) != Self.volume(destination)
+                Self.follows(recipe, to: destination, crossesDisks: Self.volume(path) != Self.volume(destination),
+                             wasInPlace: inPlaceBefore?.contains(id) ?? true)
             {
                 moved.source.path = Self.key(destination)
                 // Moved to another disk, a file gets a new creation date: MediaPull moved it, so it is still this file.
@@ -170,6 +210,12 @@ public actor RecipeStore {
             byID[id] = moved
             if changed { write(moved) }
         }
+    }
+
+    /// Whether a recipe at a path MediaPull moved goes with the file now at `destination`.
+    static func follows(_ recipe: EditRecipe, to destination: String, crossesDisks: Bool, wasInPlace: Bool) -> Bool {
+        if recipe.source.reference.flatMap(resolve) == key(destination) || belongs(recipe, to: destination) { return true }
+        return crossesDisks && wasInPlace
     }
 
     /// The disk a path is on, from its nearest folder that is still there.

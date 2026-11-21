@@ -99,7 +99,10 @@ extension EditModel {
         }
         Task { [weak self] in
             for item in recipes {
-                if let recipe = item.recipe {
+                if var recipe = item.recipe {
+                    // Known by its file as it is now, not as when the change was made (B4-2).
+                    recipe.source.created = nil
+                    recipe.source.reference = nil
                     await AppModel.shared.recipes.save(recipe)
                 } else {
                     await AppModel.shared.recipes.remove(item.path)
@@ -156,6 +159,9 @@ extension EditModel {
                 switch result {
                 case .success: done += 1
                 case let .failure(error) where error is CancellationError: break
+                case let .failure(error as ExportedWithProblem):
+                    done += 1
+                    problems.append(error.localizedDescription)
                 case let .failure(error): problems.append("“\(file.lastPathComponent)”: \(error.localizedDescription)")
                 }
             }

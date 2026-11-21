@@ -503,12 +503,54 @@ final class EditFrameTests: XCTestCase {
         CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
         CGImageDestinationFinalize(destination)
         let session = try XCTUnwrap(PhotoSession(url: url))
-        let canvas = try XCTUnwrap(session.preview(recipe(for: url), fit: CGSize(width: 64, height: 64)))
+        var wide = recipe(for: url)
+        wide.export.displayP3 = true
+        let canvas = try XCTUnwrap(session.preview(wide, fit: CGSize(width: 64, height: 64)))
         var pixel = [UInt8](repeating: 0, count: 4)
         let reader = try XCTUnwrap(CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: space,
                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         reader.draw(canvas, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         XCTAssertGreaterThan(pixel[0], 250, "\(pixel) (B3-m1)")
         XCTAssertLessThan(pixel[1], 5, "\(pixel)")
+    }
+
+    // MARK: Audit round 4
+
+    func testAMoveToAnotherDiskTakesOnlyTheMovedFilesRecipe() throws {
+        // Card A's recipe at a path card B's photo now has: not taken along when B's photo goes to another disk (B4-1).
+        let cardB = try dated("IMG_0001.JPG", created: Date())
+        var cardA = edited(cardB, contrast: 15)
+        cardA.source.created = Date().addingTimeInterval(-86400)
+        // After the move: card B's photo on the other disk, with the new creation date such a move gives.
+        let destination = try dated("library-IMG_0001.JPG", created: Date()).path
+        XCTAssertFalse(RecipeStore.follows(cardA, to: destination, crossesDisks: true, wasInPlace: false))
+        // The moved file's own recipe goes.
+        XCTAssertTrue(RecipeStore.follows(cardA, to: destination, crossesDisks: true, wasInPlace: true))
+        // On one disk, the creation date or reference decides.
+        XCTAssertFalse(RecipeStore.follows(cardA, to: cardB.path, crossesDisks: false, wasInPlace: true))
+    }
+
+    func testARecipeRestoredAfterAMoveIsKnownByItsFileAsItIsNow() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let original = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        await store.save(edited(original, contrast: 15))
+        let stored = await store.recipe(for: original)
+        let before = try XCTUnwrap(stored)
+        // Reverted (the recipe goes), then the file moves to another disk and gets a new creation date.
+        var blank = before
+        blank.adjust = Adjustments()
+        await store.save(blank)
+        let destination = folder.appendingPathComponent("moved.jpg")
+        try FileManager.default.moveItem(at: original, to: destination)
+        try FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: destination.path)
+        await store.movePaths([(original.path, destination.path)])
+        // ⇧⌘Z brings the edits back with the file as it is now (B4-2).
+        var restored = before
+        restored.source.path = destination.standardizedFileURL.path
+        restored.source.created = nil
+        restored.source.reference = nil
+        await store.save(restored)
+        let found = await store.recipe(for: destination)
+        XCTAssertEqual(found?.adjust.contrast, 15)
     }
 }

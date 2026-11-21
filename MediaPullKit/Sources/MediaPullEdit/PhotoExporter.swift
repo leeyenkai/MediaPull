@@ -69,11 +69,24 @@ public enum PhotoExporter {
               let original = CGImageSourceCopyPropertiesAtIndex(imageSource, CGImageSourceGetPrimaryImageIndex(imageSource), nil)
               as? [CFString: Any]
         else { return properties }
-        var blocks: [CFString] = [kCGImagePropertyExifDictionary, kCGImagePropertyIPTCDictionary]
+        var blocks: [CFString] = [kCGImagePropertyExifDictionary, kCGImagePropertyIPTCDictionary, kCGImagePropertyTIFFDictionary]
         if settings.keepLocation { blocks.append(kCGImagePropertyGPSDictionary) }
-        if settings.keepCamera { blocks += [kCGImagePropertyExifAuxDictionary, kCGImagePropertyTIFFDictionary] }
+        if settings.keepCamera { blocks.append(kCGImagePropertyExifAuxDictionary) }
         for key in blocks {
             if let value = original[key] { properties[key] = value }
+        }
+        // Without camera details, the camera goes but the photographer's copyright, artist and caption stay (R-4608,
+        // audit 2026-11-21-4, B4-m4).
+        if var tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            tiff[kCGImagePropertyTIFFOrientation] = nil
+            if !settings.keepCamera {
+                for key in [kCGImagePropertyTIFFMake, kCGImagePropertyTIFFModel, kCGImagePropertyTIFFSoftware,
+                            kCGImagePropertyTIFFHostComputer]
+                {
+                    tiff[key] = nil
+                }
+            }
+            properties[kCGImagePropertyTIFFDictionary] = tiff
         }
         if !settings.keepLocation, var iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
             for key in [kCGImagePropertyIPTCCity, kCGImagePropertyIPTCSubLocation, kCGImagePropertyIPTCProvinceState,

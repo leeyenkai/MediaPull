@@ -549,24 +549,34 @@ extension MetadataEditTests {
         XCTAssertNil(refused.entry)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("locked.xmp").path))
 
-        // A unit written in place: a member without the value gets it though the lead has it (A3-7).
+        // A Live Photo unit written in place: a member without the value gets it though the lead has it (A3-7, A4-4).
         let pair = folder.appendingPathComponent("pair")
         try FileManager.default.createDirectory(at: pair, withIntermediateDirectories: true)
         let heic = pair.appendingPathComponent("IMG_5.HEIC"), jpeg = pair.appendingPathComponent("IMG_5.JPG")
         Self.photo(heic, type: .heic)
         Self.photo(jpeg, type: .jpeg)
+        try Data("clip".utf8).write(to: pair.appendingPathComponent("IMG_5.MOV"))
         let names = try FileManager.default.contentsOfDirectory(atPath: pair.path)
         let place = OperationJournal.place(of: heic, names: names)
-        guard place.xmp == nil, place.files.count == 2 else { return }
+        XCTAssertNil(place.xmp)
+        XCTAssertEqual(place.files.count, 2, "\(place.files)")
         _ = await journal.editMetadata([heic], .rating(3), title: "Rate")
+        XCTAssertEqual(MetadataWriter.values(of: jpeg).rating, 3)
         // The member alone loses its rating (as another app might leave it).
-        let reset = await journal.editMetadata([jpeg], .rating(nil), title: "Rate")
-        if reset.changed == 1, MetadataWriter.values(of: jpeg).rating == nil {
-            let again = await journal.editMetadata([heic], .rating(3), title: "Rate")
-            XCTAssertEqual(again.changed, 1, "\(again.skipped)")
-            XCTAssertEqual(MetadataWriter.values(of: jpeg).rating, 3)
-            XCTAssertEqual(again.entry?.fileCount, 1)
-        }
+        let unrated = pair.appendingPathComponent("unrated.jpg")
+        try MetadataWriter.writeCopy(of: jpeg, setting: MetadataValues(fields: [.rating]), to: unrated)
+        _ = try FileManager.default.replaceItemAt(jpeg, withItemAt: unrated)
+        XCTAssertNil(MetadataWriter.values(of: jpeg).rating)
+        let again = await journal.editMetadata([heic], .rating(3), title: "Rate")
+        XCTAssertEqual(again.changed, 1, "\(again.skipped)")
+        XCTAssertEqual(MetadataWriter.values(of: jpeg).rating, 3)
+        XCTAssertEqual(again.entry?.fileCount, 1)
+        // Dated names with dots are photos of their own in History (A4-3).
+        let dotted = pair.appendingPathComponent("2024.05.01 beach.jpg"), other = pair.appendingPathComponent("2024.05.02 beach.jpg")
+        Self.photo(dotted, type: .jpeg)
+        Self.photo(other, type: .jpeg)
+        let both = await journal.editMetadata([dotted, other], .rating(2), title: "Rate")
+        XCTAssertEqual(both.entry?.fileCount, 2)
     }
 }
 

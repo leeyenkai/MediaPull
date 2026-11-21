@@ -32,14 +32,16 @@ public enum VideoComposer {
     /// shown; a size setting that would not make it smaller changes nothing either (audit 2026-11-21-3, C3-8).
     public static func isLossless(_ recipe: EditRecipe, size: CGSize? = nil) -> Bool {
         let time = recipe.timeline ?? EditTimeline()
-        let sized = recipe.export.size == .original || size.map { recipe.export.size.pixels(for: $0) == $0 } == true
+        // The picture as turned, which is what the size must fit (audit 2026-11-21-4, C4-1).
+        let turned = size.map { CGRect(origin: .zero, size: $0).applying(turn(recipe.geometry, size: $0)).standardized.size }
+        let sized = recipe.export.size == .original || turned.map { recipe.export.size.pixels(for: $0) == $0 } == true
         return time.cutsOnly && recipe.adjust == Adjustments() && recipe.look == nil && recipe.frame == nil
             && recipe.layers.allSatisfy(\.hidden) && recipe.geometry.crop == nil && recipe.geometry.straighten == 0 && sized
     }
 
     /// The container an export is written in: the one chosen, else like the original (a MOV stays MOV).
     public static func container(for source: URL, recipe: EditRecipe) -> ExportSettings.VideoContainer {
-        recipe.export.videoContainer ?? (source.pathExtension.lowercased() == "mov" ? .mov : .mp4)
+        recipe.export.videoContainer ?? (["mov", "qt"].contains(source.pathExtension.lowercased()) ? .mov : .mp4)
     }
 
     static func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferredTimescale: 600) }
@@ -83,17 +85,22 @@ public enum VideoComposer {
         // sound (or starts after it) has no frames there (audit 2026-11-21-3, C3-1).
         let videoRange = try await video.load(.timeRange)
         let audioRange = try await audio?.load(.timeRange)
+        /// Where the inserted part ends on the composition's timeline, or nil when the track has nothing there.
         func insert(_ part: CMTimeRange, of source: AVAssetTrack, within range: CMTimeRange, into track: AVMutableCompositionTrack,
-                    at cursor: CMTime) throws
+                    at cursor: CMTime) throws -> CMTime?
         {
             let clamped = part.intersection(range)
-            guard clamped.duration > .zero else { return }
-            try track.insertTimeRange(clamped, of: source, at: cursor + (clamped.start - part.start))
+            guard clamped.duration > .zero else { return nil }
+            let at = cursor + (clamped.start - part.start)
+            try track.insertTimeRange(clamped, of: source, at: at)
+            return at + clamped.duration
         }
         var cursor = CMTime.zero
+        // The picture's own end: where the sound outlasts it, the last picture stays (R-4609), and its fade ends there.
+        var pictureEnd: CMTime?
         for range in timeline.keptRanges(duration: duration) {
             let part = CMTimeRange(start: seconds(range.start), end: seconds(range.end))
-            try insert(part, of: video, within: videoRange, into: videoTrack, at: cursor)
+            if let end = try insert(part, of: video, within: videoRange, into: videoTrack, at: cursor) { pictureEnd = end }
             if let audio, let audioTrack, let audioRange { try insert(part, of: audio, within: audioRange, into: audioTrack, at: cursor) }
             // CMTime has no +=.
             cursor = cursor + part.duration // swiftlint:disable:this shorthand_operator
@@ -104,6 +111,10 @@ public enum VideoComposer {
                                        toDuration: CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
         }
         let total = cursor.seconds / speed
+        guard let pictureEnd else {
+            throw Failure.notWritten("the parts kept have no picture, only sound past the picture's end")
+        }
+        let pictureTotal = pictureEnd.seconds / speed
 
         let audioMix: AVAudioMix? = {
             guard let audioTrack, timeline.volume != 1 || timeline.fadeIn > 0 || timeline.fadeOut > 0 else { return nil }
@@ -158,7 +169,7 @@ public enum VideoComposer {
             }
             if let overlay { image = overlay.composited(over: image) }
             let time = request.compositionTime.seconds
-            let level = min(1, fadeIn > 0 ? time / fadeIn : 1, fadeOut > 0 ? max(0, total - time) / fadeOut : 1)
+            let level = min(1, fadeIn > 0 ? time / fadeIn : 1, fadeOut > 0 ? max(0, pictureTotal - time) / fadeOut : 1)
             if level < 1 {
                 let dim = CIFilter(name: "CIColorMatrix")
                 dim?.setValue(image, forKey: kCIInputImageKey)

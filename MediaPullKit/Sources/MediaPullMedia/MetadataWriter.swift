@@ -69,6 +69,19 @@ public enum MetadataWriter {
     static let clearedPrefix = "mediapulledit"
     static let clearedPath = "mediapulledit:Cleared"
 
+    /// Whether a `.xmp` holds no tag at all, MediaPull's or another app's (a develop setting, a label): only then may it go.
+    public static func holdsNothing(_ data: Data) -> Bool {
+        if let metadata = CGImageMetadataCreateFromXMPData(data as CFData) {
+            return ((CGImageMetadataCopyTags(metadata) as? [CGImageMetadataTag]) ?? []).isEmpty
+        }
+        // ImageIO reads a packet with no tag as nothing: read the XML itself, so an unreadable packet is never taken as empty.
+        let parser = XMLParser(data: data)
+        let reader = EmptyPacketReader()
+        parser.delegate = reader
+        parser.shouldProcessNamespaces = false
+        return parser.parse() && reader.sawPacket && !reader.sawContent
+    }
+
     /// The values a `.xmp` holds; only those it has are in `fields`, so they lie over the file's own (R-4502). A field it
     /// records as cleared is there with no value.
     public static func values(ofXMP data: Data) -> MetadataValues {
@@ -344,10 +357,20 @@ public enum MetadataWriter {
         }
         if values.fields.contains(.taken) {
             let taken = values.taken ?? TakenDate()
-            set("exif:DateTimeOriginal", taken.original.flatMap { XMPText.date(exif: $0, offset: taken.originalOffset) } as CFString?,
-                removing: ["photoshop:DateCreated"])
-            set("exif:DateTimeDigitized", taken.digitized.flatMap { XMPText.date(exif: $0, offset: taken.digitizedOffset) } as CFString?,
-                removing: ["xmp:CreateDate"])
+            // In XMP form with the fraction of a second it had, and the other copy of the date another app wrote kept in
+            // step rather than removed (audit 2026-11-21-4, A4-5).
+            func date(_ path: String, copy: String, _ text: String?, offset: String?) {
+                let fraction = [path, copy].lazy.compactMap { string(in: metadata, path: $0).flatMap(Self.fraction) }.first
+                let hadCopy = CGImageMetadataCopyTagWithPath(metadata, nil, copy as CFString) != nil
+                var written = text.flatMap { XMPText.date(exif: $0, offset: offset) }
+                if let fraction, let value = written, let index = value.index(value.startIndex, offsetBy: 19, limitedBy: value.endIndex) {
+                    written?.insert(contentsOf: fraction, at: index)
+                }
+                set(path, written as CFString?, removing: [copy])
+                if hadCopy, let written { _ = CGImageMetadataSetValueWithPath(metadata, nil, copy as CFString, written as CFString) }
+            }
+            date("exif:DateTimeOriginal", copy: "photoshop:DateCreated", taken.original, offset: taken.originalOffset)
+            date("exif:DateTimeDigitized", copy: "xmp:CreateDate", taken.digitized, offset: taken.digitizedOffset)
         }
         if values.fields.contains(.location) {
             let has = values.latitude != nil && values.longitude != nil
@@ -376,5 +399,27 @@ public enum MetadataWriter {
             return folder.appendingPathComponent(found)
         }
         return folder.appendingPathComponent("\(stem).xmp")
+    }
+}
+
+/// Reads an XMP packet's XML only to tell whether it holds anything: any element or attribute beyond the packet's own frame.
+private final class EmptyPacketReader: NSObject, XMLParserDelegate {
+    var sawPacket = false
+    var sawContent = false
+    private static let frame: Set<String> = ["x:xmpmeta", "rdf:RDF", "rdf:Description"]
+
+    func parser(_: XMLParser, didStartElement name: String, namespaceURI _: String?, qualifiedName _: String?,
+                attributes: [String: String] = [:])
+    {
+        guard Self.frame.contains(name) else {
+            sawContent = true
+            return
+        }
+        if name == "x:xmpmeta" { sawPacket = true }
+        if attributes.keys.contains(where: { !$0.hasPrefix("xmlns") && $0 != "rdf:about" && $0 != "x:xmptk" }) { sawContent = true }
+    }
+
+    func parser(_: XMLParser, foundCharacters string: String) {
+        if !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { sawContent = true }
     }
 }

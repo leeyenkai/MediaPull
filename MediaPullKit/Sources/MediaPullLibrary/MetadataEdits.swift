@@ -141,7 +141,10 @@ public extension OperationJournal {
                     continue
                 }
                 let xmp = place.xmp ?? MetadataWriter.xmpURL(for: lead, existing: names)
-                if try writeXMP(xmp, values: edit.apply(to: current), entry: &entry, result: &result) { result.changed += 1 }
+                // A unit that fell back to a `.xmp` because a member could not be written in place: the values of the
+                // member that needed the change, when the lead did not (audit 2026-11-21-4, A4-11).
+                let values = edit.apply(to: current) ?? place.files.lazy.compactMap { edit.apply(to: MetadataWriter.values(of: $0)) }.first
+                if try writeXMP(xmp, values: values, entry: &entry, result: &result) { result.changed += 1 }
             } catch let partial as PartlyChanged {
                 result.changed += 1
                 for file in result.rewritten[alreadyReplaced...] {
@@ -418,18 +421,18 @@ extension OperationJournal {
     }
 
     /// Undo and Redo of a metadata step: writes `values` back by the same writer and check, on the same file only
-    /// (R-4505). `removing`: Undo of a `.xmp` the edit made sends it to the Trash. `again`: Redo records the step anew.
+    /// (R-4505). A `.xmp` Undo leaves holding nothing goes to the Trash. `again`: Redo records the step anew.
     /// `expecting`: the values the file must still have (the step's after for Undo, its before for Redo); a file a later
     /// change gave other values is left as it is (D-93). `absent`: `.xmp` fields to leave empty again.
     func rewrite(_ path: String, with values: MetadataValues, expecting: MetadataValues, absent: Set<MetadataField> = [],
-                 removing made: Bool = false, again: (before: MetadataValues, made: Bool)? = nil, entry: inout JournalEntry,
+                 again: (before: MetadataValues, made: Bool)? = nil, entry: inout JournalEntry,
                  report: inout UndoReport) -> Bool
     {
         let url = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
         let isXMP = url.pathExtension.lowercased() == "xmp"
-        // Redo of a `.xmp` the edit made: made again when Undo sent it to the Trash.
-        if let again, again.made, isXMP, !fm.fileExists(atPath: path) {
+        // Redo of a step whose `.xmp` Undo sent to the Trash, emptied: made again.
+        if let again, again.made || again.before.isBlank, isXMP, !fm.fileExists(atPath: path) {
             do {
                 let data = try MetadataWriter.xmpData(setting: values, over: nil)
                 try writeXMPData(data, to: url, exists: false, step: .metadata(path: path, before: again.before, after: values, made: true),
@@ -442,8 +445,12 @@ extension OperationJournal {
                 return false
             }
         }
-        if Self.isLocked(url) {
-            report.skipped.append("“\(name)” is locked in the Finder, so it was left as it is.")
+        // A `.xmp` is refused, as on the edit, when the photo it belongs to is locked (audit 2026-11-21-4, A4-9).
+        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+        let photos = isXMP ? ((try? fm.contentsOfDirectory(at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.deletingPathExtension().lastPathComponent.lowercased() == stem && $0.pathExtension.lowercased() != "xmp" } : []
+        if let locked = ([url] + photos).first(where: Self.isLocked) {
+            report.skipped.append("“\(locked.lastPathComponent)” is locked in the Finder, so it was left as it is.")
             return false
         }
         let now = isXMP ? (MetadataWriter.values(ofXMPAt: url) ?? MetadataValues()) : MetadataWriter.values(of: url)
@@ -456,9 +463,10 @@ extension OperationJournal {
             if isXMP {
                 let data = try MetadataWriter.xmpData(setting: values, absent: absent, over: try? Data(contentsOf: url))
                 var trashed = false
-                if made, again == nil, MetadataWriter.values(ofXMP: data).fields.isEmpty {
-                    // A `.xmp` the edit made that holds nothing else now goes to the Trash, never deleted; on a drive
-                    // without a Trash it stays, emptied.
+                if again == nil, MetadataWriter.holdsNothing(data) {
+                    // A `.xmp` that holds no tag at all now (MediaPull's or another app's) goes to the Trash, never
+                    // deleted; one holding anything else is written (audit 2026-11-21-4, A4-1, A4-8). On a drive without
+                    // a Trash it stays, emptied.
                     var inTrash: NSURL?
                     do {
                         try fm.trashItem(at: url, resultingItemURL: &inTrash)

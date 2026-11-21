@@ -42,12 +42,14 @@ public final class PhotoSession: @unchecked Sendable {
 
     /// The result for the canvas, fitted to `fit` points × scale. `before` shows the photo with no edits (Before/After).
     public func preview(_ recipe: EditRecipe, fit: CGSize, before: Bool = false) -> CGImage? {
-        // Display P3, so a wide colour the export keeps is not clipped on the canvas (the window colour-manages it).
-        if before { return PhotoRenderer.cgImage(PhotoRenderer.scaled(proxy, toFit: fit), displayP3: true) }
+        // In the export's colour space, so the canvas shows what the export keeps: a wide colour only when it is kept
+        // (audit 2026-11-21-3, B3-m1, and round 4, B4-m2). The window colour-manages either.
+        let wide = recipe.export.displayP3
+        if before { return PhotoRenderer.cgImage(PhotoRenderer.scaled(proxy, toFit: fit), displayP3: wide) }
         let canvas = PhotoRenderer.render(proxy, recipe: recipe, fit: fit) { size in
             LayerRenderer.image(recipe.layers, canvas: size)
         }
-        return PhotoRenderer.cgImage(canvas, displayP3: true)
+        return PhotoRenderer.cgImage(canvas, displayP3: wide)
     }
 
     /// The picture turned and straightened but not cropped, for choosing the crop; no frame or layers.
@@ -56,7 +58,8 @@ public final class PhotoSession: @unchecked Sendable {
         plain.geometry.crop = nil
         plain.frame = nil
         plain.layers = []
-        return PhotoRenderer.cgImage(PhotoRenderer.scaled(PhotoRenderer.picture(proxy, recipe: plain), toFit: fit), displayP3: true)
+        let picture = PhotoRenderer.scaled(PhotoRenderer.picture(proxy, recipe: plain), toFit: fit)
+        return PhotoRenderer.cgImage(picture, displayP3: recipe.export.displayP3)
     }
 
     /// Small previews of each look, for the look picker.

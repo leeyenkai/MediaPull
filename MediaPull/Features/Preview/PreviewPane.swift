@@ -254,7 +254,11 @@ enum AudioPreview {
             Self.prune(folder)
             // Written under another name and renamed when whole, so a copy still being made is never played.
             let partial = folder.appendingPathComponent(UUID().uuidString + ".m4a")
-            guard (try? await ffmpeg.playableCopy(of: url, to: partial)) != nil else { return nil }
+            // A copy that could not be made: a format the system plays still plays from the original, if only to its
+            // guess of the length (audit 2026-11-21-4, C4-9).
+            guard (try? await ffmpeg.playableCopy(of: url, to: partial)) != nil else {
+                return [.ogg, .opus].contains(MediaFormat.fromExtension(url.pathExtension)) ? nil : url
+            }
             // lint:allow app-data silent-write a preview copy in the temporary folder; made again when missing
             try? FileManager.default.moveItem(at: partial, to: output)
             try? FileManager.default.removeItem(at: partial)

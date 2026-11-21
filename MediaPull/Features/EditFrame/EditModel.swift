@@ -141,6 +141,8 @@ final class EditModel: MediaGridOwner {
     var audioSource: AudioSourceFormat?
     /// The audio's true length is known (or cannot be): cuts wait for it, so none is taken from the system's guess.
     var audioLengthKnown = false
+    /// A copy the system can play is being made (Ogg, Opus, or a length the system guesses wrong).
+    var preparingPlayback = false
     /// The waveform could not be read (a format the build cannot decode, or no ffmpeg).
     var waveformFailed = false
     @ObservationIgnored var waveformTask: Task<Void, Never>?
@@ -219,6 +221,7 @@ final class EditModel: MediaGridOwner {
         waveformTask?.cancel()
         waveform = []
         audioSelection = nil
+        preparingPlayback = false
         currentTags = nil
         player.stop()
         openTask = Task { [weak self] in
@@ -300,12 +303,19 @@ final class EditModel: MediaGridOwner {
             manager.setActionName("Edit")
         }
         // The same recipe, wherever its file is now (it may have been renamed since).
+        // Only the edits come back: the file is known as it is now (it may have moved to another disk since, with a new
+        // creation date), never as when the change was made (audit 2026-11-21-4, B4-2).
         if recipe.id == self.recipe?.id || recipe.source.path == self.recipe?.source.path {
-            self.recipe = recipe
+            var restored = recipe
+            if let source = self.recipe?.source { restored.source = source }
+            self.recipe = restored
             scheduleSave()
             render()
         } else {
-            Task { await AppModel.shared.recipes.save(recipe); filesChanged() }
+            var restored = recipe
+            restored.source.created = nil
+            restored.source.reference = nil
+            Task { await AppModel.shared.recipes.save(restored); filesChanged() }
         }
     }
 
@@ -317,13 +327,14 @@ final class EditModel: MediaGridOwner {
 
     private func scheduleSave() {
         saveTask?.cancel()
-        guard let recipe else { return }
+        guard recipe != nil else { return }
         unsaved = true
         saveGeneration += 1
         let generation = saveGeneration
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled else { return }
+            // The recipe as it is when it is saved, so a move meanwhile (its new path and date) is in it.
+            guard !Task.isCancelled, let recipe = self?.recipe else { return }
             if await !AppModel.shared.recipes.save(recipe) {
                 self?.message = "The edits could not be saved. Check that the disk has space."
             } else if self?.saveGeneration == generation {
@@ -509,9 +520,17 @@ final class EditModel: MediaGridOwner {
             case let .failure(error):
                 AppModel.shared.jobs.finish(job, .failed(error.localizedDescription), notify: false)
                 self?.message = error.localizedDescription
+                // Written, only its metadata file is missing: listed all the same (audit 2026-11-21-4, C4-6).
+                if error is ExportedWithProblem { AppModel.shared.fileChangeRevision += 1 }
             }
             self?.exporting = false
         }
+    }
+
+    /// An export that was written and placed, but whose metadata file could not be: counted and listed as exported.
+    nonisolated struct ExportedWithProblem: LocalizedError {
+        let url: URL
+        let errorDescription: String?
     }
 
     /// Renders and writes off the main actor, then places the file at a free name with a copy's metadata file (D-105).
@@ -538,10 +557,8 @@ final class EditModel: MediaGridOwner {
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
             let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
             if let problem = placed.metadataProblem {
-                return .failure(CocoaError(.fileWriteUnknown, userInfo: [
-                    NSLocalizedDescriptionKey: "Exported “\(placed.url.lastPathComponent)”, but its metadata file could not be "
-                        + "written: \(problem)",
-                ]))
+                return .failure(ExportedWithProblem(url: placed.url, errorDescription: "Exported “\(placed.url.lastPathComponent)”, "
+                    + "but its metadata file could not be written: \(problem)"))
             }
             return .success(placed.url)
         } catch {

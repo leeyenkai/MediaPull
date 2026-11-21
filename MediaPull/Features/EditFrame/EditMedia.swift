@@ -26,8 +26,13 @@ extension EditModel {
         // Ogg and Opus play from a copy the system can play (R-4205), as does a file whose length the system guesses wrong:
         // its player could not reach past the guess (audit 2026-11-21-3, C3-2, C3-10).
         let measured = audioSource?.duration
+        preparingPlayback = true
         Task { [weak self] in
-            guard let playable = await AudioPreview.playable(current, measured: measured), let self, self.current == current else {
+            let playable = await AudioPreview.playable(current, measured: measured)
+            guard let self, self.current == current else { return }
+            preparingPlayback = false
+            guard let playable else {
+                message = "This audio could not be prepared for playing."
                 return
             }
             player.load(playable)
@@ -137,15 +142,16 @@ extension EditModel {
             // Within the name budget, however long the video's name.
             let name = FileNaming.fileName(stem: stem, ext: "png")
             do {
-                let fm = FileManager.default
-                let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
-                defer { try? fm.removeItem(at: staging) }
-                let staged = staging.appendingPathComponent(name)
-                try await Task.detached(priority: .userInitiated) {
+                // Staged and written off the main actor (C4-5).
+                let placed = try await Task.detached(priority: .userInitiated) { () async throws -> URL in
+                    let fm = FileManager.default
+                    let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
+                    defer { try? fm.removeItem(at: staging) }
+                    let staged = staging.appendingPathComponent(name)
                     try ImageEditing.write(frame, format: .png, metadataFrom: nil, to: staged)
+                    return try await FileOps.place(staged, as: folder.appendingPathComponent(name), with: .none).url
                 }.value
-                let placed = try await FileOps.place(staged, as: folder.appendingPathComponent(name), with: .none)
-                self?.message = "Saved “\(placed.url.lastPathComponent)”."
+                self?.message = "Saved “\(placed.lastPathComponent)”."
                 AppModel.shared.fileChangeRevision += 1
             } catch {
                 self?.message = error.localizedDescription
@@ -156,8 +162,10 @@ extension EditModel {
     // MARK: Export
 
     /// Writes the edited video (re-encoded only when the picture changes, D-130), then places it at a free name.
-    static func exportVideo(_ url: URL, recipe: EditRecipe, into folder: URL,
-                            progress: @escaping @Sendable (Double) -> Void) async -> Result<URL, Error>
+    /// Off the main actor: staging folders on a slow disk never hold up the window (audit 2026-11-21-4, C4-5).
+    @concurrent
+    nonisolated static func exportVideo(_ url: URL, recipe: EditRecipe, into folder: URL,
+                                        progress: @escaping @Sendable (Double) -> Void) async -> Result<URL, Error>
     {
         do {
             let fm = FileManager.default
@@ -180,10 +188,8 @@ extension EditModel {
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
             let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
             if let problem = placed.metadataProblem {
-                return .failure(CocoaError(.fileWriteUnknown, userInfo: [
-                    NSLocalizedDescriptionKey: "Exported “\(placed.url.lastPathComponent)”, but its metadata file could not be "
-                        + "written: \(problem)",
-                ]))
+                return .failure(ExportedWithProblem(url: placed.url, errorDescription: "Exported “\(placed.url.lastPathComponent)”, "
+                    + "but its metadata file could not be written: \(problem)"))
             }
             return .success(placed.url)
         } catch {

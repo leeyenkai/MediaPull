@@ -272,4 +272,15 @@ final class VideoEditTests: XCTestCase {
                            "the capture date is kept (C3-6)")
         }
     }
+
+    func testRoundFourDecisions() {
+        // A turned portrait clip with a size that fits only once turned is re-encoded (C4-1).
+        var turned = recipe(URL(fileURLWithPath: "/x/a.mp4"))
+        turned.geometry.quarterTurns = 1
+        turned.export.size = .post45
+        XCTAssertFalse(VideoComposer.isLossless(turned, size: CGSize(width: 1080, height: 1350)))
+        XCTAssertTrue(VideoComposer.isLossless(turned, size: CGSize(width: 1350, height: 1080)))
+        // A QuickTime .qt stays QuickTime (C4-8).
+        XCTAssertEqual(VideoComposer.container(for: URL(fileURLWithPath: "/x/a.qt"), recipe: turned), .mov)
+    }
 }

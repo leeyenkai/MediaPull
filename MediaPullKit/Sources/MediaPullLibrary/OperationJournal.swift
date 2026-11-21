@@ -59,12 +59,11 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
         // A partly undone change counts both parts (audit 15, B15-m6).
         // A unit (a file with its metadata file, or a RAW+JPEG pair) is one (R-4206).
         let all = undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])
-        // A metadata edit of a unit (a pair written in place, a photo and its .xmp) is one photo (audit A3-7).
+        // A metadata edit of a unit (a Live Photo written in place, a photo and its .xmp) is one photo (audit A3-7): by the
+        // name without its last extension, so dated names with dots stay apart (A4-3).
         let edited = Set(all.compactMap { step -> String? in
             guard case let .metadata(path, _, _, _) = step else { return nil }
-            let url = URL(fileURLWithPath: path)
-            let name = url.lastPathComponent
-            return url.deletingLastPathComponent().path + "/" + (name.split(separator: ".").first.map(String.init) ?? name)
+            return URL(fileURLWithPath: path).deletingPathExtension().path.lowercased()
         })
         return OperationJournal.units(all).filter {
             switch $0[0] {
@@ -1130,9 +1129,9 @@ public actor OperationJournal {
                 : changed.count == 1 ? "1 file in \(target.lastPathComponent) changed or was added since, so it was kept"
                     : "\(changed.count) files in \(target.lastPathComponent) changed or were added since, so they were kept")
             return false
-        case let .metadata(path, before, after, made):
-            return rewrite(path, with: before, expecting: after, absent: after.fields.subtracting(before.fields), removing: made,
-                           entry: &entry, report: &report)
+        case let .metadata(path, before, after, _):
+            return rewrite(path, with: before, expecting: after, absent: after.fields.subtracting(before.fields), entry: &entry,
+                           report: &report)
         case let .trash(original, trashed):
             let name = URL(fileURLWithPath: original).lastPathComponent
             // The item this change put in the Trash, not another one trashed later under that name (audit 9, B9-M2).

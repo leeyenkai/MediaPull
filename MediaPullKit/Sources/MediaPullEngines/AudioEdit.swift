@@ -162,7 +162,9 @@ public enum AudioEdit {
             if artwork != nil {
                 args += ["-map", "\(inputs - 1):v:0", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
             } else {
-                args += ["-map", "\(original):v?", "-c:v", "copy"]
+                // Cover art only: a picture track that is not one (chapter pictures in a podcast) cannot go into the
+                // output (audit 2026-11-21-4, C4-3).
+                args += ["-map", "\(original):v:disp:attached_pic?", "-c:v", "copy"]
             }
         }
         args += ["-map_metadata", "\(original)"]
@@ -245,12 +247,26 @@ public extension FFmpeg {
     @concurrent
     func editAudio(_ plan: AudioEditPlan) async throws {
         var list: URL?
+        var link: URL?
         if plan.copiesStreams, !plan.kept.isEmpty {
-            let file = FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-cut-\(UUID().uuidString).ffconcat")
-            try AudioEdit.concatList(plan).write(to: file, atomically: true, encoding: .utf8)
+            let temporary = FileManager.default.temporaryDirectory
+            var listed = plan
+            // The list is read line by line, so a name with a line break is listed through a link of a plain name
+            // (audit 2026-11-21-4, C4-7).
+            if plan.source.path.contains(where: \.isNewline) {
+                let plain = temporary.appendingPathComponent("MediaPull-cut-\(UUID().uuidString).\(plan.source.pathExtension)")
+                try FileManager.default.createSymbolicLink(at: plain, withDestinationURL: plan.source)
+                link = plain
+                listed.source = plain
+            }
+            let file = temporary.appendingPathComponent("MediaPull-cut-\(UUID().uuidString).ffconcat")
+            try AudioEdit.concatList(listed).write(to: file, atomically: true, encoding: .utf8)
             list = file
         }
-        defer { if let list { try? FileManager.default.removeItem(at: list) } }
+        defer {
+            if let list { try? FileManager.default.removeItem(at: list) }
+            if let link { try? FileManager.default.removeItem(at: link) }
+        }
         do {
             _ = try await Self.run(ffmpeg, AudioEdit.arguments(plan, list: list))
         } catch {

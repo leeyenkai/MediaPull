@@ -109,6 +109,8 @@ struct MetadataEditSection: View {
         var values: MetadataValues
         var hasMetadataFile: Bool
         var xmpName: String?
+        /// Read off the main actor with the values, not on every drawing of the view (audit 2026-11-21-4, A4-10).
+        var locked = false
     }
 
     /// The photos the edit applies to: those Edit Details was chosen for when this file is among them, else this one.
@@ -124,6 +126,8 @@ struct MetadataEditSection: View {
             Text("Edit").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if let reason = Self.reason(file) {
                 Text(reason).font(.caption).foregroundStyle(.secondary)
+            } else if let loaded, loaded.locked {
+                Text("This photo is locked in the Finder; unlock it to change its details.").font(.caption).foregroundStyle(.secondary)
             } else if let loaded {
                 if targets.count > 1 {
                     Text("Changes apply to the \(targets.count) chosen photos.").font(.caption).foregroundStyle(.secondary)
@@ -152,7 +156,6 @@ struct MetadataEditSection: View {
         if AppModel.shared.driveCenter.drive(containing: file)?.isReadOnly == true {
             return "This card is locked, so its photos are only read."
         }
-        if OperationJournal.isLocked(file) { return "This photo is locked in the Finder; unlock it to change its details." }
         return nil
     }
 
@@ -163,7 +166,7 @@ struct MetadataEditSection: View {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []
             let place = OperationJournal.place(of: url, names: names)
             return Loaded(values: OperationJournal.currentValues(of: url, place: place), hasMetadataFile: place.hasMetadataFile,
-                          xmpName: place.xmp?.lastPathComponent)
+                          xmpName: place.xmp?.lastPathComponent, locked: OperationJournal.isLocked(url))
         }.value
         guard !Task.isCancelled, url == file else { return }
         loaded = read

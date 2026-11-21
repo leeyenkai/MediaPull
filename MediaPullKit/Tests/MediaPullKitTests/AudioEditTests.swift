@@ -146,6 +146,9 @@ final class AudioEditTests: XCTestCase {
         var art = plan("a.aiff", .aiff)
         art.tags.artworkPath = "/m/cover.jpg"
         XCTAssertTrue(AudioEdit.arguments(art, list: nil).contains("attached_pic"))
+        // Only cover art goes with the sound, never another picture track (C4-3).
+        let kept = AudioEdit.arguments(plan("a.m4a", .aac), list: nil)
+        XCTAssertTrue(kept.contains("0:v:disp:attached_pic?"), "\(kept)")
     }
 
     /// The real engine: a tone cut losslessly, faded, normalised and converted (skipped when ffmpeg is not built).

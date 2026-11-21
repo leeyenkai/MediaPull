@@ -49,6 +49,11 @@ public struct MetadataValues: Codable, Sendable, Hashable {
         self.longitude = longitude
     }
 
+    /// No value in any field: what a `.xmp` held for these fields before it was made.
+    public var isBlank: Bool {
+        rating == nil && ratingText == nil && keywords == nil && taken == nil && latitude == nil && longitude == nil
+    }
+
     /// The same values, keeping only `wanted` fields.
     public func only(_ wanted: Set<MetadataField>) -> MetadataValues {
         var out = MetadataValues(fields: fields.intersection(wanted))
