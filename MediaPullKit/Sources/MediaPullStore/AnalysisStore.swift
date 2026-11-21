@@ -383,7 +383,9 @@ public actor AnalysisStore {
     /// that content: a copy elsewhere keeps its own (R-4506, audit 2026-11-21-5, A5-2).
     public func rekey(from old: String, to new: String, path: String? = nil) -> [(old: String, new: String)] {
         guard old != new, var record = record(sha256: old) else { return [] }
-        let holders = #Predicate<FilePathModel> { $0.sha256 == new }
+        // Either content held by another file: corrections on it are that copy's, not this file's (A5-2, and round 6,
+        // A6-3, where a Redo took a copy's corrections over a name given after the edit).
+        let holders = #Predicate<FilePathModel> { $0.sha256 == new || $0.sha256 == old }
         let heldElsewhere = ((try? modelContext.fetch(FetchDescriptor(predicate: holders))) ?? []).contains { $0.path != path }
         record.sha256 = new
         record.factsVersion = 0

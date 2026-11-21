@@ -103,6 +103,7 @@ final class EditModel: MediaGridOwner {
     /// A change not yet saved, so leaving or quitting writes only this window's own changes, never a stale copy over
     /// another window's newer edits.
     @ObservationIgnored private var unsaved = false
+    var hasUnsavedChange: Bool { unsaved }
     @ObservationIgnored private var saveGeneration = 0
     @ObservationIgnored private var openTask: Task<Void, Never>?
     @ObservationIgnored private var gestureStart: EditRecipe?
@@ -243,7 +244,7 @@ final class EditModel: MediaGridOwner {
             loadingFile = false
             guard let kind = format?.kind else { return }
             mediaDuration = duration
-            recipe = stored ?? EditRecipe(source: EditSource(path: url.standardizedFileURL.path, kind: kind))
+            recipe = stored ?? Self.newRecipe(for: url, kind: kind)
             // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
             if previousKind != kind || !tabs.contains(tab), let first = tabs.first { tab = first }
             // Audio's player waits for its true length (`loadWaveform`): a file the system measures short plays from a copy.
@@ -337,8 +338,9 @@ final class EditModel: MediaGridOwner {
             guard !Task.isCancelled, let recipe = self?.recipe else { return }
             if await !AppModel.shared.recipes.save(recipe) {
                 self?.message = "The edits could not be saved. Check that the disk has space."
-            } else if self?.saveGeneration == generation {
-                self?.unsaved = false
+            } else {
+                if self?.saveGeneration == generation { self?.unsaved = false }
+                self?.savedHere(recipe.id)
             }
             // The look thumbnails show the photo as it is now.
             if self?.tab == .adjust { self?.renderLooks() }
@@ -384,6 +386,13 @@ final class EditModel: MediaGridOwner {
         waveformTask?.cancel()
     }
 
+    /// Other windows showing this recipe take it as saved.
+    private func savedHere(_ id: UUID) {
+        for window in AppModel.shared.windows where window.edit !== self {
+            window.edit.recipeSavedElsewhere(id)
+        }
+    }
+
     /// At quit: the last change is written at once.
     func saveBeforeQuit() {
         saveTask?.cancel()
@@ -400,6 +409,8 @@ final class EditModel: MediaGridOwner {
         Task {
             if await !AppModel.shared.recipes.save(recipe) {
                 self.message = "The edits could not be saved. Check that the disk has space."
+            } else {
+                self.savedHere(recipe.id)
             }
             let edited = await AppModel.shared.recipes.editedPaths()
             self.editedPaths = edited
@@ -666,9 +677,11 @@ enum FontLookup {
     nonisolated static func missing(in layers: [Layer]) -> [String] {
         var out: [String] = []
         for layer in layers where !layer.hidden {
-            guard case let .text(style) = layer.kind, LayerRenderer.font(style, canvasHeight: 100).missing,
-                  !out.contains(style.family) else { continue }
-            out.append(style.family)
+            guard case let .text(style) = layer.kind, LayerRenderer.font(style, canvasHeight: 100).missing else { continue }
+            // The family is here but not the face: the face is named (B6-m6).
+            let name = FontCatalog.isInstalled(style.family)
+                ? "\(style.family) \(style.face ?? "")".trimmingCharacters(in: .whitespaces) : style.family
+            if !out.contains(name) { out.append(name) }
         }
         return out
     }

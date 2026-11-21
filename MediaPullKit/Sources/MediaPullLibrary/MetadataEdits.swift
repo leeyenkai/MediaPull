@@ -247,7 +247,14 @@ extension OperationJournal {
         guard let values else { return false }
         let existing = try? Data(contentsOf: xmp)
         let before = existing.map { MetadataWriter.values(ofXMP: $0) } ?? MetadataValues()
-        let data = try MetadataWriter.xmpData(setting: values, over: existing)
+        let data: Data
+        do {
+            data = try MetadataWriter.xmpData(setting: values, over: existing)
+        } catch MetadataWriter.Failure.unreadable {
+            // Named, so the person knows which file to look at (A6-4).
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey:
+                "“\(xmp.lastPathComponent)” beside it cannot be read, so it is not written over"])
+        }
         // Only the fields the `.xmp` held: Undo makes the others absent again, so the file's own values show.
         let step = JournalStep.metadata(path: xmp.path, before: before.only(values.fields), after: values, made: existing == nil)
         try writeXMPData(data, to: xmp, exists: existing != nil, step: step, entry: &entry)
@@ -467,7 +474,10 @@ extension OperationJournal {
             }
         }
         let now = isXMP ? (MetadataWriter.values(ofXMPAt: url) ?? MetadataValues()) : MetadataWriter.values(of: url)
-        guard isSame(path, in: entry), now.agrees(with: expecting) else {
+        // A Redo of a `.xmp` step whose field the `.xmp` did not hold before: it must not hold it now either, or a newer
+        // edit gave it a value (audit 2026-11-21-6, A6-1).
+        let added = again != nil && isXMP ? values.fields.subtracting(expecting.fields) : []
+        guard isSame(path, in: entry), now.agrees(with: expecting), now.fields.isDisjoint(with: added) else {
             report.skipped.append(fm.fileExists(atPath: path) ? "“\(name)” was changed since, so it was left as it is."
                 : "“\(name)” is no longer there.")
             return false

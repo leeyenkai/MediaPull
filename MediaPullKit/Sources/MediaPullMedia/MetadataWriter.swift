@@ -75,11 +75,15 @@ public enum MetadataWriter {
             return ((CGImageMetadataCopyTags(metadata) as? [CGImageMetadataTag]) ?? []).isEmpty
         }
         // ImageIO reads a packet with no tag as nothing: read the XML itself, so an unreadable packet is never taken as empty.
+        // Nothing but white space and processing instructions (an empty xpacket wrapper) is nothing (A6-4).
+        let text = String(decoding: data, as: UTF8.self)
+        let bare = text.replacingOccurrences(of: "<\\?[^>]*\\?>", with: "", options: .regularExpression)
+        if bare.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         let parser = XMLParser(data: data)
         let reader = EmptyPacketReader()
         parser.delegate = reader
         parser.shouldProcessNamespaces = false
-        return parser.parse() && reader.sawPacket && !reader.sawContent
+        return parser.parse() && !reader.sawContent
     }
 
     /// The values a `.xmp` holds; only those it has are in `fields`, so they lie over the file's own (R-4502). A field it
@@ -407,9 +411,9 @@ public enum MetadataWriter {
 
 /// Reads an XMP packet's XML only to tell whether it holds anything: any element or attribute beyond the packet's own frame.
 private final class EmptyPacketReader: NSObject, XMLParserDelegate {
-    var sawPacket = false
     var sawContent = false
-    private static let frame: Set<String> = ["x:xmpmeta", "rdf:RDF", "rdf:Description"]
+    /// The packet's own frame, with or without its outer element (a bare RDF root, an old `x:xapmeta` one).
+    private static let frame: Set<String> = ["x:xmpmeta", "x:xapmeta", "rdf:RDF", "rdf:Description"]
 
     func parser(_: XMLParser, didStartElement name: String, namespaceURI _: String?, qualifiedName _: String?,
                 attributes: [String: String] = [:])
@@ -418,7 +422,6 @@ private final class EmptyPacketReader: NSObject, XMLParserDelegate {
             sawContent = true
             return
         }
-        if name == "x:xmpmeta" { sawPacket = true }
         if attributes.keys.contains(where: { !$0.hasPrefix("xmlns") && $0 != "rdf:about" && $0 != "x:xmptk" }) { sawContent = true }
     }
 

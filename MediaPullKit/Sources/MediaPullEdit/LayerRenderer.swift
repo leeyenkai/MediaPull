@@ -54,8 +54,14 @@ public enum LayerRenderer {
         if let face = style.face { attributes[kCTFontStyleNameAttribute] = face }
         let descriptor = CTFontDescriptorCreateWithAttributes(attributes as CFDictionary)
         var font = CTFontCreateWithFontDescriptor(descriptor, 100, nil)
-        let found = (CTFontCopyFamilyName(font) as String).caseInsensitiveCompare(style.family) == .orderedSame
-        if !found { font = CTFontCreateUIFontForLanguage(.system, 100, nil) ?? font }
+        let family = (CTFontCopyFamilyName(font) as String).caseInsensitiveCompare(style.family) == .orderedSame
+        // A face the family no longer has is drawn in the family's regular face and said, as a missing family is
+        // (R-4607, audit 2026-11-21-6, B6-m6).
+        let faceFound = style.face.map { face in
+            (CTFontCopyName(font, kCTFontStyleNameKey) as String?)?.caseInsensitiveCompare(face) == .orderedSame
+        } ?? true
+        let found = family && faceFound
+        if !family { font = CTFontCreateUIFontForLanguage(.system, 100, nil) ?? font }
         let capHeight = max(CTFontGetCapHeight(font), 1)
         let pointSize = max(1, style.size * canvasHeight * 100 / capHeight)
         return (CTFontCreateCopyWithAttributes(font, pointSize, nil, nil), !found)

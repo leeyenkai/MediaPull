@@ -105,8 +105,10 @@ public struct FFmpeg: Sendable {
         var raw: [String: String] = [:]
         let format = json["format"] as? [String: Any]
         let streams = (json["streams"] as? [[String: Any]]) ?? []
-        // Ogg keeps its comments on the stream, other containers on the file.
-        for source in [format?["tags"]] + streams.map({ $0["tags"] }) {
+        // Ogg keeps its comments on the stream, other containers on the file. Only sound streams: a cover's description is
+        // not the song's title (audit 2026-11-21-6, C6-5).
+        let sound = streams.filter { $0["codec_type"] as? String == "audio" }
+        for source in [format?["tags"]] + sound.map({ $0["tags"] }) {
             for (key, value) in (source as? [String: Any]) ?? [:] {
                 if let text = value as? String, !text.isEmpty, raw[key.lowercased()] == nil { raw[key.lowercased()] = text }
             }
@@ -178,8 +180,10 @@ public struct FFmpeg: Sendable {
         else { return nil }
         let streams = json["streams"] as? [[String: Any]] ?? []
         let stream = streams.first { $0["codec_type"] as? String == "audio" }
-        // The cover art's codec, so a cover the output cannot hold as it is (BMP, GIF) is turned into PNG (C5-1).
-        let cover = streams.first { ($0["disposition"] as? [String: Any])?["attached_pic"] as? Int == 1 }?["codec_name"] as? String
+        // Each cover's codec in order, so a cover the output cannot hold as it is (BMP, GIF in M4A or FLAC) is turned into
+        // PNG (C5-1, audit 2026-11-21-6, C6-3).
+        let covers = streams.filter { ($0["disposition"] as? [String: Any])?["attached_pic"] as? Int == 1 }
+            .map { $0["codec_name"] as? String ?? "" }
         let format = json["format"] as? [String: Any]
         let guessed = (stream?["duration"] as? String).flatMap(Double.init) ?? (format?["duration"] as? String).flatMap(Double.init)
         // A VBR MP3 without a Xing header, or ADTS AAC, has no stated length: ffprobe guesses from the bit rate. The
@@ -187,7 +191,7 @@ public struct FFmpeg: Sendable {
         let measured = await measuredLength(url)
         let bits = (stream?["bits_per_raw_sample"] as? String).flatMap(Int.init) ?? (stream?["bits_per_sample"] as? Int)
         return AudioSourceFormat(duration: measured ?? guessed ?? 0, sampleRate: (stream?["sample_rate"] as? String).flatMap(Int.init),
-                                 bits: bits, codec: stream?["codec_name"] as? String, artworkCodec: cover)
+                                 bits: bits, codec: stream?["codec_name"] as? String, artworkCodecs: covers)
     }
 
     /// Copies streams into an MP4 container without re-encoding.

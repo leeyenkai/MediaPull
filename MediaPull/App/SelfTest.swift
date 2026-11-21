@@ -1706,7 +1706,7 @@ final class SelfTestRunner {
             try? await Task.sleep(for: .milliseconds(300))
             manager.endUndoGrouping()
             let gone = await AppModel.shared.recipes.recipe(for: second)
-            check(gone == nil && edit.recipe?.isEdited == false, "Revert Edits of two files removes both recipes")
+            check((gone?.isEdited ?? false) == false && edit.recipe?.isEdited == false, "Revert Edits of two files clears both recipes")
             manager.undo()
             try? await Task.sleep(for: .milliseconds(800))
             let back = await AppModel.shared.recipes.recipe(for: second)

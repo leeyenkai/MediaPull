@@ -302,6 +302,55 @@ final class VideoEditTests: XCTestCase {
         let last = await VideoComposer.frame(longer, at: 4.5)
         XCTAssertNotNil(last)
     }
+
+    // MARK: Audit round 6
+
+    func testFadesLongerThanTheMediaNeverStopAnExportOrPlayback() async throws {
+        // 2.5 s kept with 2 s fades each: the ramps would overlap (C6-1).
+        let source = try await clip()
+        var edit = recipe(source)
+        edit.adjust.exposure = 0.2
+        var time = EditTimeline()
+        time.kept = [TimeRange(start: 0.5, end: 3)]
+        time.fadeIn = 2
+        time.fadeOut = 2
+        edit.timeline = time
+        let output = folder.appendingPathComponent("fades.mp4")
+        _ = try await VideoComposer.export(source, recipe: edit, to: output) { _ in }
+        let result = try await facts(output)
+        XCTAssertEqual(result.duration, 2.5, accuracy: 0.15)
+        let item = try await VideoComposer.playerItem(AVURLAsset(url: source), recipe: edit)
+        XCTAssertNotNil(item.audioMix)
+        // A 1 s sound under a 4 s picture with 0.8 s fades each (made more likely by C5-2).
+        let short = try await clip(soundLonger: -3)
+        var shortEdit = recipe(short)
+        shortEdit.adjust.exposure = 0.2
+        var shortTime = EditTimeline()
+        shortTime.fadeIn = 0.8
+        shortTime.fadeOut = 0.8
+        shortEdit.timeline = shortTime
+        _ = try await VideoComposer.export(short, recipe: shortEdit, to: folder.appendingPathComponent("short.mov")) { _ in }
+    }
+
+    func testKeptPartsWithoutSoundAreWrittenWithoutASoundTrack() async throws {
+        // A 1 s sound under a 4 s picture, only 2 to 4 s kept: no sound in what is kept (C6-2).
+        let source = try await clip(soundLonger: -3)
+        var edit = recipe(source)
+        var time = EditTimeline()
+        time.kept = [TimeRange(start: 2, end: 4)]
+        edit.timeline = time
+        let lossless = folder.appendingPathComponent("silent.mov")
+        let built = try await VideoComposer.export(source, recipe: edit, to: lossless) { _ in }
+        XCTAssertTrue(built.lossless)
+        let plain = try await facts(lossless)
+        XCTAssertFalse(plain.audio)
+        XCTAssertEqual(plain.duration, 2, accuracy: 0.1)
+        edit.adjust.exposure = 0.2
+        let encoded = folder.appendingPathComponent("silent-encoded.mp4")
+        _ = try await VideoComposer.export(source, recipe: edit, to: encoded) { _ in }
+        let encodedFacts = try await facts(encoded)
+        XCTAssertFalse(encodedFacts.audio)
+    }
 }
 
 /// The loudest sample from `start` seconds to the end of the file's sound.

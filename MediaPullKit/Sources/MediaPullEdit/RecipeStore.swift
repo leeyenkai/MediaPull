@@ -50,12 +50,21 @@ public actor RecipeStore {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
-    /// The edited recipes, the ones shown and marked; blank ones are only kept for ⌘Z.
+    /// The edited recipes, the ones marked in the Media pane; a blank one (reverted, or holding only export settings) is
+    /// still the file's and is opened with it, so its export settings and ⌘Z stay (audit 2026-11-21-6, B6-m2).
     private var edited: [UUID: EditRecipe] { byID.filter(\.value.isEdited) }
 
-    /// The newest edited recipe at `path` that was made for the file there.
+    /// The newest recipe at `path` that was made for the file there.
     private func belonging(at path: String) -> EditRecipe? {
-        edited.values.filter { $0.source.path == path && Self.belongs($0, to: path) }.max { $0.modified < $1.modified }
+        byID.values.filter { $0.source.path == path && Self.belongs($0, to: path) }.max { $0.modified < $1.modified }
+    }
+
+    /// The recipe of this id, wherever its file is now.
+    public func recipe(id: UUID) -> EditRecipe? {
+        load()
+        guard let recipe = byID[id] else { return nil }
+        relocate(only: nil, ids: [id])
+        return byID[id] ?? recipe
     }
 
     /// Whether the recipe's file is still where it says: there, and the same file.
@@ -76,9 +85,12 @@ public actor RecipeStore {
     }
 
     /// Recipes whose file was moved or renamed outside MediaPull are brought to where their reference leads now. Only
-    /// those not in place are looked up, and none is ever written over another.
-    private func relocate(only target: String? = nil) {
-        for (id, recipe) in edited {
+    /// those not in place are looked up, and none is ever written over another. With a `target`, only recipes whose
+    /// reference is that file's are looked at, one comparison each (B6-m3).
+    private func relocate(only target: String? = nil, ids: Set<UUID>? = nil) {
+        let named = target.flatMap(Self.reference)
+        for (id, recipe) in byID where ids?.contains(id) ?? true {
+            if target != nil, named == nil || recipe.source.reference != named { continue }
             guard !Self.inPlace(recipe) else {
                 resolved[id] = nil
                 continue
@@ -151,6 +163,7 @@ public actor RecipeStore {
         if let data = try? Data(contentsOf: url), let stored = EditRecipe.decode(data) { recipe.source = stored.source }
         recipe.modified = Date()
         if recipe.source.created == nil { recipe.source.created = Self.created(recipe.source.path) }
+        if recipe.source.reference == nil { recipe.source.reference = Self.reference(recipe.source.path) }
         _ = Self.write(recipe, to: url, folder: folder)
     }
 
@@ -170,9 +183,11 @@ public actor RecipeStore {
         save(EditRecipe(id: id, source: recipe.source))
     }
 
-    /// The recipes whose files are not where they say, asked just before MediaPull moves files.
+    /// The recipes whose files are not where they say, asked just before MediaPull moves or rewrites files. Files renamed
+    /// in the Finder are followed first, while their references still lead to them (audit 2026-11-21-6, B6-1).
     public func awayIDs() -> Set<UUID> {
         load()
+        relocate()
         return Set(byID.filter { !Self.inPlace($0.value) }.keys)
     }
 

@@ -289,7 +289,7 @@ final class EditFrameTests: XCTestCase {
         blank.adjust = Adjustments()
         await outside.save(blank)
         let gone = await outside.recipe(for: later)
-        XCTAssertNil(gone)
+        XCTAssertEqual(gone?.isEdited, false)
         let marked = await outside.editedPaths()
         XCTAssertTrue(marked.isEmpty)
     }
@@ -585,5 +585,46 @@ final class EditFrameTests: XCTestCase {
         XCTAssertEqual(found?.adjust.contrast, 15)
         let marked = await store.editedPaths()
         XCTAssertEqual(marked, [renamed.standardizedFileURL.path])
+    }
+
+    // MARK: Audit round 6
+
+    func testAFinderRenameIsFollowedBeforeMediaPullRewritesTheFile() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let original = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        await store.save(edited(original, contrast: 15))
+        let renamed = folder.appendingPathComponent("b.jpg")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        // Asked before a metadata edit writes b.jpg in place (B6-1) ...
+        _ = await store.awayIDs()
+        // ... which gives the file a new identity with the same creation date.
+        let created = try XCTUnwrap(RecipeStore.created(renamed.path))
+        let copy = folder.appendingPathComponent(".copy.jpg")
+        try FileManager.default.copyItem(at: renamed, to: copy)
+        try FileManager.default.setAttributes([.creationDate: created], ofItemAtPath: copy.path)
+        _ = try FileManager.default.replaceItemAt(renamed, withItemAt: copy)
+        await store.refreshReferences([renamed.path])
+        let found = await store.recipe(for: renamed)
+        XCTAssertEqual(found?.adjust.contrast, 15)
+    }
+
+    func testARecipeFirstWrittenAtQuitIsFollowedAndExportSettingsAloneAreKept() async throws {
+        let edits = folder.appendingPathComponent("Edits")
+        let store = RecipeStore(folder: edits)
+        let original = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        store.saveNow(edited(original, contrast: 15))
+        let renamed = folder.appendingPathComponent("b.jpg")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        let followed = await RecipeStore(folder: edits).recipe(for: renamed)
+        XCTAssertEqual(followed?.adjust.contrast, 15, "a reference is taken at quit too (B6-m1)")
+        // Only an export setting chosen: kept and opened with the file, never marked edited (B6-m2).
+        let other = try dated("c.jpg", created: Date().addingTimeInterval(-3600))
+        var settings = recipe(for: other)
+        settings.export.format = .png
+        await store.save(settings)
+        let reopened = await RecipeStore(folder: edits).recipe(for: other)
+        XCTAssertEqual(reopened?.export.format, .png)
+        let marked = await store.editedPaths()
+        XCTAssertFalse(marked.contains(other.standardizedFileURL.path))
     }
 }

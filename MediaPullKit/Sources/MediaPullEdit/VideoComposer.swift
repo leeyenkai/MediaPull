@@ -79,34 +79,36 @@ public enum VideoComposer {
         guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             throw Failure.noVideo
         }
-        let audioTrack = audio != nil && timeline.volume > 0
+        var audioTrack = audio != nil && timeline.volume > 0
             ? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) : nil
         // Each track only where it has media: the file's length is its longest track, and a picture that ends before the
         // sound (or starts after it) has no frames there (audit 2026-11-21-3, C3-1).
         let videoRange = try await video.load(.timeRange)
         let audioRange = try await audio?.load(.timeRange)
-        /// Where the inserted part ends on the composition's timeline, or nil when the track has nothing there.
+        /// Where the inserted part lies on the composition's timeline, or nil when the track has nothing there.
         func insert(_ part: CMTimeRange, of source: AVAssetTrack, within range: CMTimeRange, into track: AVMutableCompositionTrack,
-                    at cursor: CMTime) throws -> CMTime?
+                    at cursor: CMTime) throws -> CMTimeRange?
         {
             let clamped = part.intersection(range)
             guard clamped.duration > .zero else { return nil }
             let at = cursor + (clamped.start - part.start)
             try track.insertTimeRange(clamped, of: source, at: at)
-            return at + clamped.duration
+            return CMTimeRange(start: at, duration: clamped.duration)
         }
         var cursor = CMTime.zero
-        // The picture's own end: where the sound outlasts it, the last picture stays (R-4609), and its fade ends there.
-        var pictureEnd: CMTime?
-        // The sound's own end likewise, so its fade-out ends where the sound does (audit 2026-11-21-5, C5-2).
-        var soundEnd: CMTime?
+        // Where the picture and the sound each start and end: where the sound outlasts the picture the last picture stays
+        // (R-4609), and each fade runs over its own media, never over silence or black (C5-2, audit 2026-11-21-6, C6-4).
+        var picture: CMTimeRange?
+        var sound: CMTimeRange?
         for range in timeline.keptRanges(duration: duration) {
             let part = CMTimeRange(start: seconds(range.start), end: seconds(range.end))
-            if let end = try insert(part, of: video, within: videoRange, into: videoTrack, at: cursor) { pictureEnd = end }
+            if let placed = try insert(part, of: video, within: videoRange, into: videoTrack, at: cursor) {
+                picture = picture.map { $0.union(placed) } ?? placed
+            }
             if let audio, let audioTrack, let audioRange,
-               let end = try insert(part, of: audio, within: audioRange, into: audioTrack, at: cursor)
+               let placed = try insert(part, of: audio, within: audioRange, into: audioTrack, at: cursor)
             {
-                soundEnd = end
+                sound = sound.map { $0.union(placed) } ?? placed
             }
             // CMTime has no +=.
             cursor = cursor + part.duration // swiftlint:disable:this shorthand_operator
@@ -116,23 +118,34 @@ public enum VideoComposer {
             composition.scaleTimeRange(CMTimeRange(start: .zero, duration: cursor),
                                        toDuration: CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
         }
-        guard let pictureEnd else { throw Failure.notWritten("the parts kept have no picture") }
-        let pictureTotal = pictureEnd.seconds / speed
-        let soundTotal = (soundEnd?.seconds ?? cursor.seconds) / speed
+        guard let picture else { throw Failure.notWritten("the parts kept have no picture") }
+        // No part kept has sound: no sound track, which an exporter cannot write empty (C6-2).
+        if sound == nil, let empty = audioTrack {
+            composition.removeTrack(empty)
+            audioTrack = nil
+        }
+        let (pictureStart, pictureEnd) = (picture.start.seconds / speed, picture.end.seconds / speed)
+        // Fades longer together than their media are shortened alike, so they meet and never overlap (C6-1).
+        func fades(over length: Double) -> (in: Double, out: Double) {
+            let total = timeline.fadeIn + timeline.fadeOut
+            let scale = total > length && total > 0 ? max(0, length) / total : 1
+            return (timeline.fadeIn * scale, timeline.fadeOut * scale)
+        }
 
         let audioMix: AVAudioMix? = {
-            guard let audioTrack, timeline.volume != 1 || timeline.fadeIn > 0 || timeline.fadeOut > 0 else { return nil }
+            guard let audioTrack, let sound, timeline.volume != 1 || timeline.fadeIn > 0 || timeline.fadeOut > 0 else { return nil }
+            let (start, end) = (sound.start.seconds / speed, sound.end.seconds / speed)
+            let (fadeIn, fadeOut) = fades(over: end - start)
             let parameters = AVMutableAudioMixInputParameters(track: audioTrack)
             let level = Float(min(max(timeline.volume, 0), 1))
-            parameters.setVolume(level, at: .zero)
-            if timeline.fadeIn > 0 {
+            parameters.setVolume(fadeIn > 0 ? 0 : level, at: .zero)
+            if fadeIn > 0 {
                 parameters.setVolumeRamp(fromStartVolume: 0, toEndVolume: level,
-                                         timeRange: CMTimeRange(start: .zero, duration: seconds(min(timeline.fadeIn, soundTotal))))
+                                         timeRange: CMTimeRange(start: seconds(start), duration: seconds(fadeIn)))
             }
-            if timeline.fadeOut > 0 {
-                let length = min(timeline.fadeOut, soundTotal)
+            if fadeOut > 0 {
                 parameters.setVolumeRamp(fromStartVolume: level, toEndVolume: 0,
-                                         timeRange: CMTimeRange(start: seconds(soundTotal - length), duration: seconds(length)))
+                                         timeRange: CMTimeRange(start: seconds(end - fadeOut), duration: seconds(fadeOut)))
             }
             let mix = AVMutableAudioMix()
             mix.inputParameters = [parameters]
@@ -152,7 +165,7 @@ public enum VideoComposer {
         let fitted = recipe.export.size.pixels(for: edited)
         let renderSize = CGSize(width: max(2, (fitted.width / 2).rounded() * 2), height: max(2, (fitted.height / 2).rounded() * 2))
         let overlay = recipe.layers.isEmpty ? nil : LayerRenderer.image(recipe.layers, canvas: renderSize).map { CIImage(cgImage: $0) }
-        let fadeIn = timeline.fadeIn, fadeOut = timeline.fadeOut
+        let (fadeIn, fadeOut) = fades(over: pictureEnd - pictureStart)
         let plain = { var copy = recipe; copy.layers = []; return copy }()
         videoTrack.preferredTransform = preferred
         let frame = CGRect(origin: .zero, size: renderSize)
@@ -173,7 +186,8 @@ public enum VideoComposer {
             }
             if let overlay { image = overlay.composited(over: image) }
             let time = request.compositionTime.seconds
-            let level = min(1, fadeIn > 0 ? time / fadeIn : 1, fadeOut > 0 ? max(0, pictureTotal - time) / fadeOut : 1)
+            let level = min(1, fadeIn > 0 ? max(0, time - pictureStart) / fadeIn : 1,
+                            fadeOut > 0 ? max(0, pictureEnd - time) / fadeOut : 1)
             if level < 1 {
                 let dim = CIFilter(name: "CIColorMatrix")
                 dim?.setValue(image, forKey: kCIInputImageKey)

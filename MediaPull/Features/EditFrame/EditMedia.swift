@@ -49,8 +49,13 @@ extension EditModel {
             do {
                 item = try await VideoComposer.playerItem(AVURLAsset(url: current), recipe: recipe)
             } catch {
-                // With the reason, as R-4609 asks (C5-4).
-                self?.message = error.localizedDescription
+                // With the reason, as R-4609 asks (C5-4), and only while this file is still open (C6-6).
+                guard let self, self.current == current else { return }
+                if case let .notWritten(reason) = error as? VideoComposer.Failure {
+                    message = "The edited video cannot be played: \(reason)"
+                } else {
+                    message = error.localizedDescription
+                }
                 return
             }
             // Still this file, still in view: never sound with no control on screen.

@@ -114,15 +114,38 @@ extension EditModel {
     /// The open file's recipe as stored now (after a paste or its undo).
     func reloadCurrentRecipe() {
         guard let current else { return }
+        let id = recipe?.id
         Task { [weak self] in
-            let stored = await AppModel.shared.recipes.recipe(for: current)
+            // By its id first, wherever the file has gone since (a Finder rename), else by the path (audit 2026-11-21-6,
+            // B6-m4).
+            let byID: EditRecipe? = if let id { await AppModel.shared.recipes.recipe(id: id) } else { nil }
+            let stored: EditRecipe? = if let byID { byID } else { await AppModel.shared.recipes.recipe(for: current) }
             let edited = await AppModel.shared.recipes.editedPaths()
             guard let self, self.current == current, let kind else { return }
-            recipe = stored ?? EditRecipe(source: EditSource(path: current.standardizedFileURL.path, kind: kind))
+            if let stored, stored.source.path != current.standardizedFileURL.path,
+               FileManager.default.fileExists(atPath: stored.source.path)
+            {
+                self.current = URL(fileURLWithPath: stored.source.path)
+            }
+            recipe = stored ?? Self.newRecipe(for: current, kind: kind)
             editedPaths = edited
             revision += 1
             render()
         }
+    }
+
+    /// A new recipe for the file at `url`, knowing that file (its creation date and reference) from the start (B6-m4).
+    static func newRecipe(for url: URL, kind: MediaKind) -> EditRecipe {
+        let path = url.standardizedFileURL.path
+        return EditRecipe(source: EditSource(path: path, reference: RecipeStore.reference(path), created: RecipeStore.created(path),
+                                             kind: kind))
+    }
+
+    /// Another window saved this recipe: shown again here unless this window has a change of its own not yet saved
+    /// (audit 2026-11-21-6, B6-2).
+    func recipeSavedElsewhere(_ id: UUID) {
+        guard recipe?.id == id, !hasUnsavedChange else { return }
+        reloadCurrentRecipe()
     }
 
     /// Exports every selected file with its own recipe and the open file's export settings, as one job (R-4611).

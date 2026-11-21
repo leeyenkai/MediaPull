@@ -45,12 +45,17 @@ extension AppModel {
                       progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> MetadataEditResult
     {
         let files = await Task.detached(priority: .userInitiated) {
-            items.flatMap { item in
-                [item] + UnitFiles.companions(of: item).filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .image }
+            // One listing per folder for the whole batch, not one per photo (audit 2026-11-21-6, A6-7).
+            let units = UnitFiles()
+            return items.flatMap { item in
+                [item] + units.companions(of: item).filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .image }
             }.map(\.path)
         }.value
         analysis.beginEdit(files)
         let previous = await analysis.currentStates(files)
+        // Recipes of files renamed in the Finder are followed while their references still lead to them: an in-place
+        // write gives the file a new reference (audit 2026-11-21-6, B6-1).
+        _ = await recipes.awayIDs()
         // Each file is followed as soon as it is replaced, so a stop part way never leaves analysis behind (D-126).
         let analysis = analysis
         let result = await journal.editMetadata(items, edit, title: title, progress: progress) { file in
