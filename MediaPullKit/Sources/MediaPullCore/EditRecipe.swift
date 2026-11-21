@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// A file's edits in Edit/Frame (section 46, D-127): the original is never changed; this recipe is applied when shown and

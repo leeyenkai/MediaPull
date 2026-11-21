@@ -31,8 +31,10 @@
 | ![Organise: sort a folder by subject](docs/images/organise.jpg) | ![Downloads: choose a video's format and resolution, then Download or Save As](docs/images/downloads.jpg) |
 | **List view** | **Column view** |
 | ![List view: sortable columns and folders that open in place](docs/images/list-view.jpg) | ![Column view: folders in columns with a preview of the chosen file](docs/images/column-view.jpg) |
-| **Profile view** | |
-| ![Profile view: a saved account with its highlights, pinned post and Reels, shown from a test folder](docs/images/profile.jpg) | |
+| **Profile view** | **Devices** |
+| ![Profile view: a saved account with its highlights, pinned post and Reels, shown from a test folder](docs/images/profile.jpg) | ![Devices: a phone's photos and clips, and Import New](docs/images/devices.jpg) |
+
+![Edit/Frame: a photo framed with the Poster template, its text layers listed beside it](docs/images/edit-frame.jpg)
 
 ## Install
 

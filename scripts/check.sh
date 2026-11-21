@@ -140,6 +140,13 @@ else
     -derivedDataPath "$CACHE/DerivedData" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u | tee /dev/stderr \
     | grep -q "BUILD SUCCEEDED" || FAILED=1
 
+  # The optimised build is the one installed and shipped; it once failed (a compiler crash reading another module's
+  # code) while every Debug check passed.
+  echo "== App build (Release, optimised)"
+  xcodebuild -project MediaPull.xcodeproj -scheme MediaPull -configuration Release -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$CACHE/DerivedData" build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u | tee /dev/stderr \
+    | grep -q "BUILD SUCCEEDED" || FAILED=1
+
   # Offline end to end: a stand-in engine replays account updates through the whole app (no network). Closures proved
   # only here must not regress unseen (audit 5, C5-m10).
   echo "== Self-test: editor Replace and account folder updates (offline)"

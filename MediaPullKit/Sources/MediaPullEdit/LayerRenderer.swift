@@ -85,12 +85,18 @@ public enum LayerRenderer {
         case .right: .right
         }
         var lineHeight = CGFloat(max(style.lineHeight, 0.5)) * size
-        let settings = [
-            CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: &alignment),
-            CTParagraphStyleSetting(spec: .minimumLineHeight, valueSize: MemoryLayout<CGFloat>.size, value: &lineHeight),
-            CTParagraphStyleSetting(spec: .maximumLineHeight, valueSize: MemoryLayout<CGFloat>.size, value: &lineHeight),
-        ]
-        let paragraph = CTParagraphStyleCreate(settings, settings.count)
+        // The values are read while the style is made, so their pointers must last until then: an `&` argument to the
+        // setting's initialiser lasts only for that call.
+        let paragraph = withUnsafeBytes(of: &alignment) { alignmentBytes in
+            withUnsafeBytes(of: &lineHeight) { lineBytes in
+                let settings = [
+                    CTParagraphStyleSetting(spec: .alignment, valueSize: alignmentBytes.count, value: alignmentBytes.baseAddress!),
+                    CTParagraphStyleSetting(spec: .minimumLineHeight, valueSize: lineBytes.count, value: lineBytes.baseAddress!),
+                    CTParagraphStyleSetting(spec: .maximumLineHeight, valueSize: lineBytes.count, value: lineBytes.baseAddress!),
+                ]
+                return CTParagraphStyleCreate(settings, settings.count)
+            }
+        }
         var attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): cgColor(style.color),
