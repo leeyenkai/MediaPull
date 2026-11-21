@@ -1,0 +1,230 @@
+@preconcurrency import AVFoundation
+import CoreImage
+import CryptoKit
+import Foundation
+import MediaPullCore
+
+/// Video edits (R-4609, D-130): the recipe's cuts and speed as a composition, and its picture (geometry, adjustments,
+/// look, frame, layers, fades) as a Core Image handler on every frame. The same build plays on the canvas and is exported.
+/// Cuts, turns, flips and muting alone are written without re-encoding.
+public enum VideoComposer {
+    public enum Failure: Error, LocalizedError {
+        case noVideo, notWritten(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .noVideo: "This file has no video to edit."
+            case let .notWritten(reason): "The edited video could not be written: \(reason)"
+            }
+        }
+    }
+
+    public struct Built: @unchecked Sendable {
+        public let composition: AVMutableComposition
+        public let videoComposition: AVVideoComposition?
+        public let audioMix: AVAudioMix?
+        public let renderSize: CGSize
+        public let lossless: Bool
+        public let speed: Double
+    }
+
+    /// Whether the recipe only cuts, turns, flips or mutes: then nothing is re-encoded (D-130).
+    public static func isLossless(_ recipe: EditRecipe) -> Bool {
+        let time = recipe.timeline ?? EditTimeline()
+        return time.cutsOnly && recipe.adjust == Adjustments() && recipe.look == nil && recipe.frame == nil
+            && recipe.layers.isEmpty && recipe.geometry.crop == nil && recipe.geometry.straighten == 0 && recipe.export.size == .original
+    }
+
+    static func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferredTimescale: 600) }
+
+    /// A turn and flip of a picture shown at `size`, in AVFoundation's coordinates (origin top left).
+    public static func turn(_ geometry: EditGeometry, size: CGSize) -> CGAffineTransform {
+        var transform = geometry.flipped ? CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: size.width, ty: 0) : .identity
+        let (w, h) = (size.width, size.height)
+        let rotation: CGAffineTransform = switch ((geometry.quarterTurns % 4) + 4) % 4 {
+        case 1: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: h, ty: 0)
+        case 2: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: w, ty: h)
+        case 3: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: w)
+        default: .identity
+        }
+        transform = transform.concatenating(rotation)
+        return transform
+    }
+
+    /// The composition, picture handler and sound for `recipe`.
+    public static func build(_ asset: AVURLAsset, recipe: EditRecipe) async throws -> Built {
+        guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
+        let audio = try await asset.loadTracks(withMediaType: .audio).first
+        let duration = try await asset.load(.duration).seconds
+        let natural = try await video.load(.naturalSize)
+        let preferred = try await video.load(.preferredTransform)
+        let fps = try await video.load(.nominalFrameRate)
+        let timeline = recipe.timeline ?? EditTimeline()
+        let lossless = isLossless(recipe)
+
+        let composition = AVMutableComposition()
+        guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw Failure.noVideo
+        }
+        let audioTrack = audio != nil && timeline.volume > 0
+            ? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) : nil
+        var cursor = CMTime.zero
+        for range in timeline.keptRanges(duration: duration) {
+            let part = CMTimeRange(start: seconds(range.start), end: seconds(range.end))
+            try videoTrack.insertTimeRange(part, of: video, at: cursor)
+            if let audio, let audioTrack { try audioTrack.insertTimeRange(part, of: audio, at: cursor) }
+            // CMTime has no +=.
+            cursor = cursor + part.duration // swiftlint:disable:this shorthand_operator
+        }
+        let speed = min(max(timeline.speed, 0.25), 4)
+        if speed != 1 {
+            composition.scaleTimeRange(CMTimeRange(start: .zero, duration: cursor),
+                                       toDuration: CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
+        }
+        let total = cursor.seconds / speed
+        let display = CGRect(origin: .zero, size: natural).applying(preferred).standardized.size
+
+        let audioMix: AVAudioMix? = {
+            guard let audioTrack, timeline.volume != 1 || timeline.fadeIn > 0 || timeline.fadeOut > 0 else { return nil }
+            let parameters = AVMutableAudioMixInputParameters(track: audioTrack)
+            let level = Float(min(max(timeline.volume, 0), 1))
+            parameters.setVolume(level, at: .zero)
+            if timeline.fadeIn > 0 {
+                parameters.setVolumeRamp(fromStartVolume: 0, toEndVolume: level,
+                                         timeRange: CMTimeRange(start: .zero, duration: seconds(min(timeline.fadeIn, total))))
+            }
+            if timeline.fadeOut > 0 {
+                let length = min(timeline.fadeOut, total)
+                parameters.setVolumeRamp(fromStartVolume: level, toEndVolume: 0,
+                                         timeRange: CMTimeRange(start: seconds(total - length), duration: seconds(length)))
+            }
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = [parameters]
+            return mix
+        }()
+
+        if lossless {
+            videoTrack.preferredTransform = preferred.concatenating(turn(recipe.geometry, size: display))
+            let size = CGRect(origin: .zero, size: display).applying(turn(recipe.geometry, size: display)).standardized.size
+            return Built(composition: composition, videoComposition: nil, audioMix: audioMix, renderSize: size, lossless: true,
+                         speed: speed)
+        }
+
+        // The picture's size after the recipe, fitted to the export size, in even pixels as encoders want.
+        let probe = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: display))
+        let edited = PhotoRenderer.render(probe, recipe: recipe).extent.size
+        let fitted = recipe.export.size.pixels(for: edited)
+        let renderSize = CGSize(width: max(2, (fitted.width / 2).rounded() * 2), height: max(2, (fitted.height / 2).rounded() * 2))
+        let overlay = recipe.layers.isEmpty ? nil : LayerRenderer.image(recipe.layers, canvas: renderSize).map { CIImage(cgImage: $0) }
+        let fadeIn = timeline.fadeIn, fadeOut = timeline.fadeOut
+        let plain = { var copy = recipe; copy.layers = []; return copy }()
+        videoTrack.preferredTransform = preferred
+        let videoComposition = try await AVMutableVideoComposition.videoComposition(with: composition) { request in
+            let source = request.sourceImage
+            let upright = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
+            var image = PhotoRenderer.render(upright, recipe: plain)
+            let extent = image.extent
+            if extent.width > 0, extent.height > 0 {
+                image = image.transformed(by: CGAffineTransform(scaleX: renderSize.width / extent.width,
+                                                                y: renderSize.height / extent.height))
+            }
+            if let overlay { image = overlay.composited(over: image) }
+            let time = request.compositionTime.seconds
+            let level = min(1, fadeIn > 0 ? time / fadeIn : 1, fadeOut > 0 ? max(0, total - time) / fadeOut : 1)
+            if level < 1 {
+                let dim = CIFilter(name: "CIColorMatrix")
+                dim?.setValue(image, forKey: kCIInputImageKey)
+                for (key, vector) in [("inputRVector", CIVector(x: level, y: 0, z: 0, w: 0)),
+                                      ("inputGVector", CIVector(x: 0, y: level, z: 0, w: 0)),
+                                      ("inputBVector", CIVector(x: 0, y: 0, z: level, w: 0))]
+                {
+                    dim?.setValue(vector, forKey: key)
+                }
+                image = dim?.outputImage ?? image
+            }
+            request.finish(with: image.cropped(to: CGRect(origin: .zero, size: renderSize)), context: nil)
+        }
+        videoComposition.renderSize = renderSize
+        let rate = fps > 0 ? Double(fps) : 30
+        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, min(120, rate.rounded()))))
+        return Built(composition: composition, videoComposition: videoComposition, audioMix: audioMix, renderSize: renderSize,
+                     lossless: false, speed: speed)
+    }
+
+    /// A player item for the canvas: the result as it will be exported.
+    @MainActor
+    public static func playerItem(_ asset: AVURLAsset, recipe: EditRecipe) async throws -> AVPlayerItem {
+        let built = try await build(asset, recipe: recipe)
+        let item = AVPlayerItem(asset: built.composition)
+        item.videoComposition = built.videoComposition
+        item.audioMix = built.audioMix
+        if built.speed != 1 { item.audioTimePitchAlgorithm = .spectral }
+        return item
+    }
+
+    /// Writes the edited video to `output` (`.mp4` or `.mov`), reporting progress; cancelling the task stops it.
+    public static func export(_ source: URL, recipe: EditRecipe, to output: URL,
+                              progress: @escaping @Sendable (Double) -> Void) async throws -> Built
+    {
+        let built = try await build(AVURLAsset(url: source), recipe: recipe)
+        let preset = built.lossless ? AVAssetExportPresetPassthrough
+            : recipe.export.videoCodec == .h264 ? AVAssetExportPresetHighestQuality : AVAssetExportPresetHEVCHighestQuality
+        guard let session = AVAssetExportSession(asset: built.composition, presetName: preset) else {
+            throw Failure.notWritten("no exporter for this video")
+        }
+        // The original's metadata (date, location, camera) is kept, as for photos.
+        session.metadata = (try? await AVURLAsset(url: source).load(.metadata)) ?? []
+        session.videoComposition = built.videoComposition
+        session.audioMix = built.audioMix
+        if built.speed != 1 { session.audioTimePitchAlgorithm = .spectral }
+        let type: AVFileType = output.pathExtension.lowercased() == "mov" ? .mov : .mp4
+        // The session only reports its state here; it is not otherwise touched from this task.
+        nonisolated(unsafe) let watched = session
+        let watcher = Task {
+            for await state in watched.states(updateInterval: 0.25) {
+                if case let .exporting(progress: current) = state { progress(current.fractionCompleted) }
+            }
+        }
+        defer { watcher.cancel() }
+        do {
+            try await session.export(to: output, as: type)
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            if error is CancellationError { throw error }
+            throw Failure.notWritten(error.localizedDescription)
+        }
+        progress(1)
+        return built
+    }
+
+    /// A digest of the compressed video samples as stored, to prove a file was not re-encoded.
+    public static func sampleDigest(_ url: URL) async -> String? {
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first, let reader = try? AVAssetReader(asset: asset) else {
+            return nil
+        }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(output)
+        guard reader.startReading() else { return nil }
+        var hasher = SHA256()
+        while let buffer = output.copyNextSampleBuffer() {
+            guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+            let length = CMBlockBufferGetDataLength(block)
+            var data = Data(count: length)
+            data.withUnsafeMutableBytes { bytes in
+                _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: bytes.baseAddress!)
+            }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A frame of the original at `seconds`, upright, for the canvas.
+    public static func frame(_ url: URL, at seconds: Double) async -> CGImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        return try? await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+    }
+}

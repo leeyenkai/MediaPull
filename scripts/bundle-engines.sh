@@ -34,6 +34,7 @@ cp "$CACHE/versions.json" "$RESOURCES/versions.json"
 if [[ -x "$CACHE/ffmpeg/ffmpeg" ]]; then
   rsync -a "$CACHE/ffmpeg/ffmpeg" "$CACHE/ffmpeg/ffprobe" "$HELPERS/"
   cp "$CACHE/ffmpeg/LICENSE-ffmpeg.txt" "$LICENSES/ffmpeg-LGPL-2.1.txt" 2>/dev/null || true
+  cp "$CACHE/ffmpeg/LICENSE-lame.txt" "$LICENSES/lame-LGPL.txt" 2>/dev/null || true
 else
   echo "warning: ffmpeg is missing. Run scripts/build-ffmpeg.sh for video merging and conversion."
 fi

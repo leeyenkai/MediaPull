@@ -8,12 +8,14 @@ import SwiftUI
 
 /// The tools of the Inspector (R-4601), by the kind of file open.
 enum EditTab: String, CaseIterable, Identifiable {
-    case adjust, crop, frame, text, export
+    case trim, sound, adjust, crop, frame, text, export
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .trim: "Trim & Speed"
+        case .sound: "Edit"
         case .adjust: "Adjust"
         case .crop: "Crop"
         case .frame: "Frame"
@@ -53,7 +55,12 @@ final class EditModel: MediaGridOwner {
     }
 
     var tab: EditTab = .adjust {
-        didSet { if tab != oldValue { render() } }
+        didSet {
+            guard tab != oldValue else { return }
+            // The timeline is cut from the original.
+            if tab == .trim, playingResult { loadPlayer() }
+            render()
+        }
     }
 
     var loadingFile = false
@@ -96,8 +103,32 @@ final class EditModel: MediaGridOwner {
     private var app: AppModel { .shared }
 
     var tabs: [EditTab] {
-        kind == .image ? EditTab.allCases : []
+        switch kind {
+        case .image: [.adjust, .crop, .frame, .text, .export]
+        case .video: [.trim, .adjust, .crop, .frame, .text, .export]
+        case .audio: [.sound, .export]
+        default: []
+        }
     }
+
+    /// Plays videos and audio on the canvas.
+    let player = EditPlayer()
+    /// The open video's or audio file's length in seconds.
+    var mediaDuration: Double = 0
+    /// The video plays as edited, rather than the original the timeline is cut from.
+    var playingResult = false
+    /// Self-tests give the model an undo manager of their own, grouped by hand: with no user events, the window's
+    /// manager never closes its groups.
+    @ObservationIgnored var testUndoManager: UndoManager?
+    var undoManager: UndoManager? { testUndoManager ?? window?.hostWindow?.undoManager }
+    /// Settings copied for Paste Settings (R-4611).
+    var copiedSettings: EditRecipe?
+    /// The audio's waveform, 0 to 1 per slice.
+    var waveform: [Float] = []
+    /// A part of the audio dragged across, to keep or cut.
+    var audioSelection: TimeRange?
+    /// The audio file's own tags, shown where nothing new is typed.
+    var currentTags: AudioTags?
 
     // MARK: Opening
 
@@ -157,6 +188,7 @@ final class EditModel: MediaGridOwner {
         openTask?.cancel()
         current = url
         let format = MediaFormat.fromExtension(url.pathExtension)
+        let previousKind = kind
         kind = format?.kind
         recipe = nil
         preview = nil
@@ -166,24 +198,44 @@ final class EditModel: MediaGridOwner {
         session = nil
         missingFonts = []
         loadingFile = true
+        playingResult = false
+        mediaDuration = 0
+        waveform = []
+        audioSelection = nil
+        currentTags = nil
+        player.stop()
         openTask = Task { [weak self] in
             let stored = await AppModel.shared.recipes.recipe(for: url)
+            var duration = 0.0
             let opened: PhotoSession? = if format?.kind == .image, !MediaFormat.isSequenceExtension(url.pathExtension) {
                 await Task.detached(priority: .userInitiated) { PhotoSession(url: url) }.value
+            } else if format?.kind == .video {
+                // A still of the video, edited like a photo; the timeline and export use the whole video.
+                await {
+                    duration = await Self.duration(of: url)
+                    return await VideoComposer.frame(url, at: min(1, duration / 2)).map { PhotoSession(image: $0, url: url) }
+                }()
             } else {
                 nil
             }
+            if format?.kind == .audio { duration = await Self.duration(of: url) }
             guard let self, !Task.isCancelled, current == url else { return }
             loadingFile = false
             guard let kind = format?.kind else { return }
+            mediaDuration = duration
             recipe = stored ?? EditRecipe(source: EditSource(path: url.standardizedFileURL.path, kind: kind))
-            if kind == .image {
+            // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
+            if previousKind != kind || !tabs.contains(tab) { tab = tabs[0] }
+            if kind == .video || kind == .audio {
+                loadPlayer()
+                if kind == .audio { loadWaveform() }
+            }
+            if kind == .image || kind == .video {
                 guard let opened else {
-                    loadError = "This picture could not be read."
+                    loadError = kind == .video ? "This video could not be read." : "This picture could not be read."
                     return
                 }
                 session = opened
-                if !tabs.contains(tab) { tab = .adjust }
                 render()
                 renderLooks()
             }
@@ -217,7 +269,7 @@ final class EditModel: MediaGridOwner {
 
     /// ⌘Z puts the recipe back as it was, for the file it belongs to, and ⇧⌘Z does it again.
     private func registerUndo(_ previous: EditRecipe) {
-        guard let manager = window?.hostWindow?.undoManager, let now = recipe else { return }
+        guard let manager = undoManager, let now = recipe else { return }
         manager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated { model.restore(previous, redo: now) }
         }
@@ -225,7 +277,7 @@ final class EditModel: MediaGridOwner {
     }
 
     private func restore(_ recipe: EditRecipe, redo: EditRecipe) {
-        if let manager = window?.hostWindow?.undoManager {
+        if let manager = undoManager {
             manager.registerUndo(withTarget: self) { model in
                 MainActor.assumeIsolated { model.restore(redo, redo: recipe) }
             }
@@ -336,20 +388,33 @@ final class EditModel: MediaGridOwner {
 
     /// Writes the edited photo as a new file beside the original (or into the chosen folder), as a job.
     func export() {
-        guard let url = current, let recipe, kind == .image, !exporting else { return }
+        guard let url = current, let recipe, let kind, !exporting else { return }
         flushSave()
         let destination = exportFolder ?? url.deletingLastPathComponent()
         let job = Job(kind: .export, title: "Export “\(url.lastPathComponent)”")
         job.state = .running
         app.jobs.add(job)
         exporting = true
+        let progress: @Sendable (Double) -> Void = { fraction in
+            Task { @MainActor in
+                job.fraction = fraction
+                job.summaryOverride = "\(Int((fraction * 100).rounded())) %"
+            }
+        }
         job.task = Task { [weak self] in
-            let result = await Self.export(url, recipe: recipe, into: destination)
+            let result: Result<URL, Error> = switch kind {
+            case .video: await Self.exportVideo(url, recipe: recipe, into: destination, progress: progress)
+            case .audio: await Self.exportAudio(url, recipe: recipe, into: destination, progress: progress)
+            default: await Self.export(url, recipe: recipe, into: destination)
+            }
             switch result {
             case let .success(placed):
                 AppModel.shared.jobs.finish(job, .completed, notify: false)
                 self?.message = "Exported “\(placed.lastPathComponent)”."
                 AppModel.shared.fileChangeRevision += 1
+            case let .failure(error) where error is CancellationError:
+                AppModel.shared.jobs.finish(job, .cancelled, notify: false)
+                self?.message = "Export stopped; nothing was written."
             case let .failure(error):
                 AppModel.shared.jobs.finish(job, .failed(error.localizedDescription), notify: false)
                 self?.message = error.localizedDescription
@@ -426,6 +491,10 @@ final class EditModel: MediaGridOwner {
         let chosen = ids.sorted().map { URL(fileURLWithPath: $0) }
         guard !chosen.isEmpty else { return nil }
         let menu = NSMenu()
+        for item in batchMenuItems(for: chosen) {
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen) })
         let edited = chosen.filter { editedPaths.contains($0.standardizedFileURL.path) }
         if !edited.isEmpty {

@@ -267,9 +267,9 @@ change as the code.
 | R-4606 | built | `LayerRenderer`, `EditLayerOverlay`, `LayersTab` in `MediaPull/Features/EditFrame/EditInspector.swift` | `testAFrameAndTextAreDrawnWhereTheRecipeSays`, `--selftest-edit-photo` | Dragging layers needs a person |
 | R-4607 | built | `FontCatalog`, `LayerRenderer.font`, `FontPicker` in `MediaPull/Features/EditFrame/EditInspector.swift`, `Preferences.allowFontDownloads` | `testAFrameAndTextAreDrawnWhereTheRecipeSays`, `docs/spikes/fonts.md` | A real download from Apple needs a person |
 | R-4608 | built | `PhotoExporter`, `EditModel.export` | `testExportWritesANewFileAndLeavesTheOriginal`, `--selftest-edit-photo` | HDR waits for spike S2 |
-| R-4609 | missing | | | Video editing: next step |
-| R-4610 | missing | | | Audio editing: next step |
-| R-4611 | missing | | | Copy and Paste Settings, Export Selected: next step |
+| R-4609 | built | `VideoComposer`, `EditModel.exportVideo`, `EditTimelineView`, `EditPlayer` | `testTurningAndCuttingAreNotReEncoded`, `testALookAFrameAndSpeedAreRendered`, `testAPortraitClipStaysUpright`, `--selftest-edit-video` | Cuts, turns and mute pass the compressed frames through unchanged (checked by digest); HDR video waits for spike S5 |
+| R-4610 | built | `AudioEdit`, `AudioEditPlan`, `FFmpeg.editAudio`, `FFmpeg.waveform`, `EditAudioCanvas`, `EditModel.exportAudio` | `testCopyingOnlyWhenNothingButCuts`, `testArgumentsAndFilters`, `testTheBundledEngineEditsAudio`, `--selftest-edit-audio` | MP3 by LAME; cuts of MP3 and AAC copy the frames |
+| R-4611 | built | `SettingGroup`, `EditModel.pasteSettings`, `EditModel.exportSelected` | `--selftest-edit-photo` | |
 | R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
 | R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
 | R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |

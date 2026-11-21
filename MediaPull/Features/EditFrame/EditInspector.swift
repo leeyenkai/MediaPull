@@ -26,14 +26,16 @@ struct EditInspectorPane: View {
                 }
             }
             Divider()
-            if edit.recipe == nil || edit.kind != .image {
-                Text(edit.current == nil ? "Open a photo to edit it." : "Nothing to adjust here yet.")
+            if edit.recipe == nil {
+                Text(edit.current == nil ? "Open a photo, video or audio file to edit it." : "Opening…")
                     .font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         switch edit.tab {
+                        case .trim: TrimTab(edit: edit)
+                        case .sound: SoundTab(edit: edit)
                         case .adjust: AdjustTab(edit: edit)
                         case .crop: CropTab(edit: edit)
                         case .frame: FrameTab(edit: edit)
@@ -514,6 +516,35 @@ private struct ExportTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            switch edit.kind {
+            case .video: videoSettings
+            case .audio: AudioExportSettings(edit: edit)
+            default: photoSettings
+            }
+            Divider()
+            destination
+        }
+    }
+
+    @ViewBuilder private var videoSettings: some View {
+        Picker("Size", selection: edit.value(\.export.size, fallback: .original)) {
+            ForEach(ExportSettings.Size.allCases, id: \.self) { Text($0.label).tag($0) }
+        }
+        Picker("Codec", selection: edit.value(\.export.videoCodec, fallback: .hevc)) {
+            ForEach(ExportSettings.VideoCodec.allCases, id: \.self) { Text($0.label).tag($0) }
+        }
+        Picker("File", selection: edit.value(\.export.videoContainer, fallback: .mp4)) {
+            ForEach(ExportSettings.VideoContainer.allCases, id: \.self) { Text($0.label).tag($0) }
+        }
+        if let recipe = edit.recipe {
+            Text(VideoComposer.isLossless(recipe)
+                ? "Only cuts, turns or muting: written without re-encoding, exactly as recorded."
+                : "The picture changes, so it is encoded again with \(recipe.export.videoCodec.label).")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var photoSettings: some View {
             Picker("Format", selection: edit.value(\.export.format, fallback: .jpeg)) {
                 ForEach(ExportSettings.PhotoFormat.allCases, id: \.self) { Text($0.label).tag($0) }
             }
@@ -531,7 +562,9 @@ private struct ExportTab: View {
             Toggle("Keep the location", isOn: edit.value(\.export.keepLocation, fallback: true))
             Toggle("Keep the camera details", isOn: edit.value(\.export.keepCamera, fallback: true))
             Text("HDR is not kept in an edited copy.").font(.caption).foregroundStyle(.secondary)
-            Divider()
+    }
+
+    @ViewBuilder private var destination: some View {
             Text("Save To").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             HStack {
                 Text(edit.exportFolder.map { "“\($0.lastPathComponent)”" } ?? "Beside the original").font(.callout)
@@ -551,7 +584,6 @@ private struct ExportTab: View {
             .buttonStyle(.borderedProminent)
             .disabled(edit.exporting)
             Text("A new file is written; the original is not changed.").font(.caption).foregroundStyle(.secondary)
-        }
     }
 
     private func choose() {
@@ -562,5 +594,63 @@ private struct ExportTab: View {
         panel.prompt = "Export Here"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         edit.exportFolder = url
+    }
+}
+
+/// Cuts, speed, fades and sound for a video (R-4609).
+private struct TrimTab: View {
+    @Bindable var edit: EditModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Cut").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack {
+                Button("Start Here") { edit.trimStart(at: edit.player.time) }
+                    .help("Everything before the playhead goes")
+                Button("End Here") { edit.trimEnd(at: edit.player.time) }
+                    .help("Everything after the playhead goes")
+                Button("Split Here") { edit.split(at: edit.player.time) }
+                    .help("Cut at the playhead, so either part can be removed")
+            }
+            .controlSize(.small)
+            .disabled(edit.playingResult)
+            let parts = edit.keptRanges
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                HStack {
+                    Text("\(EditTimelineView.clock(part.start)) – \(EditTimelineView.clock(part.end))").font(.callout.monospacedDigit())
+                    Spacer()
+                    if parts.count > 1 {
+                        Button { edit.removePart(part) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Remove this part")
+                            .help("Remove this part")
+                    }
+                }
+            }
+            Button("Keep All") { edit.resetCuts() }.controlSize(.small).disabled(edit.recipe?.timeline?.kept.isEmpty ?? true)
+        }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Speed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Picker("Speed", selection: Binding(get: { edit.timeline.speed }, set: { value in edit.setTimeline { $0.speed = value } })) {
+                ForEach([0.25, 0.5, 1, 1.5, 2, 4], id: \.self) { Text($0 == 1 ? "Normal" : "\($0.formatted())×").tag($0) }
+            }
+            .labelsHidden()
+            Text("Fades and Sound").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            EditSlider(label: "Fade In",
+                       value: Binding(get: { edit.timeline.fadeIn }, set: { value in edit.setTimeline { $0.fadeIn = value } }),
+                       range: 0 ... 5, format: { String(format: "%.1f s", $0) }, model: edit)
+            EditSlider(label: "Fade Out", value: Binding(get: { edit.timeline.fadeOut },
+                                                         set: { value in edit.setTimeline { $0.fadeOut = value } }),
+                       range: 0 ... 5, format: { String(format: "%.1f s", $0) }, model: edit)
+            EditSlider(label: "Volume", value: Binding(get: { min(edit.timeline.volume, 1) * 100 },
+                                                       set: { value in edit.setTimeline { $0.volume = value / 100 } }),
+                       range: 0 ... 100, neutral: 100, format: { String(format: "%.0f %%", $0) }, model: edit)
+            Toggle("Mute", isOn: Binding(get: { edit.timeline.volume == 0 }, set: { on in edit.setTimeline { $0.volume = on ? 0 : 1 } }))
+        }
+        Divider()
+        Button("Save Frame at Playhead") { edit.saveFrame() }
+            .controlSize(.small)
+            .disabled(edit.playingResult)
+            .help("Saves the frame shown as a PNG, at full size")
     }
 }

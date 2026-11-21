@@ -4,6 +4,7 @@ import ImageIO
 import Foundation
 import MediaPullCore
 import MediaPullDevices
+import MediaPullEdit
 import MediaPullEngines
 import MediaPullLibrary
 import MediaPullMedia
@@ -134,6 +135,16 @@ final class SelfTestRunner {
         }
         if CommandLine.arguments.contains("--selftest-edit-photo") {
             await exerciseEditPhoto(out: out)
+            quit()
+            return
+        }
+        if CommandLine.arguments.contains("--selftest-edit-video") {
+            await exerciseEditVideo(out: out)
+            quit()
+            return
+        }
+        if CommandLine.arguments.contains("--selftest-edit-audio") {
+            await exerciseEditAudio(out: out)
             quit()
             return
         }
@@ -1626,19 +1637,197 @@ final class SelfTestRunner {
 
         // Revert, then ⌘Z.
         // In use each change is its own event (a click, a drag), which closes its undo group. A self-test has no events,
-        // so the group stays open: here the test closes it and makes Revert a group of its own, as a click would.
-        let manager = model.hostWindow?.undoManager
-        manager?.groupsByEvent = false
-        while let manager, manager.groupingLevel > 0 { manager.endUndoGrouping() }
-        manager?.beginUndoGrouping()
+        // so it gives the model an undo manager of its own and makes Revert a group of its own, as a click would.
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+        edit.testUndoManager = manager
+        manager.beginUndoGrouping()
         edit.revert()
-        manager?.endUndoGrouping()
+        manager.endUndoGrouping()
         check(edit.recipe?.isEdited == false, "Revert clears the edits")
-        manager?.undo()
-        manager?.groupsByEvent = true
+        manager.undo()
+        edit.testUndoManager = nil
         check(edit.recipe?.layers.count == 5, "⌘Z brings them back")
+
+        // Copy the settings, paste them onto a second photo, then export both at once (R-4611).
+        let second = folder.appendingPathComponent("second.jpg")
+        try? fm.copyItem(at: photo, to: second)
+        edit.reloadFolder()
+        await waitUntil(timeout: 20) { edit.entries.contains { $0.name == "second.jpg" } }
+        edit.copySettings()
+        edit.pasteSettings(Set(SettingGroup.allCases), to: [second])
+        await waitUntil(timeout: 20) { edit.editedPaths.contains(second.standardizedFileURL.path) }
+        let pasted = await AppModel.shared.recipes.recipe(for: second)
+        check(pasted?.layers.count == 5 && pasted?.look?.name == .film && pasted?.frame?.shape == .portrait23,
+              "Paste Settings carries the look, frame and text to another photo")
+        let exportedBefore = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
+        // As the Media pane lists them (a temporary folder is under /var, which is /private/var), as a click selects them.
+        edit.selection = Set(edit.entries.filter { ["street.jpg", "second.jpg"].contains($0.name) }.map(\.path))
+        edit.exportSelected()
+        await waitUntil(timeout: 60) {
+            !edit.exporting && Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).count >= exportedBefore.count + 2
+        }
+        let added = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).subtracting(exportedBefore)
+        check(added.count == 2 && added.contains("second-edited.jpg"), "Export Selected wrote both (\(added.sorted()))")
         model.section = .collect
         note("edit-photo: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Edit/Frame for videos (section 46, R-4609), offline: a cut and a turn written without re-encoding, then a look, the
+    /// Poster frame, speed and a fade rendered into HEVC, a frame saved, the original untouched.
+    private func exerciseEditVideo(out: URL) async {
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("edit-video: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        let folder = out.appendingPathComponent("Clips", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clip = folder.appendingPathComponent("clip.mp4")
+        try? await Self.writeTestClip(to: clip)
+        let original = (try? FileHasher.sha256(of: clip)) ?? ""
+        let edit = model.edit
+        model.openInEdit([clip])
+        await waitUntil(timeout: 30) { edit.session != nil && edit.mediaDuration > 0 }
+        check(edit.kind == .video && edit.tab == .trim && edit.mediaDuration > 3.9,
+              "the video opened on the Trim tab (\(edit.mediaDuration) s)")
+
+        // Cut to 1 s – 3 s and turned: no re-encoding.
+        edit.player.seek(1)
+        edit.trimStart(at: 1)
+        edit.trimEnd(at: 3)
+        edit.change { $0.geometry.quarterTurns = 1 }
+        check(edit.keptRanges == [TimeRange(start: 1, end: 3)], "the cut keeps 1 s to 3 s (\(edit.keptRanges))")
+        func exportAndWait(_ name: String) async -> URL {
+            let url = folder.appendingPathComponent(name)
+            edit.export()
+            await waitUntil(timeout: 120) { !edit.exporting && fm.fileExists(atPath: url.path) }
+            await waitUntil(timeout: 10) { !edit.exporting }
+            return url
+        }
+        let cut = await exportAndWait("clip-edited.mp4")
+        let cutAsset = AVURLAsset(url: cut)
+        let cutDuration = (try? await cutAsset.load(.duration).seconds) ?? 0
+        let cutTrack = try? await cutAsset.loadTracks(withMediaType: .video).first
+        let codec = try? await cutTrack?.load(.formatDescriptions).first.map { CMFormatDescriptionGetMediaSubType($0) }
+        let natural = (try? await cutTrack?.load(.naturalSize)) ?? .zero
+        let transform = (try? await cutTrack?.load(.preferredTransform)) ?? .identity
+        let shown = CGRect(origin: .zero, size: natural).applying(transform).standardized.size
+        check(abs(cutDuration - 2) < 0.1, "the cut is 2 s long (\(cutDuration))")
+        check(codec == kCMVideoCodecType_H264, "the cut is not re-encoded (still H.264)")
+        check(shown.width < shown.height, "the cut is turned upright (\(shown))")
+
+        // A look, the Poster frame, twice the speed and a fade: rendered.
+        edit.change { recipe in
+            recipe.look = Look(name: .noir)
+            EditTemplate.poster.apply(to: &recipe)
+            recipe.timeline?.speed = 2
+            recipe.timeline?.fadeIn = 0.3
+            recipe.export.size = .post45
+        }
+        let rendered = await exportAndWait("clip-edited 2.mp4")
+        let renderedAsset = AVURLAsset(url: rendered)
+        let renderedDuration = (try? await renderedAsset.load(.duration).seconds) ?? 0
+        let renderedTrack = try? await renderedAsset.loadTracks(withMediaType: .video).first
+        let renderedCodec = try? await renderedTrack?.load(.formatDescriptions).first.map { CMFormatDescriptionGetMediaSubType($0) }
+        let size = (try? await renderedTrack?.load(.naturalSize)) ?? .zero
+        check(abs(renderedDuration - 1) < 0.15, "twice as fast: 1 s (\(renderedDuration))")
+        check(renderedCodec == kCMVideoCodecType_HEVC, "rendered as HEVC")
+        check(size.height <= 1350 && abs(size.width / max(size.height, 1) - 2.0 / 3) < 0.02, "the poster's 2:3 shape (\(size))")
+        if let frame = await VideoComposer.frame(rendered, at: 0.6) {
+            let corner = Self.colour(frame, x: 2, y: 2)
+            check(corner.r > 220 && corner.g > 220, "the white border is drawn on the video (\(corner))")
+        } else {
+            check(false, "a frame of the rendered video can be read")
+        }
+
+        // A frame saved as a PNG; the original untouched.
+        edit.tab = .trim
+        edit.player.seek(2)
+        let before = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
+        edit.saveFrame()
+        await waitUntil(timeout: 20) { Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).count > before.count }
+        let frames = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).subtracting(before)
+        check(frames.count == 1 && frames.first?.hasSuffix(".png") == true, "Save Frame wrote a PNG (\(frames.sorted()))")
+        check((try? FileHasher.sha256(of: clip)) == original, "the original is unchanged")
+        model.section = .collect
+        note("edit-video: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Edit/Frame for audio (section 46, R-4610), offline: a tagged MP3 cut by copying its frames, then faded, made louder
+    /// and written as FLAC with a new title, the original untouched.
+    private func exerciseEditAudio(out: URL) async {
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("edit-audio: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        guard let ffmpeg = AppModel.shared.ffmpeg else {
+            check(false, "the bundled ffmpeg is there")
+            note("edit-audio: FAIL [\"no ffmpeg\"]")
+            return
+        }
+        let folder = out.appendingPathComponent("Sounds", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        // A quiet 6 s tone, made into a tagged MP3 with the bundled encoder.
+        let wav = out.appendingPathComponent("tone.wav")
+        if let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1),
+           let file = try? AVAudioFile(forWriting: wav, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 44100,
+                                                                   AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+                                                                   AVLinearPCMIsFloatKey: false]),
+           let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100 * 6)
+        {
+            buffer.frameLength = 44100 * 6
+            for i in 0 ..< Int(buffer.frameLength) {
+                buffer.floatChannelData?[0][i] = Float(sin(Double(i) * 2 * .pi * 440 / 44100) * 0.1)
+            }
+            try? file.write(from: buffer)
+        }
+        let song = folder.appendingPathComponent("tone.mp3")
+        var make = AudioEditPlan(source: wav, output: song, format: .mp3, kept: [TimeRange(start: 0, end: 6)])
+        make.tags.title = "Tone"
+        make.tags.artist = "Tester"
+        do { try await ffmpeg.editAudio(make) } catch { check(false, "an MP3 can be made: \(error.localizedDescription)") }
+        let original = (try? FileHasher.sha256(of: song)) ?? ""
+
+        let edit = model.edit
+        model.openInEdit([song])
+        await waitUntil(timeout: 30) { edit.kind == .audio && !edit.waveform.isEmpty && edit.mediaDuration > 5 }
+        check(edit.tab == .sound && edit.waveform.count > 100, "the MP3 opened with its waveform (\(edit.waveform.count) slices)")
+        check(edit.currentTags?.title == "Tone", "its own tags are shown")
+
+        // Keep 1 s to 3 s: the MP3's frames are copied, not encoded again.
+        edit.audioSelection = TimeRange(start: 1, end: 3)
+        edit.keepSelection()
+        check(edit.keptRanges == [TimeRange(start: 1, end: 3)], "Keep Selection keeps 1 s to 3 s")
+        func exportAndWait(_ name: String) async -> URL {
+            let url = folder.appendingPathComponent(name)
+            edit.export()
+            await waitUntil(timeout: 5) { edit.exporting }
+            await waitUntil(timeout: 60) { !edit.exporting }
+            if !fm.fileExists(atPath: url.path) { note("edit-audio: export of \(name) said \(edit.message ?? "nothing")") }
+            return url
+        }
+        let cut = await exportAndWait("tone-edited.mp3")
+        let cutTags = await ffmpeg.audioTags(cut)
+        check(abs((cutTags?.duration ?? 0) - 2) < 0.1 && cutTags?.tags.codec == "MP3", "the cut is a 2 s MP3 (\(cutTags?.duration ?? 0))")
+        check(cutTags?.tags.title == "Tone", "the cut keeps its tags")
+
+        // Faded, evened out, retitled, as FLAC.
+        edit.setTimeline { $0.fadeIn = 0.5; $0.normalize = true }
+        edit.setTags { $0.title = "New Title" }
+        edit.change { $0.export.audioFormat = .flac }
+        let flac = await exportAndWait("tone-edited.flac")
+        let flacTags = await ffmpeg.audioTags(flac)
+        check(flacTags?.tags.codec == "FLAC" && flacTags?.tags.title == "New Title", "written as FLAC with the new title")
+        let peaks = (try? await ffmpeg.waveform(flac, buckets: 10)) ?? []
+        check(peaks.count == 10 && peaks[0] < peaks[5], "it fades in (\(peaks.prefix(3)))")
+        check((peaks.max() ?? 0) > 0.2, "it is louder than the quiet original (\(peaks.max() ?? 0))")
+        check((try? FileHasher.sha256(of: song)) == original, "the original is unchanged")
+        model.section = .collect
+        note("edit-audio: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
     }
 
     /// The colour of one pixel, origin top left.

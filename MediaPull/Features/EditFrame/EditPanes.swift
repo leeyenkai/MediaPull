@@ -12,6 +12,23 @@ struct EditMediaPane: View {
         VStack(spacing: 0) {
             PaneHeader(title: "Media", pane: .editMedia, model: model) {
                 Button("Choose Folder…", action: chooseFolder).controlSize(.small)
+                Menu {
+                    Button("Copy Settings") { edit.copySettings() }.disabled(edit.recipe == nil)
+                    Menu("Paste Settings to Selected") {
+                        Button("All") { edit.pasteSettings(Set(SettingGroup.allCases), to: edit.selectedFiles) }
+                        ForEach(SettingGroup.allCases) { group in
+                            Button(group.label) { edit.pasteSettings([group], to: edit.selectedFiles) }
+                        }
+                    }
+                    .disabled(edit.copiedSettings == nil || edit.selectedFiles.isEmpty)
+                    Button("Export Selected") { edit.exportSelected() }.disabled(edit.selectedFiles.isEmpty || edit.exporting)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("More")
+                .help("Copy settings, paste them onto the selected files, or export them all")
             }
             Divider()
             if let folder = edit.folder {
@@ -69,7 +86,14 @@ struct EditCanvasPane: View {
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(title: edit.current?.lastPathComponent ?? "Canvas", pane: .editCanvas, model: model) {
-                if edit.session != nil {
+                if edit.kind == .video {
+                    Button(edit.playingResult ? "Show Original" : "Play Result") {
+                        if edit.playingResult { edit.loadPlayer() } else { edit.playResult() }
+                    }
+                    .controlSize(.small)
+                    .help("Play the video as it will be exported, or go back to the original to cut it")
+                }
+                if edit.session != nil, edit.tab != .trim {
                     Toggle("Before", isOn: $edit.showingBefore)
                         .toggleStyle(.button)
                         .controlSize(.small)
@@ -117,12 +141,25 @@ struct EditCanvasPane: View {
             Text("Choose a photo in Media, or drag one here.").font(.callout).foregroundStyle(.secondary)
         } else if let error = edit.loadError {
             Text(error).font(.callout).foregroundStyle(.secondary)
-        } else if edit.kind != .image {
-            VStack(spacing: 8) {
-                Image(systemName: edit.kind == .audio ? "waveform" : "film")
-                    .font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
-                Text("Editing videos and audio comes next.").font(.callout).foregroundStyle(.secondary)
+        } else if edit.kind == .audio {
+            EditAudioCanvas(edit: edit)
+        } else if edit.kind == .video, edit.tab == .trim || edit.playingResult {
+            VStack(spacing: 10) {
+                EditPlayerView(player: edit.player)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityLabel(edit.playingResult ? "The edited video" : "The original video")
+                if !edit.playingResult {
+                    EditTimelineView(edit: edit).padding(.horizontal, 12)
+                    HStack {
+                        Text(EditTimelineView.clock(edit.player.time)).font(.caption.monospacedDigit())
+                        Spacer()
+                        Text("Result \(EditTimelineView.clock(edit.timeline.resultDuration(of: edit.mediaDuration)))")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                }
             }
+            .padding(.vertical, 12)
         } else if edit.tab == .crop, !edit.showingBefore, let image = edit.cropImage {
             let frame = fittedRect(CGSize(width: image.width, height: image.height), in: bounds).offsetBy(dx: 16, dy: 16)
             ZStack(alignment: .topLeading) {

@@ -29,6 +29,14 @@ public final class PhotoSession: @unchecked Sendable {
         }
     }
 
+    /// A still (a video's frame) to edit on the canvas like a photo.
+    public init(image: CGImage, url: URL) {
+        self.url = url
+        let full = CIImage(cgImage: image)
+        size = full.extent.size
+        proxy = PhotoRenderer.scaled(full, toFit: CGSize(width: Self.proxyEdge, height: Self.proxyEdge))
+    }
+
     /// The result for the canvas, fitted to `fit` points × scale. `before` shows the photo with no edits (Before/After).
     public func preview(_ recipe: EditRecipe, fit: CGSize, before: Bool = false) -> CGImage? {
         if before { return PhotoRenderer.cgImage(PhotoRenderer.scaled(proxy, toFit: fit)) }

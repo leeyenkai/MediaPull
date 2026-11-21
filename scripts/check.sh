@@ -191,6 +191,18 @@ else
     NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-edit-photo 2>&1 \
       | grep -E "edit-photo: (PASS|FAIL)" | tee /dev/stderr | grep -q "edit-photo: PASS" || FAILED=1
   fi
+  # Edit/Frame for videos, offline (section 46).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-edit-video 2>&1 \
+      | grep -E "edit-video: (PASS|FAIL)" | tee /dev/stderr | grep -q "edit-video: PASS" || FAILED=1
+  fi
+  # Edit/Frame for audio, offline, with the bundled ffmpeg (section 46).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-edit-audio 2>&1 \
+      | grep -E "edit-audio: (PASS|FAIL)" | tee /dev/stderr | grep -q "edit-audio: PASS" || FAILED=1
+  fi
   # Metadata edits, offline (section 45).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
   if [[ -x "$APP" ]]; then

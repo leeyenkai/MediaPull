@@ -12,6 +12,8 @@ public struct EditRecipe: Codable, Sendable, Hashable, Identifiable {
     public var frame: Frame?
     public var layers: [Layer] = []
     public var timeline: EditTimeline?
+    /// Audio tags and artwork to change (R-4610).
+    public var tags: AudioTagEdit?
     public var export = ExportSettings()
 
     public init(id: UUID = UUID(), source: EditSource, modified: Date = Date()) {
@@ -23,7 +25,7 @@ public struct EditRecipe: Codable, Sendable, Hashable, Identifiable {
     /// Whether anything is edited (a blank recipe is not kept).
     public var isEdited: Bool {
         geometry != EditGeometry() || adjust != Adjustments() || look != nil || frame != nil || !layers.isEmpty
-            || (timeline.map { $0 != EditTimeline() } ?? false)
+            || (timeline.map { $0 != EditTimeline() } ?? false) || (tags.map { $0 != AudioTagEdit() } ?? false)
     }
 
     /// Reads a stored recipe; a missing or newer field falls back to its neutral value.
@@ -454,6 +456,70 @@ public struct TimeRange: Codable, Sendable, Hashable {
     }
 }
 
+// MARK: Audio (R-4610)
+
+/// Tag changes for an audio export: nil leaves a tag as it is, an empty text removes it.
+public struct AudioTagEdit: Codable, Sendable, Hashable {
+    public var title: String?
+    public var artist: String?
+    public var album: String?
+    public var albumArtist: String?
+    public var year: String?
+    public var genre: String?
+    public var track: String?
+    /// A picture file to use as the artwork.
+    public var artworkPath: String?
+    public var removeArtwork = false
+
+    public init() {}
+
+    /// ffmpeg's metadata keys with their new values.
+    public var metadata: [(key: String, value: String)] {
+        [("title", title), ("artist", artist), ("album", album), ("album_artist", albumArtist), ("date", year), ("genre", genre),
+         ("track", track)].compactMap { key, value in value.map { (key, $0.trimmingCharacters(in: .whitespacesAndNewlines)) } }
+    }
+}
+
+/// What an audio export is written as.
+public enum AudioOutput: String, Codable, Sendable, CaseIterable {
+    case mp3, aac, alac, flac, wav, aiff
+
+    public var label: String {
+        switch self {
+        case .mp3: "MP3"
+        case .aac: "M4A (AAC)"
+        case .alac: "M4A (Apple Lossless)"
+        case .flac: "FLAC"
+        case .wav: "WAV"
+        case .aiff: "AIFF"
+        }
+    }
+
+    public var fileExtension: String {
+        switch self {
+        case .mp3: "mp3"
+        case .aac, .alac: "m4a"
+        case .flac: "flac"
+        case .wav: "wav"
+        case .aiff: "aiff"
+        }
+    }
+
+    /// Whether a picture can be stored with it.
+    public var holdsArtwork: Bool { [.mp3, .aac, .alac, .flac].contains(self) }
+
+    /// The output like the original where MediaPull can write that format; Ogg and Opus become AAC.
+    public static func like(_ fileExtension: String) -> AudioOutput {
+        switch fileExtension.lowercased() {
+        case "mp3": .mp3
+        case "flac": .flac
+        case "wav": .wav
+        case "aif", "aiff", "aifc": .aiff
+        default: .aac
+        }
+    }
+}
+
 // MARK: Export (R-4608)
 
 public struct ExportSettings: Codable, Sendable, Hashable {
@@ -499,8 +565,24 @@ public struct ExportSettings: Codable, Sendable, Hashable {
         }
     }
 
+    public enum VideoCodec: String, Codable, Sendable, CaseIterable {
+        case hevc, h264
+
+        public var label: String { self == .hevc ? "HEVC" : "H.264" }
+    }
+
+    public enum VideoContainer: String, Codable, Sendable, CaseIterable {
+        case mp4, mov
+
+        public var label: String { rawValue.uppercased() }
+    }
+
     public var format: PhotoFormat = .jpeg
     public var size: Size = .original
+    public var videoCodec: VideoCodec = .hevc
+    public var videoContainer: VideoContainer = .mp4
+    /// Nil: like the original (`AudioOutput.like`).
+    public var audioFormat: AudioOutput?
     /// 0.5 to 1.
     public var quality: Double = 0.92
     public var displayP3 = false
