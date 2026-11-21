@@ -92,6 +92,58 @@ public struct FFmpeg: Sendable {
         return info
     }
 
+    /// Tags, codec, bit rate and length of an audio file the system cannot open (R-4205).
+    public func audioTags(_ url: URL) async -> (tags: AudioTags, duration: Double?)? {
+        guard let output = try? await Self.run(ffprobe, [
+            "-v", "error", "-print_format", "json", "-show_streams", "-show_format", url.path,
+        ]), let data = output.stdout.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        var tags = AudioTags()
+        var raw: [String: String] = [:]
+        let format = json["format"] as? [String: Any]
+        let streams = (json["streams"] as? [[String: Any]]) ?? []
+        // Ogg keeps its comments on the stream, other containers on the file.
+        for source in [format?["tags"]] + streams.map({ $0["tags"] }) {
+            for (key, value) in (source as? [String: Any]) ?? [:] {
+                if let text = value as? String, !text.isEmpty, raw[key.lowercased()] == nil { raw[key.lowercased()] = text }
+            }
+        }
+        tags.title = raw["title"]
+        tags.artist = raw["artist"]
+        tags.album = raw["album"]
+        tags.albumArtist = raw["album_artist"] ?? raw["albumartist"]
+        tags.genre = raw["genre"]
+        tags.year = (raw["date"] ?? raw["year"]).flatMap { Int($0.prefix(4)) }
+        tags.track = (raw["track"] ?? raw["tracknumber"]).flatMap { $0.split(separator: "/").first.flatMap { Int($0) } }
+        if let audio = streams.first(where: { $0["codec_type"] as? String == "audio" }) {
+            tags.codec = (audio["codec_name"] as? String).map { $0 == "vorbis" ? "Vorbis" : $0.uppercased() }
+            tags.bitrate = (audio["bit_rate"] as? String).flatMap(Int.init)
+        }
+        tags.bitrate = tags.bitrate ?? (format?["bit_rate"] as? String).flatMap(Int.init)
+        let duration = (format?["duration"] as? String).flatMap(Double.init)
+        return (tags, duration)
+    }
+
+    /// A hash of the first audio stream's packets alone, without tags (R-4205): the same sound saved with other tags has
+    /// the same hash.
+    public func audioStreamHash(_ url: URL) async -> String? {
+        guard let output = try? await Self.run(ffmpeg, [
+            "-hide_banner", "-nostdin", "-v", "error", "-i", url.path, "-map", "0:a:0", "-c", "copy",
+            "-f", "streamhash", "-hash", "sha256", "-",
+        ]) else { return nil }
+        // "0,a,SHA256=…"
+        return output.stdout.split(separator: "\n").first.flatMap { line in line.split(separator: "=").last.map(String.init) }
+    }
+
+    /// A copy of an audio file the system cannot play (Ogg, Opus) that it can, for the preview only (R-4205).
+    public func playableCopy(of url: URL, to output: URL) async throws {
+        _ = try await Self.run(ffmpeg, [
+            "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", url.path, "-vn", "-map", "0:a:0", "-c:a", "aac_at", "-b:a", "192k",
+            output.path,
+        ])
+    }
+
     /// Copies streams into an MP4 container without re-encoding.
     public func remuxToMP4(_ input: URL, output: URL, convertAudio: Bool, hevc: Bool = false) async throws {
         var args = ["-hide_banner", "-nostdin", "-y", "-i", input.path, "-map", "0:v:0?", "-map", "0:a:0?", "-c:v", "copy"]

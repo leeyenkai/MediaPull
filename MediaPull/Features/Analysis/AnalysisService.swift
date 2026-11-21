@@ -4,6 +4,7 @@ import MediaPullAnalysis
 import MediaPullCore
 import MediaPullEngines
 import MediaPullLibrary
+import MediaPullMedia
 import MediaPullNet
 import MediaPullStore
 import Observation
@@ -102,8 +103,10 @@ final class AnalysisService {
 
     // MARK: Start
 
-    func start(inMemory: Bool = false) {
+    func start(inMemory: Bool = false, ffmpeg: FFmpeg? = nil) {
         guard store == nil else { return }
+        let probe: MediaFactsReader.AudioProbe? = ffmpeg.map { ffmpeg in { @Sendable url in await ffmpeg.audioTags(url) } }
+        let hash: (@Sendable (URL) async -> String?)? = ffmpeg.map { ffmpeg in { @Sendable url in await ffmpeg.audioStreamHash(url) } }
         store = Self.openStore(inMemory: inMemory) { [weak self] problem in self?.storeProblem = problem }
         if let store, !waitingMoves.isEmpty {
             let moves = waitingMoves
@@ -119,7 +122,7 @@ final class AnalysisService {
             let models = Self.modelsFolder
             // The vector stores read their whole files when made (hundreds of MB for a large library): off the main actor.
             let (loaded, images, faces) = await Task.detached(priority: .utility) { () -> (Analyzer, VectorStore?, VectorStore?) in
-                let loaded = Analyzer(modelsFolder: models)
+                let loaded = Analyzer(modelsFolder: models, audioProbe: probe, audioHash: hash)
                 let images = loaded.imageText.map { VectorStore(folder: folder, name: "image-\($0.spec.id)", dimension: $0.dimension) }
                 let faces = loaded.faceEncoder.map {
                     VectorStore(folder: folder, name: "faces-\($0.spec.id)", dimension: $0.spec.dimension, excludeFromBackup: true)
@@ -206,6 +209,8 @@ final class AnalysisService {
         var url: URL
         var size: Int64
         var modified: Date
+        /// Analysed by the current models but with facts read an older way: only the facts are read again (R-4210).
+        var factsOnly = false
     }
 
     private func runScan() {
@@ -317,7 +322,8 @@ final class AnalysisService {
         var files: [Work] = []
         for folder in folders {
             for url in FolderOperations.mediaFiles(in: folder, recursive: true) {
-                guard let format = MediaFormat.fromExtension(url.pathExtension), [.image, .video].contains(format.kind) || format == .gif,
+                // Audio is analysed for its facts only (R-4205).
+                guard let format = MediaFormat.fromExtension(url.pathExtension), [.image, .video, .audio].contains(format.kind),
                       let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { continue }
                 files.append(Work(url: url, size: Int64(values.fileSize ?? 0), modified: values.contentModificationDate ?? .distantPast))
             }
@@ -329,6 +335,12 @@ final class AnalysisService {
         for file in files where !FileFlags.isDataless(file.url) {
             guard let state = states[file.url.path], state.size == file.size, abs(state.modified.timeIntervalSince(file.modified)) < 1,
                   state.version == AnalysisRecord.currentVersion else { work.append(file); continue }
+            if (state.factsVersion ?? 0) < AnalysisRecord.currentFactsVersion {
+                var refresh = file
+                refresh.factsOnly = true
+                work.append(refresh)
+                continue
+            }
             if (wantFaces && state.peopleChecked == false && state.hasFaces == true) ||
                 (embeddings && state.hasEmbedding == false && !noPicture.contains(file.url.path))
             {
@@ -361,8 +373,19 @@ final class AnalysisService {
                                 wantFaces: Bool) async -> (faces: Int, noPicture: Bool)
     {
         guard let sha = try? FileHasher.sha256(of: item.url) else { return (0, false) }
+        let existing = await store.record(sha256: sha)
+        if let existing, existing.version == AnalysisRecord.currentVersion,
+           (existing.factsVersion ?? 0) < AnalysisRecord.currentFactsVersion,
+           item.factsOnly || (existing.hasEmbedding || images == nil)
+        {
+            // Facts read an older way are read again; the models' results stay (R-4210).
+            await store.save(await analyzer.refreshFacts(item.url, record: existing))
+            await store.setPath(item.url.path, sha256: sha, size: item.size, modified: item.modified)
+            if item.factsOnly { return (0, false) }
+        }
         if let existing = await store.record(sha256: sha), existing.version == AnalysisRecord.currentVersion,
            !(wantFaces && !existing.peopleChecked && !existing.faces.isEmpty), existing.hasEmbedding || images == nil
+            || existing.facts.format?.kind == .audio
         {
             await store.setPath(item.url.path, sha256: sha, size: item.size, modified: item.modified)
             return (0, false)
@@ -512,6 +535,17 @@ final class AnalysisService {
     }
 
     /// The best subject for each file with its confidence (R-3706).
+    /// Audio files under `root` with their stream hash, for "Same audio" duplicates (R-4205).
+    func audioStreamHashes(under root: URL) async -> [String: String] {
+        guard let store else { return [:] }
+        let prefix = root.standardizedFileURL.path + "/"
+        let audio = await store.allPaths().keys.filter {
+            $0.hasPrefix(prefix) && MediaFormat.fromExtension(($0 as NSString).pathExtension)?.kind == .audio
+        }
+        guard !audio.isEmpty else { return [:] }
+        return await store.records(for: Array(audio)).compactMapValues { $0.facts.audio?.streamHash }
+    }
+
     func subjects(for entries: [MediaEntry]) async -> [String: (String, Float)] {
         guard let analyzer, let encoder = analyzer.imageText, let imageVectors else { return [:] }
         let custom = preferences.customSubjects

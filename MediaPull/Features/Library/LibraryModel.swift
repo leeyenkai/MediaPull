@@ -751,50 +751,19 @@ final class LibraryModel: MediaGridOwner {
 
     // MARK: Drops
 
-    /// Files dropped into a folder: moved within the library, copied from elsewhere, converted when
-    /// the folder uses the Archive layout (SPEC R-1801).
+    /// Files dropped into a folder: moved within the library, copied from elsewhere, always in their own format (D-121,
+    /// R-1801); the Converter converts when asked.
     func importFiles(_ urls: [URL], into folder: URL, move: Bool) {
-        let target = app.target(for: folder)
-        let converter = MediaConverter(ffmpeg: app.ffmpeg, svgRasterizer: SVGRasterizer.rasterize)
-        let policy = app.preferences.conversion
         let urls = Sidecar.withoutCompanions(urls)
             .filter { $0.deletingLastPathComponent().standardizedFileURL != folder.standardizedFileURL }
-        // Files that an Archive folder needs in a normal format are converted on the way in (a new file, like a save);
-        // everything else is moved or copied as one journaled change that ⌘Z takes back (R-3806).
-        let converts = move ? [] : urls.filter { url in
-            guard target.layout == .archive, let format = MediaFormat.fromExtension(url.pathExtension) else { return false }
-            return !format.isNormal
-        }
-        let rest = urls.filter { !converts.contains($0) }
-        if !rest.isEmpty {
-            // Planned off the main actor: each item's free name is looked up on disk (audit 7, B7-m3).
-            Task { [weak self] in
-                let plan = await Task.detached(priority: .userInitiated) {
-                    move ? FolderOperations.move(rest, to: folder) : FolderOperations.copy(rest, to: folder)
-                }.value
-                self?.perform(plan)
-            }
-        }
-        guard !converts.isEmpty else { return }
-        Task {
-            var problems: [String] = []
-            for url in converts {
-                do {
-                    let work = SavePipeline.defaultWorkDirectory.appendingPathComponent("import-\(UUID().uuidString)")
-                    defer { try? FileManager.default.removeItem(at: work) }
-                    let result = try await converter.convert(url, policy: policy, layout: .archive, workDirectory: work)
-                    let name = FileNaming.fileName(stem: url.deletingPathExtension().lastPathComponent, ext: result.format.fileExtension)
-                    // A new file, like a save (D-86), with a copy of the original's metadata file that no longer identifies
-                    // the item; never over a name another file or an orphaned metadata file has (D-107).
-                    let placed = try await Self.placeConverted(result, from: url, as: folder.appendingPathComponent(name))
-                    if let problem = placed.metadataProblem { problems.append("\(url.lastPathComponent): metadata file: \(problem)") }
-                } catch {
-                    problems.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                }
-            }
-            message = problems.isEmpty ? nil : problems.prefix(3).joined(separator: "\n")
-            invalidateTree()
-            reload()
+        guard !urls.isEmpty else { return }
+        // One journaled change that ⌘Z takes back (R-3806), planned off the main actor: each item's free name is looked up
+        // on disk (audit 7, B7-m3).
+        Task { [weak self] in
+            let plan = await Task.detached(priority: .userInitiated) {
+                move ? FolderOperations.move(urls, to: folder) : FolderOperations.copy(urls, to: folder)
+            }.value
+            self?.perform(plan)
         }
     }
 
@@ -858,6 +827,7 @@ final class LibraryModel: MediaGridOwner {
         case .audio: info.kindSymbol = "music.note"; info.placeholderSymbol = "waveform"
         default: break
         }
+        if let entry = entryIndex[id].map({ entries[$0] }) { GridCellInfo.markUnit(&info, entry) }
         if file.hasSidecar {
             info.stateSymbol = "text.badge.checkmark"
             info.stateColor = .secondaryLabelColor
@@ -984,7 +954,7 @@ final class LibraryModel: MediaGridOwner {
                 })
             }
         }
-        let convertible = chosen.filter { !($0.format?.isNormal ?? true) && $0.format?.kind != .audio && $0.format != .svg }
+        let convertible = chosen.filter { !($0.format?.isNormal ?? true) && $0.format?.isConvertible == true }
         if !convertible.isEmpty {
             menu.addItem(.separator())
             // Named by what comes out: videos become MP4, animations GIF, still pictures JPEG or PNG (section 16).

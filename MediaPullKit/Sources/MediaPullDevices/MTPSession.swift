@@ -133,9 +133,11 @@ public final class MTPSource: DeviceSource {
             try Task.checkCancellation()
             guard let info = try? await session.objectInfo(handle) else { continue }
             let size = info.isFolder ? 0 : (try? await session.size(of: handle, info: info)) ?? UInt64(info.compressedSize)
+            // Files of one shot share their folder and name (R-4206).
+            let stem = (info.name as NSString).deletingPathExtension.lowercased()
             let entry = DeviceEntry(id: "\(folder.storage)/\(handle)", ref: String(handle), storage: folder.storage, name: info.name,
                                     isFolder: info.isFolder, size: Int64(clamping: size), taken: info.captured ?? info.modified,
-                                    hasThumbnail: info.thumbFormat != 0)
+                                    pairKey: "\(folder.ref ?? "top")/\(stem)", hasThumbnail: info.thumbFormat != 0)
             if entry.isFolder || entry.isMedia { out.append(entry) }
         }
         return out

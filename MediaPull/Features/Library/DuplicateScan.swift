@@ -40,10 +40,12 @@ final class DuplicateScan {
         }
         let finder = app.duplicates
         let sensitivity = app.preferences.duplicateSensitivity
+        let analysis = app.analysis
         task = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            let report = await finder.scan(root: root, sensitivity: sensitivity) { done, total in
+            let sounds = await analysis.audioStreamHashes(under: root)
+            let report = await finder.scan(root: root, sensitivity: sensitivity, audioHashes: sounds) { done, total in
                 Task { @MainActor in
                     guard let self, self.scanID == id else { return }
                     self.progress = total > 30 && done < total ? (done, total) : nil

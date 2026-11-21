@@ -29,6 +29,18 @@ struct GridCellInfo: Equatable {
     }
 }
 
+extension GridCellInfo {
+    /// A unit's badge (R-4206): "RAW+JPEG" or "LIVE" in the details, a Live Photo's symbol in the corner. Posts show their
+    /// place, "2 of 5" (R-4209).
+    static func markUnit(_ info: inout GridCellInfo, _ entry: MediaEntry) {
+        if let unit = entry.unit {
+            info.detail += " · " + unit.badge
+            if unit == .live { info.kindSymbol = "livephoto" }
+        }
+        if let place = entry.source?.postPlace { info.secondary += " · " + place }
+    }
+}
+
 struct GridSection: Hashable {
     var id: String
     var title: String

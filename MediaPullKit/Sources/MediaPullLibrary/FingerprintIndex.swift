@@ -25,10 +25,7 @@ public actor FingerprintIndex {
         }
     }
 
-    static let mediaExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "gif", "webp", "avif", "heic", "heif", "jxl", "bmp", "tif", "tiff", "ico", "svg", "mp4", "m4v", "mov",
-        "webm", "mkv", "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac",
-    ]
+    static let mediaExtensions: Set<String> = MediaFormat.knownExtensions
 
     /// An existing file in `folder` (and, if `recursive`, its subfolders) with this content.
     public func duplicate(sha256: String, size: Int64, in folder: URL, recursive: Bool) -> URL? {

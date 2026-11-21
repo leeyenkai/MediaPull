@@ -22,9 +22,11 @@ public enum MediaKind: String, Codable, Sendable, CaseIterable, Hashable {
 
 public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
     case jpeg, png, gif, webp, avif, heic, jxl, bmp, tiff, ico, svg
+    /// Camera RAW of any make (R-4201): kept as it is, never converted or rewritten (R-4203).
+    case raw
     case mp4, mov, webm, mkv
     case hls, dash
-    case mp3, m4a, aac, ogg, opus, wav, flac
+    case mp3, m4a, aac, ogg, opus, wav, flac, aiff
 
     public var fileExtension: String {
         switch self {
@@ -42,18 +44,19 @@ public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
         case .dash: "DASH"
         case .heic: "HEIC"
         case .jxl: "JPEG XL"
+        case .raw: "RAW"
         default: rawValue.uppercased()
         }
     }
 
     public var kind: MediaKind {
         switch self {
-        case .jpeg, .png, .webp, .avif, .heic, .jxl, .bmp, .tiff, .ico: .image
+        case .jpeg, .png, .webp, .avif, .heic, .jxl, .bmp, .tiff, .ico, .raw: .image
         case .gif: .image
         case .svg: .vector
         case .mp4, .mov, .webm, .mkv: .video
         case .hls, .dash: .stream
-        case .mp3, .m4a, .aac, .ogg, .opus, .wav, .flac: .audio
+        case .mp3, .m4a, .aac, .ogg, .opus, .wav, .flac, .aiff: .audio
         }
     }
 
@@ -63,6 +66,33 @@ public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
         case .jpeg, .png, .gif, .mp4, .mov: true
         default: false
         }
+    }
+
+    public var isRaw: Bool { self == .raw }
+
+    /// Formats the Converter and the Editor may turn into another file. RAW never is (R-4203); audio has no target.
+    public var isConvertible: Bool {
+        switch self {
+        case .raw, .svg, .hls, .dash: false
+        default: kind != .audio
+        }
+    }
+
+    /// Camera RAW extensions (R-4201).
+    public static let rawExtensions: Set<String> = [
+        "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "dng", "pef", "srw", "x3f", "3fr", "iiq",
+        "erf", "mos", "mrw",
+    ]
+
+    /// HEIF image sequences (bursts, short animations): listed as HEIC, played in the preview (R-4204).
+    public static func isSequenceExtension(_ ext: String) -> Bool { ["heics", "heifs"].contains(ext.lowercased()) }
+
+    /// Every extension `fromExtension` knows, for indexes that list files by name.
+    public static var knownExtensions: Set<String> {
+        let candidates = ["jpg", "jpeg", "jpe", "jfif", "pjpeg", "png", "apng", "gif", "webp", "avif", "heic", "heif", "hif", "heics",
+                          "heifs", "avci", "jxl", "bmp", "tif", "tiff", "ico", "cur", "svg", "svgz", "mp4", "m4v", "mov", "qt", "webm",
+                          "mkv", "m3u8", "m3u", "mpd", "mp3", "m4a", "aac", "ogg", "oga", "opus", "wav", "flac", "aif", "aiff", "aifc"]
+        return Set(candidates).union(rawExtensions)
     }
 
     public var isLosslessImage: Bool {
@@ -79,7 +109,7 @@ public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
         case "gif": .gif
         case "webp": .webp
         case "avif": .avif
-        case "heic", "heif": .heic
+        case "heic", "heif", "hif", "heics", "heifs", "avci": .heic
         case "jxl": .jxl
         case "bmp": .bmp
         case "tif", "tiff": .tiff
@@ -98,6 +128,8 @@ public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
         case "opus": .opus
         case "wav": .wav
         case "flac": .flac
+        case "aif", "aiff", "aifc": .aiff
+        case let ext where rawExtensions.contains(ext): .raw
         default: nil
         }
     }
@@ -110,7 +142,7 @@ public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
         case "image/gif": return .gif
         case "image/webp": return .webp
         case "image/avif": return .avif
-        case "image/heic", "image/heif": return .heic
+        case "image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence", "image/avci": return .heic
         case "image/jxl": return .jxl
         case "image/bmp", "image/x-ms-bmp": return .bmp
         case "image/tiff": return .tiff
@@ -129,6 +161,7 @@ public enum MediaFormat: String, Codable, Sendable, CaseIterable, Hashable {
         case "audio/opus": return .opus
         case "audio/wav", "audio/x-wav", "audio/wave": return .wav
         case "audio/flac", "audio/x-flac": return .flac
+        case "audio/aiff", "audio/x-aiff": return .aiff
         default: return nil
         }
     }

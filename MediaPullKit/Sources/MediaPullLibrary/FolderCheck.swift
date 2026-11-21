@@ -143,13 +143,16 @@ public enum ExtraCopies {
         public var hasMetadata: Bool
         public var created: Date
         public var bytes: Int64
+        /// The Instagram post the file is a picture of, when it is one of several (R-4208).
+        public var post: String?
 
-        public init(url: URL, pixels: Int, hasMetadata: Bool, created: Date, bytes: Int64) {
+        public init(url: URL, pixels: Int, hasMetadata: Bool, created: Date, bytes: Int64, post: String? = nil) {
             self.url = url
             self.pixels = pixels
             self.hasMetadata = hasMetadata
             self.created = created
             self.bytes = bytes
+            self.post = post
         }
     }
 
@@ -172,7 +175,8 @@ public enum ExtraCopies {
         for members in groups where members.count > 1 {
             let candidates = members.compactMap(candidate)
             guard candidates.count == members.count, let keep = keeper(candidates) else { continue }
-            for other in candidates where other.url != keep.url {
+            // A picture of the same post as the one kept is part of that post, not a spare copy (R-4209).
+            for other in candidates where other.url != keep.url && (other.post == nil || other.post != keep.post) {
                 trash.append(other.url)
                 bytes += other.bytes
             }
@@ -185,13 +189,14 @@ public enum ExtraCopies {
         else { return nil }
         var pixels = 0
         if let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil) as? [CFString: Any],
            let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int
         {
             pixels = width * height
         }
         let hasMetadata = FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
+        let post = hasMetadata ? SourceInfo.read(sidecarOf: url)?.postKey : nil
         return Candidate(url: url, pixels: pixels, hasMetadata: hasMetadata, created: values.creationDate ?? .distantFuture,
-                         bytes: Int64(size))
+                         bytes: Int64(size), post: post)
     }
 }

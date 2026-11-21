@@ -7,6 +7,8 @@ import MediaPullLibrary
 /// path (analysis, archive entries) follow the moves, and every window's History refreshes.
 extension AppModel {
     func applyChange(_ plan: OrganisePlan, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> JournalEntry {
+        var plan = plan
+        plan.accountFolders = accountFolderList.map { URL(fileURLWithPath: $0.path, isDirectory: true) }
         let entry = await journal.run(plan, progress: progress)
         await followMoves(entry.moves, changedBy: entry.id)
         // A window's save folder or Organise folder that went to the Trash is left for the folder above (audit 4, B4-m2).

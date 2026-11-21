@@ -57,7 +57,18 @@ nonisolated enum MediaListing {
         let fm = FileManager.default
         var entries: [MediaEntry] = []
         entries.reserveCapacity(urls.count)
-        for url in urls {
+        // A unit is one entry, its lead (R-4206): members are left out and named on the lead.
+        var leads: [String: MediaUnits.Unit] = [:]
+        var members = Set<String>()
+        for (folder, items) in Dictionary(grouping: urls, by: { $0.deletingLastPathComponent().path }) {
+            for unit in MediaUnits.units(in: items.map(\.lastPathComponent)) {
+                leads[(folder as NSString).appendingPathComponent(unit.lead)] = unit
+                for member in unit.members {
+                    members.insert((folder as NSString).appendingPathComponent(member))
+                }
+            }
+        }
+        for url in urls where !members.contains(url.path) {
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
             guard ext != "json", let format = MediaFormat.fromExtension(ext) else { continue }
@@ -67,6 +78,10 @@ nonisolated enum MediaListing {
             var entry = MediaEntry(url: url, size: Int64(values.fileSize ?? 0), created: values.creationDate,
                                    modified: values.contentModificationDate ?? .distantPast, format: format, source: source)
             entry.finderTags = values.tagNames ?? []
+            if let unit = leads[url.path] {
+                entry.unit = unit.kind
+                entry.unitMembers = unit.members
+            }
             entries.append(entry)
         }
         return entries

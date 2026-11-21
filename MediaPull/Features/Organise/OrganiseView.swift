@@ -375,6 +375,11 @@ struct OrganiseWorkPane: View {
                             .disabled(organise.working != nil || organise.destination == nil)
                         }
                     }
+                    Toggle("Sort images individually", isOn: Binding(
+                        get: { app.preferences.sortPostImagesIndividually }, set: { app.preferences.sortPostImagesIndividually = $0 }
+                    ))
+                    .font(.callout)
+                    .help("Off: the pictures of one Instagram post always go into the same folder. On: each picture is sorted on its own.")
                     if let working = organise.working {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)

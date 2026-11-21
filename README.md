@@ -4,7 +4,7 @@
 
 <h1 align="center">MediaPull</h1>
 
-<p align="center">Save images and videos from the web into your own folders, then find and sort them. A Mac app that never uploads anything.</p>
+<p align="center">Collect images, videos and audio from the web, bring them in from phones, cameras and drives, and keep them in order. A Mac app that never uploads anything.</p>
 
 ![Collect: browse a page and every image on it appears, at its largest size](docs/images/collect.jpg)
 
@@ -13,7 +13,10 @@
 - **Collect from any page.** Every image and video on the page appears as you browse, at the largest size. Save with ⌘S.
 - **Download from hundreds of sites.** Instagram, YouTube, Bluesky, Pinterest, ArtStation, Imgur and the other sites gallery-dl and yt-dlp support, each with its own options.
 - **Search your photos** by what they show, the text in them, places and people. Everything runs on your Mac.
-- **Organise any folder** by date, event, subject or person, in place or into a new folder. Undo with ⌘Z.
+- **Organise any folder** by date, event, subject, person, place, artist or album, in place or into a new folder. Undo with ⌘Z. Duplicates and look-alikes are marked in Organise too.
+- **Bring in from phones and cameras.** The Devices section (⌃⌘3) shows an iPhone or Android phone like a drive and copies only what is new.
+- **Every format, kept as it is.** HEIC (including Fujifilm .hif), camera RAW, Live Photos and audio (MP3, M4A, FLAC, WAV, AIFF, Ogg) are listed, previewed and searched. A RAW and its JPEG, or a Live Photo's photo and clip, are one item that always moves together; your own files are never converted.
+- **Instagram posts stay together.** Sorting puts every picture of a post in the same folder, and grids show "2 of 5".
 - **View folders as icons, a list or columns**, as in the Finder (⌘1, ⌘2, ⌘3). Each pane keeps its own view.
 - **See saved accounts as they looked.** In Organise, a saved Instagram account, YouTube channel, X, Bluesky or Reddit feed or Pinterest board opens as a profile, a channel, a timeline or a board (⌘4), from the saved files only. Captions, places, playlists and highlight covers are kept with new downloads.
 - **Save As.** Any download can go exactly into a folder you choose. Only what that folder lacks is added, and nothing goes anywhere else.

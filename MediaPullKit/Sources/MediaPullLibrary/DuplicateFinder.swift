@@ -93,7 +93,9 @@ public actor DuplicateFinder {
 
     // MARK: Scanning
 
-    public func scan(root: URL, sensitivity: DuplicateSensitivity,
+    /// `audioHashes`: each audio file's stream hash from analysis (path → hash), so the same sound with other tags is a
+    /// look-alike (R-4205).
+    public func scan(root: URL, sensitivity: DuplicateSensitivity, audioHashes: [String: String] = [:],
                      progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> Report {
         loadIfNeeded()
         let files = Self.mediaFiles(under: root)
@@ -195,6 +197,13 @@ public actor DuplicateFinder {
             }
         }
 
+        if sensitivity.threshold != nil, !audioHashes.isEmpty {
+            let sounds = Dictionary(grouping: files.indices.compactMap { i in audioHashes[files[i].path].map { (i, $0) } }, by: \.1)
+            for members in sounds.values where members.count > 1 {
+                for other in members.dropFirst() { union.join(members[0].0, other.0) }
+            }
+        }
+
         var groups: [Int: [Int]] = [:]
         for position in files.indices {
             groups[union.find(position), default: []].append(position)
@@ -227,7 +236,14 @@ public actor DuplicateFinder {
         var isImage: Bool
     }
 
+    /// Media files, a unit counted once by its lead (R-4206): Trash Extra Copies never sees half a pair.
     static func mediaFiles(under root: URL) -> [MediaFile] {
+        let all = allMediaFiles(under: root)
+        let leads = Set(FolderOperations.withoutUnitMembers(all.map(\.url)).map(\.path))
+        return all.count == leads.count ? all : all.filter { leads.contains($0.url.path) }
+    }
+
+    static func allMediaFiles(under root: URL) -> [MediaFile] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys,
                                                               options: [.skipsHiddenFiles, .skipsPackageDescendants])

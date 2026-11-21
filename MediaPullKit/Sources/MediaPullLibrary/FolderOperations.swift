@@ -36,6 +36,9 @@ public struct OrganisePlan: Sendable {
     /// trashed since, even before the plan was made, is never made again (audit 7, B7-m2). Only a plan that says so makes
     /// its root (a copy into a new folder).
     public var createsRoot = false
+    /// Account folders (D-79): a copy made inside the one that holds its original no longer claims to be an item of the
+    /// post (R-4209); its metadata file drops the identity keys (D-105).
+    public var accountFolders: [URL] = []
 
     public init(title: String, root: URL) {
         self.title = title
@@ -162,14 +165,27 @@ public enum FolderOperations {
             let items = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
             result = items.filter(isMedia)
         }
-        return result.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        return withoutUnitMembers(result).sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    /// Leads only: a unit's members travel with their lead and are never planned on their own (R-4206).
+    public static func withoutUnitMembers(_ files: [URL]) -> [URL] {
+        let byFolder = Dictionary(grouping: files) { $0.deletingLastPathComponent().standardizedFileURL.path }
+        var members = Set<String>()
+        for (folder, items) in byFolder {
+            for name in MediaUnits.memberNames(in: items.map(\.lastPathComponent)) {
+                members.insert((folder as NSString).appendingPathComponent(name))
+            }
+        }
+        guard !members.isEmpty else { return files }
+        return files.filter { !members.contains($0.standardizedFileURL.path) }
     }
 
     public static func isMedia(_ url: URL) -> Bool {
         guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return false }
         let ext = url.pathExtension.lowercased()
         guard ext != "json", let format = MediaFormat.fromExtension(ext) else { return false }
-        return [.image, .animatedImage, .video, .vector].contains(format.kind)
+        return [.image, .animatedImage, .video, .vector, .audio].contains(format.kind)
     }
 
     static func isDirectory(_ url: URL) -> Bool {
@@ -200,12 +216,16 @@ public enum FolderOperations {
     }
 
     static func children(_ folder: URL) -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(
+        let items = ((try? FileManager.default.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ))
             ?? []).filter { $0.pathExtension.lowercased() != "json" || !hasMedia(forSidecar: $0) }
+        // A unit's members and edit files go with their lead (R-4206).
+        let names = items.map(\.lastPathComponent)
+        let carried = Set(MediaUnits.units(in: names).flatMap { MediaUnits.companions(ofLead: $0.lead, in: names) })
+        return items.filter { !carried.contains($0.lastPathComponent) }
     }
 
     /// `photo.jpg.json` belongs to `photo.jpg` and moves with it.
@@ -228,18 +248,28 @@ public enum FolderOperations {
     }
 
     /// Picks a free name in `folder`, numbering `name 2.jpg`, `name 3.jpg` so an Archive date prefix stays first.
-    public static func freeDestination(for name: String, in folder: URL, taken: inout Set<String>) -> (url: URL, renamed: Bool) {
+    /// `alsoFree`: the parts after the stem of the file's companions (R-4206), which must be free under the same number.
+    public static func freeDestination(for name: String, in folder: URL, taken: inout Set<String>,
+                                       alsoFree: [String] = []) -> (url: URL, renamed: Bool)
+    {
         let ns = name as NSString
         let stem = ns.deletingPathExtension, ext = ns.pathExtension
+        let fm = FileManager.default
         var n = 1
         while true {
-            let candidate = n == 1 ? name : (ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
+            let candidateStem = n == 1 ? stem : "\(stem) \(n)"
+            let candidate = n == 1 ? name : (ext.isEmpty ? candidateStem : "\(candidateStem).\(ext)")
             let url = folder.appendingPathComponent(candidate)
             let key = OrganisePlan.key(url)
-            if !taken.contains(key), !FileManager.default.fileExists(atPath: url.path),
-               !FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: url).path) || ext.isEmpty
+            let others = alsoFree.map { folder.appendingPathComponent(candidateStem + $0) }
+            if !taken.contains(key), !fm.fileExists(atPath: url.path),
+               !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path) || ext.isEmpty,
+               others.allSatisfy({ !taken.contains(OrganisePlan.key($0)) && !fm.fileExists(atPath: $0.path) })
             {
                 taken.insert(key)
+                for other in others {
+                    taken.insert(OrganisePlan.key(other))
+                }
                 return (url, n > 1)
             }
             n += 1
@@ -252,9 +282,10 @@ public enum FolderOperations {
     public static func flatten(_ folder: URL) -> OrganisePlan {
         var plan = OrganisePlan(title: "Flatten \(folder.lastPathComponent)", root: folder)
         var taken = Set<String>()
+        let units = UnitFiles()
         let top = folder.standardizedFileURL
         for file in mediaFiles(in: folder, recursive: true) where file.deletingLastPathComponent().standardizedFileURL != top {
-            let dest = freeDestination(for: file.lastPathComponent, in: folder, taken: &taken)
+            let dest = freeDestination(for: file.lastPathComponent, in: folder, taken: &taken, alsoFree: units.suffixes(of: file))
             if dest.renamed {
                 plan.renamed += 1
             }
@@ -272,10 +303,11 @@ public enum FolderOperations {
             root: root
         )
         var taken = Set<String>()
+        let units = UnitFiles()
         for folder in subfolders {
             let parent = folder.deletingLastPathComponent()
             for child in children(folder) {
-                let dest = freeDestination(for: child.lastPathComponent, in: parent, taken: &taken)
+                let dest = freeDestination(for: child.lastPathComponent, in: parent, taken: &taken, alsoFree: units.suffixes(of: child))
                 if dest.renamed {
                     plan.renamed += 1
                 }
@@ -292,6 +324,7 @@ public enum FolderOperations {
         guard !contains(source, target), !contains(target, source) else { return plan }
         plan.requiredFolders = [source, target]
         var taken = Set<String>()
+        let units = UnitFiles()
         func merge(_ from: URL, _ to: URL) {
             for child in children(from) {
                 let existing = to.appendingPathComponent(child.lastPathComponent)
@@ -299,7 +332,7 @@ public enum FolderOperations {
                     merge(child, existing)
                     plan.foldersToTrash.append(child)
                 } else {
-                    let dest = freeDestination(for: child.lastPathComponent, in: to, taken: &taken)
+                    let dest = freeDestination(for: child.lastPathComponent, in: to, taken: &taken, alsoFree: units.suffixes(of: child))
                     if dest.renamed {
                         plan.renamed += 1
                     }
@@ -323,9 +356,10 @@ public enum FolderOperations {
         let items = outermost(items)
         var plan = OrganisePlan(title: items.count == 1 ? "Move \(items[0].lastPathComponent)" : "Move \(items.count) Items", root: folder)
         var taken = Set<String>()
+        let units = UnitFiles()
         let target = folder.standardizedFileURL
         for item in items where item.deletingLastPathComponent().standardizedFileURL != target && !contains(item, folder) {
-            let dest = freeDestination(for: item.lastPathComponent, in: folder, taken: &taken)
+            let dest = freeDestination(for: item.lastPathComponent, in: folder, taken: &taken, alsoFree: units.suffixes(of: item))
             if dest.renamed {
                 plan.renamed += 1
             }
@@ -339,8 +373,9 @@ public enum FolderOperations {
         let items = outermost(items)
         var plan = OrganisePlan(title: items.count == 1 ? "Copy \(items[0].lastPathComponent)" : "Copy \(items.count) Items", root: folder)
         var taken = Set<String>()
+        let units = UnitFiles()
         for item in items where !contains(item, folder) {
-            let dest = freeDestination(for: item.lastPathComponent, in: folder, taken: &taken)
+            let dest = freeDestination(for: item.lastPathComponent, in: folder, taken: &taken, alsoFree: units.suffixes(of: item))
             if dest.renamed { plan.renamed += 1 }
             plan.moves.append(PlannedMove(source: item, destination: dest.url, kind: .clone))
         }
@@ -371,6 +406,12 @@ public enum FolderOperations {
         if !isFolder, !ext.isEmpty, (newName as NSString).pathExtension.lowercased() != ext.lowercased() {
             newName += ".\(ext)"
         }
+        // A file saved in the Archive layout keeps its date prefix, which its order and its archive rely on (R-1504, R-4209).
+        if !isFolder, FileManager.default.fileExists(atPath: Sidecar.sidecarURL(for: item).path),
+           let prefix = archiveDatePrefix(item.lastPathComponent), !newName.hasPrefix(prefix)
+        {
+            newName = prefix + newName
+        }
         var plan = OrganisePlan(title: "Rename \(item.lastPathComponent)", root: item.deletingLastPathComponent())
         guard newName != item.lastPathComponent, !newName.isEmpty else { return plan }
         // A change of case only finds the item itself under the new name on case-insensitive volumes; it is not a collision.
@@ -380,9 +421,16 @@ public enum FolderOperations {
             return plan
         }
         var taken = Set<String>()
-        let dest = freeDestination(for: newName, in: item.deletingLastPathComponent(), taken: &taken)
+        let dest = freeDestination(for: newName, in: item.deletingLastPathComponent(), taken: &taken,
+                                   alsoFree: isFolder ? [] : UnitFiles().suffixes(of: item))
         plan.moves = [PlannedMove(source: item, destination: dest.url)]
         return plan
+    }
+
+    /// `2024-06-01_183005_` at the start of an Archive name (R-1503), or nil.
+    static func archiveDatePrefix(_ name: String) -> String? {
+        guard let range = name.range(of: #"^\d{4}-\d{2}-\d{2}_\d{6}_"#, options: .regularExpression) else { return nil }
+        return String(name[range])
     }
 
     /// Several files renamed by one pattern (R-3808): `{name}` is the old name without its extension, `{n}` the file's
@@ -405,11 +453,15 @@ public enum FolderOperations {
         }.map { OrganisePlan.key($0.file) })
         let vacated = Set(files.map { OrganisePlan.key($0) }).subtracting(keeping)
         var chosen = keeping
-        func free(_ url: URL) -> Bool {
+        let units = UnitFiles()
+        // A unit's other files take the same new name (R-4206), so theirs must be free too.
+        func free(_ url: URL, alsoFree suffixes: [String]) -> Bool {
             let key = OrganisePlan.key(url)
             guard !chosen.contains(key) else { return false }
             if vacated.contains(key) { return true }
+            let stem = url.deletingPathExtension().lastPathComponent, folder = url.deletingLastPathComponent()
             return !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
+                && suffixes.allSatisfy { !fm.fileExists(atPath: folder.appendingPathComponent(stem + $0).path) }
         }
         var renames: [(source: URL, destination: URL)] = []
         for (file, stem) in wanted {
@@ -418,7 +470,8 @@ public enum FolderOperations {
             let folder = file.deletingLastPathComponent()
             var destination = folder.appendingPathComponent(stem + ext)
             var counter = 2
-            while !free(destination), OrganisePlan.key(destination) != OrganisePlan.key(file) {
+            let suffixes = units.suffixes(of: file).filter { !$0.lowercased().hasSuffix(".json") }
+            while !free(destination, alsoFree: suffixes), OrganisePlan.key(destination) != OrganisePlan.key(file) {
                 destination = folder.appendingPathComponent("\(stem) \(counter)\(ext)")
                 counter += 1
             }
@@ -481,6 +534,7 @@ public enum FolderOperations {
     {
         var plan = OrganisePlan(title: title, root: root)
         var taken = Set<String>()
+        let units = UnitFiles()
         var created = Set<String>()
         var respelled = Set<String>()
         for file in files {
@@ -519,7 +573,7 @@ public enum FolderOperations {
                         plan.foldersToCreate.append(path)
                     }
                 }
-                let dest = freeDestination(for: file.lastPathComponent, in: folder, taken: &taken)
+                let dest = freeDestination(for: file.lastPathComponent, in: folder, taken: &taken, alsoFree: units.suffixes(of: file))
                 if dest.renamed {
                     plan.renamed += 1
                 }
@@ -560,6 +614,17 @@ public enum SortRules {
     public static func byScreenshot(_ item: MediaEntry) -> [[String]] {
         guard let record = item.record else { return [] }
         return [[record.isScreenshot ? FolderNames.screenshots : FolderNames.photos]]
+    }
+
+    /// Audio by artist, then album (R-4205); files without an artist tag stay where they are.
+    public static func byArtist(_ item: MediaEntry) -> [[String]] {
+        guard let tags = item.facts?.audio, let artist = (tags.albumArtist ?? tags.artist)?.trimmedNonEmpty else { return [] }
+        return [[artist] + (tags.album?.trimmedNonEmpty.map { [$0] } ?? [])]
+    }
+
+    public static func byAlbum(_ item: MediaEntry) -> [[String]] {
+        guard let album = item.facts?.audio?.album?.trimmedNonEmpty else { return [] }
+        return [[album]]
     }
 
     public static func byPlace(_ item: MediaEntry) -> [[String]] {

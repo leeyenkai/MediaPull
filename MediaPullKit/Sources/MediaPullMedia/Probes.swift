@@ -13,21 +13,49 @@ public enum Thumbnailer {
         return thumbnail(source, maxPixel: maxPixel)
     }
 
-    public static func image(at url: URL, maxPixel: Int) -> CGImage? {
+    /// `hdr`: decoded in high dynamic range where the picture has it (a gain map), for the preview (R-4204).
+    public static func image(at url: URL, maxPixel: Int, hdr: Bool = false) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             return nil
         }
-        return thumbnail(source, maxPixel: maxPixel)
+        // RAW and HEIC carry a preview of the whole picture; using it keeps grids of large files quick (R-4204). An HDR
+        // preview needs the full picture.
+        let format = MediaFormat.fromExtension(url.pathExtension)
+        return thumbnail(source, maxPixel: maxPixel, embeddedFirst: !hdr && (format == .raw || format == .heic), hdr: hdr)
     }
 
-    static func thumbnail(_ source: CGImageSource, maxPixel: Int) -> CGImage? {
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
+    static func thumbnail(_ source: CGImageSource, maxPixel: Int, embeddedFirst: Bool = false, hdr: Bool = false) -> CGImage? {
+        let index = CGImageSourceGetPrimaryImageIndex(source)
+        var options: [CFString: Any] = [
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        if hdr { options[kCGImageSourceDecodeRequest] = kCGImageSourceDecodeToHDR }
+        if embeddedFirst {
+            options[kCGImageSourceCreateThumbnailFromImageIfAbsent] = true
+            if let image = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary),
+               embeddedPreviewWillDo(image, source: source, index: index, maxPixel: maxPixel)
+            {
+                return image
+            }
+            options[kCGImageSourceCreateThumbnailFromImageIfAbsent] = nil
+        }
+        options[kCGImageSourceCreateThumbnailFromImageAlways] = true
+        return CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary)
+    }
+
+    /// An embedded preview is used only when it is as large as asked and shows the whole picture (no letterbox bars).
+    static func embeddedPreviewWillDo(_ image: CGImage, source: CGImageSource, index: Int, maxPixel: Int) -> Bool {
+        guard max(image.width, image.height) >= maxPixel * 9 / 10,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue, width > 0, height > 0
+        else { return false }
+        let turned = ((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1) >= 5
+        let expected = turned ? height / width : width / height
+        let actual = Double(image.width) / Double(max(image.height, 1))
+        return abs(actual - expected) / expected < 0.02
     }
 
     /// Where a frame is taken from.
@@ -36,6 +64,16 @@ public enum Thumbnailer {
         case poster
         /// A tenth of the way in, past title cards and fades (R-3601).
         case analysis
+    }
+
+    /// An audio file's embedded artwork (R-4205), or nil.
+    public static func audioArtwork(at url: URL, maxPixel: Int) async -> CGImage? {
+        let asset = AVURLAsset(url: url)
+        let items = (try? await asset.load(.commonMetadata)) ?? []
+        for item in items where item.commonKey == .commonKeyArtwork {
+            if let data = try? await item.load(.dataValue), let image = image(from: data, maxPixel: maxPixel) { return image }
+        }
+        return nil
     }
 
     /// A frame from a local video file.
@@ -66,7 +104,8 @@ public enum ImageProbe {
 
     static func size(of source: CGImageSource) -> PixelSize? {
         guard CGImageSourceGetCount(source) > 0,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil)
+              as? [CFString: Any],
               let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
               width > 0, height > 0

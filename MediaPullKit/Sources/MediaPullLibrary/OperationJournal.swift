@@ -51,8 +51,9 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var fileCount: Int {
         // An undone change still names the files it moved (audit 7, B7-m7).
         // A partly undone change counts both parts (audit 15, B15-m6).
-        (undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])).filter {
-            switch $0 {
+        // A unit (a file with its metadata file, or a RAW+JPEG pair) is one (R-4206).
+        OperationJournal.units(undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])).filter {
+            switch $0[0] {
             // A rename through a temporary name is one file, not two (audit 12, B12-m2).
             case let .move(from, to, _, _): !from.hasSuffix(".json") && !OperationJournal.isTemporary(to)
             case let .clone(from, _, _): !from.hasSuffix(".json")
@@ -222,21 +223,41 @@ public actor OperationJournal {
             }
             tick()
         }
+        // A file's unit goes with it: members, edit files and metadata files (R-4206). A member the plan also names on its
+        // own has already gone with its lead.
+        let units = UnitFiles()
+        var carried = Set<String>()
         for move in plan.moves {
             if Task.isCancelled {
                 break
             }
+            if carried.contains(move.source.standardizedFileURL.path) {
+                tick()
+                continue
+            }
             do {
                 try makeMissingFolders(move.destination.deletingLastPathComponent(), allowed: allowed, entry: &entry)
-                let sidecar = MediaFiles.companion(of: move.source)
+                let companions = units.companionMoves(of: move.source, to: move.destination)
                 switch move.kind {
                 case .move:
                     try moveItem(move.source, to: move.destination, entry: &entry)
-                    if let sidecar { try moveItem(sidecar, to: Sidecar.sidecarURL(for: move.destination), entry: &entry) }
+                    for companion in companions {
+                        try moveItem(companion.from, to: companion.to, entry: &entry)
+                    }
+                    units.forget(move.source.deletingLastPathComponent())
                 case .clone:
                     try cloneItem(move.source, to: move.destination, entry: &entry)
-                    if let sidecar { try cloneItem(sidecar, to: Sidecar.sidecarURL(for: move.destination), entry: &entry) }
+                    let within = plan.accountFolders.first { Self.inside(move.source, $0) && Self.inside(move.destination, $0) }
+                    for companion in companions {
+                        if within != nil, companion.from.pathExtension.lowercased() == "json" {
+                            try copyWithoutIdentity(companion.from, to: companion.to, entry: &entry)
+                        } else {
+                            try cloneItem(companion.from, to: companion.to, entry: &entry)
+                        }
+                    }
                 }
+                units.forget(move.destination.deletingLastPathComponent())
+                carried.formUnion(companions.map(\.from.standardizedFileURL.path))
             } catch {
                 entry.failures.append("\(move.source.lastPathComponent): \(error.localizedDescription)")
             }
@@ -246,10 +267,18 @@ public actor OperationJournal {
             if Task.isCancelled {
                 break
             }
+            if carried.contains(item.standardizedFileURL.path) {
+                tick()
+                continue
+            }
             do {
-                let sidecar = MediaFiles.companion(of: item)
+                let companions = units.companions(of: item)
                 try trashItem(item, entry: &entry)
-                if let sidecar { try trashItem(sidecar, entry: &entry) }
+                for companion in companions {
+                    try trashItem(companion, entry: &entry)
+                }
+                units.forget(item.deletingLastPathComponent())
+                carried.formUnion(companions.map(\.standardizedFileURL.path))
             } catch { entry.failures.append("\(item.lastPathComponent): \(error.localizedDescription)") }
             tick()
         }
@@ -495,6 +524,21 @@ public actor OperationJournal {
         }
     }
 
+    static func inside(_ url: URL, _ folder: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(folder.standardizedFileURL.path + "/")
+    }
+
+    /// A copy of a metadata file without the keys that make its media an item of a post (D-105), for a copy made inside the
+    /// account folder that holds the original (R-4209). Journaled as a copy, so Undo takes it away.
+    func copyWithoutIdentity(_ from: URL, to: URL, entry: inout JournalEntry) throws {
+        guard let data = try FileOps.metadata(of: from.deletingPathExtension(), applying: .init(values: [:], isCopy: true)) else {
+            return try cloneItem(from, to: to, entry: &entry)
+        }
+        try FileOps.writeNew(data, to: to)
+        entry.steps.append(.clone(from: from.path, to: to.path, files: Self.stamps(of: to)))
+        noteRemade(to.path, in: &entry)
+    }
+
     func cloneItem(_ from: URL, to: URL, entry: inout JournalEntry) throws {
         // COPYFILE_CLONE makes an APFS clone where the volume supports it, and a full copy elsewhere.
         let existed = fm.fileExists(atPath: to.path)
@@ -636,7 +680,7 @@ public actor OperationJournal {
             defer { if hidden != nil { Self.update(&hidden, after: unit) } }
             if undo(unit[0], entry: &entry, report: &report) {
                 for step in unit.dropFirst() {
-                    undo(step, entry: &entry, report: &report)
+                    undo(step, companion: true, entry: &entry, report: &report)
                 }
                 undoneUnits.append(unit)
             } else if canRetry(unit[0], entry: entry) {
@@ -716,7 +760,7 @@ public actor OperationJournal {
             defer { if hidden != nil { Self.update(&hidden, after: unit) } }
             if redo(unit[0], allowed: allowed, entry: &entry, report: &report) {
                 for step in unit.dropFirst() {
-                    redo(step, allowed: allowed, entry: &entry, report: &report)
+                    redo(step, companion: true, allowed: allowed, entry: &entry, report: &report)
                 }
             }
             if Date().timeIntervalSince(checkpoint) >= 0.5, entry.steps[before...].contains(where: isFile) {
@@ -756,7 +800,9 @@ public actor OperationJournal {
     public static let unsavedNote = "MediaPull could not record this, so it may not be possible to undo or redo it again."
 
     @discardableResult
-    func redo(_ step: JournalStep, allowed: Set<String>, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
+    func redo(_ step: JournalStep, companion: Bool = false, allowed: Set<String>, entry: inout JournalEntry,
+              report: inout UndoReport) -> Bool
+    {
         // As Undo: only the same things in the same places, and only folders the change made itself (D-93).
         do {
             switch step {
@@ -791,10 +837,10 @@ public actor OperationJournal {
                     try makeMissingFolders(folder, allowed: allowed, entry: &entry)
                 }
                 var target = URL(fileURLWithPath: to)
-                if to.hasSuffix(".json"),
-                   let media = fallbacks.first(where: { Sidecar.sidecarURL(for: URL(fileURLWithPath: $0.key)).path == to })
-                {
-                    target = Sidecar.sidecarURL(for: URL(fileURLWithPath: media.value))
+                if companion, let media = fallbacks.first(where: { Self.isCompanion(to, of: $0.key) }) {
+                    target = folder.appendingPathComponent(MediaUnits.renamed(target.lastPathComponent,
+                                                                              lead: (media.key as NSString).lastPathComponent,
+                                                                              newLead: (media.value as NSString).lastPathComponent))
                 } else if fm.fileExists(atPath: to), !Self.sameFile(from, to) {
                     // As on Undo: an item under a temporary name is never left hidden (audit 11, B11-M1).
                     guard Self.isTemporary(from) else {
@@ -808,7 +854,7 @@ public actor OperationJournal {
                         + "its name is taken")
                 }
                 try moveItem(URL(fileURLWithPath: from), to: target, entry: &entry)
-                if !to.hasSuffix(".json"), !Self.isTemporary(target.path) { report.restored += 1 }
+                if !companion, !Self.isTemporary(target.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((from, target.path))
                 return true
@@ -821,7 +867,7 @@ public actor OperationJournal {
                 }
                 if !fm.fileExists(atPath: folder.path) { try makeMissingFolders(folder, allowed: allowed, entry: &entry) }
                 try cloneItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
-                if !to.hasSuffix(".json") { report.restored += 1 }
+                if !companion { report.restored += 1 }
                 report.done += 1
                 return true
             case let .trash(original, _):
@@ -837,7 +883,7 @@ public actor OperationJournal {
                 }
                 try trashItem(URL(fileURLWithPath: original), entry: &entry)
                 // A Replace counts its one file once, when the edit takes its place.
-                if !original.hasSuffix(".json"), entry.edits == nil { report.restored += 1 }
+                if !companion, entry.edits == nil { report.restored += 1 }
                 report.done += 1
                 return true
             }
@@ -861,6 +907,12 @@ public actor OperationJournal {
     }
 
     /// Steps grouped so each media step is followed by the step for its metadata file, as `run` records them.
+    /// Whether `path` is a companion of the file at `lead` (same folder, named after it, R-4206).
+    static func isCompanion(_ path: String, of lead: String) -> Bool {
+        (path as NSString).deletingLastPathComponent == (lead as NSString).deletingLastPathComponent
+            && MediaUnits.isCompanionName((path as NSString).lastPathComponent, ofLead: (lead as NSString).lastPathComponent)
+    }
+
     static func units(_ steps: [JournalStep]) -> [[JournalStep]] {
         func source(_ step: JournalStep) -> String? {
             switch step {
@@ -871,8 +923,10 @@ public actor OperationJournal {
         }
         var units: [[JournalStep]] = []
         for step in steps {
-            if let last = units.last, last.count == 1, let media = source(last[0]), let path = source(step),
-               Sidecar.sidecarURL(for: URL(fileURLWithPath: media)).path == path
+            // A file's companions (its unit's members, edit files and metadata files, R-4206) follow it in the same folder.
+            if let last = units.last, let media = source(last[0]), let path = source(step),
+               (media as NSString).deletingLastPathComponent == (path as NSString).deletingLastPathComponent,
+               MediaUnits.isCompanionName((path as NSString).lastPathComponent, ofLead: (media as NSString).lastPathComponent)
             {
                 units[units.count - 1].append(step)
             } else {
@@ -886,7 +940,7 @@ public actor OperationJournal {
     /// changed since, or a folder that is another folder now, is left where it is and reported; no folder is ever made.
     /// Returns whether it was put back (or there was nothing to put back), so its metadata file may follow.
     @discardableResult
-    func undo(_ step: JournalStep, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
+    func undo(_ step: JournalStep, companion: Bool = false, entry: inout JournalEntry, report: inout UndoReport) -> Bool {
         switch step {
         case let .makeFolder(path):
             // Only the empty folder this change made is removed. One that holds something now is kept, and Redo does not
@@ -925,11 +979,11 @@ public actor OperationJournal {
                 return false
             }
             var back = URL(fileURLWithPath: from)
-            // A metadata file goes with its media, under the name its media went back to.
-            if to.hasSuffix(".json"),
-               let media = fallbacks.first(where: { Sidecar.sidecarURL(for: URL(fileURLWithPath: $0.key)).path == from })
-            {
-                back = Sidecar.sidecarURL(for: URL(fileURLWithPath: media.value))
+            // A companion (metadata file, unit member, R-4206) goes with its file, under the name its file went back to.
+            if companion, let media = fallbacks.first(where: { Self.isCompanion(from, of: $0.key) }) {
+                back = home.appendingPathComponent(MediaUnits.renamed(back.lastPathComponent,
+                                                                     lead: (media.key as NSString).lastPathComponent,
+                                                                     newLead: (media.value as NSString).lastPathComponent))
             } else if fm.fileExists(atPath: from), !Self.sameFile(from, to) {
                 // Its old name is taken. An item under a temporary name (a rename that swapped names) is never left hidden:
                 // it gets a free name beside its old one (audit 10, B10-M1); anything else stays where it is.
@@ -944,7 +998,7 @@ public actor OperationJournal {
             }
             do {
                 try fm.moveItem(at: dest, to: back)
-                if !to.hasSuffix(".json"), !Self.isTemporary(back.path) { report.restored += 1 }
+                if !companion, !Self.isTemporary(back.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((to, back.path))
                 // For Redo: what is back at its old place (or under the free name it got), and the folder it left (B11-m1).
@@ -972,7 +1026,7 @@ public actor OperationJournal {
             if changed.isEmpty {
                 do {
                     try fm.trashItem(at: target, resultingItemURL: nil)
-                    if !to.hasSuffix(".json") { report.restored += 1 }
+                    if !companion { report.restored += 1 }
                     report.done += 1
                     return true
                 } catch {
@@ -1015,7 +1069,7 @@ public actor OperationJournal {
             }
             do {
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
-                if !original.hasSuffix(".json") { report.restored += 1 }
+                if !companion { report.restored += 1 }
                 report.done += 1
                 note(original, in: &entry)
                 return true

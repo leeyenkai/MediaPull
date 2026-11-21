@@ -33,8 +33,8 @@ cd "$WORK/ffmpeg-$VERSION"
   --enable-zlib --enable-videotoolbox --enable-audiotoolbox \
   --disable-everything \
   --enable-protocol=file,pipe \
-  --enable-demuxer=mov,matroska,mpegts,aac,mp3,ogg,flac,wav,image2,image2pipe,gif,apng,png_pipe,jpeg_pipe,webp_pipe,concat,rawvideo,ivf,h264,hevc,m4v \
-  --enable-muxer=mp4,mov,ipod,matroska,webm,gif,apng,image2,image2pipe,adts,null,rawvideo \
+  --enable-demuxer=mov,matroska,mpegts,aac,mp3,ogg,flac,wav,aiff,image2,image2pipe,gif,apng,png_pipe,jpeg_pipe,webp_pipe,concat,rawvideo,ivf,h264,hevc,m4v \
+  --enable-muxer=mp4,mov,ipod,matroska,webm,gif,apng,image2,image2pipe,adts,null,rawvideo,mp3,flac,ogg,opus,wav,aiff,streamhash,framemd5 \
   --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,aac,aac_latm,mp3,mp3float,opus,vorbis,flac,alac,pcm_s16le,pcm_f32le,mjpeg,png,apng,gif,webp,rawvideo \
   --enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac_at,aac,gif,apng,png,rawvideo,pcm_s16le,mjpeg \
   --enable-parser=h264,hevc,vp8,vp9,av1,aac,aac_latm,mpegaudio,opus,vorbis,flac,png,gif,webp,mjpeg \

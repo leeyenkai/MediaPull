@@ -77,6 +77,9 @@ final class EditorModel: UnsavedEditing {
     var isImage = true
     var isLoading = true
     var message: String?
+    /// The photo carries HDR, which a cropped copy cannot keep yet (R-4203); turning it alone keeps it.
+    var hasGainMap = false
+    var isCropped: Bool { crop.width < 0.999 || crop.height < 0.999 }
     var isSaving = false
     var hasUnsavedChanges: Bool { hasImageEdits || hasNameChange }
     private(set) var turns = 0
@@ -153,11 +156,16 @@ final class EditorModel: UnsavedEditing {
         // Sniffing, counting frames and choosing the output format read the file, so they run off the main actor.
         // Animated images of any format are rename-only: editing would keep just the first frame (R-3202).
         let format = await Task.detached(priority: .userInitiated) { () -> MediaFormat? in
-            let sniffed = Sniffer.sniff(MediaConverter.head(of: file)).format ?? MediaFormat.fromExtension(file.pathExtension)
-            guard sniffed?.kind == .image || sniffed?.kind == .animatedImage, sniffed != .gif else { return nil }
+            let sniffed = Sniffer.resolve(Sniffer.sniff(MediaConverter.head(of: file)).format, fileExtension: file.pathExtension)
+            // RAW and image sequences are never edited (R-4203).
+            guard sniffed?.kind == .image || sniffed?.kind == .animatedImage, sniffed != .gif, sniffed?.isConvertible == true,
+                  !MediaFormat.isSequenceExtension(file.pathExtension)
+            else { return nil }
             let analysis = ImageConversion.analyze(file)
             if analysis?.isAnimated ?? false { return nil }
             if sniffed == .jpeg { return .jpeg }
+            // A HEIC stays HEIC (R-4203).
+            if sniffed == .heic { return .heic }
             if sniffed?.isLosslessImage ?? false { return .png }
             return analysis.map { ImageConversion.stillTarget(for: $0) == .jpeg ? .jpeg : .png } ?? .png
         }.value
@@ -167,6 +175,7 @@ final class EditorModel: UnsavedEditing {
         }
         self.format = format
         if case .item = request.subject { fileExtension = format.fileExtension }
+        hasGainMap = await Task.detached(priority: .utility) { ImageEditing.hasGainMap(file) }.value
         let image = await Task.detached(priority: .userInitiated) { ImageEditing.loadOriented(file) }.value
         original = image
         working = image
@@ -273,8 +282,8 @@ final class EditorModel: UnsavedEditing {
         let (crop, format, source, reorientation) = (crop, format, sourceFile, reorientation)
         let uncropped = crop.width >= 0.999 && crop.height >= 0.999
         try await Task.detached(priority: .userInitiated) {
-            // Only turned or flipped: a JPEG keeps its exact image data and gets a new orientation tag (lossless).
-            if uncropped, format == .jpeg, let source {
+            // Only turned or flipped: a JPEG or HEIC keeps its exact image data and gets a new orientation tag (lossless).
+            if uncropped, format == .jpeg || format == .heic, let source {
                 try ImageEditing.writeReoriented(source, by: reorientation, to: output)
                 return
             }

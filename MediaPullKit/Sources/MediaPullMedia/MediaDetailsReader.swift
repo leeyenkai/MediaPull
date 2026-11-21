@@ -30,6 +30,8 @@ public struct MediaDetails: Sendable, Equatable {
     public var duration: Double?
     public var codec: String?
     public var frameRate: Double?
+    /// An audio file's tags (R-4205).
+    public var audio: AudioTags?
 
     public init() {}
 
@@ -46,13 +48,28 @@ public struct MediaDetails: Sendable, Equatable {
 public enum MediaDetailsReader {
     @concurrent
     public static func details(for url: URL) async -> MediaDetails {
-        MediaFormat.fromExtension(url.pathExtension)?.kind == .video ? await videoDetails(url) : imageDetails(url)
+        switch MediaFormat.fromExtension(url.pathExtension)?.kind {
+        case .video: await videoDetails(url)
+        case .audio: await audioDetails(url)
+        default: imageDetails(url)
+        }
+    }
+
+    static func audioDetails(_ url: URL) async -> MediaDetails {
+        let facts = await MediaFactsReader.audioFacts(url, probe: nil)
+        var details = MediaDetails()
+        details.duration = facts.duration
+        details.codec = facts.audio?.codec
+        details.audio = facts.audio
+        return details
     }
 
     static func imageDetails(_ url: URL) -> MediaDetails {
         var details = MediaDetails()
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return details }
+              let props = CGImageSourceCopyPropertiesAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil)
+              as? [CFString: Any]
+        else { return details }
         let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
         let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
         let exifAux = props[kCGImagePropertyExifAuxDictionary] as? [CFString: Any] ?? [:]
@@ -74,10 +91,9 @@ public enum MediaDetailsReader {
         }
         // Bit 0 of the EXIF flash value says whether it fired.
         if let flash = exif[kCGImagePropertyExifFlash] as? NSNumber { details.flashFired = flash.intValue & 1 == 1 }
-        if let date = text(exif[kCGImagePropertyExifDateTimeOriginal]) ?? text(exif[kCGImagePropertyExifDateTimeDigitized]) {
-            let offset = text(exif[kCGImagePropertyExifOffsetTimeOriginal])
+        if let (date, offset) = MediaFactsReader.takenDate(exif) {
             details.taken = MediaFactsReader.exifDate(date, offset: offset)
-            details.takenOffset = offset
+            details.takenOffset = MediaFactsReader.normalizedOffset(offset)
         }
         if let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any],
            let lat = (gps[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue,

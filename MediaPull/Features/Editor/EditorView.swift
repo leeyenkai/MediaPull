@@ -71,6 +71,10 @@ struct EditorView: View {
             if let message = model.message, model.isImage {
                 Text(message).font(.callout).foregroundStyle(.orange)
             }
+            if model.hasGainMap, model.isCropped {
+                Text("A cropped copy of this HDR photo is saved without its HDR. Turning or flipping it alone keeps it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Text(hint).font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)

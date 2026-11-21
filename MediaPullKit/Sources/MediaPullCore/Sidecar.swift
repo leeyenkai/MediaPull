@@ -137,11 +137,23 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         media.deletingLastPathComponent().appendingPathComponent(media.lastPathComponent + ".json")
     }
 
-    /// Dropped or chosen files without the metadata files of media also in the list: those move with their media.
+    /// Dropped or chosen files without the metadata files of media also in the list, nor the members and edit files of a
+    /// unit whose lead is in the list (R-4206): those move with their media.
     public static func withoutCompanions(_ urls: [URL]) -> [URL] {
         let paths = Set(urls.map(\.standardizedFileURL.path))
+        var carried = Set<String>()
+        for (folder, items) in Dictionary(grouping: urls, by: { $0.standardizedFileURL.deletingLastPathComponent().path }) {
+            let names = items.map(\.lastPathComponent)
+            for unit in MediaUnits.units(in: names) {
+                for name in MediaUnits.companions(ofLead: unit.lead, in: names) {
+                    carried.insert((folder as NSString).appendingPathComponent(name))
+                }
+            }
+        }
         return urls.filter { url in
-            url.pathExtension.lowercased() != "json" || !paths.contains(url.standardizedFileURL.deletingPathExtension().path)
+            let path = url.standardizedFileURL.path
+            guard !carried.contains(path) else { return false }
+            return url.pathExtension.lowercased() != "json" || !paths.contains(url.standardizedFileURL.deletingPathExtension().path)
         }
     }
 }

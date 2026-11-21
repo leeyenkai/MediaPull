@@ -145,7 +145,7 @@ final class AppModel {
         } catch {
             engineMessage = "The library database could not be opened: \(error.localizedDescription)"
         }
-        analysis.start(inMemory: SelfTestRunner.isActive)
+        analysis.start(inMemory: SelfTestRunner.isActive, ffmpeg: ffmpeg)
         Task {
             // Stranded changes first: an old one is taken back before the prune forgets it (audit 18, A18-m3).
             await takeBackStranded()
@@ -846,6 +846,9 @@ final class AppModel {
                 files.append(url)
             }
         }
-        return files.filter { MediaFormat.fromExtension($0.pathExtension) != nil && $0.pathExtension.lowercased() != "json" }
+        // Camera RAW and image sequences are never converted (R-4203).
+        return files.filter {
+            MediaFormat.fromExtension($0.pathExtension)?.isConvertible == true && !MediaFormat.isSequenceExtension($0.pathExtension)
+        }
     }
 }

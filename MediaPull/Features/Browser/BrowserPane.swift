@@ -248,8 +248,12 @@ struct StartPage: View {
                     ) {
                         model.showDownloads("")
                     }
+                    StartRow(symbol: "iphone", title: "Bring in from a phone or camera",
+                             detail: "Plug in an iPhone, an Android phone or a camera card and copy only what is new") {
+                        model.section = .devices
+                    }
                     StartRow(symbol: "folder", title: "Organise a folder",
-                             detail: "Sort photos by date, subject or person, in place or into a new folder") {
+                             detail: "Sort photos by date, subject or person, find duplicates and people, in place or into a new folder") {
                         model.section = .organise
                     }
                     StartRow(symbol: "arrow.triangle.2.circlepath", title: "Convert WebP, AVIF or HEIC files",

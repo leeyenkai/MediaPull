@@ -39,6 +39,8 @@ final class Preferences {
     /// Where imports from devices go; nil for the default library folder (R-4104).
     var deviceImportFolder: String? { didSet { set(deviceImportFolder, "deviceImportFolder") } }
     var includeLivePhotoClips: Bool { didSet { set(includeLivePhotoClips, "includeLivePhotoClips") } }
+    /// Automatic sorts put a whole post in one folder unless this is on (R-4208).
+    var sortPostImagesIndividually: Bool { didSet { set(sortPostImagesIndividually, "sortPostImagesIndividually") } }
 
     func arrangement(for group: PaneGroup) -> PaneArrangement {
         switch group {
@@ -126,6 +128,7 @@ final class Preferences {
             .flatMap { $0.group == .devices ? $0 : nil } ?? .devicesStandard
         deviceImportFolder = d.string(forKey: "deviceImportFolder")
         includeLivePhotoClips = d.bool(forKey: "includeLivePhotoClips")
+        sortPostImagesIndividually = d.bool(forKey: "sortPostImagesIndividually")
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true
         showMaps = d.object(forKey: "showMaps") as? Bool ?? false
         highlightDuplicates = d.object(forKey: "highlightDuplicates") as? Bool ?? true

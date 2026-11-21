@@ -8,19 +8,19 @@ import UniformTypeIdentifiers
 public enum ImageEditing {
     /// The full-size image with its camera orientation applied, so edits act on what people see.
     public static func loadOriented(_ url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0 else { return nil }
+        let index = CGImageSourceGetPrimaryImageIndex(source)
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any] else { return nil }
         let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
         let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
         let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-        if orientation == 1 { return CGImageSourceCreateImageAtIndex(source, 0, nil) }
+        if orientation == 1 { return CGImageSourceCreateImageAtIndex(source, index, nil) }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: max(width, height),
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        return CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary)
     }
 
     /// Rotates by quarter turns; positive turns are clockwise.
@@ -119,11 +119,21 @@ public enum ImageEditing {
         }
     }
 
-    /// A rotate or flip of a JPEG without re-encoding (R-3202, D-34 as amended): the image data is copied as it is and
-    /// only the orientation tag changes.
+    /// Whether the picture carries an HDR gain map, which an edited copy cannot keep yet (R-4203).
+    public static func hasGainMap(_ url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
+        let index = CGImageSourceGetPrimaryImageIndex(source)
+        return [kCGImageAuxiliaryDataTypeISOGainMap, kCGImageAuxiliaryDataTypeHDRGainMap].contains { type in
+            CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, index, type) != nil
+        }
+    }
+
+    /// A rotate or flip of a JPEG or HEIC without re-encoding (R-3202, D-34 as amended, R-4203): the image data is copied
+    /// as it is and only the orientation tag changes.
     public static func writeReoriented(_ source: URL, by edit: Reorientation, to output: URL) throws {
         guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil), let type = CGImageSourceGetType(imageSource),
-              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, CGImageSourceGetPrimaryImageIndex(imageSource), nil)
+              as? [CFString: Any],
               let destination = CGImageDestinationCreateWithURL(output as CFURL, type, 1, nil)
         else { throw ImageConversionError.unreadable }
         let current = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
@@ -133,19 +143,29 @@ public enum ImageEditing {
         }
     }
 
-    /// Writes the edited image as JPEG (quality 1.0) or PNG, carrying over the source's metadata
-    /// except orientation, which the pixels now already reflect.
+    /// Writes the edited image as JPEG (quality 1.0), HEIC (quality 1.0; a HEIC stays HEIC, R-4203) or PNG, carrying over
+    /// every metadata block of the source (EXIF, IPTC, GPS, the camera maker's) except orientation, which the pixels now
+    /// already reflect.
     public static func write(_ image: CGImage, format: MediaFormat, metadataFrom source: URL?, to output: URL) throws {
-        let target: MediaFormat = format == .jpeg ? .jpeg : .png
-        let type = target == .jpeg ? UTType.jpeg : UTType.png
+        let target: MediaFormat = [.jpeg, .heic].contains(format) ? format : .png
+        let type = switch target {
+        case .jpeg: UTType.jpeg
+        case .heic: UTType.heic
+        default: UTType.png
+        }
         guard let destination = CGImageDestinationCreateWithURL(output as CFURL, type.identifier as CFString, 1, nil) else {
             throw ImageConversionError.cannotWrite
         }
         var properties: [CFString: Any] = [:]
         if let source, let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
-           let original = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+           let original = CGImageSourceCopyPropertiesAtIndex(imageSource, CGImageSourceGetPrimaryImageIndex(imageSource), nil)
+           as? [CFString: Any]
         {
-            for key in [kCGImagePropertyExifDictionary, kCGImagePropertyIPTCDictionary, kCGImagePropertyGPSDictionary] {
+            let blocks = [
+                kCGImagePropertyExifDictionary, kCGImagePropertyIPTCDictionary, kCGImagePropertyGPSDictionary,
+                kCGImagePropertyMakerAppleDictionary, kCGImagePropertyExifAuxDictionary,
+            ]
+            for key in blocks {
                 if let value = original[key] { properties[key] = value }
             }
             if var tiff = original[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
@@ -159,7 +179,7 @@ public enum ImageEditing {
             }
         }
         properties[kCGImagePropertyOrientation] = 1
-        if target == .jpeg { properties[kCGImageDestinationLossyCompressionQuality] = 1.0 }
+        if target != .png { properties[kCGImageDestinationLossyCompressionQuality] = 1.0 }
         CGImageDestinationAddImage(destination, image, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { throw ImageConversionError.cannotWrite }
     }

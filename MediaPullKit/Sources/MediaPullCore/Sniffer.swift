@@ -46,6 +46,12 @@ public enum Sniffer {
             return SniffResult(format: .jxl)
         }
         if ascii("BM"), bytes.count > 14 { return SniffResult(format: .bmp) }
+        // RAW formats with signatures of their own; most others share TIFF's, so `resolve` lets their extension decide.
+        if ascii("FUJIFILMCCD-RAW") || ascii("IIRO") || ascii("IIRS") || ascii("MMOR") || starts([0x49, 0x49, 0x55, 0x00])
+            || ascii("FOVb")
+        {
+            return SniffResult(format: .raw)
+        }
         if starts([0x49, 0x49, 0x2A, 0x00]) || starts([0x4D, 0x4D, 0x00, 0x2A]) { return SniffResult(format: .tiff) }
         if starts([0x00, 0x00, 0x01, 0x00]) || starts([0x00, 0x00, 0x02, 0x00]) { return SniffResult(format: .ico) }
         if starts([0x1A, 0x45, 0xDF, 0xA3]) {
@@ -60,6 +66,7 @@ public enum Sniffer {
             return SniffResult(format: head.contains("OpusHead") ? .opus : .ogg)
         }
         if ascii("fLaC") { return SniffResult(format: .flac) }
+        if ascii("FORM"), ascii("AIFF", at: 8) || ascii("AIFC", at: 8) { return SniffResult(format: .aiff) }
         if bytes.count > 1, bytes[0] == 0xFF, bytes[1] & 0xF6 == 0xF0 { return SniffResult(format: .aac) }
 
         let text = String(decoding: bytes.prefix(1024), as: UTF8.self)
@@ -76,6 +83,14 @@ public enum Sniffer {
         return SniffResult()
     }
 
+    /// The format to handle a file as: its content, except that a RAW extension wins over the TIFF signature many RAW
+    /// formats share (R-4202), so a RAW file is never rewritten as a TIFF.
+    public static func resolve(_ sniffed: MediaFormat?, fileExtension: String) -> MediaFormat? {
+        let byName = MediaFormat.fromExtension(fileExtension)
+        if byName == .raw, sniffed == nil || sniffed == .tiff || sniffed == .raw { return .raw }
+        return sniffed ?? byName
+    }
+
     private static func isoFormat(_ bytes: [UInt8]) -> MediaFormat? {
         guard bytes.count >= 12 else { return nil }
         let size = Int(bytes[0]) << 24 | Int(bytes[1]) << 16 | Int(bytes[2]) << 8 | Int(bytes[3])
@@ -87,10 +102,11 @@ public enum Sniffer {
         }
         let major = brands[0]
         if brands.contains(where: { $0 == "avif" || $0 == "avis" }) { return .avif }
-        if ["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].contains(major) { return .heic }
+        if ["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1", "avci", "miaf"].contains(major) { return .heic }
         if major == "qt  " { return .mov }
         if major == "M4A " || major == "M4B " { return .m4a }
-        if major == "crx " { return nil }
+        // Canon CR3.
+        if major == "crx " { return .raw }
         return .mp4
     }
 

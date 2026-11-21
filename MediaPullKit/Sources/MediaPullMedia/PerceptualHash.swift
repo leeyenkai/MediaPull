@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import MediaPullCore
 
 /// Two 64-bit perceptual hashes of an image (SPEC section 33). Deterministic: the image is reduced to a
 /// small greyscale copy and summarised; no learned model is involved.
@@ -46,13 +47,9 @@ public enum PerceptualHash {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) > 0
         else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: 128,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        // A RAW file's embedded preview shows the whole picture and spares a full decode (R-4204).
+        let raw = MediaFormat.fromExtension(url.pathExtension) == .raw
+        guard let image = Thumbnailer.thumbnail(source, maxPixel: 128, embeddedFirst: raw) else { return nil }
         return fingerprint(of: image)
     }
 

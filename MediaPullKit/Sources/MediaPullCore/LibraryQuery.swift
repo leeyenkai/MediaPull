@@ -11,6 +11,9 @@ public struct MediaEntry: Sendable, Hashable {
     public var record: AnalysisRecord?
     /// The file's Finder tags (R-1715), read with the listing.
     public var finderTags: [String] = []
+    /// When the file leads a unit (R-4206): what kind, and its other media files' names.
+    public var unit: UnitKind?
+    public var unitMembers: [String] = []
 
     public init(url: URL, size: Int64, created: Date?, modified: Date, format: MediaFormat?, source: SourceInfo? = nil,
                 record: AnalysisRecord? = nil)
@@ -47,6 +50,8 @@ public struct MediaEntry: Sendable, Hashable {
 
 public enum LibrarySort: String, Codable, Sendable, CaseIterable {
     case date, name, fileSize, pixelSize, videoLength, source, camera, events, similar
+    /// Audio (R-4205): by artist then album and track, or by album then track.
+    case artist, album
 
     public var label: String {
         switch self {
@@ -59,11 +64,13 @@ public enum LibrarySort: String, Codable, Sendable, CaseIterable {
         case .camera: "Camera"
         case .events: "Events"
         case .similar: "Group Similar"
+        case .artist: "Artist"
+        case .album: "Album"
         }
     }
 
     public var needsAnalysis: Bool {
-        [.pixelSize, .videoLength, .camera, .similar].contains(self)
+        [.pixelSize, .videoLength, .camera, .similar, .artist, .album].contains(self)
     }
 }
 
@@ -326,15 +333,34 @@ public struct LibraryQuery: Codable, Sendable, Hashable {
                 : ordered($0.facts?.duration ?? 0, $1.facts?.duration ?? 0)
             }
         case .source:
-            func key(_ i: MediaEntry) -> String {
-                "\(i.source?.sourceName?.lowercased() ?? "\u{FFFF}")\u{0}\(i.source?.postID ?? "")"
+            // By account or site, then posts by their date (newest first), then by place in the post (R-3702, R-4208).
+            func account(_ i: MediaEntry) -> String { i.source?.sourceName?.lowercased() ?? "\u{FFFF}" }
+            func postDate(_ i: MediaEntry) -> Date { i.source?.date ?? i.date }
+            return items.sorted { a, b in
+                if account(a) != account(b) { return ascending ? account(a) < account(b) : account(a) > account(b) }
+                if postDate(a) != postDate(b) { return postDate(a) > postDate(b) }
+                let (pa, pb) = (a.source?.postID ?? "", b.source?.postID ?? "")
+                if pa != pb { return pa < pb }
+                return (a.source?.num ?? 0, a.name) < (b.source?.num ?? 0, b.name)
             }
-            return items.sorted { key($0) == key($1) ? $0.date > $1.date : (ascending ? key($0) < key($1) : key($0) > key($1)) }
         case .camera:
             func key(_ i: MediaEntry) -> String {
                 i.facts?.camera?.lowercased() ?? "\u{FFFF}"
             }
             return items.sorted { key($0) == key($1) ? $0.date > $1.date : (ascending ? key($0) < key($1) : key($0) > key($1)) }
+        case .artist, .album:
+            // Files without tags last; within an album, by track, then name.
+            func key(_ i: MediaEntry) -> String {
+                let tags = i.facts?.audio
+                let artist = (tags?.albumArtist ?? tags?.artist)?.lowercased() ?? "\u{FFFF}"
+                let album = tags?.album?.lowercased() ?? "\u{FFFF}"
+                return sort == .artist ? "\(artist)\u{0}\(album)" : "\(album)\u{0}\(artist)"
+            }
+            return items.sorted {
+                guard key($0) == key($1) else { return ascending ? key($0) < key($1) : key($0) > key($1) }
+                let (a, b) = ($0.facts?.audio?.track ?? Int.max, $1.facts?.audio?.track ?? Int.max)
+                return a == b ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : a < b
+            }
         }
     }
 

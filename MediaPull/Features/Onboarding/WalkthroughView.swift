@@ -99,11 +99,12 @@ struct WalkthroughView: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
             Text("Welcome to MediaPull").font(.largeTitle.weight(.semibold))
-            Text("Collect the images and videos from any web page, or download whole profiles, galleries and videos from hundreds "
-                + "of sites, into your own folders at the highest quality available.")
+            Text("Collect images and videos from any web page or from hundreds of sites, bring them in from your phone, camera or "
+                + "drives, and keep them in order: sorted, searchable, with duplicates and people found for you.")
                 .fixedSize(horizontal: false, vertical: true)
             Label("Only reads from the web. MediaPull never uploads files and never posts, likes or follows.", systemImage: "lock.shield")
-            Label("Saves normal JPEG, PNG, GIF and MP4 files. WebP and other modern formats are converted for you.", systemImage: "photo")
+            Label("Saves from the web as normal JPEG, PNG, GIF and MP4 files. Your own photos, RAW files and audio keep their format.",
+                  systemImage: "photo")
             Spacer(minLength: 0)
             Text("Would you like a one-minute tour? You can skip it and open it later from Settings.")
                 .foregroundStyle(.secondary)

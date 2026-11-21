@@ -229,6 +229,7 @@ public actor ThumbnailLoader {
         if ["mp4", "mov", "m4v"].contains(ext) {
             return await Thumbnailer.videoFrame(at: file, maxPixel: maxPixel)
         }
+        if MediaFormat.fromExtension(ext)?.kind == .audio { return await Thumbnailer.audioArtwork(at: file, maxPixel: maxPixel) }
         return Thumbnailer.image(at: file, maxPixel: maxPixel)
     }
 

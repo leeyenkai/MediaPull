@@ -18,8 +18,12 @@ public final class Analyzer: Sendable {
     public let geocoder: OfflineGeocoder?
     public let faceDetector: FaceDetector?
     let ocrState = OCRState()
+    let audioProbe: MediaFactsReader.AudioProbe?
+    let audioHash: (@Sendable (URL) async -> String?)?
 
-    public init(modelsFolder: URL?) {
+    public init(modelsFolder: URL?, audioProbe: MediaFactsReader.AudioProbe? = nil, audioHash: (@Sendable (URL) async -> String?)? = nil) {
+        self.audioProbe = audioProbe
+        self.audioHash = audioHash
         let manifest = modelsFolder.flatMap(ModelManifest.load)
         imageText = modelsFolder.flatMap { folder in manifest?.imageText.flatMap { try? ImageTextEncoder(folder: folder, spec: $0) } }
         faceEncoder = modelsFolder.flatMap { folder in manifest?.face.flatMap { try? FaceEncoder(folder: folder, spec: $0) } }
@@ -60,8 +64,30 @@ public final class Analyzer: Sendable {
     /// The longest side analysed. Large enough for text and small faces, small enough to decode quickly.
     public static let analysisSize = 1024
 
+    /// Reads the file's facts again into an existing record, without running any model (R-4210).
+    public func refreshFacts(_ url: URL, record: AnalysisRecord) async -> AnalysisRecord {
+        var updated = record
+        var facts = await readFacts(url)
+        // Sizes measured from the decoded picture when the file did not say are kept.
+        if facts.pixelWidth == nil {
+            facts.pixelWidth = record.facts.pixelWidth
+            facts.pixelHeight = record.facts.pixelHeight
+        }
+        updated.facts = facts
+        updated.isScreenshot = ScreenshotRule.isScreenshot(facts: facts, fileName: url.lastPathComponent)
+        updated.place = facts.latitude.flatMap { lat in facts.longitude.flatMap { geocoder?.place(latitude: lat, longitude: $0) } }
+        updated.factsVersion = AnalysisRecord.currentFactsVersion
+        return updated
+    }
+
+    func readFacts(_ url: URL) async -> MediaFacts {
+        var facts = await MediaFactsReader.facts(for: url, audioProbe: audioProbe)
+        if facts.audio != nil, let audioHash { facts.audio?.streamHash = await audioHash(url) }
+        return facts
+    }
+
     public func analyse(_ url: URL, sha256: String, recogniseFaces: Bool) async -> AnalysisOutput {
-        var facts = await MediaFactsReader.facts(for: url)
+        var facts = await readFacts(url)
         let isVideo = facts.format?.kind == .video
         let image: CGImage? = isVideo ? await Thumbnailer.videoFrame(at: url, maxPixel: Self.analysisSize, position: .analysis)
             : Thumbnailer.image(at: url, maxPixel: Self.analysisSize)

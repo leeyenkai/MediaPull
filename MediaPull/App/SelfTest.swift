@@ -9,6 +9,7 @@ import MediaPullLibrary
 import MediaPullMedia
 import MediaPullNet
 import MediaPullStore
+import UniformTypeIdentifiers
 
 /// Automated end-to-end check of the web extraction and save pipeline, started with
 /// `--selftest-url <url> --selftest-out <folder>`. It loads the page, scrolls it to the end,
@@ -123,6 +124,11 @@ final class SelfTestRunner {
         }
         if CommandLine.arguments.contains("--selftest-save-as") {
             await exerciseSaveAs(library: library, out: out)
+            quit()
+            return
+        }
+        if CommandLine.arguments.contains("--selftest-formats") {
+            await exerciseFormats(library: library, out: out)
             quit()
             return
         }
@@ -1187,6 +1193,142 @@ final class SelfTestRunner {
         app.deviceCenter.standIns = []
         model.section = .collect
         note("devices: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Formats, units and posts (section 42), offline: a RAW+JPEG pair, a Live Photo, a Fujifilm `.hif`, tagged audio and an
+    /// Instagram post in a folder opened in Organise. Units list once with their badge and move as one; a HEIC dropped into
+    /// an Archive library folder stays HEIC; audio gets its tags; a sort keeps the post together.
+    private func exerciseFormats(library: URL, out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("formats: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        let folder = out.appendingPathComponent("Camera roll", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        func picture(_ name: String, type: UTType, colour: Int, date: String? = nil) {
+            guard let image = NSImage(data: Self.jpeg(colour)).flatMap({ $0.cgImage(forProposedRect: nil, context: nil, hints: nil) }),
+                  let destination = CGImageDestinationCreateWithURL(folder.appendingPathComponent(name) as CFURL,
+                                                                     type.identifier as CFString,
+                                                                     1, nil) else { return }
+            var properties: [CFString: Any] = [:]
+            if let date { properties[kCGImagePropertyExifDictionary] = [kCGImagePropertyExifDateTimeOriginal: date] }
+            CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+            CGImageDestinationFinalize(destination)
+        }
+        // A DNG is a TIFF inside, which is what the system reads for this test.
+        picture("DSC_1.DNG", type: .tiff, colour: 1)
+        picture("DSC_1.JPG", type: .jpeg, colour: 1)
+        try? Data("<x:xmpmeta/>".utf8).write(to: folder.appendingPathComponent("DSC_1.xmp"))
+        picture("IMG_2.HEIC", type: .heic, colour: 2)
+        try? await Self.writeTestClip(to: folder.appendingPathComponent("IMG_2.MOV"))
+        picture("DSCF3.hif", type: .heic, colour: 3)
+        picture("photo.heic", type: .heic, colour: 4)
+        await Self.writeTaggedSong(to: folder.appendingPathComponent("song.m4a"), work: out)
+        // A post of three pictures taken in three months, saved with metadata files.
+        let account = folder.appendingPathComponent("someone", isDirectory: true)
+        try? fm.createDirectory(at: account, withIntermediateDirectories: true)
+        for (number, month) in [(1, "01"), (2, "05"), (3, "09")] {
+            let name = "2024-01-01_120000_POST_0\(number).jpg"
+            let url = account.appendingPathComponent(name)
+            guard let image = NSImage(data: Self.jpeg(10 + number)).flatMap({ $0.cgImage(forProposedRect: nil, context: nil, hints: nil) }),
+                  let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
+            else { continue }
+            CGImageDestinationAddImage(destination, image, [kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifDateTimeOriginal: "2024:\(month):10 10:00:00",
+            ]] as CFDictionary)
+            CGImageDestinationFinalize(destination)
+            let meta: [String: Any] = ["category": "instagram", "subcategory": "posts", "username": "someone", "post_id": "999",
+                                       "post_shortcode": "POST", "num": number, "count": 3, "date": "2024-01-01 12:00:00"]
+            try? JSONSerialization.data(withJSONObject: meta).write(to: Sidecar.sidecarURL(for: url))
+        }
+
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        let organise = model.organise, pane = organise.source
+        organise.open(folder)
+        await waitUntil(timeout: 60) { !pane.loading && !pane.filtering && pane.entries.count >= 5 }
+        let names = pane.entries.map(\.name).sorted()
+        check(names == ["DSCF3.hif", "DSC_1.DNG", "IMG_2.HEIC", "photo.heic", "song.m4a"],
+              "units list once, .hif and audio are listed (\(names))")
+        let byName = Dictionary(pane.entries.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        check(byName["DSC_1.DNG"]?.unit == .rawPair && byName["IMG_2.HEIC"]?.unit == .live, "RAW+JPEG and LIVE badges")
+        try? await Task.sleep(for: .seconds(1))
+        snapshot(to: out.appendingPathComponent("formats.png"))
+
+        // The pair moves as one, and Undo brings every file back.
+        let into = folder.appendingPathComponent("Sorted", isDirectory: true)
+        try? fm.createDirectory(at: into, withIntermediateDirectories: true)
+        let changes = organise.history.count
+        organise.run(FolderOperations.move([folder.appendingPathComponent("DSC_1.DNG")], to: into))
+        await waitUntil(timeout: 30) { organise.history.count > changes && organise.working == nil }
+        let moved = Set((try? fm.contentsOfDirectory(atPath: into.path)) ?? [])
+        check(moved == ["DSC_1.DNG", "DSC_1.JPG", "DSC_1.xmp"], "the pair moved with its edit file (\(moved.sorted()))")
+        if let entry = organise.history.first { organise.undo(entry) }
+        await waitUntil(timeout: 30) { organise.working == nil && fm.fileExists(atPath: folder.appendingPathComponent("DSC_1.JPG").path) }
+        check(["DSC_1.DNG", "DSC_1.JPG", "DSC_1.xmp"].allSatisfy { fm.fileExists(atPath: folder.appendingPathComponent($0).path) },
+              "Undo put the whole pair back")
+
+        // A HEIC dropped into an Archive library folder keeps its format (D-121).
+        model.library.importFiles([folder.appendingPathComponent("photo.heic")], into: library, move: false)
+        await waitUntil(timeout: 30) { fm.fileExists(atPath: library.appendingPathComponent("photo.heic").path) }
+        check(fm.fileExists(atPath: library.appendingPathComponent("photo.heic").path)
+              && !fm.fileExists(atPath: library.appendingPathComponent("photo.jpg").path), "a HEIC copied into the library stays HEIC")
+
+        // Audio tags come from analysis; the post stays together in a sort by date. The move showed its destination: back.
+        pane.folder = pane.root
+        await waitUntil(timeout: 30) { !pane.loading && !pane.filtering && pane.entries.count >= 5 }
+        app.analysis.schedule(after: .milliseconds(100))
+        await waitUntil(timeout: 120) {
+            pane.entries.first { $0.name == "song.m4a" }?.facts?.audio?.title != nil
+        }
+        let song = pane.entries.first { $0.name == "song.m4a" }
+        check(song?.facts?.audio?.title == "Test Song" && song?.facts?.audio?.artist == "Test Artist" && (song?.facts?.duration ?? 0) > 0,
+              "audio tags and length (\(song?.facts?.audio?.title ?? "none"), \(song?.facts?.duration ?? 0) s)")
+        organise.open(account)
+        await waitUntil(timeout: 120) {
+            !pane.loading && !pane.filtering && pane.entries.count == 3 && pane.entries.allSatisfy { $0.facts?.captureDate != nil }
+        }
+        let saved = app.preferences.sortPostImagesIndividually
+        defer { app.preferences.sortPostImagesIndividually = saved }
+        app.preferences.sortPostImagesIndividually = false
+        organise.pending = nil
+        organise.autoSort(.date)
+        await waitUntil(timeout: 60) { organise.pending != nil }
+        let folders = Set(organise.pending?.plan.moves.map { $0.destination.deletingLastPathComponent().lastPathComponent } ?? [])
+        check(folders == ["2024-01"], "the post stays in its first picture's month (\(folders.sorted()))")
+        organise.pending = nil
+        model.section = .collect
+        note("formats: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// A short tagged AAC file, made with the system's encoder (no ffmpeg needed).
+    static func writeTaggedSong(to url: URL, work: URL) async {
+        let wave = work.appendingPathComponent("tone.caf")
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1),
+              let file = try? AVAudioFile(forWriting: wave, settings: format.settings),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100)
+        else { return }
+        buffer.frameLength = 44100
+        for frame in 0 ..< Int(buffer.frameLength) {
+            buffer.floatChannelData?[0][frame] = Float(sin(Double(frame) * 2 * .pi * 440 / 44100) * 0.2)
+        }
+        try? file.write(from: buffer)
+        let asset = AVURLAsset(url: wave)
+        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else { return }
+        func item(_ key: AVMetadataKey, _ value: String) -> AVMetadataItem {
+            let item = AVMutableMetadataItem()
+            item.keySpace = .common
+            item.key = key.rawValue as NSString
+            item.value = value as NSString
+            return item
+        }
+        export.metadata = [
+            item(.commonKeyTitle, "Test Song"), item(.commonKeyArtist, "Test Artist"), item(.commonKeyAlbumName, "Test Album"),
+        ]
+        try? await export.export(to: url, as: .m4a)
     }
 
     /// Organise has the Library's duplicates and the Preview pane's details (D-114), offline, in a folder outside the library:

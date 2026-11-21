@@ -78,6 +78,7 @@ Decisions that changed during implementation are D-13 and D-24 to D-56 (and D-68
 39. Faces and people
 40. Profile views
 41. Devices
+42. Formats, units and posts
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -87,19 +88,23 @@ Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema 
 
 ### 1.1 What MediaPull is
 
-MediaPull is a lightweight native macOS app for collecting media from the web into local folders.
+MediaPull is a lightweight native macOS app for collecting media and keeping it in order: photos, videos and audio from the web, from phones, cameras and drives, and from the person's own folders (D-122).
+
+- **Collect** from the web (below).
+- **Bring in** from phones, cameras, camera cards and drives (section 41).
+- **Organise** any folder: sort into folders, find people, duplicates and look-alikes, search by what a picture shows, and see the camera, date and place of each file (sections 33 and 36 to 40, 42).
 
 - **Web pages.** The user browses any public page in an embedded browser pane. MediaPull finds every image, video and media stream on the page, including media that only loads as the user scrolls or interacts, and lists it live in an Extracted Media pane. The user filters by type, format, resolution, file size and more, then drags or saves the chosen items into folders.
 - **Instagram.** The user enters a public account (or a post or Reel link) and MediaPull pulls posts, carousels, videos, Reels, the HD profile picture, highlights and current stories at the highest quality Instagram serves, into a folder per account.
 - **Supported sites.** On pages from roughly 300 sites with a dedicated extractor (Pinterest, X, Reddit, Tumblr, Flickr and others), a site extractor scan returns original-resolution files.
-- **Normal formats.** Everything is saved as JPEG, PNG, GIF or MP4 (MOV kept when served as MOV). WebP, AVIF and HEIC are converted at maximum quality. A standalone converter does the same for files already on disk. Imports from a phone or camera are the exception: they keep the device's originals (D-117).
+- **Normal formats.** Everything saved from the web is JPEG, PNG, GIF or MP4 (MOV kept when served as MOV). WebP, AVIF and HEIC are converted at maximum quality. A standalone converter does the same for files already on disk when asked. Files that are already the person's own (imports from a phone, camera or drive, and files on the Mac) keep their format on every route: HEIC, RAW and audio stay as they are (D-117, D-121).
 - **Metadata archive layout.** One save layout writes a gallery-dl-compatible metadata archive: each media file has a JSON sidecar describing where it came from. Media-library and archiving tools that understand gallery-dl folders can import these folders directly, with captions, dates and carousel grouping intact.
 
 ### 1.2 Principles
 
 - **P1 Read-only.** MediaPull reads from the web and writes only to the local disk. No file or media bytes ever leave the Mac, and MediaPull never performs any action on any account (no posting, liking, following, commenting, marking stories as seen). This is enforced in code and proved by tests (section 5).
 - **P2 Highest quality.** For every item MediaPull chooses the largest variant actually available and never re-compresses when it does not have to.
-- **P3 Normal formats.** Saved files open everywhere on a Mac without extra software.
+- **P3 Normal formats.** Files saved from the web open everywhere on a Mac without extra software. The person's own files are never converted unless they ask (D-121).
 - **P4 Local-first and private.** No accounts, no servers, no analytics, no crash upload. The only background network activity MediaPull initiates by itself is the optional weekly engine update check (section 13.6).
 - **P5 Lightweight.** Small resident footprint, near-zero idle CPU, no helper processes running when no job is running.
 - **P6 Honest.** The UI says plainly when something is lower quality than requested, protected, private, rate-limited or blocked, and why.
@@ -463,7 +468,7 @@ Tracking parameters such as `igsh`, `utm_*` and `fbclid` are removed from Instag
 
 **R-805a** Tabs: each window has one or more browser tabs, shown in a strip at the top of the Browser pane with a new-tab button (⌘T), a close button on the selected or hovered tab (⌘W; closing the last tab closes the window), Reopen Closed Tab (⇧⌘T), Show Next and Previous Tab (⌃Tab, ⌃⇧Tab) and a context menu (New Tab, Duplicate, Bookmark, Close, Close Other Tabs). Links that ask for a new window open in a new tab; ⌘-click opens a link in a background tab and ⇧⌘-click in a selected one. All tabs share the website data store. Extracted Media collects from every tab in the window; the "This Page" chip shows only media from the selected tab's page. Switching tabs never reloads a page.
 
-**R-805b** Bookmarks: the star in the address field bookmarks the page into the first folder ("Favourites") and opens a small editor (name, folder, Remove); ⌘D does the same. The Bookmarks and History panel (toolbar button, ⌥⌘B) lists folders with their bookmarks. Folders can be added, renamed (double-click or context menu), reordered and deleted; bookmarks can be opened, opened in a new tab, renamed, moved to another folder and deleted. A Bookmarks menu lists every folder. The start page of a new tab shows bookmarks and recently visited pages, then four starting points: open a web page, download from one of the supported sites (opens the Downloads pane), organise a folder, and convert WebP, AVIF or HEIC files. It is not tied to any one site.
+**R-805b** Bookmarks: the star in the address field bookmarks the page into the first folder ("Favourites") and opens a small editor (name, folder, Remove); ⌘D does the same. The Bookmarks and History panel (toolbar button, ⌥⌘B) lists folders with their bookmarks. Folders can be added, renamed (double-click or context menu), reordered and deleted; bookmarks can be opened, opened in a new tab, renamed, moved to another folder and deleted. A Bookmarks menu lists every folder. The start page of a new tab shows bookmarks and recently visited pages, then five starting points: open a web page, download from one of the supported sites (opens the Downloads pane), bring in from a phone or camera (opens Devices, D-122), organise a folder, and convert WebP, AVIF or HEIC files. It is not tied to any one site.
 
 **R-805c** History: every page that finishes loading in any tab is recorded once per address (title, last visit, visit count; at most 5,000 addresses). The panel's History tab (⌘Y) groups visits by day with search; entries can be opened, bookmarked or removed. Clear History removes the last hour, today, today and yesterday, or everything (panel, History menu, Settings). Settings > General > "Remember browsing history" turns recording off. Bookmarks and history are stored as JSON files in `~/Library/Application Support/MediaPull/Browser/` and never leave the Mac; they are separate from website data (cookies), which "Clear All Website Data" removes.
 
@@ -881,7 +886,7 @@ The Archive layout is a **gallery-dl-compatible metadata archive**. It is design
 
 **R-1501** Each media file has a sidecar named `<full file name>.json` in the same folder (for `photo.jpg` the sidecar is `photo.jpg.json`).
 
-**R-1502** Only these media types are written: `.jpg`, `.png`, `.gif`, `.mp4`, `.mov`. Anything else is converted (section 16) or skipped with a reason (SVG, audio and protected streams are skipped, D-13). The one exception is a WebM or M4A file the person chooses in the Save Video sheet, which is saved without a metadata file (D-56).
+**R-1502** *(Amended by D-121: this applies to saves from the web; files already on the Mac keep their format when copied or moved into any folder.)* Only these media types are written: `.jpg`, `.png`, `.gif`, `.mp4`, `.mov`. Anything else is converted (section 16) or skipped with a reason (SVG, audio and protected streams are skipped, D-13). The one exception is a WebM or M4A file the person chooses in the Save Video sheet, which is saved without a metadata file (D-56).
 
 **R-1503** File names begin with a sortable timestamp (`YYYY-MM-DD_HHMMSS_…`) so that name order equals chronological order.
 
@@ -955,7 +960,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 
 **R-1603** Animated GIF output decodes frames with ImageIO and builds an optimized palette with ffmpeg (`palettegen` and `paletteuse`) for quality far better than a single global palette; frame delays and loop count are preserved.
 
-**R-1604** "Keep original WebP/AVIF/HEIC" (off by default) applies only to the Plain layout. The Archive layout always converts.
+**R-1604** *(Amended by D-121: saves from the web only; local files are never converted on the way into a folder.)* "Keep original WebP/AVIF/HEIC" (off by default) applies only to the Plain layout. The Archive layout always converts.
 
 ### 16.2 Converter
 
@@ -1019,7 +1024,7 @@ Tokens: `{yyyy}`, `{MM}`, `{dd}`, `{HH}`, `{mm}`, `{ss}`, `{date:<format>}`, `{s
 |---|---|---|
 | Extracted items | Library folder (tree row or grid) | Save job into that folder using its root's layout |
 | Extracted items | Finder or another app | File promises: files are downloaded and converted on drop, Plain layout; holding ⌥ adds sidecars |
-| Finder files | Library folder | Copy into the folder; converted when the root's layout is Archive |
+| Finder files | Library folder | Copy into the folder, in their own format (D-121) |
 | Finder files or folders | Converter window | Convert |
 | Library items | Finder | Copy (sidecars included) |
 | Library items | Another Library folder | Move (sidecars included); ⌥ copies |
@@ -1315,6 +1320,10 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-116 | Android's default "File transfer" mode is MTP, which macOS cannot read, so MediaPull has its own read-only MTP client (no third-party code). The system's camera daemon holds such phones exclusively, and taking a USB interface from it needs root or a private entitlement, so the client sends its requests through Apple's camera framework's PTP pass-through (`MTPPassThroughTransport`). The spike (`docs/spikes/device-access.md`, with `docs/spikes/device-probe.swift`) records how real phones answer; if a phone in MTP mode is not handed over, the Devices pane asks for PTP mode instead. Reads only, by an allow-list (R-4107) | Researched; a bundled MTP library would add third-party code and has the same contention |
 | D-117 | Imports from a device are copies of the person's own files, not saves from the web: originals are kept byte for byte (HEIC and MOV included, an exception to the "normal formats" principle of section 1.2 for this one route; the Converter turns them into JPEG and MP4 when wanted), named as on the device, with no metadata file in any layout, since there is no source, account or post to record | Requested: keep originals; converting HEIC would re-encode a photo that has a lossless path |
 | D-118 | What was imported from each device is remembered in Application Support (R-4105), keyed by the device's serial number and each file's fingerprint (else name, size and date taken), so Import New skips files already imported even after they were moved, renamed or sorted in the library | Requested: plugging the same phone in again should bring only the new photos |
+| D-119 | MediaPull handles every common photo, video and audio format properly (R-4201 to R-4205, R-4210): HEIC variants (`.hif`, sequences, `avci`), camera RAW (one `raw` format, never converted), and audio as a first-class kind with tags, artwork and sorts. RAW is recognised before the TIFF signature it often shares. File facts get a version of their own so they can be reread without rerunning models. The bundled ffmpeg gains the `mp3`, `flac`, `ogg`, `opus`, `wav`, `aiff`, `streamhash` and `framemd5` muxers and the `aiff` demuxer | Requested: the app should organise the person's own photos (iPhone HEIC, DSLR RAW), videos and audio; an audit found `.hif` and sequences invisible and audio skipped by Organise |
+| D-120 | Units (R-4206, R-4207): RAW+JPEG/HEIF and Live Photos are one item that moves, renames and trashes as one, found by name in a folder, never by reading files while listing (iCloud placeholders stay untouched). A unit is analysed from its lead: a RAW is read from its embedded preview, as quick as its JPEG, so no member is analysed instead. Splitting a Live Photo whose still and clip carry different content identifiers is left for later; same-named files in one folder are one shot in practice | Requested; otherwise moves and renames split pairs and Trash Extra Copies could remove half a pair |
+| D-121 | The person's own files keep their format on every route: a file dropped or copied into an Archive library folder is no longer converted (amends R-1502, R-1604, R-1801, §1.2); the Converter converts when asked, and the Editor keeps HEIC as HEIC. Saves from the web still convert as before | Requested; an audit found an iPhone HEIC re-encoded as JPEG when dropped into an Archive folder but kept by every other route |
+| D-122 | MediaPull is presented as collecting, bringing in and organising (§1.1). Instagram posts stay together in Organise (R-4208, R-4209): sorts place a whole post, copies inside an account folder stop posing as the post, Trash Extra Copies spares a post's own pictures, Find Missing does not fetch items moved elsewhere in the library, and grids show "2 of 5" | Requested; an audit found sorts by Subject or Person splitting carousels, copies duplicating a post's items in Profile views, and moved items downloaded again |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1464,7 +1473,7 @@ and a resolution from the heights that format actually offers for this video (wi
 
 **R-3701** *(Amended by D-77: sort and filter choices are kept between launches for the Library as a whole, not per window.)* The Library pane's header has a Sort menu, a Filter popover, "Include Subfolders" and a search field (⌘F when the Library has focus). Sort and filter choices are kept per window between launches.
 
-**R-3702** Sorts, each ascending or descending: Date (the EXIF capture date, then the metadata file's date, then the file's creation date), Name, File Size, Pixel Size, Video Length, Source (account or site, then post, from metadata files), Camera, and Events (grid sections that start wherever the gap between neighbouring dates is longer than the event gap, 3 hours by default; one value for the Sort menu, Settings and Sort by Event).
+**R-3702** *(Amended by D-119 and D-122: Artist and Album for audio; Source orders posts by their date, then by position in the post.)* Sorts, each ascending or descending: Date (the EXIF capture date, then the metadata file's date, then the file's creation date), Name, File Size, Pixel Size, Video Length, Source (account or site, then post, from metadata files), Camera, Artist, Album, and Events (grid sections that start wherever the gap between neighbouring dates is longer than the event gap, 3 hours by default; one value for the Sort menu, Settings and Sort by Event).
 
 **R-3703** Filters combine with AND, and the values chosen within one filter with OR: kind (still, animated, video), format, orientation (landscape, portrait, square), aspect ratio, pixel size, video length, camera, source (account, site), screenshots or photos, duplicates (section 33), visually similar sets (R-3705), dominant colour, place, content tags, faces (with faces, without faces, portraits: one face covering at least a tenth of the picture; group photos: three or more faces) and people (section 39). Filters that need analysis show its progress and include only analysed files.
 
@@ -1486,7 +1495,7 @@ and a resolution from the heights that format actually offers for this video (wi
 
 Where results go (D-68): **In Place** (no target; folders inside the source folder, files move into them) is the default for every source; **Copy to Target** (the source stays exactly as it was; organised copies go into the target, as APFS clones) and **Move to Target** apply once a target folder is chosen. Changing the source never changes the target; choosing the source itself, or None, as the target returns to in place. Copying into a library folder is how media is imported. Dropping a folder from Finder on a pane's header opens it in that pane. The MediaPull library has no fixed rules of its own; it is organised however the person likes.
 
-**R-3803** Operations: New Folder, Rename, Move (drag and drop, or Move To…), Flatten (every media file from all subfolders moved up into the folder; the emptied subfolders go to the Trash), Remove Subfolders (each chosen subfolder's contents moved up one level; the emptied subfolder goes to the Trash), Merge Folders (one folder's contents moved into another; the emptied folder goes to the Trash), Move to Trash, and the automatic sorts: by Date (year, then month), by Event, by Source, by Subject (R-3706), by Person (R-3906), screenshots apart from photos, and by Place.
+**R-3803** Operations: New Folder, Rename, Move (drag and drop, or Move To…), Flatten (every media file from all subfolders moved up into the folder; the emptied subfolders go to the Trash), Remove Subfolders (each chosen subfolder's contents moved up one level; the emptied subfolder goes to the Trash), Merge Folders (one folder's contents moved into another; the emptied folder goes to the Trash), Move to Trash, and the automatic sorts: by Date (year, then month), by Event, by Source, by Subject (R-3706), by Person (R-3906), screenshots apart from photos, by Place, and by Artist and by Album for audio (D-119). Automatic sorts keep units and posts together (R-4206, R-4208).
 
 **R-3804** Every operation follows these rules:
 
@@ -1550,6 +1559,30 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 **R-4106** An import is an Import job in Activity with progress and Cancel; a file that could not be read is failed, with Retry Failed, and unplugging the device fails what is left with "The device was disconnected." Imported files are ordinary local files: analysis, search, People, duplicates and Organise apply to them as to any other (sections 33 and 36 to 39); "Organise These…" opens the destination in Organise.
 
 **R-4107** *(D-116)* Devices are read-only (section 5.1). MTP operations are built only through an allow-list of reads (`MTPOperation`: device information, open and close session, storage IDs and information, object handles, object information and properties, objects, partial objects and thumbnails); nothing that deletes, sends, moves, copies, formats or sets a property can be expressed, and no request carries data to the device. The framework's delete, upload, clock and capture requests are barred by the lint (section 25), and `requestSendPTPCommand` appears only in the pass-through transport, always with no data.
+
+---
+
+## 42. Formats, units and posts
+
+**R-4201** *(D-119)* MediaPull recognises, lists, previews, analyses and finds duplicates of: JPEG, PNG, GIF, WebP, AVIF, HEIC and HEIF (`.heic`, `.heif`, `.hif`, `.avci`, and image sequences `.heics`/`.heifs`), JPEG XL, TIFF, BMP, camera RAW (CR2, CR3, CRW, NEF, NRW, ARW, SRF, SR2, RAF, ORF, RW2, DNG, PEF, SRW, X3F, 3FR, IIQ, ERF, MOS, MRW), MP4, MOV, WebM, MKV, and audio (MP3, M4A, AAC, WAV, AIFF, FLAC, Ogg, Opus). Web extraction never lists RAW files.
+
+**R-4202** A file's format is decided by its content where its content is clear, except that a RAW extension (or a RAW type reported by the system's image reader) wins over the TIFF signature many RAW formats share, so a RAW file is never handled as a TIFF.
+
+**R-4203** *(D-121)* RAW files are never converted, edited or rewritten; the Editor and Converter are not offered for them, nor for image sequences. HEIC stays HEIC in the Editor (10-bit included), every metadata block is kept, and a rotation alone is lossless. An edited copy of an HDR photo says when its HDR could not be kept.
+
+**R-4204** Pictures are read from the file's primary image. Grids use the picture's own embedded preview when it has one large enough, so RAW and large HEIC folders stay quick. The taken date uses the offset recorded with the date it came from (OffsetTimeOriginal or OffsetTimeDigitized; `Z` and `+0800` forms are accepted). HEIC is shown in high dynamic range where the picture has it; image sequences play.
+
+**R-4205** *(D-119)* Audio is listed and organised everywhere. Its details are the length, codec, bit rate, title, artist, album, album artist, year, genre and track, and its embedded artwork is its picture in grids. Sorts by Artist and Album, and Sort into Folders by Artist and by Album, are offered. Two audio files with the same sound and different tags are "Same audio" duplicates (a hash of the audio stream alone, deterministic, D-50). Formats the system cannot play (Ogg, Opus) play from a copy decoded when previewed. Audio is analysed for these facts only; no learned model reads it.
+
+**R-4206** *(D-120)* A **unit** is the files of one shot, found by name in one folder: a RAW file with the JPEG, HEIC or HEIF of the same name; a photo with the MOV of the same name (a Live Photo; a ProRAW Live Photo has a DNG, a HEIC or JPEG and a MOV); and, with any of them, `<name>.xmp`, `<name>.aae` and each member's metadata file. Edited versions named `IMG_E…` are separate. A unit is one tile in grids with a "RAW+JPEG" or "LIVE" badge (in the list, after its kind). Every move, copy, rename, sort, flatten, merge, Trash and Undo acts on the whole unit, and its members keep one name (with one shared number when a name is taken). Duplicates and Trash Extra Copies see the unit, never half of it.
+
+**R-4207** *(Amended by D-120: from its lead; a RAW lead is read from its embedded preview.)* A unit is analysed once, from its JPEG or HEIC when it has one (faster, the same faces), else its lead file; earlier records of its other members are removed.
+
+**R-4208** *(D-122)* An Instagram **post** with several pictures is the files whose metadata files share `post_id` or `post_shortcode` with a `count` above 1 (Appendix C.4). Automatic sorts in Organise put a whole post in one folder: the folder of its first picture for Date, Event, Source, Place and Screenshots, and for Subject and Person the folder most of its pictures go to (ties go to the first picture). "Sort images individually" in the Organise pane sorts each picture on its own. The preview says how many posts were kept whole.
+
+**R-4209** A copy made inside the account folder that holds the original (D-79) drops the keys that make it an item of a post (D-105); a copy into any other folder keeps them, so a copied account folder still shows as the account. Trash Extra Copies never moves a file that belongs to the same post as the file it keeps. Grids show a post picture's place in its post ("2 of 5"). Find Missing counts an item as present when the library knows it anywhere (an archive entry with its key), so an item moved out of its account folder is not downloaded again. Renaming one file in an Archive folder keeps its date prefix (R-1504).
+
+**R-4210** *(D-119)* Facts read from files (dates, offsets, camera, place, audio tags, units and post keys) carry their own version: when reading them changes, they are read again without running any learned model again.
 
 ---
 

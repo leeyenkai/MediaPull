@@ -244,6 +244,8 @@ public actor ExtractionIngestor {
         if format == nil, origin == .data, let mime = raw.dropFirst(5).split(whereSeparator: { $0 == ";" || $0 == "," }).first {
             format = MediaFormat.fromMIME(String(mime))
         }
+        // Web pages never list camera RAW files (R-4201).
+        if format == .raw { return false }
         let kind = Self.kind(origin: origin, format: format)
         guard let kind else { return false }
 

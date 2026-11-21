@@ -28,7 +28,9 @@ enum ListText {
             if let facts = entry.facts, let width = facts.pixelWidth, let height = facts.pixelHeight { "\(width) × \(height)" } else {
                 measured.map { "\($0.width) × \($0.height)" } ?? ""
             }
-        case .kind: entry.format?.label ?? entry.url.pathExtension.uppercased()
+        // A unit's badge (R-4206) and a post picture's place (R-4209) follow the kind.
+        case .kind: ([entry.format?.label ?? entry.url.pathExtension.uppercased(), entry.unit?.badge, entry.source?.postPlace]
+            .compactMap(\.self) as [String]).joined(separator: " · ")
         case .duration: entry.facts?.duration.map(Format.duration) ?? ""
         case .source: entry.source?.sourceName ?? ""
         case .found: ""

@@ -226,18 +226,43 @@ struct ItemMediaPreview: View {
     }
 }
 
+/// Audio the system cannot play (Ogg, Opus) is decoded into a temporary copy when previewed; anything else plays as it is.
+enum AudioPreview {
+    static let folder = FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-audio-preview", isDirectory: true)
+
+    static func playable(_ url: URL) async -> URL? {
+        guard [.ogg, .opus].contains(MediaFormat.fromExtension(url.pathExtension)) else { return url }
+        guard let ffmpeg = AppModel.shared.ffmpeg else { return nil }
+        let name = ShortHash.of(url.path) + ".m4a"
+        let folder = folder, output = folder.appendingPathComponent(name)
+        return await Task.detached(priority: .userInitiated) { () -> URL? in
+            if FileManager.default.fileExists(atPath: output.path) { return output }
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            return (try? await ffmpeg.playableCopy(of: url, to: output)) != nil ? output : nil
+        }.value
+    }
+}
+
 /// A saved file in a library folder.
 struct FileMediaPreview: View {
     var file: URL
     @State private var image: CGImage?
     @State private var kind: MediaKind?
     @State private var loaded = false
+    @State private var playable: URL?
 
     var body: some View {
         MediaStage {
             switch kind {
-            case .video, .audio:
+            case .video:
                 PlayerView(file: file)
+            case .audio:
+                // Ogg and Opus play from a copy decoded for the preview (R-4205).
+                if let playable {
+                    PlayerView(file: playable)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
             case .animatedImage:
                 AnimatedImageView(file: file)
             default:
@@ -246,6 +271,7 @@ struct FileMediaPreview: View {
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
+                        .allowedDynamicRange(.high)
                 } else if loaded {
                     Label("No preview", systemImage: "eye.slash").foregroundStyle(.secondary)
                 } else {
@@ -256,7 +282,7 @@ struct FileMediaPreview: View {
         .task(id: file) {
             let url = file
             let result = await Task.detached(priority: .userInitiated) { () -> (MediaKind?, CGImage?) in
-                let format = Sniffer.sniff(MediaConverter.head(of: url)).format ?? MediaFormat.fromExtension(url.pathExtension)
+                let format = Sniffer.resolve(Sniffer.sniff(MediaConverter.head(of: url)).format, fileExtension: url.pathExtension)
                 switch format?.kind {
                 case .video, .audio: return (format?.kind, nil)
                 default:
@@ -264,12 +290,15 @@ struct FileMediaPreview: View {
                     if format == .gif, ImageProbe.frameCount(from: (try? Data(contentsOf: url, options: .mappedIfSafe)) ?? Data()) > 1 {
                         return (.animatedImage, nil)
                     }
-                    return (.image, Thumbnailer.image(at: url, maxPixel: 2400))
+                    // HEIF image sequences play; HEIC is shown in high dynamic range where it has it (R-4204).
+                    if format == .heic, ImageConversion.isSequence(url) { return (.animatedImage, nil) }
+                    return (.image, Thumbnailer.image(at: url, maxPixel: 2400, hdr: format == .heic))
                 }
             }.value
             kind = result.0
             image = result.1
             loaded = true
+            if kind == .audio { playable = await AudioPreview.playable(url) }
         }
     }
 }
@@ -446,6 +475,15 @@ struct RecordedDetails: Sendable {
         if let software = details.software { taken.append(("Software", software)) }
         if let profile = details.colorProfile { taken.append(("Colour", profile)) }
         var video: [(String, String)] = []
+        if let audio = details.audio {
+            // An audio file's own section (R-4205).
+            let fields: [(String, String?)] = [
+                ("Title", audio.title), ("Artist", audio.artist), ("Album", audio.album), ("Album artist", audio.albumArtist),
+                ("Year", audio.year.map(String.init)), ("Genre", audio.genre), ("Track", audio.track.map(String.init)),
+            ]
+            video += fields.compactMap { label, value in value.map { (label, $0) } }
+            if let rate = audio.bitrate { video.append(("Bit rate", "\(rate / 1000) kbps")) }
+        }
         if let duration = details.duration {
             video.append(("Length", Duration.seconds(duration).formatted(.time(pattern: .hourMinuteSecond))))
         }
@@ -453,8 +491,10 @@ struct RecordedDetails: Sendable {
         if let rate = details.frameRate {
             video.append(("Frame rate", rate.formatted(.number.precision(.fractionLength(0 ... 2))) + " fps"))
         }
-        sections = [Section(title: "Camera", rows: camera), Section(title: "Taken", rows: taken), Section(title: "Video", rows: video)]
-            .filter { !$0.rows.isEmpty }
+        sections = [
+            Section(title: "Camera", rows: camera), Section(title: "Taken", rows: taken),
+            Section(title: details.audio == nil ? "Video" : "Audio", rows: video),
+        ].filter { !$0.rows.isEmpty }
         var location: [(String, String)] = []
         if let lat = details.latitude, let lon = details.longitude {
             location.append(("Coordinates", Self.coordinates(lat, lon)))
@@ -490,7 +530,7 @@ nonisolated enum FileFacts {
     static func read(_ url: URL) -> (rows: [(String, String)], caption: String?) {
         var rows: [(String, String)] = []
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        let format = Sniffer.sniff(MediaConverter.head(of: url)).format ?? MediaFormat.fromExtension(url.pathExtension)
+        let format = Sniffer.resolve(Sniffer.sniff(MediaConverter.head(of: url)).format, fileExtension: url.pathExtension)
         if let format { rows.append(("Format", format.label)) }
         if let analysis = ImageConversion.analyze(url) { rows.append(("Dimensions", "\(analysis.width) × \(analysis.height) px")) }
         if let size = values?.fileSize {

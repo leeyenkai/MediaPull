@@ -104,6 +104,7 @@ public struct FileState: Sendable, Hashable {
     public var size: Int64
     public var modified: Date
     public var version: Int?
+    public var factsVersion: Int?
     /// From the stored record: whether it has an image embedding, whether faces were checked for people, and whether
     /// it found any faces. Nil when nothing is stored for the checksum.
     public var hasEmbedding: Bool?
@@ -114,6 +115,7 @@ public struct FileState: Sendable, Hashable {
 /// The few fields a scan needs from a stored record; decoding these skips building labels, text and facts.
 private struct RecordFlags: Decodable {
     struct Skipped: Decodable {}
+    var factsVersion: Int?
     var hasEmbedding: Bool
     var peopleChecked: Bool?
     var faces: [Skipped]
@@ -211,6 +213,7 @@ public actor AnalysisStore {
                 size: row.size,
                 modified: row.modified,
                 version: record?.version,
+                factsVersion: record?.flags?.factsVersion,
                 hasEmbedding: record?.flags?.hasEmbedding,
                 peopleChecked: record?.flags?.peopleChecked,
                 hasFaces: record?.flags.map { !$0.faces.isEmpty }

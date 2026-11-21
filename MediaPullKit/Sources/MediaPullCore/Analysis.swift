@@ -28,6 +28,10 @@ public struct MediaFacts: Codable, Sendable, Hashable {
     public var longitude: Double?
     public var screenCaptureMarker = false
     public var hasCameraEXIF = false
+    /// Audio files' tags and stream (R-4205).
+    public var audio: AudioTags?
+    /// A Live Photo's content identifier, shared by its still and its clip (R-4206).
+    public var contentIdentifier: String?
 
     public init() {}
 
@@ -130,9 +134,12 @@ public struct SourceInfo: Codable, Sendable, Hashable {
     public var postID: String?
     public var date: Date?
     public var description: String?
+    /// The file's place in its post and the post's size, when the post has several files (Appendix C.4, R-4208).
+    public var num: Int?
+    public var count: Int?
 
     public init(category: String? = nil, subcategory: String? = nil, username: String? = nil, postID: String? = nil, date: Date? = nil,
-                description: String? = nil)
+                description: String? = nil, num: Int? = nil, count: Int? = nil)
     {
         self.category = category
         self.subcategory = subcategory
@@ -140,6 +147,20 @@ public struct SourceInfo: Codable, Sendable, Hashable {
         self.postID = postID
         self.date = date
         self.description = description
+        self.num = num
+        self.count = count
+    }
+
+    /// The post this file belongs to, when it is one of several (R-4208): its account or site and its id.
+    public var postKey: String? {
+        guard let postID, (count ?? 1) > 1 else { return nil }
+        return "\(sourceName ?? "")\u{0}\(postID)"
+    }
+
+    /// "2 of 5" for a file of a post with several files (R-4209).
+    public var postPlace: String? {
+        guard postKey != nil, let num, let count else { return nil }
+        return "\(num) of \(count)"
     }
 
     /// Reads `<file>.json` next to a media file, if there is one.
@@ -158,7 +179,8 @@ public struct SourceInfo: Codable, Sendable, Hashable {
         return SourceInfo(category: string("category"), subcategory: string("subcategory"), username: string("username"),
                           postID: string("post_shortcode") ?? string("post_id"),
                           date: string("date").flatMap { DateFormats.parseEngineDate($0) },
-                          description: string("description") ?? string("content"))
+                          description: string("description") ?? string("content"),
+                          num: string("num").flatMap(Int.init), count: string("count").flatMap(Int.init))
     }
 
     /// "Account" for engine sources, the site for web pages.
@@ -220,9 +242,13 @@ public enum ColourName: String, Codable, Sendable, CaseIterable {
 public struct AnalysisRecord: Codable, Sendable, Hashable {
     /// Bump when a model or rule changes, so files are analysed again in the background (R-3603).
     public static let currentVersion = 1
+    /// Bump when reading facts from files changes: facts are read again, no model runs again (R-4210).
+    public static let currentFactsVersion = 2
 
     public var sha256: String
     public var version: Int
+    /// Nil for records made before facts had a version of their own.
+    public var factsVersion: Int?
     public var facts: MediaFacts
     public var labels: [ContentLabel]
     public var text: String?
@@ -241,6 +267,7 @@ public struct AnalysisRecord: Codable, Sendable, Hashable {
     {
         self.sha256 = sha256
         self.version = version
+        factsVersion = AnalysisRecord.currentFactsVersion
         self.facts = facts
         self.labels = labels
         self.text = text
@@ -256,6 +283,34 @@ public struct AnalysisRecord: Codable, Sendable, Hashable {
     public var recognisableFaces: [FaceBox] {
         faces.filter { $0.pixelSize >= FaceRules.minimumPixels }
     }
+}
+
+public extension String {
+    /// The text without surrounding spaces, or nil when nothing is left.
+    var trimmedNonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// What an audio file says about itself (R-4205).
+public struct AudioTags: Codable, Sendable, Hashable {
+    public var title: String?
+    public var artist: String?
+    public var album: String?
+    public var albumArtist: String?
+    public var year: Int?
+    public var genre: String?
+    public var track: Int?
+    public var codec: String?
+    /// Bits per second.
+    public var bitrate: Int?
+    /// A hash of the audio stream alone, so the same sound with other tags is found (R-4205); nil until computed.
+    public var streamHash: String?
+
+    public init() {}
+
+    public var isEmpty: Bool { [title, artist, album, albumArtist, genre].allSatisfy { $0 == nil } && year == nil && track == nil }
 }
 
 public enum FaceRules {

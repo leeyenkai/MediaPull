@@ -638,7 +638,10 @@ final class EngineService {
                 known = run.libraryBefore ?? []
             } else if let place {
                 let findMissing = draft.findMissing || draft.continueFrom?.findMissing == true
-                known = findMissing ? place.index.identities : place.index.identities.union(place.record?.keys ?? [])
+                // Find Missing counts an item the library holds anywhere as present, so one moved out of the account folder
+                // (into an album, by an Organise sort) is not downloaded again (R-4209).
+                let elsewhere = findMissing ? await app.store?.knownKeys(account: account) ?? [] : []
+                known = findMissing ? place.index.identities.union(elsewhere) : place.index.identities.union(place.record?.keys ?? [])
             } else if exact, let folder = root?.url {
                 // Save As: what the chosen folder held when the job began (D-108); its own items go as retry ids, so a Retry
                 // or Resume never stops early at what it saved itself (as A20-M1).

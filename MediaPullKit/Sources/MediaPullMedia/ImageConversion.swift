@@ -77,6 +77,13 @@ public enum ImageConversion {
         )
     }
 
+    /// A HEIF image sequence: named as one, or several images with frame timing (R-4204).
+    public static func isSequence(_ url: URL) -> Bool {
+        if MediaFormat.isSequenceExtension(url.pathExtension) { return true }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 1 else { return false }
+        return hasFrameTiming(source)
+    }
+
     static func hasFrameTiming(_ source: CGImageSource) -> Bool {
         guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return false }
         return properties[kCGImagePropertyHEICSDictionary] != nil || properties[kCGImagePropertyAVISDictionary] != nil

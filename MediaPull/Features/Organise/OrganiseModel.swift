@@ -7,7 +7,7 @@ import Observation
 
 /// The automatic sorts Organise offers (R-3803).
 enum AutoSort: String, CaseIterable, Identifiable {
-    case date, event, source, subject, person, screenshots, place
+    case date, event, source, subject, person, screenshots, place, artist, album
 
     var id: String { rawValue }
 
@@ -20,6 +20,8 @@ enum AutoSort: String, CaseIterable, Identifiable {
         case .person: "Person"
         case .screenshots: "Screenshots"
         case .place: "Place"
+        case .artist: "Artist"
+        case .album: "Album"
         }
     }
 
@@ -32,6 +34,8 @@ enum AutoSort: String, CaseIterable, Identifiable {
         case .person: "Who is in the photo"
         case .screenshots: "Screenshots apart from photos"
         case .place: "Country, then city"
+        case .artist: "Audio: artist, then album"
+        case .album: "Audio: one folder per album"
         }
     }
 
@@ -44,6 +48,8 @@ enum AutoSort: String, CaseIterable, Identifiable {
         case .person: "person.2"
         case .screenshots: "iphone"
         case .place: "mappin.and.ellipse"
+        case .artist: "music.mic"
+        case .album: "square.stack"
         }
     }
 }
@@ -372,6 +378,8 @@ final class OrganisePane: MediaGridOwner {
         detail.append(entry.format?.label ?? entry.url.pathExtension.uppercased())
         var info = GridCellInfo(title: entry.name, detail: detail.joined(separator: " · "), secondary: Format.bytes(entry.size))
         if entry.kind == .video { info.kindSymbol = "play.fill"; info.placeholderSymbol = "film" }
+        if entry.kind == .audio { info.kindSymbol = "music.note"; info.placeholderSymbol = "waveform" }
+        GridCellInfo.markUnit(&info, entry)
         if entry.source != nil { info.stateSymbol = "text.badge.checkmark"; info.stateColor = .secondaryLabelColor }
         info.tagColors = GridCellInfo.tagColors(entry.finderTags)
         duplicates.mark(&info, for: entry.url)
@@ -1117,6 +1125,7 @@ final class OrganiseModel {
         let gap = app.preferences.eventGapHours * 3600
         let threshold = Float(app.preferences.subjectThreshold)
         let placement = app.preferences.groupPhotoPlacement
+        let individually = app.preferences.sortPostImagesIndividually
         let copy = mode == .copy
         Task {
             let layoutForRoot = await self.layoutFor(destination)
@@ -1128,6 +1137,8 @@ final class OrganiseModel {
             case .source: for f in files { assignment[f.path] = SortRules.bySource(f) }
             case .screenshots: for f in files { assignment[f.path] = SortRules.byScreenshot(f) }
             case .place: for f in files { assignment[f.path] = SortRules.byPlace(f) }
+            case .artist: for f in files { assignment[f.path] = SortRules.byArtist(f) }
+            case .album: for f in files { assignment[f.path] = SortRules.byAlbum(f) }
             case .subject:
                 let subjects = await app.analysis.subjects(for: files)
                 for f in files {
@@ -1151,13 +1162,23 @@ final class OrganiseModel {
                 if !app.preferences.facesEnabled { note = "Turn on recognising people in the People tab first." }
             }
             let missing = files.filter { $0.record == nil }.count
+            if [.artist, .album].contains(kind) { note = "Only audio files with tags are sorted; everything else stays where it is." }
+            // A post with several pictures stays together (R-4208) unless the person sorts images individually.
+            if !individually {
+                let kept = PostGroups.keepTogether(files, assignment: assignment, byMajority: [.subject, .person].contains(kind))
+                assignment = kept.assignment
+                if kept.posts > 0 {
+                    note = [note, "\(kept.posts) post\(kept.posts == 1 ? " was" : "s were") kept together."].compactMap { $0 }
+                        .joined(separator: " ")
+                }
+            }
             if missing > 0, kind != .date, kind != .source, kind != .event {
                 note = [note, "\(missing) file\(missing == 1 ? " is" : "s are") not analysed yet and will go to Unsorted."]
                     .compactMap { $0 }
                     .joined(separator: " ")
             }
             let urls = files.map(\.url)
-            let title = "Sort by \(kind.label)", keepUnsorted = kind == .person
+            let title = "Sort by \(kind.label)", keepUnsorted = [.person, .artist, .album].contains(kind)
             let plan = await Task.detached(priority: .userInitiated) {
                 FolderOperations.sort(urls, into: destination, title: title, keepUnsorted: keepUnsorted, copy: copy) {
                     assignment[$0.path] ?? []

@@ -1,5 +1,7 @@
 import AppKit
 import AVKit
+import ImageIO
+import MediaPullCore
 import SwiftUI
 
 /// Plays a local video file with the system's inline controls. Remote media is downloaded through
@@ -32,31 +34,53 @@ struct PlayerView: NSViewRepresentable {
 struct AnimatedImageView: NSViewRepresentable {
     var file: URL
 
-    func makeNSView(context _: Context) -> NSImageView {
+    func makeNSView(context: Context) -> NSImageView {
         let view = NSImageView()
         view.imageScaling = .scaleProportionallyUpOrDown
         view.animates = true
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        load(file, into: view)
+        load(file, into: view, flag: context.coordinator.stopFlag)
         return view
     }
 
     func updateNSView(_ view: NSImageView, context: Context) {
         guard context.coordinator.file != file else { return }
         context.coordinator.file = file
-        load(file, into: view)
+        context.coordinator.stop()
+        context.coordinator.stopFlag = StopFlag()
+        load(file, into: view, flag: context.coordinator.stopFlag)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(file: file) }
 
+    static func dismantleNSView(_: NSImageView, coordinator: Coordinator) { coordinator.stop() }
+
     final class Coordinator {
         var file: URL
+        /// Set to stop an image sequence the system's animator is playing.
+        var stopFlag = StopFlag()
         init(file: URL) { self.file = file }
+        func stop() { stopFlag.stopped = true }
     }
 
-    /// A long GIF can be many megabytes: it is read off the main actor.
-    private func load(_ file: URL, into view: NSImageView) {
+    final class StopFlag: @unchecked Sendable {
+        var stopped = false
+    }
+
+    /// A long GIF can be many megabytes: it is read off the main actor. HEIF image sequences are played by the system's
+    /// animator, frame by frame (R-4204).
+    private func load(_ file: URL, into view: NSImageView, flag: StopFlag) {
+        if MediaFormat.fromExtension(file.pathExtension) == .heic {
+            CGAnimateImageAtURLWithBlock(file as CFURL, nil) { [weak view] _, image, stop in
+                guard let view, !flag.stopped else {
+                    stop.pointee = true
+                    return
+                }
+                view.image = NSImage(cgImage: image, size: .zero)
+            }
+            return
+        }
         Task { [weak view] in
             let data = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: file) }.value // lint:allow main-io detached
             guard let view, let data else { return }

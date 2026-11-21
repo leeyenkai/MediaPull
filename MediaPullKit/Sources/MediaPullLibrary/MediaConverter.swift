@@ -52,9 +52,11 @@ public struct MediaConverter: Sendable {
     public func convert(_ file: URL, policy: ConversionPolicy, layout: SaveLayout, workDirectory: URL) async throws -> ConversionResult {
         let head = Self.head(of: file)
         let sniff = Sniffer.sniff(head)
-        guard let format = sniff.format else {
+        guard let format = Sniffer.resolve(sniff.format, fileExtension: file.pathExtension) else {
             throw sniff.isMarkup ? ConversionIssue.notMedia : ConversionIssue.unknownFormat
         }
+        // Camera RAW is never converted (R-4203).
+        if format == .raw { return ConversionResult(url: file, format: .raw, converted: false) }
         if policy.keepDownloadedMedia, format.kind == .video || format.kind == .audio {
             // M4A audio and MP4 video share their first bytes; the extension the engine gave the file tells them apart.
             let named = MediaFormat.fromExtension(file.pathExtension)

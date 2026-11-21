@@ -82,7 +82,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   filters, sorts it in Organise and undoes the sort, comparing checksums), `--selftest-save-as` (offline: Save As of Instagram,
   video and gallery downloads, never redirected), `--selftest-details` (a photo's camera, date and place, maps off; add
   `--selftest-map` to load the map; also Organise's duplicates and Details tab), `--selftest-profile` (offline: Profile, Channel,
-  Timeline and Board views), `--selftest-devices` (offline: a stand-in iPhone and a simulated Android phone, browse and import)
+  Timeline and Board views), `--selftest-devices` (offline: a stand-in iPhone and a simulated Android phone, browse and import),
+  `--selftest-formats` (offline: RAW+JPEG and Live Photo units, .hif, tagged audio, a post kept together)
   (theme and layout are restored afterwards).
 
 ## Rules
@@ -139,6 +140,11 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
 - Devices are only read (R-4107): MTP requests are built only through `MTPOperation`'s allow-list and carry no data; the
   framework's delete, upload, clock and capture requests are barred by `check.sh`, and `requestSendPTPCommand` lives only in
   `ImageCaptureDevices.swift`. The camera framework starts only when the Devices section is first shown.
+- A RAW+JPEG pair or a Live Photo is a unit (D-120, `MediaUnits`, `UnitFiles`): listings show the lead only, and every
+  move, copy, trash and Undo carries its members, `.xmp`, `.aae` and metadata files. Plan new file operations through
+  `FolderOperations` so `freeDestination(alsoFree:)` keeps one shared name for the whole unit.
+- Facts read from files have their own version (`AnalysisRecord.currentFactsVersion`): bump it, not `currentVersion`, when only
+  reading facts changes, so no model runs again. Local files never change format on the way into a folder (D-121).
 - How real Android phones in File transfer mode are handed over is settled by `docs/spikes/device-access.md` (run
   `swift docs/spikes/device-probe.swift usb|icc` with a phone plugged in); record the results there and in D-116.
 

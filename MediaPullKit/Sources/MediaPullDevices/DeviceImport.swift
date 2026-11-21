@@ -29,14 +29,16 @@ public enum ImportPlan {
         "\(name.precomposedStringWithCanonicalMapping.lowercased())|\(size)"
     }
 
-    /// Clip id → photo id: a video sharing a pair key with a photo is that photo's Live Photo clip.
+    /// Member id → lead id for the units among the entries (R-4206), by pair key: a RAW leads the JPEG, HEIC or HEIF of the
+    /// same shot and its clip; otherwise a photo leads its clip (a Live Photo).
     public static func clips(in entries: [DeviceEntry]) -> [String: String] {
         var out: [String: String] = [:]
         let grouped = Dictionary(grouping: entries.filter { $0.pairKey != nil && $0.isMedia }) { $0.pairKey! }
         for group in grouped.values {
-            guard let photo = group.first(where: { $0.kind == .image }) else { continue }
-            for clip in group where clip.kind == .video {
-                out[clip.id] = photo.id
+            let sorted = group.sorted { $0.name < $1.name }
+            guard let lead = sorted.first(where: { $0.format == .raw }) ?? sorted.first(where: { $0.kind == .image }) else { continue }
+            for member in sorted where member.id != lead.id && (member.kind == .video || lead.format == .raw && member.kind == .image) {
+                out[member.id] = lead.id
             }
         }
         return out
@@ -54,7 +56,8 @@ public enum ImportPlan {
         var clipsByPhoto: [String: [DeviceEntry]] = [:]
         for entry in media {
             if let photo = clips[entry.id] {
-                if includeClips { clipsByPhoto[photo, default: []].append(entry) } else { leftOut += 1 }
+                // The JPEG of a RAW always comes along; only Live Photo clips are optional.
+                if includeClips || entry.kind != .video { clipsByPhoto[photo, default: []].append(entry) } else { leftOut += 1 }
             }
         }
         for entry in media where clips[entry.id] == nil {
