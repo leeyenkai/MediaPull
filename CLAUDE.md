@@ -10,7 +10,8 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.8 implemented, plus the Devices section (section 41, D-115 to D-118: phones and cameras over USB, read-only)
+Status: version 1.8 implemented, plus formats, units and posts (section 42, D-119 to D-122), drives (section 43, D-123), the Map &
+Timeline pane (section 44, D-124) and photo metadata edits (section 45, D-125, D-126); and the Devices section (section 41, D-115 to D-118: phones and cameras over USB, read-only)
 and Organise parity (D-114: duplicates, analysis progress and a Details tab in Organise); version 1.8 itself (account folder updates, conformance ledger, invariant lints and audit protocol; then FileOps,
 Save As, notes, file details with a map, post details kept and Profile views, D-107 to D-113; on top of 1.7: on-device analysis, Library search and filters, the Organise section, people, Icon, List and Column views). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull and update).
 

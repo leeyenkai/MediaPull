@@ -39,14 +39,22 @@ extension WindowModel {
         job.state = .running
         app.jobs.add(job)
         job.task = Task { [weak self] in
-            let result = await AppModel.shared.editMetadata(photos, edit, title: title)
+            let result = await AppModel.shared.editMetadata(photos, edit, title: title) { done, total in
+                Task { @MainActor in
+                    job.fraction = Double(done) / Double(max(total, 1))
+                    job.summaryOverride = "\(done) of \(total) photos"
+                }
+            }
             let problems = result.skipped
-            AppModel.shared.jobs.finish(job, problems.isEmpty ? .completed : .failed(problems[0]), notify: false)
-            if problems.isEmpty { AppModel.shared.jobs.jobs.removeAll { $0 === job } }
+            let state: JobState = result.stopped ? .cancelled : problems.isEmpty ? .completed : .failed(problems[0])
+            AppModel.shared.jobs.finish(job, state, notify: false)
+            // A short edit leaves Activity once done; a long or stopped one stays, so what happened can be seen.
+            if problems.isEmpty, !result.stopped, photos.count <= 20 { AppModel.shared.jobs.jobs.removeAll { $0 === job } }
             guard let self else { return }
             if let entry = result.entry { self.registerUndo(entry) }
-            var text = result.changed == 0 ? "Nothing needed changing."
-                : "\(title): \(result.changed) photo\(result.changed == 1 ? "" : "s") changed. ⌘Z undoes it."
+            let photosChanged = "\(result.changed) photo\(result.changed == 1 ? "" : "s") changed"
+            var text = result.changed == 0 ? (result.stopped ? "Stopped before anything was changed." : "Nothing needed changing.")
+                : "\(title): \(photosChanged)\(result.stopped ? " before it was stopped" : ""). ⌘Z undoes it."
             if let first = problems.first {
                 text += problems.count == 1 ? " \(first)" : " \(problems.count) were left as they were, such as: \(first)"
             }

@@ -84,8 +84,9 @@ nonisolated enum MediaListing {
             }
             // Its `.xmp`, whose values lie over the file's (R-4502); one look, whatever the case of its extension on most disks.
             if format.kind == .image {
-                let xmp = url.deletingPathExtension().appendingPathExtension("xmp")
-                if fm.fileExists(atPath: xmp.path) { entry.xmp = xmp }
+                let stem = url.deletingPathExtension()
+                // Lowercase first; `.XMP` too, for a case-sensitive disk.
+                entry.xmp = ["xmp", "XMP"].lazy.map { stem.appendingPathExtension($0) }.first { fm.fileExists(atPath: $0.path) }
             }
             entries.append(entry)
         }

@@ -358,4 +358,26 @@ final class MetadataEditTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photos.path), ["IMG_2.JPG"])
         XCTAssertNil(MetadataWriter.values(of: photo).rating)
     }
+
+    func testABatchStoppedPartWayKeepsWhatWasDoneAndUndoesIt() async throws {
+        let photos = folder.appendingPathComponent("batch")
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        let files = (1 ... 4).map { photos.appendingPathComponent("IMG_\($0).JPG") }
+        for file in files { Self.photo(file, type: .jpeg) }
+        let journal = journal()
+        await journal.stop(after: 2)
+        let progress = Progress(totalUnitCount: 0)
+        let result = await journal.editMetadata(files, .rating(5), title: "Rate") { done, total in
+            progress.totalUnitCount = Int64(total)
+            progress.completedUnitCount = Int64(done)
+        }
+        XCTAssertTrue(result.stopped)
+        XCTAssertEqual(result.changed, 2)
+        XCTAssertEqual(files.map { MetadataWriter.values(of: $0).rating }, [5, 5, nil, nil])
+        XCTAssertEqual(progress.totalUnitCount, 4)
+        await journal.stop(after: nil)
+        let undo = await journal.undo(try XCTUnwrap(result.entry?.id))
+        XCTAssertEqual(undo.done, 2, "\(undo.skipped)")
+        XCTAssertEqual(files.map { MetadataWriter.values(of: $0).rating }, [nil, nil, nil, nil])
+    }
 }

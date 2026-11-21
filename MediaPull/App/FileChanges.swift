@@ -39,7 +39,9 @@ extension AppModel {
 
     /// A metadata edit (section 45) as one journaled change ⌘Z takes back: analysis follows each file written in place to
     /// its new content (R-4506), and listings read `.xmp` files again.
-    func editMetadata(_ items: [URL], _ edit: MetadataEdit, title: String) async -> MetadataEditResult {
+    func editMetadata(_ items: [URL], _ edit: MetadataEdit, title: String,
+                      progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> MetadataEditResult
+    {
         let files = await Task.detached(priority: .userInitiated) {
             items.flatMap { item in
                 [item] + UnitFiles.companions(of: item).filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .image }
@@ -47,7 +49,7 @@ extension AppModel {
         }.value
         analysis.beginEdit(files)
         let previous = await analysis.currentStates(files)
-        let result = await journal.editMetadata(items, edit, title: title)
+        let result = await journal.editMetadata(items, edit, title: title, progress: progress)
         await analysis.followEdit(result.rewritten, previous: previous, editing: files)
         fileChangeRevision += 1
         return result

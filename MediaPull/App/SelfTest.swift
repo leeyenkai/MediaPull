@@ -1274,6 +1274,23 @@ final class SelfTestRunner {
         check(fm.fileExists(atPath: camera.appendingPathComponent("IMG_0001.CR3").path)
               && fm.fileExists(atPath: camera.appendingPathComponent("IMG_0001.JPG").path), "Undo on the card put the pair back")
 
+        // A rating written into a JPEG on the card: exFAT cannot swap names, so the hidden-name path runs (R-4503).
+        let onCard = organise.source.entries.first { $0.name == "IMG_0002.JPG" }?.url ?? camera.appendingPathComponent("IMG_0002.JPG")
+        let before = out.appendingPathComponent("IMG_0002-before.JPG")
+        try? fm.copyItem(at: onCard, to: before)
+        let edits = organise.history.count
+        model.editMetadata([onCard], .rating(3))
+        await waitUntil(timeout: 30) { organise.history.count > edits }
+        check(MetadataWriter.values(of: onCard).rating == 3 && MetadataWriter.samePicture(before, onCard),
+              "a rating is written into a photo on the exFAT card, its picture unchanged")
+        check(((try? fm.contentsOfDirectory(atPath: camera.path)) ?? []).allSatisfy { !$0.hasPrefix(".mediapull-edit-") },
+              "nothing hidden is left on the card")
+        if let entry = organise.history.first(where: { !$0.undone }) {
+            organise.undo(entry)
+            await waitUntil(timeout: 30) { organise.history.first { $0.id == entry.id }?.undone == true }
+        }
+        check(MetadataWriter.values(of: onCard).rating == nil, "⌘Z takes the rating back on the card")
+
         // Eject: the card goes, and the pane says so.
         if let drive { app.driveCenter.eject(drive) }
         await waitUntil(timeout: 30) { !app.driveCenter.drives.contains { $0.url.standardizedFileURL.path == mountPath } }

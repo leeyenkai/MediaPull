@@ -22,6 +22,8 @@ public struct MetadataEditResult: Sendable {
     public var skipped: [String] = []
     /// Files changed (a unit counts once).
     public var changed = 0
+    /// Stopped part way (Cancel, Quit): what was done is recorded and can be undone (R-4505).
+    public var stopped = false
 }
 
 public extension OperationJournal {
@@ -57,14 +59,22 @@ public extension OperationJournal {
     /// Applies `edit` to each item (a lead file; its unit comes along) as one change ⌘Z takes back (R-4501 to R-4505).
     /// Each file is written beside itself and checked before it replaces the original; an item whose file cannot be
     /// written in place losslessly gets a `.xmp` instead.
-    func editMetadata(_ items: [URL], _ edit: MetadataEdit, title: String) -> MetadataEditResult {
+    func editMetadata(_ items: [URL], _ edit: MetadataEdit, title: String,
+                      progress: @Sendable (_ done: Int, _ total: Int) -> Void = { _, _ in }) -> MetadataEditResult
+    {
         var result = MetadataEditResult()
         let folders = Set(items.map { $0.deletingLastPathComponent().standardizedFileURL.path })
         let root = folders.count == 1 ? folders.first! : Self.commonFolder(Array(folders))
         var entry = JournalEntry(id: UUID(), title: title, root: root, date: Date(), steps: [], failures: [], undone: false,
                                  finished: false)
         var listed: [String: [String]] = [:]
-        for lead in items {
+        for (number, lead) in items.enumerated() {
+            // Stopped between photos, never part way through one (R-3807).
+            if Task.isCancelled || stopsAfter.map({ number >= $0 }) == true {
+                result.stopped = true
+                break
+            }
+            progress(number, items.count)
             let folder = lead.deletingLastPathComponent()
             let names = listed[folder.path] ?? ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
             listed[folder.path] = names
@@ -94,6 +104,7 @@ public extension OperationJournal {
                 result.skipped.append("“\(lead.lastPathComponent)” was left as it was: \(error.localizedDescription)")
             }
         }
+        progress(items.count, items.count)
         entry.finished = true
         entry.swaps = nil
         guard !entry.steps.isEmpty else { return result }

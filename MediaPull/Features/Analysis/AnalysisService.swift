@@ -526,6 +526,8 @@ final class AnalysisService {
             }
             return out
         }.value
+        // Kept for the folders shown lately, not for ever.
+        if xmpCache.count + read.count > 5000 { xmpCache.removeAll(keepingCapacity: true) }
         for (path, value) in read {
             xmpCache[path] = value
         }
