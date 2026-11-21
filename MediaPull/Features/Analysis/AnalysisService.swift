@@ -586,7 +586,7 @@ final class AnalysisService {
         for file in rewritten {
             // The content just before it was replaced, as the journal read it; else what the store knew.
             if let old = file.previous ?? previous[file.path]?.sha256, old != file.sha256 {
-                let pairs = await store.rekey(from: old, to: file.sha256, path: file.path)
+                let pairs = await store.rekey(from: old, to: file.sha256)
                 if let faceVectors, !pairs.isEmpty {
                     var rows: [String: Int] = [:]
                     for pair in pairs {

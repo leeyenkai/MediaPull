@@ -125,7 +125,7 @@ struct EditCanvasPane: View {
                 return true
             }
             if let message = edit.message
-                ?? edit.missingFonts.first.map({ "“\($0)” is not on this Mac; the system font is drawn instead." })
+                ?? edit.missingFonts.first
                 ?? edit.missingPictures.first.map({ "The picture “\($0)” is no longer there, so it is left out." })
             {
                 Divider()

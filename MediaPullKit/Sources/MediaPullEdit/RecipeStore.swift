@@ -132,27 +132,50 @@ public actor RecipeStore {
     public func editedPaths() -> Set<String> {
         load()
         relocate()
-        return Set(edited.values.filter { Self.belongs($0, to: $0.source.path) }.map(\.source.path))
+        // Marked as shown: by the newest recipe made for the file there (B7-3).
+        var newest: [String: EditRecipe] = [:]
+        for recipe in byID.values where Self.belongs(recipe, to: recipe.source.path) {
+            if let other = newest[recipe.source.path], other.modified >= recipe.modified { continue }
+            newest[recipe.source.path] = recipe
+        }
+        return Set(newest.filter(\.value.isEdited).keys)
     }
 
-    /// Keeps a recipe's edits; one with nothing edited is kept blank (Revert). The file it belongs to is the store's to
-    /// say when it holds the recipe already; a new one takes the file at its path. False when it could not be written.
+    /// Keeps a recipe's edits; one with nothing edited is kept blank (Revert). False when it could not be written.
     @discardableResult
     public func save(_ recipe: EditRecipe) -> Bool {
+        store(recipe) != nil
+    }
+
+    /// Keeps a recipe's edits and gives back the recipe as kept, or nil when it could not be written.
+    ///
+    /// The file a held recipe belongs to is the store's to say. A file has one recipe at a time: a new recipe for a file
+    /// that has one already (two windows, a paste) takes that one's place and id, so no recipe ever hides another
+    /// (audit 2026-11-21-7, B7-3). A new recipe knows its file as it is when it is first kept, since a metadata edit may
+    /// have given the file a new reference since it was opened (B7-1).
+    @discardableResult
+    public func store(_ recipe: EditRecipe) -> EditRecipe? {
         load()
         var recipe = recipe
         if let stored = byID[recipe.id] {
             recipe.source = stored.source
         } else {
             let path = Self.key(recipe.source.path)
-            recipe.source.path = path
-            if recipe.source.reference == nil { recipe.source.reference = Self.reference(path) }
-            if recipe.source.created == nil { recipe.source.created = Self.created(path) }
+            if let existing = belonging(at: path) {
+                recipe.id = existing.id
+                recipe.source = existing.source
+            } else {
+                recipe.source.path = path
+                if FileManager.default.fileExists(atPath: path) {
+                    recipe.source.reference = Self.reference(path) ?? recipe.source.reference
+                    recipe.source.created = Self.created(path) ?? recipe.source.created
+                }
+            }
         }
         recipe.modified = Date()
         byID[recipe.id] = recipe
         resolved[recipe.id] = nil
-        return write(recipe)
+        return write(recipe) ? recipe : nil
     }
 
     /// At quit: writes a recipe's edits at once, outside the actor (the app is about to end), under the file identity
@@ -160,10 +183,14 @@ public actor RecipeStore {
     public nonisolated func saveNow(_ recipe: EditRecipe) {
         let url = folder.appendingPathComponent("\(recipe.id.uuidString).json")
         var recipe = recipe
-        if let data = try? Data(contentsOf: url), let stored = EditRecipe.decode(data) { recipe.source = stored.source }
         recipe.modified = Date()
-        if recipe.source.created == nil { recipe.source.created = Self.created(recipe.source.path) }
-        if recipe.source.reference == nil { recipe.source.reference = Self.reference(recipe.source.path) }
+        if let data = try? Data(contentsOf: url), let stored = EditRecipe.decode(data) {
+            recipe.source = stored.source
+        } else if FileManager.default.fileExists(atPath: recipe.source.path) {
+            // First kept at quit: the file as it is now (B7-1).
+            recipe.source.created = Self.created(recipe.source.path) ?? recipe.source.created
+            recipe.source.reference = Self.reference(recipe.source.path) ?? recipe.source.reference
+        }
         _ = Self.write(recipe, to: url, folder: folder)
     }
 

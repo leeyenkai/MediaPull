@@ -627,4 +627,40 @@ final class EditFrameTests: XCTestCase {
         let marked = await store.editedPaths()
         XCTAssertFalse(marked.contains(other.standardizedFileURL.path))
     }
+
+    // MARK: Audit round 7
+
+    func testANewRecipeKnowsItsFileWhenFirstKeptAndAFileHasOneRecipe() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let photo = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        // Opened: the recipe knows the file as it was then.
+        var opened = recipe(for: photo)
+        opened.source.reference = RecipeStore.reference(photo.path)
+        opened.source.created = RecipeStore.created(photo.path)
+        // Rated in place: a new file at the same name, with the same creation date.
+        let created = try XCTUnwrap(RecipeStore.created(photo.path))
+        let copy = folder.appendingPathComponent(".copy.jpg")
+        try FileManager.default.copyItem(at: photo, to: copy)
+        try FileManager.default.setAttributes([.creationDate: created], ofItemAtPath: copy.path)
+        _ = try FileManager.default.replaceItemAt(photo, withItemAt: copy)
+        // First kept now, with the file as it is now (B7-1): a later Finder rename is followed.
+        opened.adjust.contrast = 15
+        let first = await store.store(opened)
+        let kept = try XCTUnwrap(first)
+        XCTAssertEqual(kept.source.reference, RecipeStore.reference(photo.path))
+        let renamed = folder.appendingPathComponent("b.jpg")
+        try FileManager.default.moveItem(at: photo, to: renamed)
+        let followed = await store.recipe(for: renamed)
+        XCTAssertEqual(followed?.adjust.contrast, 15)
+        // A second new recipe for the same file (another window) takes the first one's place, never hides it (B7-3).
+        var other = recipe(for: renamed)
+        other.adjust.contrast = 30
+        let stored = await store.store(other)
+        let second = try XCTUnwrap(stored)
+        XCTAssertEqual(second.id, kept.id)
+        let shown = await store.recipe(for: renamed)
+        XCTAssertEqual(shown?.adjust.contrast, 30)
+        let marked = await store.editedPaths()
+        XCTAssertEqual(marked, [renamed.standardizedFileURL.path])
+    }
 }

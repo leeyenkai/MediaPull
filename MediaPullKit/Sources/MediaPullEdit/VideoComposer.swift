@@ -139,13 +139,16 @@ public enum VideoComposer {
             let parameters = AVMutableAudioMixInputParameters(track: audioTrack)
             let level = Float(min(max(timeline.volume, 0), 1))
             parameters.setVolume(fadeIn > 0 ? 0 : level, at: .zero)
+            // In whole ticks, the fade-out starting no earlier than the fade-in ends: two ramps that meet must never
+            // overlap by a rounding (audit 2026-11-21-7, C7-1).
+            let fadeInRange = CMTimeRange(start: seconds(start), duration: seconds(fadeIn))
             if fadeIn > 0 {
-                parameters.setVolumeRamp(fromStartVolume: 0, toEndVolume: level,
-                                         timeRange: CMTimeRange(start: seconds(start), duration: seconds(fadeIn)))
+                parameters.setVolumeRamp(fromStartVolume: 0, toEndVolume: level, timeRange: fadeInRange)
             }
             if fadeOut > 0 {
+                let outStart = max(seconds(end - fadeOut), fadeIn > 0 ? fadeInRange.end : .zero)
                 parameters.setVolumeRamp(fromStartVolume: level, toEndVolume: 0,
-                                         timeRange: CMTimeRange(start: seconds(end - fadeOut), duration: seconds(fadeOut)))
+                                         timeRange: CMTimeRange(start: outStart, end: max(outStart, seconds(end))))
             }
             let mix = AVMutableAudioMix()
             mix.inputParameters = [parameters]

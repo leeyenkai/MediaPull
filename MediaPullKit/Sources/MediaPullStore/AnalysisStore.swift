@@ -69,6 +69,9 @@ public enum AnalysisSchemaV1: VersionedSchema {
         public var personID: UUID?
         public var pinned: Bool
         public var rejected: [UUID]
+        /// When its person, pin or rejections last changed: faces of one content shared by several files (a photo and its
+        /// copy, or an edit written back to bytes held before) take the newest (D-126, audit 2026-11-21-7, A7-5).
+        public var changed: Date?
 
         public init(key: String, sha256: String, vectorRow: Int, quality: Float, pixelSize: Double) {
             self.key = key
@@ -381,12 +384,8 @@ public actor AnalysisStore {
     /// new, so their vectors can be copied too (`setFaceRows`).
     /// `path`: the file edited. Faces already held for `new` take this file's corrections only when no other file holds
     /// that content: a copy elsewhere keeps its own (R-4506, audit 2026-11-21-5, A5-2).
-    public func rekey(from old: String, to new: String, path: String? = nil) -> [(old: String, new: String)] {
+    public func rekey(from old: String, to new: String) -> [(old: String, new: String)] {
         guard old != new, var record = record(sha256: old) else { return [] }
-        // Either content held by another file: corrections on it are that copy's, not this file's (A5-2, and round 6,
-        // A6-3, where a Redo took a copy's corrections over a name given after the edit).
-        let holders = #Predicate<FilePathModel> { $0.sha256 == new || $0.sha256 == old }
-        let heldElsewhere = ((try? modelContext.fetch(FetchDescriptor(predicate: holders))) ?? []).contains { $0.path != path }
         record.sha256 = new
         record.factsVersion = 0
         if self.record(sha256: new) == nil { save(record) }
@@ -396,20 +395,23 @@ public actor AnalysisStore {
             let suffix = face.key.split(separator: "|", maxSplits: 1).last.map(String.init) ?? face.key
             let key = "\(new)|\(suffix)"
             let existing = #Predicate<FaceModel> { $0.key == key }
-            if let stale = try? modelContext.fetch(FetchDescriptor(predicate: existing)).first {
-                if heldElsewhere { continue }
-                // The content is held already (an edit, Undo or Redo writes the same bytes again; those records go only
-                // when a scan prunes them): the people and corrections made since are what count (audit 2026-11-21-4,
-                // A4-2).
-                stale.personID = face.personID
-                stale.pinned = face.pinned
-                stale.rejected = face.rejected
+            if let held = try? modelContext.fetch(FetchDescriptor(predicate: existing)).first {
+                // The content is held already (by a copy, or by bytes an edit, Undo or Redo writes again): one content has
+                // one set of faces, and the newest change to them wins, whichever file it was made in (A4-2, A5-2, A6-3,
+                // A7-5).
+                if (face.changed ?? .distantPast) > (held.changed ?? .distantPast) {
+                    held.personID = face.personID
+                    held.pinned = face.pinned
+                    held.rejected = face.rejected
+                    held.changed = face.changed
+                }
                 continue
             }
             let copy = FaceModel(key: key, sha256: new, vectorRow: face.vectorRow, quality: face.quality, pixelSize: face.pixelSize)
             copy.personID = face.personID
             copy.pinned = face.pinned
             copy.rejected = face.rejected
+            copy.changed = face.changed
             modelContext.insert(copy)
             pairs.append((face.key, key))
         }
@@ -513,11 +515,13 @@ public actor AnalysisStore {
         var next = (((try? modelContext.fetch(FetchDescriptor<PersonModel>())) ?? []).map(\.number).max() ?? 0) + 1
         var newCounts: [UUID: Int] = [:]
         var successors: [UUID: Set<UUID>] = [:]
+        let now = Date()
         for face in faces {
             guard let assigned = assignments[face.key] else { continue }
             if let old = face.personID, let id = assigned {
                 successors[old, default: []].insert(id)
             }
+            if face.personID != assigned { face.changed = now }
             face.personID = assigned
             if let id = assigned, !known.contains(id) {
                 newCounts[id, default: 0] += 1
@@ -589,8 +593,10 @@ public actor AnalysisStore {
                 face.personID = target
                 face.pinned = true
                 face.rejected.removeAll { $0 == target }
+                face.changed = Date()
             } else if face.rejected.contains(other), !face.rejected.contains(target) {
                 face.rejected.append(target)
+                face.changed = Date()
             }
         }
         let predicate = #Predicate<PersonModel> { $0.id == other }
@@ -615,6 +621,7 @@ public actor AnalysisStore {
         for face in (try? modelContext.fetch(FetchDescriptor<FaceModel>())) ?? [] where keys.contains(face.key) {
             face.personID = id
             face.pinned = true
+            face.changed = Date()
             if !face.rejected.contains(person) {
                 face.rejected.append(person)
             }
@@ -631,6 +638,7 @@ public actor AnalysisStore {
                 face.personID = nil
             }
             face.pinned = false
+            face.changed = Date()
             if !face.rejected.contains(person) {
                 face.rejected.append(person)
             }

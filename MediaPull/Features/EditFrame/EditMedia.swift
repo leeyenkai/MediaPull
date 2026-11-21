@@ -61,7 +61,7 @@ extension EditModel {
             // Still this file, still in view: never sound with no control on screen.
             guard let self, self.current == current, window?.section == .edit else { return }
             playingResult = true
-            player.load(item, at: min(at, timeline.resultDuration(of: mediaDuration)))
+            player.load(item, at: min(timeline.resultTime(of: at, duration: mediaDuration), timeline.resultDuration(of: mediaDuration)))
             player.player.play()
         }
     }

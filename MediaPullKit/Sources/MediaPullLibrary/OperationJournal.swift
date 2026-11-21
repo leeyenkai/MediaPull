@@ -639,25 +639,60 @@ public actor OperationJournal {
 
     /// Files (relative paths; "" for the item itself) that differ from what was copied, or were added since.
     /// The name of a copied unit's file that changed since it was copied, if any.
-    static func changedMember(of unit: [JournalStep]) -> String? {
+    /// An edit file beside the copy that the copy did not bring (a rating written since) is a change too, so a copy
+    /// rated since stays whole however its format keeps the rating (A7-4).
+    func changedMember(of unit: [JournalStep]) -> String? {
+        var copied: Set<String> = []
         for step in unit {
-            guard case let .clone(from, to, files) = step, FileManager.default.fileExists(atPath: to) else { continue }
-            let recorded = files ?? stamps(of: URL(fileURLWithPath: from)) ?? []
-            if !changedFiles(in: URL(fileURLWithPath: to), recorded: recorded).isEmpty { return URL(fileURLWithPath: to).lastPathComponent }
+            guard case let .clone(from, to, files) = step else { continue }
+            copied.insert(to)
+            guard fm.fileExists(atPath: to) else { continue }
+            let recorded = files ?? Self.stamps(of: URL(fileURLWithPath: from)) ?? []
+            if !Self.changedFiles(in: URL(fileURLWithPath: to), recorded: recorded).isEmpty {
+                return URL(fileURLWithPath: to).lastPathComponent
+            }
         }
-        return nil
+        guard case let .clone(_, lead, _) = unit[0] else { return nil }
+        let photo = URL(fileURLWithPath: lead), folder = photo.deletingLastPathComponent()
+        let stem = photo.deletingPathExtension().lastPathComponent.lowercased()
+        let near = listing(of: folder).filter { $0.lowercased().hasPrefix(stem) }
+        // The photo's own name once: a name listed twice is taken as two files and the unit is not found.
+        let names = Array(Set(near + [photo.lastPathComponent]))
+        return MediaUnits.companions(ofLead: photo.lastPathComponent, in: names).first { name in
+            Self.isEditFile(name) && !copied.contains(folder.appendingPathComponent(name).path)
+                && fm.fileExists(atPath: folder.appendingPathComponent(name).path)
+        }
     }
 
-    /// Edit files beside `moved` (where a photo was) that this change does not move itself: they go with the photo to `back`.
-    func carryEditFiles(of moved: URL, to back: URL, entry: JournalEntry, report: inout UndoReport) {
+    /// A photo's edit files (`.xmp`, `.aae`) follow it by name when Undo or Redo moves it: whatever was written into them
+    /// since, whoever saved them, and whether or not this change moved them itself; never while another photo of that
+    /// name stays where they are (D-120 as amended, audit 2026-11-21-7, A7-1 to A7-3). Run once the photo's whole unit
+    /// has moved. `moved` is where the photo was, `back` where it is now.
+    func carryEditFiles(of moved: URL, to back: URL, report: inout UndoReport) {
         let folder = moved.deletingLastPathComponent()
-        let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
-        let listed = Set(entry.steps.compactMap { step -> String? in if case let .move(_, to, _, _) = step { to } else { nil } })
-        for name in MediaUnits.companions(ofLead: moved.lastPathComponent, in: names) where Self.isEditFile(name) {
+        let stem = moved.deletingPathExtension().lastPathComponent.lowercased()
+        // Only names that start like the photo's, still there: one listing per folder for the whole Undo or Redo (A7-7).
+        let near = listing(of: folder).filter { name in
+            name.lowercased().hasPrefix(stem) && fm.fileExists(atPath: folder.appendingPathComponent(name).path)
+        }
+        let companions = MediaUnits.companions(ofLead: moved.lastPathComponent, in: Array(Set(near + [moved.lastPathComponent])))
+        let staying = near.contains { name in
+            name.lowercased() != moved.lastPathComponent.lowercased() && !Self.isEditFile(name) && !name.lowercased().hasSuffix(".json")
+                && (name as NSString).deletingPathExtension.lowercased() == stem
+        }
+        guard !staying else { return }
+        for name in companions where Self.isEditFile(name) {
             let source = folder.appendingPathComponent(name)
-            guard !listed.contains(source.path) else { continue }
             let target = back.deletingLastPathComponent().appendingPathComponent(
                 MediaUnits.renamed(name, lead: moved.lastPathComponent, newLead: back.lastPathComponent))
+            // A case-only rename on a drive that ignores case: it is the same file, already in place (A7-9); only its
+            // name's case is put back, and a failure there loses nothing.
+            if Self.sameFile(source.path, target.path) {
+                if source.lastPathComponent != target.lastPathComponent {
+                    try? fm.moveItem(at: source, to: target) // lint:allow silent-write the file is in place either way
+                }
+                continue
+            }
             guard !fm.fileExists(atPath: target.path) else {
                 report.skipped.append("\(name) was left where it is: \(target.lastPathComponent) is already beside the photo")
                 continue
@@ -668,6 +703,28 @@ public actor OperationJournal {
             } catch {
                 report.skipped.append("\(name) was left where it is: \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// After a unit's Undo or Redo: its photo's edit files follow it, if it moved.
+    func carryEditFiles(after unit: [JournalStep], undoing: Bool, report: inout UndoReport) {
+        guard case let .move(from, to, _, _) = unit[0] else { return }
+        let was = undoing ? to : from
+        guard let now = report.moves.last(where: { $0.from == was })?.to else { return }
+        carryEditFiles(of: URL(fileURLWithPath: was), to: URL(fileURLWithPath: now), report: &report)
+    }
+
+    /// Why a metadata step could not be written now but may be later: its file or its photo locked, or its drive locked
+    /// (a card's switch), as `rewrite` refuses them (A7-6).
+    func metadataBlocked(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        if Self.isLocked(url) { return true }
+        if (try? url.deletingLastPathComponent().resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly == true { return true }
+        guard url.pathExtension.lowercased() == "xmp" else { return false }
+        let folder = url.deletingLastPathComponent(), stem = url.deletingPathExtension().lastPathComponent.lowercased()
+        return listing(of: folder).contains { name in
+            (name as NSString).deletingPathExtension.lowercased() == stem && !Self.isEditFile(name)
+                && Self.isLocked(folder.appendingPathComponent(name))
         }
     }
 
@@ -792,7 +849,8 @@ public actor OperationJournal {
             defer { if hidden != nil { Self.update(&hidden, after: unit) } }
             // A copied unit any of whose files changed since (a rating written into its .xmp) stays whole (R-3806, R-4206,
             // audit 2026-11-21-6, A6-2).
-            if case let .clone(_, to, _) = unit[0], unit.count > 1, let changed = Self.changedMember(of: unit) {
+            // A copied folder is still taken back file by file (only what changed stays).
+            if case let .clone(_, to, _) = unit[0], !Self.isFolder(URL(fileURLWithPath: to)), let changed = changedMember(of: unit) {
                 report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) was kept with its unit: \(changed) changed since")
                 continue
             }
@@ -800,6 +858,7 @@ public actor OperationJournal {
                 for step in unit.dropFirst() {
                     undo(step, companion: true, entry: &entry, report: &report)
                 }
+                carryEditFiles(after: unit, undoing: true, report: &report)
                 undoneUnits.append(unit)
             } else if canRetry(unit[0], entry: entry) {
                 left.append(unit)
@@ -890,6 +949,7 @@ public actor OperationJournal {
                 for step in unit.dropFirst() {
                     redo(step, companion: true, allowed: allowed, entry: &entry, report: &report)
                 }
+                carryEditFiles(after: unit, undoing: false, report: &report)
             }
             if Date().timeIntervalSince(checkpoint) >= 0.5, entry.steps[before...].contains(where: isFile) {
                 var part = entry
@@ -948,6 +1008,10 @@ public actor OperationJournal {
                 }
                 return true
             case let .move(from, to, _, _):
+                if companion, Self.isEditFile(from) {
+                    report.done += 1
+                    return true
+                }
                 guard isSame(from, in: entry) else {
                     // A temporary name is never shown; nor is a name the item was only going to get (B12-m3).
                     let name = Self.isTemporary(from) ? "A renamed file" : Self.shownName(from)
@@ -1035,7 +1099,7 @@ public actor OperationJournal {
         case let .trash(original, _): !fm.fileExists(atPath: URL(fileURLWithPath: original).deletingLastPathComponent().path)
         // A drive that is away, or a file locked in the Finder: tried again once it is back or unlocked (A6-5).
         case let .metadata(path, _, _, _): !fm.fileExists(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path)
-            || Self.isLocked(URL(fileURLWithPath: path))
+            || metadataBlocked(path)
         case .makeFolder: false
         }
     }
@@ -1096,13 +1160,18 @@ public actor OperationJournal {
             return true
         case let .move(from, to, size, modified):
             let dest = URL(fileURLWithPath: to)
+            // An edit file goes with its photo by name once the unit has moved (`carryEditFiles`), never on its own.
+            if companion, Self.isEditFile(to) {
+                report.done += 1
+                return true
+            }
             guard isSame(to, in: entry) else {
                 report.skipped.append(fm.fileExists(atPath: to)
                     ? "\(Self.shownName(to, otherwise: from)) was changed since, so it was left as it is"
                     : "\(Self.shownName(to, otherwise: from)) is no longer where the change put it, so it was left where it is")
                 return false
             }
-            if let size, !(companion && Self.isEditFile(to)) {
+            if let size {
                 let values = try? dest.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 if values?.fileSize.map(Int64.init) != size
                     || abs((values?.contentModificationDate ?? .distantPast).timeIntervalSince(modified ?? .distantPast)) > 1
@@ -1141,8 +1210,6 @@ public actor OperationJournal {
                 if !companion, !Self.isTemporary(back.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((to, back.path))
-                // A `.xmp` or `.aae` made beside the photo after it was moved goes back with it (A6-2).
-                if !companion { carryEditFiles(of: dest, to: back, entry: entry, report: &report) }
                 // For Redo: what is back at its old place (or under the free name it got), and the folder it left (B11-m1).
                 note(from, at: back.path == from ? nil : back.path, in: &entry)
                 note(dest.deletingLastPathComponent().path, in: &entry)

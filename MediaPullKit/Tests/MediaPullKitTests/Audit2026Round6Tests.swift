@@ -89,14 +89,30 @@ final class Audit2026Round6Tests: XCTestCase {
         await store.addFaces([NewFace(key: "f1", vectorRow: 0, quality: 1, pixelSize: 100)], sha256: "S1")
         await store.setPath("/lib/P.jpg", sha256: "S1", size: 1, modified: Date())
         await store.setPath("/lib/Q.jpg", sha256: "S1", size: 1, modified: Date())
-        _ = await store.rekey(from: "S1", to: "S2", path: "/lib/P.jpg")
+        _ = await store.rekey(from: "S1", to: "S2")
         await store.setPath("/lib/P.jpg", sha256: "S2", size: 2, modified: Date())
         let alice = UUID()
         _ = await store.applyAssignments(["S2|f1": alice])
-        _ = await store.rekey(from: "S2", to: "S1", path: "/lib/P.jpg")
+        _ = await store.rekey(from: "S2", to: "S1")
         await store.setPath("/lib/P.jpg", sha256: "S1", size: 1, modified: Date())
-        _ = await store.rekey(from: "S1", to: "S2", path: "/lib/P.jpg")
+        _ = await store.rekey(from: "S1", to: "S2")
         let face = await store.faces().first { $0.key == "S2|f1" }
+        XCTAssertEqual(face?.personID, alice)
+    }
+
+    func testTheNewestCorrectionWinsWhereACopyHoldsTheEditedContent() async throws {
+        // P rated (S1 to S2), then copied (Q holds S2), its face named, then the rating undone (A7-5).
+        let store = try AnalysisStore.make(folder: nil)
+        await store.save(AnalysisRecord(sha256: "S1", facts: MediaFacts()))
+        await store.addFaces([NewFace(key: "f1", vectorRow: 0, quality: 1, pixelSize: 100)], sha256: "S1")
+        await store.setPath("/lib/P.jpg", sha256: "S1", size: 1, modified: Date())
+        _ = await store.rekey(from: "S1", to: "S2")
+        await store.setPath("/lib/P.jpg", sha256: "S2", size: 2, modified: Date())
+        await store.setPath("/lib/Q.jpg", sha256: "S2", size: 2, modified: Date())
+        let alice = UUID()
+        _ = await store.applyAssignments(["S2|f1": alice])
+        _ = await store.rekey(from: "S2", to: "S1")
+        let face = await store.faces().first { $0.key == "S1|f1" }
         XCTAssertEqual(face?.personID, alice)
     }
 

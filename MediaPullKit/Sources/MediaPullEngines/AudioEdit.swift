@@ -230,18 +230,18 @@ public enum AudioEdit {
     /// The highest level in each of `buckets` equal slices of `samples`, 0 to 1.
     public static func peaks(_ samples: [Float], buckets: Int) -> [Float] {
         guard buckets > 0, !samples.isEmpty else { return [] }
-        let size = max(1, samples.count / buckets)
+        // Slice i covers samples i·n/b up to (i+1)·n/b, so the slices reach the end of the sound and each is drawn where it
+        // is (audit 2026-11-21-7, C7-3).
+        let count = min(buckets, samples.count)
         var out: [Float] = []
-        out.reserveCapacity(buckets)
-        var start = 0
-        while start < samples.count, out.count < buckets {
-            let end = min(samples.count, start + size)
+        out.reserveCapacity(count)
+        for index in 0 ..< count {
+            let start = index * samples.count / count, end = (index + 1) * samples.count / count
             var peak: Float = 0
-            for value in samples[start ..< end] {
+            for value in samples[start ..< max(start + 1, end)] {
                 peak = max(peak, abs(value))
             }
             out.append(min(peak, 1))
-            start = end
         }
         return out
     }

@@ -483,6 +483,18 @@ public struct EditTimeline: Codable, Sendable, Hashable {
         keptRanges(duration: duration).reduce(0) { $0 + $1.end - $1.start } / min(max(speed, 0.25), 4)
     }
 
+    /// Where `time` in the original falls in the result: the parts kept before it, and its place in its own part, at the
+    /// speed; a time in a part cut out goes to where the next part starts (audit 2026-11-21-7, C7-2).
+    public func resultTime(of time: Double, duration: Double) -> Double {
+        var before = 0.0
+        for part in keptRanges(duration: duration) {
+            if time < part.start { break }
+            before += min(time, part.end) - part.start
+            if time < part.end { break }
+        }
+        return before / min(max(speed, 0.25), 4)
+    }
+
     /// Whether only cuts are asked for, which never needs re-encoding (D-130).
     public var cutsOnly: Bool {
         speed == 1 && fadeIn == 0 && fadeOut == 0 && (volume == 1 || volume == 0) && !normalize
@@ -519,7 +531,10 @@ public struct AudioTagEdit: Codable, Sendable, Hashable {
     /// ffmpeg's metadata keys with their new values.
     public var metadata: [(key: String, value: String)] {
         [("title", title), ("artist", artist), ("album", album), ("album_artist", albumArtist), ("date", year), ("genre", genre),
-         ("track", track)].compactMap { key, value in value.map { (key, $0.trimmingCharacters(in: .whitespacesAndNewlines)) } }
+         ("track", track)].compactMap { key, value in
+            // Only spaces typed is no value: the file's own tag stays (C7-4).
+            value.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : (key, $0) }
+        }
     }
 }
 

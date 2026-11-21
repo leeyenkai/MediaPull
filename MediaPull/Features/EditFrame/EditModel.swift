@@ -104,6 +104,7 @@ final class EditModel: MediaGridOwner {
     /// another window's newer edits.
     @ObservationIgnored private var unsaved = false
     var hasUnsavedChange: Bool { unsaved }
+    var saveGenerationNow: Int { saveGeneration }
     @ObservationIgnored private var saveGeneration = 0
     @ObservationIgnored private var openTask: Task<Void, Never>?
     @ObservationIgnored private var gestureStart: EditRecipe?
@@ -314,8 +315,9 @@ final class EditModel: MediaGridOwner {
             render()
         } else {
             Task {
-                await AppModel.shared.recipes.save(recipe)
+                let kept = await AppModel.shared.recipes.store(recipe)
                 reloadCurrentRecipe()
+                if let kept { Self.recipesChanged([kept.source.path], by: self) }
             }
         }
     }
@@ -336,11 +338,12 @@ final class EditModel: MediaGridOwner {
             try? await Task.sleep(for: .milliseconds(400))
             // The recipe as it is when it is saved, so a move meanwhile (its new path and date) is in it.
             guard !Task.isCancelled, let recipe = self?.recipe else { return }
-            if await !AppModel.shared.recipes.save(recipe) {
-                self?.message = "The edits could not be saved. Check that the disk has space."
-            } else {
+            if let kept = await AppModel.shared.recipes.store(recipe) {
                 if self?.saveGeneration == generation { self?.unsaved = false }
-                self?.savedHere(recipe.id)
+                self?.adopt(kept, for: recipe)
+                Self.recipesChanged([kept.source.path], by: self)
+            } else {
+                self?.message = "The edits could not be saved. Check that the disk has space."
             }
             // The look thumbnails show the photo as it is now.
             if self?.tab == .adjust { self?.renderLooks() }
@@ -386,10 +389,19 @@ final class EditModel: MediaGridOwner {
         waveformTask?.cancel()
     }
 
-    /// Other windows showing this recipe take it as saved.
-    private func savedHere(_ id: UUID) {
-        for window in AppModel.shared.windows where window.edit !== self {
-            window.edit.recipeSavedElsewhere(id)
+    /// The store kept `saved` as `kept`: a file has one recipe at a time, so a new recipe for a file that had one takes
+    /// that one's id (B7-3). The open recipe takes it too, so its next save and ⌘Z name the same recipe.
+    private func adopt(_ kept: EditRecipe, for saved: EditRecipe) {
+        guard kept.id != saved.id, recipe?.id == saved.id else { return }
+        recipe?.id = kept.id
+    }
+
+    /// Recipes of these files were written (a save, a paste, a revert, ⌘Z): every other window showing one of them shows
+    /// it as kept, unless it has a change of its own not yet saved (audit 2026-11-21-6, B6-2; round 7, B7-4).
+    static func recipesChanged(_ paths: Set<String>, by model: EditModel?) {
+        let standardized = Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        for window in AppModel.shared.windows where window.edit !== model {
+            window.edit.recipeChanged(standardized)
         }
     }
 
@@ -407,10 +419,11 @@ final class EditModel: MediaGridOwner {
         saveTask = nil
         unsaved = false
         Task {
-            if await !AppModel.shared.recipes.save(recipe) {
-                self.message = "The edits could not be saved. Check that the disk has space."
+            if let kept = await AppModel.shared.recipes.store(recipe) {
+                self.adopt(kept, for: recipe)
+                Self.recipesChanged([kept.source.path], by: self)
             } else {
-                self.savedHere(recipe.id)
+                self.message = "The edits could not be saved. Check that the disk has space."
             }
             let edited = await AppModel.shared.recipes.editedPaths()
             self.editedPaths = edited
@@ -647,6 +660,7 @@ final class EditModel: MediaGridOwner {
             guard let self else { return }
             registerBatchUndo(before, name: "Revert Edits")
             reloadCurrentRecipe()
+            Self.recipesChanged(Set(files.map(\.path)), by: self)
         }
     }
 
@@ -672,16 +686,17 @@ final class EditModel: MediaGridOwner {
     }
 }
 
-/// Fonts a recipe names that this Mac does not have (R-4607).
+/// Fonts a recipe names that this Mac does not have (R-4607), each said as the canvas says it.
 enum FontLookup {
     nonisolated static func missing(in layers: [Layer]) -> [String] {
         var out: [String] = []
         for layer in layers where !layer.hidden {
             guard case let .text(style) = layer.kind, LayerRenderer.font(style, canvasHeight: 100).missing else { continue }
-            // The family is here but not the face: the face is named (B6-m6).
-            let name = FontCatalog.isInstalled(style.family)
-                ? "\(style.family) \(style.face ?? "")".trimmingCharacters(in: .whitespaces) : style.family
-            if !out.contains(name) { out.append(name) }
+            // The family is here but not the face: its regular style is drawn (B6-m6, B7-m2).
+            let said = FontCatalog.isInstalled(style.family)
+                ? "“\(style.family) \(style.face ?? "")” is not on this Mac; its regular style is drawn instead."
+                : "“\(style.family)” is not on this Mac; the system font is drawn instead."
+            if !out.contains(said) { out.append(said) }
         }
         return out
     }

@@ -45,6 +45,34 @@ cp COPYING "$WORK/LICENSE-lame.txt"
 
 cd "$WORK/ffmpeg-$VERSION"
 
+# Every component named below must exist under that name, or configure leaves it out without a word (audit
+# 2026-11-21-7, C7-6, where three image demuxers were named wrongly and missing).
+check_names() {
+  local kind="$1" names="$2" known
+  known="$(./configure --list-"$kind"s | tr -s ' \t' '\n')"
+  for name in ${names//,/ }; do
+    grep -qx "$name" <<<"$known" || { echo "error: no $kind named $name in ffmpeg $VERSION" >&2; exit 1; }
+  done
+}
+PROTOCOLS="file,pipe"
+check_names protocol "$PROTOCOLS"
+DEMUXERS="mov,matroska,mpegts,aac,mp3,ogg,flac,wav,aiff,image2,image2pipe,gif,apng,image_png_pipe,image_jpeg_pipe,image_webp_pipe,concat,rawvideo,ivf,h264,hevc,m4v"
+check_names demuxer "$DEMUXERS"
+MUXERS="mp4,mov,ipod,matroska,webm,gif,apng,image2,image2pipe,adts,null,rawvideo,mp3,flac,ogg,opus,wav,aiff,streamhash,framemd5,pcm_f32le"
+check_names muxer "$MUXERS"
+DECODERS="h264,hevc,vp8,vp9,av1,mpeg4,aac,aac_latm,mp3,mp3float,opus,vorbis,flac,alac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_u8,pcm_s8,pcm_mulaw,pcm_alaw,adpcm_ima_wav,adpcm_ima_qt,adpcm_ms,pcm_f64be,mjpeg,png,apng,gif,webp,bmp,tiff,rawvideo"
+check_names decoder "$DECODERS"
+ENCODERS="h264_videotoolbox,hevc_videotoolbox,aac_at,aac,gif,apng,png,rawvideo,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,mjpeg,libmp3lame,flac,alac"
+check_names encoder "$ENCODERS"
+PARSERS="h264,hevc,vp8,vp9,av1,aac,aac_latm,mpegaudio,opus,vorbis,flac,png,gif,webp,mjpeg"
+check_names parser "$PARSERS"
+BSFS="aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,vp9_superframe,vp9_superframe_split,extract_extradata"
+check_names bsf "$BSFS"
+FILTERS="palettegen,paletteuse,scale,fps,format,null,anull,aresample,aformat,split,setpts,copy,pad,crop,atrim,afade,volume,loudnorm,concat,asetpts,asetnsamples,ebur128,amix"
+check_names filter "$FILTERS"
+HWACCELS="h264_videotoolbox,hevc_videotoolbox,vp9_videotoolbox,av1_videotoolbox"
+check_names hwaccel "$HWACCELS"
+
 ./configure \
   --prefix="$WORK/install" \
   --arch=arm64 --target-os=darwin --cc=clang \
@@ -54,15 +82,15 @@ cd "$WORK/ffmpeg-$VERSION"
   --disable-network --disable-autodetect \
   --enable-zlib --enable-videotoolbox --enable-audiotoolbox --enable-libmp3lame \
   --disable-everything \
-  --enable-protocol=file,pipe \
-  --enable-demuxer=mov,matroska,mpegts,aac,mp3,ogg,flac,wav,aiff,image2,image2pipe,gif,apng,png_pipe,jpeg_pipe,webp_pipe,concat,rawvideo,ivf,h264,hevc,m4v \
-  --enable-muxer=mp4,mov,ipod,matroska,webm,gif,apng,image2,image2pipe,adts,null,rawvideo,mp3,flac,ogg,opus,wav,aiff,streamhash,framemd5,pcm_f32le \
-  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,aac,aac_latm,mp3,mp3float,opus,vorbis,flac,alac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_u8,pcm_s8,pcm_mulaw,pcm_alaw,adpcm_ima_wav,adpcm_ima_qt,adpcm_ms,pcm_f64be,mjpeg,png,apng,gif,webp,bmp,tiff,rawvideo \
-  --enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac_at,aac,gif,apng,png,rawvideo,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,mjpeg,libmp3lame,flac,alac \
-  --enable-parser=h264,hevc,vp8,vp9,av1,aac,aac_latm,mpegaudio,opus,vorbis,flac,png,gif,webp,mjpeg \
-  --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,vp9_superframe,vp9_superframe_split,extract_extradata \
-  --enable-filter=palettegen,paletteuse,scale,fps,format,null,anull,aresample,aformat,split,setpts,copy,pad,crop,atrim,afade,volume,loudnorm,concat,asetpts,asetnsamples,ebur128,amix \
-  --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox,vp9_videotoolbox,av1_videotoolbox
+  --enable-protocol="$PROTOCOLS" \
+  --enable-demuxer="$DEMUXERS" \
+  --enable-muxer="$MUXERS" \
+  --enable-decoder="$DECODERS" \
+  --enable-encoder="$ENCODERS" \
+  --enable-parser="$PARSERS" \
+  --enable-bsf="$BSFS" \
+  --enable-filter="$FILTERS" \
+  --enable-hwaccel="$HWACCELS"
 
 make -j"$(sysctl -n hw.ncpu)"
 make install

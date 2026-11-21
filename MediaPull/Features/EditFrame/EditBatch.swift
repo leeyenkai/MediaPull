@@ -71,6 +71,7 @@ extension EditModel {
             guard let self else { return }
             registerBatchUndo(before, name: "Paste Settings")
             reloadCurrentRecipe()
+            Self.recipesChanged(Set(before.map(\.path)), by: self)
             message = before.isEmpty ? "These settings do not apply to audio."
                 : "Settings pasted onto \(before.count) file\(before.count == 1 ? "" : "s")."
         }
@@ -108,6 +109,7 @@ extension EditModel {
                 }
             }
             self?.reloadCurrentRecipe()
+            Self.recipesChanged(Set(recipes.map(\.path)), by: self)
         }
     }
 
@@ -115,13 +117,15 @@ extension EditModel {
     func reloadCurrentRecipe() {
         guard let current else { return }
         let id = recipe?.id
+        let generation = saveGenerationNow
         Task { [weak self] in
             // By its id first, wherever the file has gone since (a Finder rename), else by the path (audit 2026-11-21-6,
             // B6-m4).
             let byID: EditRecipe? = if let id { await AppModel.shared.recipes.recipe(id: id) } else { nil }
             let stored: EditRecipe? = if let byID { byID } else { await AppModel.shared.recipes.recipe(for: current) }
             let edited = await AppModel.shared.recipes.editedPaths()
-            guard let self, self.current == current, let kind else { return }
+            // A change made meanwhile is kept, never replaced by what was stored before it (B7-m1).
+            guard let self, self.current == current, let kind, saveGenerationNow == generation else { return }
             if let stored, stored.source.path != current.standardizedFileURL.path,
                FileManager.default.fileExists(atPath: stored.source.path)
             {
@@ -141,10 +145,11 @@ extension EditModel {
                                              kind: kind))
     }
 
-    /// Another window saved this recipe: shown again here unless this window has a change of its own not yet saved
-    /// (audit 2026-11-21-6, B6-2).
-    func recipeSavedElsewhere(_ id: UUID) {
-        guard recipe?.id == id, !hasUnsavedChange else { return }
+    /// Another window wrote the recipe of one of `paths`: shown again here when it is the open file's, unless this window
+    /// has a change of its own not yet saved.
+    func recipeChanged(_ paths: Set<String>) {
+        guard let current, paths.contains(current.standardizedFileURL.path) || recipe.map({ paths.contains($0.source.path) }) == true,
+              !hasUnsavedChange else { return }
         reloadCurrentRecipe()
     }
 

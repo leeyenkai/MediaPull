@@ -68,7 +68,8 @@ final class Audit2026Round4Tests: XCTestCase {
         await store.addFaces([NewFace(key: "f1", vectorRow: 0, quality: 1, pixelSize: 100)], sha256: "A")
         await store.addFaces([NewFace(key: "f1", vectorRow: 1, quality: 1, pixelSize: 100)], sha256: "B")
         let old = UUID(), named = UUID()
-        _ = await store.applyAssignments(["B|f1": old, "A|f1": named])
+        _ = await store.applyAssignments(["B|f1": old])
+        _ = await store.applyAssignments(["A|f1": named])
         _ = await store.rekey(from: "A", to: "B")
         let face = await store.faces().first { $0.key == "B|f1" }
         XCTAssertEqual(face?.personID, named)
@@ -99,7 +100,7 @@ final class Audit2026Round4Tests: XCTestCase {
         await store.setPath("/lib/Q.jpg", sha256: "R", size: 1, modified: Date())
         let alice = UUID()
         _ = await store.applyAssignments(["R|f1": alice])
-        _ = await store.rekey(from: "P0", to: "R", path: "/lib/P.jpg")
+        _ = await store.rekey(from: "P0", to: "R")
         let face = await store.faces().first { $0.key == "R|f1" }
         XCTAssertEqual(face?.personID, alice, "the copy keeps its own correction")
     }
