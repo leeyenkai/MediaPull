@@ -80,6 +80,7 @@ Decisions that changed during implementation are D-13 and D-24 to D-56 (and D-68
 41. Devices
 42. Formats, units and posts
 43. Drives
+44. Map and Timeline
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -1326,6 +1327,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-121 | The person's own files keep their format on every route: a file dropped or copied into an Archive library folder is no longer converted (amends R-1502, R-1604, R-1801, §1.2); the Converter converts when asked, and the Editor keeps HEIC as HEIC. Saves from the web still convert as before | Requested; an audit found an iPhone HEIC re-encoded as JPEG when dropped into an Archive folder but kept by every other route |
 | D-122 | MediaPull is presented as collecting, bringing in and organising (§1.1). Instagram posts stay together in Organise (R-4208, R-4209): sorts place a whole post, copies inside an account folder stop posing as the post, Trash Extra Copies spares a post's own pictures, Find Missing does not fetch items moved elsewhere in the library, and grids show "2 of 5" | Requested; an audit found sorts by Subject or Person splitting carousels, copies duplicating a post's items in Profile views, and moved items downloaded again |
 | D-123 | Drives and camera cards appear by themselves in Organise and, with a DCIM folder, in Devices (section 43). They are ordinary folders, read and written like any other, so §5.1's read-only rule now covers only phones and cameras that connect as devices. Volumes are known by UUID (D-91), which exFAT cards have and keep across unplugging (spike S3) | Requested: DSLR cards and external drives should be organised directly; an audit found two cards with one name could drop each other's analysis and people |
+| D-124 | Organise gains a Map & Timeline pane (section 44): an optional pane rather than a view mode, so the grid stays beside it, following the Source or Target pane last worked in. Pins are clustered by MediaPull's own grid (no map search), and the map stays behind the existing opt-in (D-110). The timeline is drawn by MediaPull itself; no charting framework is added | Requested: see where and when photos were taken, and pick them from there to organise |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1599,6 +1601,18 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 **R-4304** A locked card (read-only) can be browsed and imported from; changes to it are not offered.
 
 **R-4305** Volumes are told apart by their UUID, not their name (spike `docs/spikes/exfat-identity.md`): analysis results for files on a drive that is not connected are kept until the same drive is connected again without them, and are never dropped because another drive with the same name is connected in its place. Files on exFAT and FAT drives are moved, copied, sorted, renamed and undone as on the Mac's own disk; where the drive cannot rename without overwriting, MediaPull checks the name is free first, and a drive without a Trash says "This drive has no Trash, so nothing was moved." Nothing is ever deleted permanently.
+
+---
+
+## 44. Map and Timeline
+
+**R-4401** *(D-124)* Organise has a fourth pane, **Map & Timeline** (hidden until shown: ⌥⌘4, the View menu or its arrange menu), stacked under the Organise pane in the presets. It shows the files of the Source or Target pane the person worked in last, as that pane shows them: its search and filters apply. Clicking the Map & Timeline pane never changes which pane it follows. A switch at its top chooses **Map** or **Timeline**.
+
+**R-4402** The Map shows where the photos and videos were taken, from their GPS position (analysis, section 36): nearby files are one pin with their count, splitting as the map zooms in (at most 500 pins). Choosing a pin selects its files in the pane it follows; **Select Area** selects every file inside a rectangle drawn on the map. The pane says how many files have no location and how many are not analysed yet. The map loads Apple's map images, so like every map in MediaPull it is drawn only after the person allows maps (R-514, D-110); until then the pane offers Show Map. Nothing is looked up online (D-59).
+
+**R-4403** The Timeline is a strip of bars, one per day, month or year (chosen to fit the span shown, or by the person), each as tall as its number of files; dragging across the strip selects the files in that range. Below it, the events (R-3702: files taken close together, with their place) are listed newest first with their count; choosing an event selects its files.
+
+**R-4404** Selecting in the Map or Timeline is selecting in the pane: the files are ready to sort, move, copy, rename, look at or send to the Trash there.
 
 ---
 

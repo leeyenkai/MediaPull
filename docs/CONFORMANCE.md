@@ -247,6 +247,10 @@ change as the code.
 | R-4303 | built | `DeviceCenter.drivesChanged`, `FolderDeviceSource`, `DeviceBrowser` | `--selftest-drives` | Known by volume UUID; the camera framework skips mass-storage cards |
 | R-4304 | person | `OrganiseModel.run`, `DriveInfo.isReadOnly` | none | A locked card refuses changes; needs a real locked card |
 | R-4305 | built | `Volumes.isGone`, `VolumeTable`, `FileOps.exclusiveOrMove`, `OperationJournal.trashItem` | `testDrivePathsArePrunedOnlyWhenTheSameDriveIsBack`, `testTheTableRemembersEveryDriveSeenAtAMountPoint`, `--selftest-drives` | Spike S3 recorded in `docs/spikes/exfat-identity.md` |
+| R-4401 | built | `PaneID.organiseMap`, `PaneArrangement.organiseStandard`, `WindowModel.lastOrganiseFolderPane`, `OrganiseMapPane` | `testTheMapPaneJoinsSavedArrangements`, `--selftest-details` | Hidden until shown; follows the folder pane worked in last |
+| R-4402 | person | `MapClusters.clusters`, `LocationClusterMap` | `testPinsJoinWhenZoomedOutAndSplitWhenZoomedIn` | Clustering tested; the live map loads Apple's images, so its look and Select Area need a person |
+| R-4403 | built | `Timeline.buckets`, `Timeline.scale`, `LibraryQuery.events` | `testTimelineBucketsKeepGaps` | Dragging across the strip needs a person |
+| R-4404 | person | `OrganiseMapPane` | none | Choosing a pin, an area, a range or an event selects in the pane; needs a person |
 | R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
 | R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
 | R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |

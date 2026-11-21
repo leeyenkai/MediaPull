@@ -369,11 +369,11 @@ final class PaneArrangementTests: XCTestCase {
     }
 
     func testOrganiseArrangementsHoldOnlyOrganisePanes() throws {
-        XCTAssertEqual(PaneArrangement.organiseStandard.key, "organiseSource|organiseWork|organiseTarget")
+        XCTAssertEqual(PaneArrangement.organiseStandard.key, "organiseSource|organiseWork+organiseMap|organiseTarget")
         XCTAssertEqual(PaneArrangement.organiseStandard.group, .organise)
         let data = Data(#"[["organiseTarget"],["library"]]"#.utf8)
         let layout = try JSONDecoder().decode(PaneArrangement.self, from: data)
-        XCTAssertEqual(layout.key, "organiseTarget|organiseSource|organiseWork")
+        XCTAssertEqual(layout.key, "organiseTarget|organiseSource|organiseWork|organiseMap", "a saved arrangement gains the new pane")
     }
 }
 

@@ -8,7 +8,7 @@ public enum PaneGroup: String, Codable, Sendable, Hashable {
 /// The window's panes (SPEC sections 7 and 38).
 public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
     case source, extracted, preview, library, downloads
-    case organiseSource, organiseWork, organiseTarget
+    case organiseSource, organiseWork, organiseTarget, organiseMap
     case devicesList, devicesMedia, devicesImport
 
     public var title: String {
@@ -21,6 +21,7 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
         case .organiseSource: "Source"
         case .organiseWork: "Organise"
         case .organiseTarget: "Target"
+        case .organiseMap: "Map & Timeline"
         case .devicesList: "Devices"
         case .devicesMedia: "Media"
         case .devicesImport: "Import"
@@ -29,7 +30,7 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
 
     public var group: PaneGroup {
         switch self {
-        case .organiseSource, .organiseWork, .organiseTarget: .organise
+        case .organiseSource, .organiseWork, .organiseTarget, .organiseMap: .organise
         case .devicesList, .devicesMedia, .devicesImport: .devices
         default: .collect
         }
@@ -76,9 +77,10 @@ public struct PaneArrangement: Codable, Equatable, Sendable, Hashable {
         ("Mirrored", .libraryFirst),
     ]
 
-    public static let organiseStandard = PaneArrangement(columns: [[.organiseSource], [.organiseWork], [.organiseTarget]])
-    public static let organiseWorkRight = PaneArrangement(columns: [[.organiseSource], [.organiseTarget], [.organiseWork]])
-    public static let organiseTargetBelow = PaneArrangement(columns: [[.organiseSource, .organiseTarget], [.organiseWork]])
+    // The Map & Timeline pane sits under the Organise pane; it is hidden until shown (R-4401).
+    public static let organiseStandard = PaneArrangement(columns: [[.organiseSource], [.organiseWork, .organiseMap], [.organiseTarget]])
+    public static let organiseWorkRight = PaneArrangement(columns: [[.organiseSource], [.organiseTarget], [.organiseWork, .organiseMap]])
+    public static let organiseTargetBelow = PaneArrangement(columns: [[.organiseSource, .organiseTarget], [.organiseWork, .organiseMap]])
 
     public static let organisePresets: [(name: String, arrangement: PaneArrangement)] = [
         ("Standard", .organiseStandard),

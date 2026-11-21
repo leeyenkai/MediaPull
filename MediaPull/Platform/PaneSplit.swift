@@ -83,6 +83,7 @@ final class PaneSplitController: NSViewController {
         case .organiseSource: 300
         case .organiseWork: 300
         case .organiseTarget: 260
+        case .organiseMap: 280
         case .devicesList: 220
         case .devicesMedia: 320
         case .devicesImport: 240
@@ -99,6 +100,7 @@ final class PaneSplitController: NSViewController {
         case .organiseSource: 40
         case .organiseWork: 28
         case .organiseTarget: 32
+        case .organiseMap: 28
         case .devicesList: 22
         case .devicesMedia: 52
         case .devicesImport: 26
@@ -115,6 +117,7 @@ final class PaneSplitController: NSViewController {
         case .organiseSource: 50
         case .organiseWork: 50
         case .organiseTarget: 50
+        case .organiseMap: 60
         case .devicesList: 50
         case .devicesMedia: 50
         case .devicesImport: 50
@@ -132,6 +135,7 @@ final class PaneSplitController: NSViewController {
         case .organiseSource: 250
         case .organiseWork: 258
         case .organiseTarget: 254
+        case .organiseMap: 258
         case .devicesList: 258
         case .devicesMedia: 250
         case .devicesImport: 256

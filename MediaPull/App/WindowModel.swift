@@ -106,6 +106,10 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var showOrganiseSource = true
     var showOrganiseWork = true
     var showOrganiseTarget = true
+    /// The Map & Timeline pane (R-4401), hidden until shown.
+    var showOrganiseMap = false
+    /// The Organise folder pane worked in last, which the Map & Timeline pane follows; clicking the map never changes it.
+    var lastOrganiseFolderPane: PaneID = .organiseSource
     var showDevicesList = true
     var showDevicesMedia = true
     var showDevicesImport = true
@@ -781,6 +785,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         if showOrganiseSource { panes.insert(.organiseSource) }
         if showOrganiseWork { panes.insert(.organiseWork) }
         if showOrganiseTarget { panes.insert(.organiseTarget) }
+        if showOrganiseMap { panes.insert(.organiseMap) }
         return panes
     }
 
@@ -863,6 +868,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// An Organise pane is being worked in (its grid, tree or search field took the keyboard).
     func noteOrganiseFocus(_ pane: PaneID) {
         focusedPane = pane
+        if pane == .organiseSource || pane == .organiseTarget { lastOrganiseFolderPane = pane }
         if let view = hostWindow.flatMap({ Self.paneView(of: $0.firstResponder) }) { organisePaneViews[pane] = WeakView(view: view) }
     }
 
@@ -961,6 +967,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         case .organiseSource: showOrganiseSource = show
         case .organiseWork: showOrganiseWork = show
         case .organiseTarget: showOrganiseTarget = show
+        case .organiseMap: showOrganiseMap = show
         case .devicesList: showDevicesList = show
         case .devicesMedia: showDevicesMedia = show
         case .devicesImport: showDevicesImport = show

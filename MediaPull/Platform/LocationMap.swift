@@ -1,4 +1,5 @@
 import MapKit
+import MediaPullCore
 import SwiftUI
 
 /// The map of where a file was taken (D-110, R-514): a pin on Apple's map, the only map in MediaPull. Map images for the
@@ -29,5 +30,85 @@ struct LocationMap: View {
             MapScaleView()
         }
         .mapStyle(.standard(pointsOfInterest: .excludingAll))
+    }
+}
+
+/// Where many files were taken (R-4402): pins clustered by MediaPull's own grid as the map moves, a count on each, and an
+/// area drawn with Select Area. Drawn only after the person allows maps, as `LocationMap` is (D-110); nothing is searched.
+struct LocationClusterMap: View {
+    let points: [MapClusters.Point]
+    /// Files of a chosen pin, or inside a drawn area.
+    var onChoose: ([String]) -> Void
+    @Binding var selectingArea: Bool
+    @State private var position: MapCameraPosition = .automatic
+    @State private var area: MapClusters.Area?
+    @State private var dragStart: CGPoint?
+    @State private var dragNow: CGPoint?
+
+    private static let world = MapClusters.Area(south: -85, west: -180, north: 85, east: 180)
+
+    var body: some View {
+        MapReader { proxy in
+            Map(position: $position, interactionModes: selectingArea ? [] : [.pan, .zoom]) {
+                ForEach(MapClusters.clusters(points, in: area ?? Self.world)) { cluster in
+                    Annotation("", coordinate: CLLocationCoordinate2D(latitude: cluster.latitude, longitude: cluster.longitude)) {
+                        Button { onChoose(cluster.ids) } label: {
+                            Text("\(cluster.ids.count)")
+                                .font(.caption.weight(.semibold).monospacedDigit())
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.accentColor))
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .help(cluster.ids.count == 1 ? "Select this file" : "Select these \(cluster.ids.count) files")
+                    }
+                }
+            }
+            .mapControls {
+                MapZoomStepper()
+                MapCompass()
+                MapScaleView()
+            }
+            .mapStyle(.standard(pointsOfInterest: .excludingAll))
+            .onMapCameraChange(frequency: .onEnd) { context in
+                let region = context.region
+                area = MapClusters.Area(south: region.center.latitude - region.span.latitudeDelta / 2,
+                                        west: region.center.longitude - region.span.longitudeDelta / 2,
+                                        north: region.center.latitude + region.span.latitudeDelta / 2,
+                                        east: region.center.longitude + region.span.longitudeDelta / 2)
+            }
+            .overlay {
+                if selectingArea {
+                    ZStack(alignment: .topLeading) {
+                        Color.black.opacity(0.06).contentShape(Rectangle())
+                        if let start = dragStart, let now = dragNow {
+                            Rectangle()
+                                .strokeBorder(Color.accentColor, lineWidth: 2)
+                                .background(Color.accentColor.opacity(0.12))
+                                .frame(width: abs(now.x - start.x), height: abs(now.y - start.y))
+                                .offset(x: min(start.x, now.x), y: min(start.y, now.y))
+                        }
+                    }
+                    .gesture(DragGesture(minimumDistance: 4)
+                        .onChanged { value in
+                            dragStart = value.startLocation
+                            dragNow = value.location
+                        }
+                        .onEnded { value in
+                            defer {
+                                dragStart = nil
+                                dragNow = nil
+                                selectingArea = false
+                            }
+                            guard let a = proxy.convert(value.startLocation, from: .local),
+                                  let b = proxy.convert(value.location, from: .local) else { return }
+                            let drawn = MapClusters.Area(south: min(a.latitude, b.latitude), west: min(a.longitude, b.longitude),
+                                                         north: max(a.latitude, b.latitude), east: max(a.longitude, b.longitude))
+                            onChoose(points.filter { drawn.contains(latitude: $0.latitude, longitude: $0.longitude) }.map(\.id))
+                        })
+                }
+            }
+        }
     }
 }

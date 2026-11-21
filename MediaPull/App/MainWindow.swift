@@ -50,6 +50,7 @@ struct MainWindow: View {
                         .organiseSource: AnyView(OrganiseFolderPane(model: model, organise: model.organise, pane: model.organise.source)),
                         .organiseWork: AnyView(OrganiseWorkPane(model: model, organise: model.organise)),
                         .organiseTarget: AnyView(OrganiseFolderPane(model: model, organise: model.organise, pane: model.organise.target)),
+                        .organiseMap: AnyView(OrganiseMapPane(model: model, organise: model.organise)),
                     ]
                 )
                 .background(Color(nsColor: .windowBackgroundColor))

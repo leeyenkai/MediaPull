@@ -1481,6 +1481,17 @@ final class SelfTestRunner {
         check(organise.details?.url.path == id(other) && organise.details?.pane == .source, "the Details tab shows the chosen file")
         try? await Task.sleep(for: .seconds(1.5))
         snapshot(to: out.appendingPathComponent("organise-details.png"))
+        // The Map & Timeline pane (R-4401): hidden until shown, following the folder pane worked in last.
+        check(!model.isShowing(.organiseMap), "the Map & Timeline pane starts hidden")
+        model.setShowing(.organiseMap, true)
+        model.noteOrganiseFocus(.organiseTarget)
+        let followsTarget = model.lastOrganiseFolderPane == .organiseTarget
+        model.noteOrganiseFocus(.organiseMap)
+        check(followsTarget && model.lastOrganiseFolderPane == .organiseTarget, "the map follows the folder pane, not itself")
+        model.noteOrganiseFocus(.organiseSource)
+        try? await Task.sleep(for: .seconds(1.5))
+        snapshot(to: out.appendingPathComponent("organise-map.png"))
+        model.setShowing(.organiseMap, false)
         organise.tab = .sort
         model.section = .collect
         note("organise: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
