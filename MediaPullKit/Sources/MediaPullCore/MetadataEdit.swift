@@ -144,10 +144,11 @@ public enum MetadataEdit: Sendable, Hashable {
             out.keywords = list.isEmpty ? nil : list
         case let .shiftDate(seconds):
             guard seconds != 0, let taken = current.taken, !taken.isEmpty else { return nil }
+            // Each date that can be read moves; one left blank by the camera ("0000:00:00 …") stays as it is.
             var shifted = taken
-            shifted.original = taken.original.flatMap { Self.shift($0, by: seconds) }
-            shifted.digitized = taken.digitized.flatMap { Self.shift($0, by: seconds) }
-            guard shifted.original != nil || taken.original == nil, shifted.digitized != nil || taken.digitized == nil else { return nil }
+            shifted.original = taken.original.map { Self.shift($0, by: seconds) ?? $0 }
+            shifted.digitized = taken.digitized.map { Self.shift($0, by: seconds) ?? $0 }
+            guard shifted != taken else { return nil }
             out.taken = shifted
         case let .timeZone(zone):
             guard let zone = Self.offset(zone), let taken = current.taken, !taken.isEmpty else { return nil }

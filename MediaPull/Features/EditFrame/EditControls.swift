@@ -12,6 +12,14 @@ extension EditModel {
         )
     }
 
+    /// A binding to a part of the frame; safe while the frame is taken away under it (audit B2-1).
+    func frameValue<T: Equatable>(_ path: WritableKeyPath<Frame, T>, fallback: T) -> Binding<T> {
+        Binding(
+            get: { [weak self] in self?.recipe?.frame?[keyPath: path] ?? fallback },
+            set: { [weak self] value in self?.change { $0.frame?[keyPath: path] = value } }
+        )
+    }
+
     /// The selected layer, as a binding; nil when none is selected.
     func layer(_ id: UUID?) -> Binding<Layer>? {
         guard let id, let recipe, recipe.layers.contains(where: { $0.id == id }) else { return nil }

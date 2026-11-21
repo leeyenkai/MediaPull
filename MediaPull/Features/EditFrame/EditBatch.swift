@@ -5,13 +5,14 @@ import MediaPullEdit
 
 /// What Paste Settings carries (R-4611).
 enum SettingGroup: String, CaseIterable, Identifiable {
-    case adjustments, frame, layers
+    case look, adjustments, frame, layers
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .adjustments: "Look and Adjustments"
+        case .look: "Look"
+        case .adjustments: "Adjustments"
         case .frame: "Frame"
         case .layers: "Text and Shapes"
         }
@@ -19,9 +20,10 @@ enum SettingGroup: String, CaseIterable, Identifiable {
 
     func apply(from source: EditRecipe, to recipe: inout EditRecipe) {
         switch self {
+        case .look:
+            recipe.look = source.look
         case .adjustments:
             recipe.adjust = source.adjust
-            recipe.look = source.look
         case .frame:
             recipe.frame = source.frame
         case .layers:
@@ -123,6 +125,8 @@ extension EditModel {
         guard !files.isEmpty, !exporting else { return }
         flushSave()
         let settings = recipe?.export ?? ExportSettings()
+        // The open file's export settings go to files of its kind; others keep their own (a photo's size is not a video's).
+        let settingsKind = kind
         let destination = exportFolder
         let job = Job(kind: .export, title: "Export \(files.count) Files")
         job.state = .running
@@ -138,7 +142,7 @@ extension EditModel {
                 let kind = MediaFormat.fromExtension(file.pathExtension)?.kind ?? .image
                 var recipe = await AppModel.shared.recipes.recipe(for: file)
                     ?? EditRecipe(source: EditSource(path: file.standardizedFileURL.path, kind: kind))
-                recipe.export = settings
+                if kind == settingsKind { recipe.export = settings }
                 let folder = destination ?? file.deletingLastPathComponent()
                 let result: Result<URL, Error> = switch kind {
                 case .video: await Self.exportVideo(file, recipe: recipe, into: folder) { _ in }

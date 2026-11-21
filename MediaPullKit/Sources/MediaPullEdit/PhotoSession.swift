@@ -22,7 +22,10 @@ public final class PhotoSession: @unchecked Sendable {
         size = upright.extent.size
         // Rendered once into memory, so every slider move starts from decoded pixels, not the file.
         let small = PhotoRenderer.scaled(upright, toFit: CGSize(width: Self.proxyEdge, height: Self.proxyEdge))
-        if let bitmap = PhotoRenderer.cgImage(small) {
+        // Kept in extended linear sRGB at half-float, so wide-gamut (Display P3) colours are not clipped before edits and
+        // the canvas matches the export (D-128).
+        let space = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        if let bitmap = PhotoRenderer.context.createCGImage(small, from: small.extent, format: .RGBAh, colorSpace: space) {
             proxy = CIImage(cgImage: bitmap)
         } else {
             proxy = small

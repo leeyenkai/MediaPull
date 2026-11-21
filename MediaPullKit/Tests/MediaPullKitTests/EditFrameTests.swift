@@ -350,4 +350,44 @@ final class EditFrameTests: XCTestCase {
         XCTAssertEqual(layout.canvas.width / layout.canvas.height, 16.0 / 9, accuracy: 0.01)
         XCTAssertLessThan(layout.photo.width, 1600)
     }
+
+    // MARK: Audit round 2
+
+    func testRecipesAreNeverDeletedAndFollowTheirFiles() async throws {
+        let folderEdits = folder.appendingPathComponent("Edits")
+        let store = RecipeStore(folder: folderEdits)
+        // Moved by MediaPull to another disk: a new creation date, still the same file (B2-2).
+        let url = photo("moved.jpg")
+        var edit = recipe(for: url)
+        edit.adjust.contrast = 40
+        await store.save(edit)
+        let destination = folder.appendingPathComponent("elsewhere.jpg")
+        try FileManager.default.moveItem(at: url, to: destination)
+        try FileManager.default.setAttributes([.creationDate: Date().addingTimeInterval(7200)], ofItemAtPath: destination.path)
+        await store.movePaths([(url.path, destination.path)])
+        let afterMove = await store.recipe(for: destination)
+        XCTAssertEqual(afterMove?.adjust.contrast, 40)
+
+        // Renamed in the Finder, then a new file takes the old name: the new one gets nothing, the renamed one keeps its
+        // edits (B2-4).
+        let original = photo("IMG_0001.jpg")
+        var first = recipe(for: original)
+        first.adjust.contrast = 15
+        await store.save(first)
+        let renamed = folder.appendingPathComponent("Sunset.jpg")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        _ = photo("IMG_0001.jpg")
+        try FileManager.default.setAttributes([.creationDate: Date().addingTimeInterval(3600)], ofItemAtPath: original.path)
+        let newcomer = await store.recipe(for: original)
+        XCTAssertNil(newcomer)
+        let found = await store.recipe(for: renamed)
+        XCTAssertEqual(found?.adjust.contrast, 15)
+
+        // A file deleted: its recipe is kept on disk, never pruned (B2-3).
+        try FileManager.default.removeItem(at: destination)
+        let reopened = RecipeStore(folder: folderEdits)
+        _ = await reopened.editedPaths()
+        let files = try FileManager.default.contentsOfDirectory(atPath: folderEdits.path)
+        XCTAssertEqual(files.count, 2, "\(files)")
+    }
 }

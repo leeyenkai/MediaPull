@@ -171,11 +171,11 @@ private struct FrameTab: View {
         if hasFrame {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Canvas").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Picker("Shape", selection: edit.value(\.frame!.shape, fallback: .photo)) {
+                Picker("Shape", selection: edit.frameValue(\.shape, fallback: .photo)) {
                     ForEach(Frame.Shape.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 if edit.recipe?.frame?.shape != .photo {
-                    Toggle("Fill the space", isOn: edit.value(\.frame!.fill, fallback: false))
+                    Toggle("Fill the space", isOn: edit.frameValue(\.fill, fallback: false))
                         .help("The photo fills the space inside the border, trimmed at its edges, as on a poster")
                 }
                 background
@@ -205,7 +205,7 @@ private struct FrameTab: View {
                     get: { (edit.recipe?.frame?.cornerRadius ?? 0) * 100 },
                     set: { value in edit.change { $0.frame?.cornerRadius = value / 100 } }
                 ), range: 0 ... 50, model: edit)
-                Toggle("Shadow", isOn: edit.value(\.frame!.shadow, fallback: false))
+                Toggle("Shadow", isOn: edit.frameValue(\.shadow, fallback: false))
             }
         }
     }
@@ -540,6 +540,7 @@ private struct ExportTab: View {
             Text("Like the Original").tag(ExportSettings.VideoContainer?.none)
             ForEach(ExportSettings.VideoContainer.allCases, id: \.self) { Text($0.label).tag(Optional($0)) }
         }
+        Toggle("Keep the location", isOn: edit.value(\.export.keepLocation, fallback: true))
         if let recipe = edit.recipe {
             Text(VideoComposer.isLossless(recipe)
                 ? "Only cuts, turns or muting: the picture is not encoded again. The first sound track is kept."

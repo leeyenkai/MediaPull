@@ -122,8 +122,8 @@ struct MetadataEditSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Edit").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            if WindowModel.editablePhotos([file]).isEmpty {
-                Text("The details of videos and audio cannot be changed yet.").font(.caption).foregroundStyle(.secondary)
+            if let reason = Self.reason(file) {
+                Text(reason).font(.caption).foregroundStyle(.secondary)
             } else if let loaded {
                 if targets.count > 1 {
                     Text("Changes apply to the \(targets.count) chosen photos.").font(.caption).foregroundStyle(.secondary)
@@ -140,6 +140,20 @@ struct MetadataEditSection: View {
             }
         }
         .task(id: "\(file.path)|\(app.fileChangeRevision)") { await load() }
+    }
+
+    /// Why this file's details cannot be changed, or nil when they can (R-4508).
+    static func reason(_ file: URL) -> String? {
+        guard let kind = MediaFormat.fromExtension(file.pathExtension)?.kind else { return "This file's details cannot be changed." }
+        if kind == .video || kind == .audio { return "The details of videos and audio cannot be changed yet." }
+        if kind != .image || MediaFormat.isSequenceExtension(file.pathExtension) {
+            return "The details of animations and image sequences cannot be changed."
+        }
+        if AppModel.shared.driveCenter.drive(containing: file)?.isReadOnly == true {
+            return "This card is locked, so its photos are only read."
+        }
+        if OperationJournal.isLocked(file) { return "This photo is locked in the Finder; unlock it to change its details." }
+        return nil
     }
 
     private func load() async {

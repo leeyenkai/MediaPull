@@ -155,7 +155,8 @@ public enum VideoComposer {
         }
         videoComposition.renderSize = renderSize
         let rate = fps > 0 ? Double(fps) : 30
-        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, min(120, rate.rounded()))))
+        // Up to 240 fps, so slow-motion clips keep every frame.
+        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, min(240, rate.rounded()))))
         return Built(composition: composition, videoComposition: videoComposition, audioMix: audioMix, renderSize: renderSize,
                      lossless: false, speed: speed)
     }
@@ -182,8 +183,13 @@ public enum VideoComposer {
         guard let session = AVAssetExportSession(asset: built.composition, presetName: preset) else {
             throw Failure.notWritten("no exporter for this video")
         }
-        // The original's metadata (date, location, camera) is kept, as for photos.
-        session.metadata = (try? await AVURLAsset(url: source).load(.metadata)) ?? []
+        // The original's metadata (date, location, camera) is kept, as for photos; the location only when asked.
+        let kept = (try? await AVURLAsset(url: source).load(.metadata)) ?? []
+        session.metadata = recipe.export.keepLocation ? kept : kept.filter { item in
+            let identifier = item.identifier?.rawValue.lowercased() ?? ""
+            return !identifier.contains("location") && !identifier.contains("iso6709") && !identifier.contains("%a9xyz")
+                && !identifier.contains("©xyz") && !identifier.contains("loci")
+        }
         session.videoComposition = built.videoComposition
         session.audioMix = built.audioMix
         if built.speed != 1 { session.audioTimePitchAlgorithm = .spectral }

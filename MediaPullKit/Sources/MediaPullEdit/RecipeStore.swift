@@ -22,18 +22,11 @@ public actor RecipeStore {
         guard !loaded else { return }
         loaded = true
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        let fm = FileManager.default
+        // A recipe is never deleted here: only Revert removes one (D-127). A drive that is away, a card of the same name or
+        // a file renamed outside MediaPull must never cost the person their edits.
         for file in files where file.pathExtension == "json" {
             guard let data = try? Data(contentsOf: file), let recipe = EditRecipe.decode(data) else { continue }
             let path = Self.key(recipe.source.path)
-            // A file deleted from a folder that is still there (not a drive that is away, not a folder moved elsewhere)
-            // is gone for good: its recipe goes too, unless its reference finds it elsewhere.
-            if !fm.fileExists(atPath: path), fm.fileExists(atPath: (path as NSString).deletingLastPathComponent),
-               recipe.source.reference.flatMap(Self.resolve) == nil
-            {
-                try? fm.removeItem(at: file)
-                continue
-            }
             // Two recipes for one path (a crash between writes): the newer one is kept.
             if let other = byPath[path], other.modified > recipe.modified { continue }
             byPath[path] = recipe
@@ -61,12 +54,17 @@ public actor RecipeStore {
         load()
         let path = Self.key(url.path)
         if let recipe = byPath[path] {
-            // Another file with this name: the old recipe goes with the file it was made for.
-            guard Self.belongs(recipe, to: path) else {
-                remove(path)
-                return nil
+            if Self.belongs(recipe, to: path) { return recipe }
+            // Another file with this name. The recipe is the other file's: where its reference leads now, if anywhere,
+            // else it is kept as it is (that file may come back), and never shown for this one.
+            if let reference = recipe.source.reference, let moved = Self.resolve(reference), moved != path {
+                var followed = recipe
+                followed.source.path = moved
+                byPath[path] = nil
+                byPath[moved] = followed
+                write(followed)
             }
-            return recipe
+            return nil
         }
         for (oldPath, recipe) in byPath where !FileManager.default.fileExists(atPath: oldPath) {
             guard let reference = recipe.source.reference, Self.resolve(reference) == path else { continue }
@@ -106,7 +104,11 @@ public actor RecipeStore {
 
     /// At quit: writes a recipe at once, outside the actor (the app is about to end).
     public nonisolated func saveNow(_ recipe: EditRecipe) {
-        guard recipe.isEdited else { return }
+        guard recipe.isEdited else {
+            // A Revert just before quitting: its file goes now.
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(recipe.id.uuidString).json"))
+            return
+        }
         var recipe = recipe
         recipe.modified = Date()
         if recipe.source.created == nil { recipe.source.created = Self.created(recipe.source.path) }
@@ -135,6 +137,8 @@ public actor RecipeStore {
                 ?? remap.destination(of: URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
             {
                 moved.source.path = Self.key(destination)
+                // Moved to another disk, a file gets a new creation date: MediaPull moved it, so it is still this file.
+                moved.source.created = Self.created(destination) ?? moved.source.created
                 changed = true
             }
             // Picture layers follow their files too.

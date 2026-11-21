@@ -183,17 +183,7 @@ public enum MetadataWriter {
         if values.fields.contains(.location) {
             let lat = values.latitude, lon = values.longitude
             let has = lat != nil && lon != nil
-            // Removing a location removes every GPS value, not only the position (height, heading, speed, time).
-            if !has {
-                for key in [kCGImagePropertyGPSAltitude, kCGImagePropertyGPSAltitudeRef, kCGImagePropertyGPSImgDirection,
-                            kCGImagePropertyGPSImgDirectionRef, kCGImagePropertyGPSDestBearing, kCGImagePropertyGPSDestBearingRef,
-                            kCGImagePropertyGPSSpeed, kCGImagePropertyGPSSpeedRef, kCGImagePropertyGPSHPositioningError,
-                            kCGImagePropertyGPSDateStamp, kCGImagePropertyGPSTimeStamp, kCGImagePropertyGPSDestLatitude,
-                            kCGImagePropertyGPSDestLatitudeRef, kCGImagePropertyGPSDestLongitude, kCGImagePropertyGPSDestLongitudeRef]
-                {
-                    remove(metadata, kCGImagePropertyGPSDictionary, key)
-                }
-            }
+            // The position only: height, heading and GPS time stay, so Undo puts the photo back exactly (audit A2-1).
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLatitude, has ? abs(lat!) as CFNumber : nil)
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLatitudeRef, has ? (lat! < 0 ? "S" : "N") as CFString : nil)
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLongitude, has ? abs(lon!) as CFNumber : nil)

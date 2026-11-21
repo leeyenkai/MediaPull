@@ -62,15 +62,19 @@ public extension OperationJournal {
     /// Applies `edit` to each item (a lead file; its unit comes along) as one change ⌘Z takes back (R-4501 to R-4505).
     /// Each file is written beside itself and checked before it replaces the original; an item whose file cannot be
     /// written in place losslessly gets a `.xmp` instead.
+    /// `replaced` is told of each file as soon as it is replaced, so analysis follows it then, not at the end of a long
+    /// batch that a crash could cut short (D-126).
     func editMetadata(_ items: [URL], _ edit: MetadataEdit, title: String,
-                      progress: @Sendable (_ done: Int, _ total: Int) -> Void = { _, _ in }) -> MetadataEditResult
+                      progress: @Sendable (_ done: Int, _ total: Int) -> Void = { _, _ in },
+                      replaced: @Sendable (RewrittenFile) -> Void = { _ in }) -> MetadataEditResult
     {
         var result = MetadataEditResult()
         let folders = Set(items.map { $0.deletingLastPathComponent().standardizedFileURL.path })
         let root = folders.count == 1 ? folders.first! : Self.commonFolder(Array(folders))
         var entry = JournalEntry(id: UUID(), title: title, root: root, date: Date(), steps: [], failures: [], undone: false,
                                  finished: false)
-        var listed: [String: [String]] = [:]
+        // Each folder listed once, its names by stem: an item only looks at the names that share its own.
+        var listed: [String: [String: [String]]] = [:]
         for (number, lead) in items.enumerated() {
             // Stopped between photos, never part way through one (R-3807).
             if Task.isCancelled || stopsAfter.map({ number >= $0 }) == true {
@@ -79,8 +83,11 @@ public extension OperationJournal {
             }
             progress(number, items.count)
             let folder = lead.deletingLastPathComponent()
-            let names = listed[folder.path] ?? ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
-            listed[folder.path] = names
+            let byStem = listed[folder.path] ?? Dictionary(grouping: (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []) {
+                Self.stem(of: $0)
+            }
+            listed[folder.path] = byStem
+            let names = byStem[Self.stem(of: lead.lastPathComponent)] ?? []
             guard fm.fileExists(atPath: lead.path) else {
                 result.skipped.append("“\(lead.lastPathComponent)” is no longer there.")
                 continue
@@ -104,10 +111,22 @@ public extension OperationJournal {
                 continue
             }
             let current = Self.currentValues(of: lead, place: place)
-            guard edit.apply(to: current) != nil else { continue }
+            guard edit.apply(to: current) != nil else {
+                // Said, so a photo in a batch is never left without a word.
+                if case .shiftDate = edit, current.taken?.isEmpty ?? true {
+                    result.skipped.append("“\(lead.lastPathComponent)” records no date to shift.")
+                } else if case .timeZone = edit, current.taken?.isEmpty ?? true {
+                    result.skipped.append("“\(lead.lastPathComponent)” records no date to give a time zone.")
+                }
+                continue
+            }
+            let alreadyReplaced = result.rewritten.count
             do {
                 if place.xmp == nil, try writeInPlace(place.files, edit, entry: &entry, result: &result) {
                     result.changed += 1
+                    for file in result.rewritten[alreadyReplaced...] {
+                        replaced(file)
+                    }
                     continue
                 }
                 // Not written in place (the format, or the picture could not be proven the same): a `.xmp`, unless
@@ -121,6 +140,9 @@ public extension OperationJournal {
                 if try writeXMP(xmp, values: edit.apply(to: current), entry: &entry, result: &result) { result.changed += 1 }
             } catch let partial as PartlyChanged {
                 result.changed += 1
+                for file in result.rewritten[alreadyReplaced...] {
+                    replaced(file)
+                }
                 result.skipped.append("Only part of “\(lead.lastPathComponent)” was changed (\(partial.reason)); ⌘Z takes it back.")
             } catch {
                 result.skipped.append("“\(lead.lastPathComponent)” was left as it was: \(error.localizedDescription)")
@@ -138,9 +160,16 @@ public extension OperationJournal {
         return result
     }
 
-    /// A file the Finder locks cannot be replaced.
+    /// A file the Finder locks (or one only appended to) cannot be replaced.
     static func isLocked(_ url: URL) -> Bool {
-        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.immutable] as? Bool) == true
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes?[.immutable] as? Bool) == true || (attributes?[.appendOnly] as? Bool) == true
+    }
+
+    /// A name up to its first dot, in lower case: every name an item's unit, `.xmp` and metadata files can have
+    /// (`IMG_1.CR3`, `IMG_1.xmp`, `IMG_1.JPG.json`) shares it with the item, so an index by it holds all of them.
+    static func stem(of name: String) -> String {
+        String(name.lowercased().prefix { $0 != "." })
     }
 
     /// Another media file in the folder with the item's name but not of its unit: a `<name>.xmp` would be read for both.
@@ -235,9 +264,14 @@ extension OperationJournal {
         }
     }
 
+    /// A new `.xmp` is placed with no swap: its record is saved now and then (a batch of thousands would otherwise
+    /// rewrite it each time); a stop part way leaves only `.xmp` files the next edit overwrites.
     func record(_ step: JournalStep, entry: inout JournalEntry) {
         entry.steps.append(step)
-        save(entry)
+        if Date().timeIntervalSince(lastEditSave) >= 0.5 || entry.steps.count <= 1 {
+            save(entry)
+            lastEditSave = Date()
+        }
     }
 
     /// `.mediapull-edit-<id>.<ext>` beside `file`: hidden, and taken back at launch if left (R-4503).
@@ -378,6 +412,10 @@ extension OperationJournal {
                 report.skipped.append("“\(name)” was not written again: \(error.localizedDescription)")
                 return false
             }
+        }
+        if Self.isLocked(url) {
+            report.skipped.append("“\(name)” is locked in the Finder, so it was left as it is.")
+            return false
         }
         let now = isXMP ? (MetadataWriter.values(ofXMPAt: url) ?? MetadataValues()) : MetadataWriter.values(of: url)
         guard isSame(path, in: entry), now.agrees(with: expecting) else {

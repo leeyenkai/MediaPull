@@ -1700,6 +1700,14 @@ final class SelfTestRunner {
             check(back?.layers.count == 5 && edit.recipe?.layers.count == 5, "⌘Z brings both back")
             edit.testUndoManager = nil
         }
+        // The Frame tab stays up when the frame is taken away while it is shown (audit B2-1).
+        edit.tab = .frame
+        try? await Task.sleep(for: .milliseconds(500))
+        edit.change { $0.frame = nil }
+        try? await Task.sleep(for: .milliseconds(800))
+        edit.change { EditTemplate.centredTitle.apply(to: &$0) }
+        try? await Task.sleep(for: .milliseconds(500))
+        check(edit.recipe?.frame == nil, "the Frame tab survives its frame being removed")
         model.section = .collect
         note("edit-photo: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
     }

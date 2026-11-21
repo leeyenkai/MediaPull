@@ -176,7 +176,7 @@ final class EditModel: MediaGridOwner {
             let listed = await MediaListing.load(folder, recursive: false).entries
             let edited = await AppModel.shared.recipes.editedPaths()
             guard let self, self.folder == folder else { return }
-            entries = listed.filter { [.image, .animatedImage, .video, .audio].contains($0.kind) }
+            entries = listed.filter { !Self.editable([$0.url]).isEmpty }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             editedPaths = edited
             loadingFolder = false
@@ -206,9 +206,11 @@ final class EditModel: MediaGridOwner {
         loadError = nil
         session = nil
         missingFonts = []
+        missingPictures = []
         loadingFile = true
         playingResult = false
         mediaDuration = 0
+        waveformTask?.cancel()
         waveform = []
         audioSelection = nil
         currentTags = nil
@@ -293,7 +295,7 @@ final class EditModel: MediaGridOwner {
             manager.setActionName("Edit")
         }
         // The same recipe, wherever its file is now (it may have been renamed since).
-        if recipe.id == self.recipe?.id {
+        if recipe.id == self.recipe?.id || recipe.source.path == self.recipe?.source.path {
             self.recipe = recipe
             scheduleSave()
             render()
@@ -317,6 +319,8 @@ final class EditModel: MediaGridOwner {
             if await !AppModel.shared.recipes.save(recipe) {
                 self?.message = "The edits could not be saved. Check that the disk has space."
             }
+            // The look thumbnails show the photo as it is now.
+            if self?.tab == .adjust { self?.renderLooks() }
             let edited = await AppModel.shared.recipes.editedPaths()
             guard let self, edited != editedPaths else { return }
             editedPaths = edited
@@ -344,6 +348,7 @@ final class EditModel: MediaGridOwner {
             recipe?.source.path = moved
         }
         selection = Set(selection.map { remap.destination(of: $0) ?? $0 })
+        if let exportFolder, let moved = destination(exportFolder) { self.exportFolder = URL(fileURLWithPath: moved, isDirectory: true) }
     }
 
     /// Leaving the section: edits are saved, and ⌘Z elsewhere never undoes a recipe change out of sight (R-4602).
@@ -351,6 +356,7 @@ final class EditModel: MediaGridOwner {
         flushSave()
         undoManager?.removeAllActions(withTarget: self)
         player.player.pause()
+        waveformTask?.cancel()
     }
 
     /// At quit: the last change is written at once.
@@ -365,7 +371,9 @@ final class EditModel: MediaGridOwner {
         saveTask?.cancel()
         saveTask = nil
         Task {
-            await AppModel.shared.recipes.save(recipe)
+            if await !AppModel.shared.recipes.save(recipe) {
+                self.message = "The edits could not be saved. Check that the disk has space."
+            }
             let edited = await AppModel.shared.recipes.editedPaths()
             self.editedPaths = edited
             self.revision += 1
@@ -395,7 +403,9 @@ final class EditModel: MediaGridOwner {
                 let uncropped = cropping ? session.uncropped(recipe, fit: fit) : nil
                 return (image, uncropped, FontLookup.missing(in: recipe.layers), FontLookup.missingPictures(in: recipe.layers))
             }.value
-            // Shown even when a newer render waits: the canvas follows a drag instead of standing still.
+            // Shown even when a newer render waits: the canvas follows a drag instead of standing still; never another
+            // file's.
+            guard self.session === session else { return }
             preview = image
             cropImage = uncropped
             missingFonts = fonts
@@ -403,7 +413,7 @@ final class EditModel: MediaGridOwner {
         }
     }
 
-    private func renderLooks() {
+    func renderLooks() {
         guard let session, let recipe else { return }
         Task { [weak self] in
             let previews = await Task.detached(priority: .utility) { () -> [LookName: CGImage] in
@@ -489,7 +499,8 @@ final class EditModel: MediaGridOwner {
     }
 
     /// Renders and writes off the main actor, then places the file at a free name with a copy's metadata file (D-105).
-    static func export(_ url: URL, recipe: EditRecipe, into folder: URL) async -> Result<URL, Error> {
+    @concurrent
+    nonisolated static func export(_ url: URL, recipe: EditRecipe, into folder: URL) async -> Result<URL, Error> {
         do {
             let fm = FileManager.default
             let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
@@ -504,10 +515,18 @@ final class EditModel: MediaGridOwner {
                     "edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: staged)),
                     "width": .int(Int(size.width)), "height": .int(Int(size.height)),
                 ]
-                return try FileOps.metadata(of: url, applying: .init(values: values, isCopy: true))
+                // Without the location when it is left out of the picture (R-4608).
+                let dropping = recipe.export.keepLocation ? [] : ["location_name", "location_id", "location", "latitude", "longitude"]
+                return try FileOps.metadata(of: url, applying: .init(values: values, dropping: dropping, isCopy: true))
             }.value
             let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
             let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
+            if let problem = placed.metadataProblem {
+                return .failure(CocoaError(.fileWriteUnknown, userInfo: [
+                    NSLocalizedDescriptionKey: "Exported “\(placed.url.lastPathComponent)”, but its metadata file could not be "
+                        + "written: \(problem)",
+                ]))
+            }
             return .success(placed.url)
         } catch {
             return .failure(error)

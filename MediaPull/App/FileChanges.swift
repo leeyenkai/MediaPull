@@ -49,7 +49,11 @@ extension AppModel {
         }.value
         analysis.beginEdit(files)
         let previous = await analysis.currentStates(files)
-        let result = await journal.editMetadata(items, edit, title: title, progress: progress)
+        // Each file is followed as soon as it is replaced, so a stop part way never leaves analysis behind (D-126).
+        let analysis = analysis
+        let result = await journal.editMetadata(items, edit, title: title, progress: progress) { file in
+            Task { @MainActor in await analysis.followEdit([file], previous: [:], editing: []) }
+        }
         analysis.forgetXMP(result.xmpWritten)
         await analysis.followEdit(result.rewritten, previous: previous, editing: files)
         fileChangeRevision += 1

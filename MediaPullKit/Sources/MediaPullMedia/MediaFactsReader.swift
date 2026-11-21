@@ -11,6 +11,7 @@ public enum MediaFactsReader {
     /// runs the bundled ffprobe (MediaPullEngines); this module cannot start processes.
     public typealias AudioProbe = @Sendable (URL) async -> (tags: AudioTags, duration: Double?)?
 
+    @concurrent
     public static func facts(for url: URL, audioProbe: AudioProbe? = nil) async -> MediaFacts {
         let format = MediaFormat.fromExtension(url.pathExtension)
         var facts = switch format?.kind {

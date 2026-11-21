@@ -33,12 +33,20 @@ final class EditPlayer {
         if let boundary { player.removeTimeObserver(boundary) }
     }
 
+    /// The stop point Play Selection set, gone once it is reached or another file is loaded.
+    private func clearBoundary() {
+        if let boundary { player.removeTimeObserver(boundary) }
+        boundary = nil
+    }
+
     func load(_ url: URL) {
+        clearBoundary()
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         time = 0
     }
 
     func load(_ item: AVPlayerItem, at seconds: Double = 0) {
+        clearBoundary()
         player.replaceCurrentItem(with: item)
         seek(seconds)
     }
@@ -50,10 +58,13 @@ final class EditPlayer {
 
     /// Plays from `start` and stops at `end`.
     func play(from start: Double, to end: Double) {
-        if let boundary { player.removeTimeObserver(boundary) }
+        clearBoundary()
         boundary = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: end, preferredTimescale: 600))],
                                                   queue: .main) { [weak self] in
-            MainActor.assumeIsolated { self?.player.pause() }
+            MainActor.assumeIsolated {
+                self?.player.pause()
+                self?.clearBoundary()
+            }
         }
         seek(start)
         player.play()
@@ -64,6 +75,7 @@ final class EditPlayer {
     }
 
     func stop() {
+        clearBoundary()
         player.pause()
         player.replaceCurrentItem(with: nil)
         time = 0

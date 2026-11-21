@@ -555,6 +555,7 @@ public enum AudioOutput: String, Codable, Sendable, CaseIterable {
     /// Apple Lossless (`codec` "alac") stays lossless.
     public static func like(_ fileExtension: String, codec: String? = nil) -> AudioOutput {
         if codec?.lowercased() == "alac" { return .alac }
+        if codec?.lowercased() == "flac" { return .flac }
         switch fileExtension.lowercased() {
         case "mp3": return .mp3
         case "flac": return .flac

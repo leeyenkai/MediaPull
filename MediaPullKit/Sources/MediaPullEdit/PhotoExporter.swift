@@ -3,6 +3,7 @@ import CoreImage
 import Foundation
 import ImageIO
 import MediaPullCore
+import MediaPullMedia
 import UniformTypeIdentifiers
 
 /// Writes an edited photo as a new file (R-4608). The original is only read.
@@ -98,6 +99,40 @@ public enum PhotoExporter {
             tiff[kCGImagePropertyTIFFOrientation] = 1
             properties[kCGImagePropertyTIFFDictionary] = tiff
         }
+        overlayXMP(of: source, on: &properties, settings: settings)
         return properties
+    }
+
+    /// The photo's `.xmp` lies over its own values (R-4502), cleared ones included: a location removed there is not
+    /// exported, a date shifted there is.
+    static func overlayXMP(of source: URL, on properties: inout [CFString: Any], settings: ExportSettings) {
+        let stem = source.deletingPathExtension()
+        guard let xmp = ["xmp", "XMP"].lazy.map({ stem.appendingPathExtension($0) }).first(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }), let values = MetadataWriter.values(ofXMPAt: xmp) else { return }
+        var iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
+        if values.fields.contains(.rating) { iptc[kCGImagePropertyIPTCStarRating] = values.rating }
+        if values.fields.contains(.keywords) { iptc[kCGImagePropertyIPTCKeywords] = values.keywords }
+        properties[kCGImagePropertyIPTCDictionary] = iptc
+        if values.fields.contains(.taken), let taken = values.taken {
+            var exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
+            exif[kCGImagePropertyExifDateTimeOriginal] = taken.original
+            exif[kCGImagePropertyExifOffsetTimeOriginal] = MetadataEdit.offset(taken.originalOffset)
+            if taken.digitized != nil {
+                exif[kCGImagePropertyExifDateTimeDigitized] = taken.digitized
+                exif[kCGImagePropertyExifOffsetTimeDigitized] = MetadataEdit.offset(taken.digitizedOffset)
+            }
+            properties[kCGImagePropertyExifDictionary] = exif
+        }
+        if values.fields.contains(.location) {
+            if let lat = values.latitude, let lon = values.longitude, settings.keepLocation {
+                properties[kCGImagePropertyGPSDictionary] = [
+                    kCGImagePropertyGPSLatitude: abs(lat), kCGImagePropertyGPSLatitudeRef: lat < 0 ? "S" : "N",
+                    kCGImagePropertyGPSLongitude: abs(lon), kCGImagePropertyGPSLongitudeRef: lon < 0 ? "W" : "E",
+                ] as [CFString: Any]
+            } else {
+                properties[kCGImagePropertyGPSDictionary] = nil
+            }
+        }
     }
 }

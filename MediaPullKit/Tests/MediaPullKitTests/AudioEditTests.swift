@@ -111,6 +111,21 @@ final class AudioEditTests: XCTestCase {
         XCTAssertTrue(AudioEdit.filterGraph(plan("a.wav", .aac)).contains("aformat=sample_rates=48000"))
     }
 
+    func testRoundTwoArguments() {
+        // New artwork on a whole-file copy: the picture is input 1 (audit C2-2).
+        var art = AudioEditPlan(source: URL(fileURLWithPath: "/m/a.mp3"), output: URL(fileURLWithPath: "/m/o.mp3"),
+                                recipe: EditRecipe(source: EditSource(path: "/m/a.mp3", kind: .audio)),
+                                format: AudioSourceFormat(duration: 10, codec: "mp3"))
+        art.tags.artworkPath = "/m/cover.jpg"
+        let args = AudioEdit.arguments(art, list: nil)
+        XCTAssertTrue(args.contains("1:v:0"), "\(args)")
+        // Floating-point PCM stays floating point; an Ogg FLAC stays FLAC.
+        var float = plan("a.wav", .wav)
+        float.sourceFormat = AudioSourceFormat(duration: 10, bits: 32, codec: "pcm_f32le")
+        XCTAssertTrue(AudioEdit.arguments(float, list: nil).contains("pcm_f32le"))
+        XCTAssertEqual(AudioOutput.like("oga", codec: "flac"), .flac)
+    }
+
     /// The real engine: a tone cut losslessly, faded, normalised and converted (skipped when ffmpeg is not built).
     func testTheBundledEngineEditsAudio() async throws {
         let ffmpeg = FFmpeg(ffmpeg: TestEngines.ffmpegFolder.appendingPathComponent("ffmpeg"),
@@ -140,6 +155,13 @@ final class AudioEditTests: XCTestCase {
         XCTAssertEqual(tags.tags.title, "Tone")
         XCTAssertEqual(tags.tags.codec, "MP3")
         XCTAssertEqual(try XCTUnwrap(tags.duration), 6, accuracy: 0.1)
+
+        // A VBR MP3 without a Xing header: its length is measured, not guessed from the bit rate (audit C2-1).
+        let noXing = folder.appendingPathComponent("noxing.mp3")
+        _ = try await FFmpeg.run(ffmpeg.ffmpeg, ["-hide_banner", "-nostdin", "-v", "error", "-y", "-i", wav.path, "-c:a", "libmp3lame",
+                                                 "-q:a", "6", "-write_xing", "0", noXing.path])
+        let measured = await ffmpeg.audioFormat(noXing)
+        XCTAssertEqual(try XCTUnwrap(measured?.duration), 6, accuracy: 0.1)
 
         // Cut losslessly: the kept frames are copied (the same audio packets as the original's).
         let cut = folder.appendingPathComponent("cut.mp3")

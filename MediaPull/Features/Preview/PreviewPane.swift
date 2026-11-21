@@ -233,16 +233,35 @@ enum AudioPreview {
     static func playable(_ url: URL) async -> URL? {
         guard [.ogg, .opus].contains(MediaFormat.fromExtension(url.pathExtension)) else { return url }
         guard let ffmpeg = AppModel.shared.ffmpeg else { return nil }
-        let name = ShortHash.of(url.path) + ".m4a"
-        let folder = folder, output = folder.appendingPathComponent(name)
+        let folder = folder
         return await Task.detached(priority: .userInitiated) { () -> URL? in
-            // A copy left empty by a failed run is never served.
+            // Keyed by the file's size and date too, so another file later at this path is not played as this one.
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let stamp = "\(values?.fileSize ?? 0)-\(Int(values?.contentModificationDate?.timeIntervalSince1970 ?? 0))"
+            let output = folder.appendingPathComponent(ShortHash.of(url.path + "|" + stamp) + ".m4a")
             if let size = (try? FileManager.default.attributesOfItem(atPath: output.path))?[.size] as? NSNumber, size.intValue > 0 {
                 return output
             }
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            return (try? await ffmpeg.playableCopy(of: url, to: output)) != nil ? output : nil
+            Self.prune(folder)
+            // Written under another name and renamed when whole, so a copy still being made is never played.
+            let partial = folder.appendingPathComponent(UUID().uuidString + ".m4a")
+            guard (try? await ffmpeg.playableCopy(of: url, to: partial)) != nil else { return nil }
+            // lint:allow app-data silent-write a preview copy in the temporary folder; made again when missing
+            try? FileManager.default.moveItem(at: partial, to: output)
+            try? FileManager.default.removeItem(at: partial)
+            return FileManager.default.fileExists(atPath: output.path) ? output : nil
         }.value
+    }
+
+    /// Copies not used for a week go.
+    nonisolated static func prune(_ folder: URL) {
+        // lint:allow main-io called from a detached task
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentAccessDateKey])) ?? []
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
+        for file in files where ((try? file.resourceValues(forKeys: [.contentAccessDateKey]))?.contentAccessDate ?? .distantPast) < cutoff {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 }
 

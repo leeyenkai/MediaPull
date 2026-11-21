@@ -67,6 +67,9 @@ public struct AudioEditPlan: Sendable, Equatable {
 
     var codec: String { sourceFormat?.codec?.lowercased() ?? "" }
 
+    /// A floating-point PCM source.
+    var isFloat: Bool { codec.hasPrefix("pcm_f") }
+
     /// Only cuts (and tags), into the same lossy format: the frames are copied, not encoded again. MP3 and AAC only; a
     /// lossless format is encoded again losslessly, which cuts to the sample.
     public var copiesStreams: Bool {
@@ -143,7 +146,8 @@ public enum AudioEdit {
         }
         // The original's tags and pictures come from the source file: input 1 when cutting by copy, else input 0.
         let original = copying && !whole && list != nil ? 1 : 0
-        var inputs = copying ? 2 : 1
+        // Inputs so far: the concat list and the source when cutting by copy, else the source alone.
+        var inputs = copying && !whole && list != nil ? 2 : 1
         let artwork = plan.format.holdsArtwork ? plan.tags.artworkPath : nil
         if let artwork {
             args += ["-i", artwork]
@@ -180,8 +184,9 @@ public enum AudioEdit {
             case .alac: args += ["-c:a", "alac"]
             case .flac: args += ["-c:a", "flac"]
             // The source's depth is kept: 24-bit stays 24-bit.
-            case .wav: args += ["-c:a", (plan.sourceFormat?.bits ?? 16) > 16 ? "pcm_s24le" : "pcm_s16le"]
-            case .aiff: args += ["-c:a", (plan.sourceFormat?.bits ?? 16) > 16 ? "pcm_s24be" : "pcm_s16be"]
+            // Floating-point sources stay floating point (values over full scale are kept, not clipped).
+            case .wav: args += ["-c:a", plan.isFloat ? "pcm_f32le" : (plan.sourceFormat?.bits ?? 16) > 16 ? "pcm_s24le" : "pcm_s16le"]
+            case .aiff: args += ["-c:a", plan.isFloat ? "pcm_f32be" : (plan.sourceFormat?.bits ?? 16) > 16 ? "pcm_s24be" : "pcm_s16be"]
             }
         }
         switch plan.format {

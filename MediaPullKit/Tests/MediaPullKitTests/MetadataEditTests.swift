@@ -411,16 +411,22 @@ final class MetadataEditTests: XCTestCase {
         XCTAssertNil(file.merging(MetadataWriter.values(ofXMP: xmp)).keywords)
     }
 
-    func testRemovingALocationRemovesEveryGPSValue() throws {
+    func testRemovingALocationRemovesThePositionAndUndoPutsItBack() async throws {
         let photo = folder.appendingPathComponent("gps.jpg")
         Self.photo(photo, type: .jpeg, gps: (10, 20))
-        let copy = folder.appendingPathComponent("gps-2.jpg")
-        try MetadataWriter.writeCopy(of: photo, setting: MetadataValues(fields: [.location]), to: copy)
-        let props = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(CGImageSourceCreateWithURL(copy as CFURL, nil)!, 0, nil)
-            as? [CFString: Any])
-        let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any] ?? [:]
-        XCTAssertNil(gps[kCGImagePropertyGPSLatitude])
-        XCTAssertNil(gps[kCGImagePropertyGPSAltitude])
+        let journal = journal()
+        let result = await journal.editMetadata([photo], .removeLocation, title: "Remove Location")
+        XCTAssertEqual(result.changed, 1)
+        XCTAssertNil(MetadataWriter.values(of: photo).latitude)
+        _ = await journal.undo(try XCTUnwrap(result.entry?.id))
+        XCTAssertEqual(MetadataWriter.values(of: photo).latitude ?? 0, 10, accuracy: 1e-6)
+    }
+
+    func testADateShiftMovesTheDateThatCanBeRead() throws {
+        let taken = TakenDate(original: "2020:01:02 03:04:05", originalOffset: nil, digitized: "0000:00:00 00:00:00")
+        let shifted = try XCTUnwrap(MetadataEdit.shiftDate(seconds: 60).apply(to: MetadataValues(fields: [.taken], taken: taken)))
+        XCTAssertEqual(shifted.taken?.original, "2020:01:02 03:05:05")
+        XCTAssertEqual(shifted.taken?.digitized, "0000:00:00 00:00:00")
     }
 
     func testUndoOfAnOlderChangeLeavesANewerValue() async throws {

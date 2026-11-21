@@ -65,6 +65,8 @@ public final class Analyzer: Sendable {
     public static let analysisSize = 1024
 
     /// Reads the file's facts again into an existing record, without running any model (R-4210).
+    /// Off the main actor: it reads the file's metadata (audit A2-8).
+    @concurrent
     public func refreshFacts(_ url: URL, record: AnalysisRecord) async -> AnalysisRecord {
         var updated = record
         var facts = await readFacts(url)

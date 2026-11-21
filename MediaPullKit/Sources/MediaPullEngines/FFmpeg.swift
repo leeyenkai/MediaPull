@@ -152,6 +152,21 @@ public struct FFmpeg: Sendable {
         }
     }
 
+    /// The audio's true length: every packet read by stream copy into nothing (quick: nothing is decoded), the last time
+    /// ffmpeg reports.
+    @concurrent
+    public func measuredLength(_ url: URL) async -> Double? {
+        guard let output = try? await Self.run(ffmpeg, [
+            "-hide_banner", "-nostdin", "-v", "error", "-i", url.path, "-map", "0:a:0", "-c", "copy", "-f", "null", "-",
+            "-progress", "pipe:1",
+        ]) else { return nil }
+        let micros = output.stdout.split(separator: "\n").compactMap { line -> Double? in
+            guard line.hasPrefix("out_time_us=") else { return nil }
+            return Double(line.dropFirst("out_time_us=".count))
+        }.last
+        return micros.flatMap { $0 > 0 ? $0 / 1_000_000 : nil }
+    }
+
     /// What an audio file holds, read by ffprobe: its true length (the system can guess short or long), sample rate,
     /// bits per sample and codec (R-4610).
     @concurrent
@@ -163,9 +178,12 @@ public struct FFmpeg: Sendable {
         else { return nil }
         let stream = (json["streams"] as? [[String: Any]])?.first
         let format = json["format"] as? [String: Any]
-        let duration = (stream?["duration"] as? String).flatMap(Double.init) ?? (format?["duration"] as? String).flatMap(Double.init)
+        let guessed = (stream?["duration"] as? String).flatMap(Double.init) ?? (format?["duration"] as? String).flatMap(Double.init)
+        // A VBR MP3 without a Xing header, or ADTS AAC, has no stated length: ffprobe guesses from the bit rate. The
+        // packets' own times are read instead (audit C2-1).
+        let measured = await measuredLength(url)
         let bits = (stream?["bits_per_raw_sample"] as? String).flatMap(Int.init) ?? (stream?["bits_per_sample"] as? Int)
-        return AudioSourceFormat(duration: duration ?? 0, sampleRate: (stream?["sample_rate"] as? String).flatMap(Int.init),
+        return AudioSourceFormat(duration: measured ?? guessed ?? 0, sampleRate: (stream?["sample_rate"] as? String).flatMap(Int.init),
                                  bits: bits, codec: stream?["codec_name"] as? String)
     }
 

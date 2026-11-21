@@ -40,7 +40,8 @@ extension EditModel {
                 self?.message = "The edited video could not be played."
                 return
             }
-            guard let self, self.current == current else { return }
+            // Still this file, still in view: never sound with no control on screen.
+            guard let self, self.current == current, window?.section == .edit else { return }
             playingResult = true
             player.load(item, at: min(at, timeline.resultDuration(of: mediaDuration)))
             player.player.play()
