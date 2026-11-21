@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import MediaPullCore
+import MediaPullEdit
 import MediaPullLibrary
 
 /// Every change MediaPull makes to files in place (Library and Organise: rename, move, copy in, new folder, Move to Trash,
@@ -127,6 +128,8 @@ extension AppModel {
     /// Changes that left items under temporary names (a crash part way) are taken back at launch, so no photo stays hidden
     /// (audit 17, B17-M1, C17-M2). Each is a job, so Quit waits for it.
     func takeBackStranded() async {
+        // Temporary sound, waveform and cut files a quit part way left (C12-4), off the main actor.
+        await Task.detached(priority: .utility) { SoundAtSpeed.removeLeftovers() }.value
         // Edits left hidden by an undone Replace go to the Trash first (R1-m2).
         let leftovers = await journal.parkLeftoverEdits()
         if !leftovers.isEmpty {

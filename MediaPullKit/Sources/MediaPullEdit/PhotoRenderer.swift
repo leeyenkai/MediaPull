@@ -104,11 +104,26 @@ public enum PhotoRenderer {
         if let crop = geometry.crop?.clamped, crop != .whole {
             let size = image.extent.size
             // Unit rects have their origin top left; Core Image's is bottom left.
-            let rect = CGRect(x: crop.x * size.width, y: (1 - crop.y - crop.height) * size.height,
-                              width: crop.width * size.width, height: crop.height * size.height).integral
+            let rect = Self.pixelCrop(crop, in: size, ratio: geometry.aspect.ratio(original: Double(size.width / size.height)))
             image = image.cropped(to: rect).transformed(by: CGAffineTransform(translationX: -rect.minX, y: -rect.minY))
         }
         return image
+    }
+
+    /// The pixels a crop keeps, whole pixels; a crop of a fixed shape has exactly that shape, so a 4:5 crop exported as
+    /// a 1080 × 1350 post is that size (audit 2026-11-21-12, B12-m2).
+    static func pixelCrop(_ crop: UnitRect, in size: CGSize, ratio: Double?) -> CGRect {
+        // Unit rects have their origin top left; Core Image's is bottom left.
+        let exact = CGRect(x: crop.x * size.width, y: (1 - crop.y - crop.height) * size.height,
+                           width: crop.width * size.width, height: crop.height * size.height)
+        var width = max(1, exact.width.rounded()), height = max(1, exact.height.rounded())
+        if let ratio, ratio > 0 {
+            height = max(1, min(size.height, (min(exact.width, exact.height * ratio) / ratio).rounded()))
+            width = max(1, min(size.width, (height * ratio).rounded()))
+        }
+        let x = min(max(0, (exact.midX - width / 2).rounded()), size.width - width)
+        let y = min(max(0, (exact.midY - height / 2).rounded()), size.height - height)
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     // MARK: Adjustments (R-4603)

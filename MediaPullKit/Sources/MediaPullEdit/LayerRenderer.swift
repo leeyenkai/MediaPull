@@ -64,7 +64,11 @@ public enum LayerRenderer {
         if !family { font = CTFontCreateUIFontForLanguage(.system, 100, nil) ?? font }
         let capHeight = max(CTFontGetCapHeight(font), 1)
         let pointSize = max(1, style.size * canvasHeight * 100 / capHeight)
-        return (CTFontCreateCopyWithAttributes(font, pointSize, nil, nil), !found)
+        // Optical sizes follow the size the text has on a 1080-pixel canvas, at every size, so a line is the same share of
+        // the canvas on screen and in an export of any size (D-128, round 12, B12-m3).
+        let optical = max(1, style.size * 1080 * 100 / capHeight)
+        let fixed = CTFontDescriptorCreateWithAttributes([kCTFontOpticalSizeAttribute: optical] as CFDictionary)
+        return (CTFontCreateCopyWithAttributes(font, pointSize, nil, fixed), !found)
     }
 
     /// The name of the face a text layer is drawn in (its own, or the family's regular one when it names none).

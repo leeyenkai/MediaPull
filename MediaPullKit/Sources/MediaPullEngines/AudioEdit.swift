@@ -264,13 +264,14 @@ public enum AudioEdit {
 }
 
 public extension FFmpeg {
-    /// The audio's waveform as `buckets` peaks (R-4610): decoded to 2 kHz mono floats in a temporary file. Off the main
-    /// actor: it reads the file and goes through every sample.
+    /// The audio's waveform as `buckets` peaks (R-4610): decoded to 2 kHz floats in a temporary file, every channel kept,
+    /// so the peak is the loudest channel's (a mono mix would draw channels out of phase as silence, round 12, C12-3).
+    /// Off the main actor: it reads the file and goes through every sample.
     @concurrent
     func waveform(_ url: URL, buckets: Int) async throws -> [Float] {
         let raw = FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-wave-\(UUID().uuidString).f32")
         defer { try? FileManager.default.removeItem(at: raw) }
-        _ = try await Self.run(ffmpeg, ["-hide_banner", "-nostdin", "-v", "error", "-y", "-i", url.path, "-map", "0:a:0", "-ac", "1",
+        _ = try await Self.run(ffmpeg, ["-hide_banner", "-nostdin", "-v", "error", "-y", "-i", url.path, "-map", "0:a:0",
                                         "-ar", "2000", "-f", "f32le", raw.path])
         let data = try Data(contentsOf: raw)
         let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }

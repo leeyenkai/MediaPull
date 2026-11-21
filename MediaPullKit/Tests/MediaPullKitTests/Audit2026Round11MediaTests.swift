@@ -87,10 +87,11 @@ extension VideoEditTests {
                 let out = folder.appendingPathComponent("tone-\(channels)-\(speed).mov")
                 _ = try await VideoComposer.export(source, recipe: edit, to: out) { _ in }
                 let sound = try await c11readSound(out)
+                // Surround is written in the encoder's order (C12-1): each tone is looked for in whichever channel it is.
                 let mid = sound.samples[0].count / 2
-                let f = c11frequency(sound.samples[0][mid - 4800 ..< mid + 4800], rate: sound.rate)
-                if abs(f - 1000) > 30 {
-                    problems.append(String(format: "%dch at %.1fx: first channel at %.0f Hz, not 1000", channels, speed, f))
+                let heard = sound.samples.map { c11frequency($0[mid - 4800 ..< mid + 4800], rate: sound.rate) }
+                for tone in channels > 2 ? [1000.0, 600] : [1000] where !heard.contains(where: { abs($0 - tone) <= 30 }) {
+                    problems.append(String(format: "%dch at %.1fx: no channel at %.0f Hz (%@)", channels, speed, tone, "\(heard)"))
                 }
                 if sound.channels != channels { problems.append("\(channels)ch at \(speed)x: \(sound.channels) channels out") }
             }

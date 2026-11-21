@@ -396,15 +396,16 @@ final class EditModel: MediaGridOwner {
             recipe?.source.reference = RecipeStore.reference(moved) ?? recipe?.source.reference
         }
         selection = Set(selection.map { remap.destination(of: $0) ?? $0 })
-        // Copied settings' picture layers follow their files, so a paste never names a moved logo (B10-4).
-        if var copied = copiedSettings {
-            for index in copied.layers.indices {
-                if case let .image(path) = copied.layers[index].kind, let moved = remap.destination(of: path) {
-                    copied.layers[index].kind = .image(path: moved)
-                }
+        // Pictures the open recipe and copied settings draw from follow their files, so the canvas, Export and the next
+        // save never name a moved logo (B10-4, round 12, B12-1).
+        let pictureMoved = { (path: String) in remap.destination(of: URL(fileURLWithPath: path).standardizedFileURL.path) }
+        if var open = recipe, RecipeStore.picturesFollow(&open, pictureMoved) {
+            recipe = open
+            missingPictures = missingPictures.filter { name in
+                !open.layers.contains { if case let .image(path) = $0.kind { (path as NSString).lastPathComponent == name } else { false } }
             }
-            copiedSettings = copied
         }
+        if var copied = copiedSettings, RecipeStore.picturesFollow(&copied, pictureMoved) { copiedSettings = copied }
         if let exportFolder, let moved = destination(exportFolder) { self.exportFolder = URL(fileURLWithPath: moved, isDirectory: true) }
     }
 

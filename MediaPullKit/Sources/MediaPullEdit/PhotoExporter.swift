@@ -118,8 +118,11 @@ public enum PhotoExporter {
             properties[kCGImagePropertyTIFFDictionary] = tiff
         }
         if !settings.keepLocation, var iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+            // Every place IPTC can hold, the content location and the extension's too (round 12, B12-m1).
             for key in [kCGImagePropertyIPTCCity, kCGImagePropertyIPTCSubLocation, kCGImagePropertyIPTCProvinceState,
-                        kCGImagePropertyIPTCCountryPrimaryLocationName, kCGImagePropertyIPTCCountryPrimaryLocationCode]
+                        kCGImagePropertyIPTCCountryPrimaryLocationName, kCGImagePropertyIPTCCountryPrimaryLocationCode,
+                        kCGImagePropertyIPTCContentLocationName, kCGImagePropertyIPTCContentLocationCode,
+                        kCGImagePropertyIPTCExtLocationCreated, kCGImagePropertyIPTCExtLocationShown]
             {
                 iptc[key] = nil
             }

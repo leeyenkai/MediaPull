@@ -247,7 +247,9 @@ public enum DeviceImporter {
         if let taken = item.entry.taken {
             try? fm.setAttributes([.creationDate: taken, .modificationDate: taken], ofItemAtPath: staged.path)
         }
-        // A clip joins the photo it was imported with; anything else takes a name no other shot there has.
-        return try await FileOps.place(staged, as: destination.appendingPathComponent(name), with: .none, joining: item.clipOf != nil).url
+        // A clip joins the photo it was imported with, only when that photo was placed; anything else, and a clip whose
+        // photo failed, takes a name no other shot there has (audit 2026-11-21-12, A12-m1).
+        let joining = item.clipOf.map { photoNames[$0] != nil } ?? false
+        return try await FileOps.place(staged, as: destination.appendingPathComponent(name), with: .none, joining: joining).url
     }
 }

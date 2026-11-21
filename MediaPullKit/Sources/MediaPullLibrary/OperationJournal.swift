@@ -252,6 +252,7 @@ public actor OperationJournal {
             do {
                 try makeMissingFolders(move.destination.deletingLastPathComponent(), allowed: allowed, entry: &entry)
                 let companions = units.companionMoves(of: move.source, to: move.destination)
+                try Self.refuseLockedUnit(move.source, companions.map(\.from))
                 switch move.kind {
                 case .move:
                     try moveItem(move.source, to: move.destination, entry: &entry)
@@ -287,6 +288,7 @@ public actor OperationJournal {
             }
             do {
                 let companions = units.companions(of: item)
+                try Self.refuseLockedUnit(item, companions)
                 try trashItem(item, entry: &entry)
                 for companion in companions {
                     try trashItem(companion, entry: &entry)
@@ -1098,7 +1100,8 @@ public actor OperationJournal {
                     try makeMissingFolders(folder, allowed: allowed, entry: &entry)
                 }
                 var target = URL(fileURLWithPath: to)
-                let shotThere = !companion && anotherShot(at: to, current: from)
+                // The edit of a Replace that kept its name goes back into its original's shot (A12-1).
+                let shotThere = !companion && !(Self.isTemporary(from) && Self.replaceKeptStem(entry)) && anotherShot(at: to, current: from)
                 if shotThere, !Self.isTemporary(from) {
                     report.skipped.append("\(target.lastPathComponent): another photo now has that name")
                     return false
@@ -1368,7 +1371,7 @@ public actor OperationJournal {
             }
             // The original of a Replace goes back to its own place in its shot: whether its name is free is settled by
             // `replaceUndoRefusal` (A11-2).
-            if !companion, entry.edits == nil, anotherShot(at: original, current: nil) {
+            if !companion, !Self.replaceKeptStem(entry), anotherShot(at: original, current: nil) {
                 report.skipped.append("\(name) was left in the Trash: another photo now has its name")
                 return false
             }
@@ -1396,6 +1399,13 @@ public actor OperationJournal {
         throws -> JournalEntry
     {
         let folder = wanted.deletingLastPathComponent()
+        // A file with others that go with it (a clip, a RAW, its `.xmp` or `.aae`) keeps its name stem, so the unit stays
+        // whole; a rename is its own change afterwards (D-127, audit 2026-11-21-12, A12-2).
+        let stem = { (url: URL) in url.deletingPathExtension().lastPathComponent.lowercased() }
+        if stem(wanted) != stem(original), !UnitFiles.companions(of: original).filter({ $0 != Sidecar.sidecarURL(for: original) }).isEmpty {
+            let message = "“\(original.lastPathComponent)” has files that go with it, so Replace keeps its name. Rename it afterwards."
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: message])
+        }
         let hidden = folder.appendingPathComponent("\(Self.editPrefix)\(UUID().uuidString).\(wanted.pathExtension)")
         let hiddenMetadata = Sidecar.sidecarURL(for: hidden)
         var entry = JournalEntry(id: UUID(), title: title, root: folder.path, date: Date(), steps: [], failures: [],
@@ -1504,6 +1514,32 @@ public actor OperationJournal {
         return problems
     }
 
+    /// A unit moves, is copied or goes to the Trash whole or not at all: one with a file the Finder locks is left as it is,
+    /// with the reason, before any of it moves (D-120, audit 2026-11-21-12, A12-4).
+    static func refuseLockedUnit(_ lead: URL, _ companions: [URL]) throws {
+        guard !companions.isEmpty, let locked = ([lead] + companions).first(where: { isLocked($0) }) else { return }
+        let message = "“\(locked.lastPathComponent)” is locked in the Finder, so it and the files that go with it were left "
+            + "as they are."
+        throw CocoaError(.fileWriteNoPermission, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    /// Whether a Replace kept its original's name stem (D-127): only then does the original's own shot (its clip, its
+    /// RAW) pass the shot rule on Undo and Redo; a Replace under another name went from a file in no unit, so any shot
+    /// of the original's name there later is another photo (audit 2026-11-21-12, A12-1, A12-3).
+    static func replaceKeptStem(_ entry: JournalEntry) -> Bool {
+        guard entry.edits != nil else { return false }
+        let all = entry.steps + (entry.undoneSteps ?? [])
+        let original = all.lazy.compactMap { step -> String? in
+            if case let .trash(original, _) = step, !original.hasSuffix(".json") { original } else { nil }
+        }.first
+        let placed = all.lazy.compactMap { step -> String? in
+            if case let .move(from, to, _, _) = step, isTemporary(from), !from.hasSuffix(".json") { to } else { nil }
+        }.first
+        guard let original, let placed else { return false }
+        func stem(_ path: String) -> String { URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent.lowercased() }
+        return stem(original) == stem(placed)
+    }
+
     /// Whether Undo of a Replace could put the original back; the reason not, when it could not (R1-M1).
     func replaceUndoRefusal(_ entry: JournalEntry) -> String? {
         let trash = entry.steps.lazy.compactMap { step -> (original: String, trashed: String)? in
@@ -1526,6 +1562,9 @@ public actor OperationJournal {
         }.first
         if fm.fileExists(atPath: trash.original), placed.map({ !Self.sameFile($0, trash.original) }) ?? true {
             return "Another file is called “\(name)” now, so the edit was left in place."
+        }
+        if !Self.replaceKeptStem(entry), anotherShot(at: trash.original, current: placed) {
+            return "Another photo has the name of “\(name)” now, so the edit was left in place."
         }
         return nil
     }

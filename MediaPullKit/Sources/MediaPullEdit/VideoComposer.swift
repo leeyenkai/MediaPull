@@ -131,8 +131,8 @@ public enum VideoComposer {
             composition.removeTrack(empty)
             audioTrack = nil
         }
-        // The sound rendered at the speed takes the scaled sound's place, unscaled (C10-1).
-        if let soundAtSpeed, speed != 1, let scaled = audioTrack {
+        // The sound rendered first takes the composition's sound's place, as it is (C10-1, C12-1).
+        if let soundAtSpeed, let scaled = audioTrack {
             composition.removeTrack(scaled)
             audioTrack = nil
             let file = AVURLAsset(url: soundAtSpeed)
@@ -303,9 +303,12 @@ public enum VideoComposer {
         let asset = AVURLAsset(url: source)
         let timeline = recipe.timeline ?? EditTimeline()
         let speed = min(max(timeline.speed, 0.25), 4)
-        // At another speed the sound is rendered first, its pitch kept and exactly as long as the picture (C10-1).
-        let sound = speed != 1 && timeline.volume > 0
-            ? try await SoundAtSpeed.render(asset, recipe: recipe) { progress($0 / 2) } : nil
+        // The sound is rendered first at another speed, its pitch kept and no longer than the picture (C10-1), and for
+        // surround sound on any re-encode, so its channels are put in the encoder's order by their labels (C12-1).
+        let plain = try await build(asset, recipe: recipe)
+        let rendered = timeline.volume > 0 && !plain.lossless
+            ? speed != 1 ? true : try await SoundAtSpeed.channels(of: asset) > 2 : false
+        let sound = rendered ? try await SoundAtSpeed.render(asset, recipe: recipe) { progress($0 / 2) } : nil
         // With the sound rendered first, the export is the second half of the progress.
         let half = sound != nil
         let share: @Sendable (Double) -> Double = { half ? 0.5 + $0 / 2 : $0 }

@@ -46,8 +46,12 @@ public final class PhotoSession: @unchecked Sendable {
         // (audit 2026-11-21-3, B3-m1, and round 4, B4-m2). The window colour-manages either.
         let wide = recipe.export.displayP3
         if before { return PhotoRenderer.cgImage(PhotoRenderer.scaled(proxy, toFit: fit), displayP3: wide) }
-        let canvas = PhotoRenderer.render(proxy, recipe: recipe, fit: fit) { size in
+        var canvas = PhotoRenderer.render(proxy, recipe: recipe, fit: fit) { size in
             LayerRenderer.image(recipe.layers, canvas: size)
+        }
+        // A JPEG has no transparency: see-through parts are shown white, as the export writes them (round 12, B12-m4).
+        if recipe.export.format == .jpeg {
+            canvas = canvas.composited(over: CIImage(color: .white).cropped(to: canvas.extent))
         }
         return PhotoRenderer.cgImage(canvas, displayP3: wide)
     }

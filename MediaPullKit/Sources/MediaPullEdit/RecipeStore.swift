@@ -264,16 +264,28 @@ public actor RecipeStore {
                 moved.source.reference = Self.reference(destination) ?? moved.source.reference
                 changed = true
             }
-            // Picture layers follow their files too.
-            for index in moved.layers.indices {
-                if case let .image(picture) = moved.layers[index].kind, let destination = remap.destination(of: Self.key(picture)) {
-                    moved.layers[index].kind = .image(path: destination)
-                    changed = true
-                }
-            }
+            // Picture layers and artwork follow their files too.
+            if Self.picturesFollow(&moved, { remap.destination(of: Self.key($0)) }) { changed = true }
             byID[id] = moved
             if changed { write(moved) }
         }
+    }
+
+    /// The pictures a recipe draws from other files (picture layers, audio artwork) follow them where they went; one rule
+    /// for the store, a window's open recipe and its copied settings (audit 2026-11-21-12, B12-1, B12-m5). True when any did.
+    public static func picturesFollow(_ recipe: inout EditRecipe, _ destination: (String) -> String?) -> Bool {
+        var changed = false
+        for index in recipe.layers.indices {
+            if case let .image(picture) = recipe.layers[index].kind, let moved = destination(picture) {
+                recipe.layers[index].kind = .image(path: moved)
+                changed = true
+            }
+        }
+        if let artwork = recipe.tags?.artworkPath, let moved = destination(artwork) {
+            recipe.tags?.artworkPath = moved
+            changed = true
+        }
+        return changed
     }
 
     /// Whether a recipe at a path MediaPull moved goes with the file now at `destination`.

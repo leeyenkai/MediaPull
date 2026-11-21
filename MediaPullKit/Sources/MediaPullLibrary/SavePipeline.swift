@@ -535,7 +535,9 @@ public final class SavePipeline: Sendable {
                 if conflict == .skip { return nil }
                 continue
             }
-            guard code == EXDEV else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
+            // Another disk, or one without exclusive renames (exFAT, FAT): a move, which fails on a name taken since
+            // (audit 2026-11-21-12, A12-m2).
+            guard code == EXDEV || code == ENOTSUP || code == EINVAL else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
             do {
                 try manager.moveItem(at: staged, to: candidate)
                 return candidate

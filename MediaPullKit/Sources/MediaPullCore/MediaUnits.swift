@@ -107,7 +107,8 @@ public enum MediaUnits {
         guard let memberExt = parts.first, parts.count <= 2, parts.count == 1 || parts[1] == "json" else { return false }
         let leadsMembers = MediaFormat.rawExtensions.contains(leadExt)
             ? photoExtensions.union(clipExtensions).union(MediaFormat.rawExtensions)
-            : photoExtensions.contains(leadExt) ? clipExtensions.union(photoExtensions) : []
+            // A photo leads clips only: two photos of one name are two items, never one (audit 2026-11-21-12, A12-m3).
+            : photoExtensions.contains(leadExt) ? clipExtensions : []
         return leadsMembers.contains(memberExt) && memberExt != leadExt
     }
 

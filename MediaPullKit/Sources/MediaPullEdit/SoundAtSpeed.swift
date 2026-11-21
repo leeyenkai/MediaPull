@@ -6,9 +6,10 @@ import MediaPullCore
 /// C11-1 to C11-5). The export session's own time-stretch runs late by an amount that varies and drops the end of the
 /// sound; read through a mix output over the same scaled composition, the stretch is on time, keeps every channel and
 /// its pitch, and sounds as Play Result does. It is written buffer by buffer, so memory stays small whatever the length.
-enum SoundAtSpeed {
+public enum SoundAtSpeed {
     /// The parts kept of `asset`'s sound at the recipe's speed, pitch kept, in a temporary file as long as the picture at
-    /// most; nil when the parts kept have no sound. Cancelling stops it, and nothing is left behind when it throws.
+    /// most; nil when the parts kept have no sound. Cancelling stops it, and nothing is left behind when it throws; a file
+    /// left by a quit part way is removed at the next launch (`removeLeftovers`).
     static func render(_ asset: AVURLAsset, recipe: EditRecipe,
                        progress: @Sendable (Double) -> Void = { _ in }) async throws -> URL?
     {
@@ -82,17 +83,41 @@ enum SoundAtSpeed {
         return url
     }
 
-    /// Float samples at the sound's own rate and channels; more than two keep their layout (5.1, ambisonics). A low rate
-    /// is read at 48 kHz: the stretch at 8 kHz loses the last tenth of a second at 4x.
+    /// How many channels the sound of `asset` has (its first sound track, the one an export keeps).
+    static func channels(of asset: AVURLAsset) async throws -> Int {
+        guard let track = try await asset.loadTracks(withMediaType: .audio).first,
+              let description = try await track.load(.formatDescriptions).first else { return 0 }
+        return Int(AVAudioFormat(cmAudioFormatDescription: description).channelCount)
+    }
+
+    /// The order an AAC encoder takes surround channels in, by count; read in it by their labels, every channel lands
+    /// where it was (audit 2026-11-21-12, C12-1). Four channels (quad, ambisonics) keep their own layout.
+    static let encoderLayouts: [AVAudioChannelCount: AudioChannelLayoutTag] = [
+        3: kAudioChannelLayoutTag_AAC_3_0, 5: kAudioChannelLayoutTag_AAC_5_0, 6: kAudioChannelLayoutTag_AAC_5_1,
+        7: kAudioChannelLayoutTag_AAC_6_1, 8: kAudioChannelLayoutTag_AAC_7_1,
+    ]
+
+    /// Float samples at the sound's own rate and channels; more than two in the encoder's order (5.1) or their own
+    /// layout (quad, ambisonics). A low rate is read at 48 kHz: the stretch at 8 kHz loses the last tenth of a second at 4x.
     static func format(of input: AVAudioFormat) -> AVAudioFormat? {
         let rate = input.sampleRate >= 32000 ? input.sampleRate : 48000
         let channels = max(1, input.channelCount)
         if channels <= 2 {
             return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: channels, interleaved: true)
         }
-        let layout = input.channelLayout.flatMap { $0.channelCount == channels ? $0 : nil }
+        let layout = encoderLayouts[channels].flatMap { AVAudioChannelLayout(layoutTag: $0) }
+            ?? input.channelLayout.flatMap { $0.channelCount == channels ? $0 : nil }
             ?? AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | channels)
         return layout.map { AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, interleaved: true, channelLayout: $0) }
+    }
+
+    /// Temporary files an export, a waveform or a cut left when MediaPull quit part way (round 12, C12-4).
+    public static func removeLeftovers() {
+        let folder = FileManager.default.temporaryDirectory
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where ["MediaPull-sound-", "MediaPull-wave-", "MediaPull-cut-"].contains(where: name.hasPrefix) {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) // lint:allow app-data own temporary files
+        }
     }
 
     /// A channel layout as the reader's settings take it, with all its channel descriptions.
