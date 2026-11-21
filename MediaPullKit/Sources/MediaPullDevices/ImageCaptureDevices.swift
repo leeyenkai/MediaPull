@@ -71,7 +71,10 @@
         }
 
         private func added(_ device: ICDevice) {
-            guard let camera = device as? ICCameraDevice else { return }
+            // A camera card is a drive, listed from the drives (R-4303), never twice.
+            guard let camera = device as? ICCameraDevice,
+                  camera.transportType != ICDeviceTransport.transportTypeMassStorage.rawValue
+            else { return }
             let id = key(camera)
             cameras[id] = camera
             let apple = Int(camera.usbVendorID) == DeviceRouting.appleVendorID

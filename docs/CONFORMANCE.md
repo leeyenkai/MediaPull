@@ -242,6 +242,11 @@ change as the code.
 | R-4208 | built | `PostGroups.keepTogether`, `OrganiseModel.autoSort`, `Preferences.sortPostImagesIndividually` | `testPostsStayTogether`, `--selftest-formats` | |
 | R-4209 | built | `OperationJournal.copyWithoutIdentity`, `ExtraCopies.plan`, `SourceInfo.postPlace`, `EngineService`, `FolderOperations.archiveDatePrefix` | `testExtraCopiesSpareAPostsOwnPictures`, `testArchiveRenamesKeepTheirDatePrefix`, `testSourceSortOrdersPostsByDateThenPlace` | Find Missing with items moved elsewhere needs a signed-in pull (person) |
 | R-4210 | built | `AnalysisRecord.factsVersion`, `Analyzer.refreshFacts` | `testFactsCarryTheirOwnVersion` | |
+| R-4301 | built | `DriveCenter`, `Volumes.drives`, `FolderMenu`, `DriveCenter.isOnMissingDrive` | `--selftest-drives` | Listed as they come and go; an ejected drive's pane says so |
+| R-4302 | built | `DriveCenter.eject`, `AnalysisService.updateWatch` | `--selftest-drives` | A drive another app holds stays, with its name in the message (needs a person to see) |
+| R-4303 | built | `DeviceCenter.drivesChanged`, `FolderDeviceSource`, `DeviceBrowser` | `--selftest-drives` | Known by volume UUID; the camera framework skips mass-storage cards |
+| R-4304 | person | `OrganiseModel.run`, `DriveInfo.isReadOnly` | none | A locked card refuses changes; needs a real locked card |
+| R-4305 | built | `Volumes.isGone`, `VolumeTable`, `FileOps.exclusiveOrMove`, `OperationJournal.trashItem` | `testDrivePathsArePrunedOnlyWhenTheSameDriveIsBack`, `testTheTableRemembersEveryDriveSeenAtAMountPoint`, `--selftest-drives` | Spike S3 recorded in `docs/spikes/exfat-identity.md` |
 | R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
 | R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
 | R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |

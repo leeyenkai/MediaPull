@@ -81,28 +81,51 @@ public actor ImportedIndex {
     struct Stored: Codable {
         var device: String
         var keys: [String]
+        /// Version 2: where each imported file was placed, so a later delete from the device can check the copy is still
+        /// there and whole (Phase 5). Records from before have none, and never allow a delete.
+        var placed: [String: Placed]?
+    }
+
+    /// A placed copy: a reference that follows it through moves and renames on its volume, its size and checksum.
+    public struct Placed: Codable, Sendable, Equatable {
+        public var reference: String
+        public var size: Int64
+        public var sha256: String
     }
 
     public nonisolated let url: URL
     let deviceName: String
     private var keys: Set<String> = []
+    private var placed: [String: Placed] = [:]
     private var unsaved = 0
 
     public init(folder: URL, device: DeviceIdentity) {
         let digest = SHA256.hash(data: Data(device.key.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
         url = folder.appendingPathComponent("\(digest).json")
         deviceName = device.name
-        keys = Self.read(url)
+        let stored = Self.read(url)
+        keys = Set(stored?.keys ?? [])
+        placed = stored?.placed ?? [:]
     }
 
     /// A file that cannot be read is set aside, never written over.
-    static func read(_ url: URL) -> Set<String> {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        if let stored = try? JSONDecoder().decode(Stored.self, from: data) { return Set(stored.keys) }
+    static func read(_ url: URL) -> Stored? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if let stored = try? JSONDecoder().decode(Stored.self, from: data) { return stored }
         let aside = url.deletingPathExtension().appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970)).json")
         // lint:allow silent-write the record is MediaPull's own; without it Import New still skips files in the destination
         try? FileManager.default.moveItem(at: url, to: aside)
-        return []
+        return nil
+    }
+
+    /// Where the copy of `key` is now, when it is still the copy that was placed (same size and checksum).
+    public func verifiedCopy(of key: String) -> URL? {
+        guard let record = placed[key], let path = OperationJournal.resolve(record.reference) else { return nil }
+        let url = URL(fileURLWithPath: path)
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value, size == record.size,
+              (try? Self.sha256(of: url)) == record.sha256
+        else { return nil }
+        return url
     }
 
     public func all() -> Set<String> { keys }
@@ -110,23 +133,41 @@ public actor ImportedIndex {
     public func contains(_ key: String) -> Bool { keys.contains(key) }
 
     /// Saved every 20 files and at the end, so a stop part way loses at most a few (the destination check covers those).
-    public func record(_ key: String) {
-        guard keys.insert(key).inserted else { return }
+    public func record(_ key: String, placedAt url: URL? = nil) {
+        if let url, let reference = OperationJournal.reference(url.path),
+           let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value,
+           let sha = try? Self.sha256(of: url)
+        {
+            placed[key] = Placed(reference: reference, size: size, sha256: sha)
+        }
+        guard keys.insert(key).inserted || url != nil else { return }
         unsaved += 1
         if unsaved >= 20 { save() }
     }
 
     public func save() {
         unsaved = 0
-        let stored = Stored(device: deviceName, keys: keys.sorted())
+        let stored = Stored(device: deviceName, keys: keys.sorted(), placed: placed)
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         // lint:allow silent-write the record is MediaPull's own; without it Import New still skips files in the destination
         try? data.write(to: url, options: .atomic)
     }
 
+    /// The file's SHA-256, read a megabyte at a time.
+    static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     public func forget() {
         keys = []
+        placed = [:]
         unsaved = 0
         try? FileManager.default.removeItem(at: url)
     }
@@ -157,7 +198,7 @@ public enum DeviceImporter {
                 let placed = try await importOne(item, from: source, into: destination, photoNames: placedNames)
                 placedNames[item.entry.id] = placed.deletingPathExtension().lastPathComponent
                 outcome.placed.append(placed)
-                await index.record(item.entry.importKey)
+                await index.record(item.entry.importKey, placedAt: placed)
             } catch is CancellationError {
                 outcome.cancelled = true
                 break

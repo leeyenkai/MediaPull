@@ -127,6 +127,11 @@ final class SelfTestRunner {
             quit()
             return
         }
+        if let mount = Self.value(after: "--selftest-drives") {
+            await exerciseDrives(mount: URL(fileURLWithPath: mount, isDirectory: true), out: out)
+            quit()
+            return
+        }
         if CommandLine.arguments.contains("--selftest-formats") {
             await exerciseFormats(library: library, out: out)
             quit()
@@ -1193,6 +1198,86 @@ final class SelfTestRunner {
         app.deviceCenter.standIns = []
         model.section = .collect
         note("devices: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Drives (section 43) on a real exFAT disk image that check.sh attaches: listed by itself, a camera card in Devices
+    /// whose Import New brings a RAW+JPEG pair and then nothing, a pair moved on the card and put back, and Eject.
+    private func exerciseDrives(mount: URL, out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("drives: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        let camera = mount.appendingPathComponent("DCIM/100CANON", isDirectory: true)
+        try? fm.createDirectory(at: camera, withIntermediateDirectories: true)
+        for (name, type, colour) in [("IMG_0001.CR3", UTType.tiff, 1), ("IMG_0001.JPG", .jpeg, 1), ("IMG_0002.JPG", .jpeg, 2)] {
+            guard let image = NSImage(data: Self.jpeg(colour)).flatMap({ $0.cgImage(forProposedRect: nil, context: nil, hints: nil) }),
+                  let destination = CGImageDestinationCreateWithURL(camera.appendingPathComponent(name) as CFURL,
+                                                                     type.identifier as CFString, 1, nil)
+            else { continue }
+            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationFinalize(destination)
+        }
+        app.driveCenter.refresh()
+        let mountPath = mount.standardizedFileURL.path
+        await waitUntil(timeout: 20) { app.driveCenter.drives.contains { $0.url.standardizedFileURL.path == mountPath && $0.isCameraCard } }
+        let drive = app.driveCenter.drives.first { $0.url.standardizedFileURL.path == mountPath }
+        check(drive != nil && drive?.uuid != nil, "the card is listed by itself, with its UUID (\(app.driveCenter.drives.map(\.name)))")
+        check(drive?.isCameraCard == true, "a DCIM folder makes it a camera card")
+
+        // Import New from the card, in Devices.
+        let destination = out.appendingPathComponent("Imported", isDirectory: true)
+        try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        let savedFolder = app.preferences.deviceImportFolder
+        defer { app.preferences.deviceImportFolder = savedFolder }
+        app.preferences.deviceImportFolder = destination.path
+        let devices = model.devices
+        model.section = .devices
+        let cardID = "volume:\(drive?.id ?? "")"
+        await waitUntil(timeout: 20) { app.deviceCenter.devices.contains { $0.id == cardID } }
+        devices.deviceID = cardID
+        await waitUntil(timeout: 20) { !devices.loading && !devices.entries.isEmpty }
+        let first = devices.importJob
+        devices.importNew()
+        await waitUntil(timeout: 60) { devices.importJob !== first && devices.importJob?.state.isFinished == true }
+        let imported = Set((try? fm.contentsOfDirectory(atPath: destination.path)) ?? [])
+        check(imported == ["IMG_0001.CR3", "IMG_0001.JPG", "IMG_0002.JPG"], "Import New copied the card (\(imported.sorted()))")
+        let second = devices.importJob
+        devices.importNew()
+        await waitUntil(timeout: 60) { devices.importJob !== second && devices.importJob?.state.isFinished == true }
+        check(devices.importJob?.saved == 0, "Import New again brings nothing")
+
+        // On the card itself: the pair moves as one and Undo puts it back.
+        model.section = .organise
+        try? await Task.sleep(for: .seconds(1))
+        let organise = model.organise
+        organise.open(camera)
+        await waitUntil(timeout: 30) { !organise.source.loading && organise.source.entries.count == 2 }
+        let sorted = camera.appendingPathComponent("Sorted", isDirectory: true)
+        try? fm.createDirectory(at: sorted, withIntermediateDirectories: true)
+        let changes = organise.history.count
+        organise.run(FolderOperations.move([camera.appendingPathComponent("IMG_0001.CR3")], to: sorted))
+        await waitUntil(timeout: 30) { organise.history.count > changes && organise.working == nil }
+        let moved = Set((try? fm.contentsOfDirectory(atPath: sorted.path)) ?? [])
+        check(moved == ["IMG_0001.CR3", "IMG_0001.JPG"], "the pair moved on the exFAT card (\(moved.sorted()))")
+        if let entry = organise.history.first { organise.undo(entry) }
+        await waitUntil(timeout: 30) {
+            organise.working == nil && fm.fileExists(atPath: camera.appendingPathComponent("IMG_0001.JPG").path)
+        }
+        check(fm.fileExists(atPath: camera.appendingPathComponent("IMG_0001.CR3").path)
+              && fm.fileExists(atPath: camera.appendingPathComponent("IMG_0001.JPG").path), "Undo on the card put the pair back")
+
+        // Eject: the card goes, and the pane says so.
+        if let drive { app.driveCenter.eject(drive) }
+        await waitUntil(timeout: 30) { !app.driveCenter.drives.contains { $0.url.standardizedFileURL.path == mountPath } }
+        check(!fm.fileExists(atPath: camera.path), "Eject unmounted the card")
+        check(app.driveCenter.isOnMissingDrive(camera), "the pane knows its drive was ejected")
+        try? await Task.sleep(for: .seconds(1))
+        snapshot(to: out.appendingPathComponent("drive-ejected.png"))
+        model.section = .collect
+        note("drives: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
     }
 
     /// Formats, units and posts (section 42), offline: a RAW+JPEG pair, a Live Photo, a Fujifilm `.hif`, tagged audio and an

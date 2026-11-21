@@ -14,6 +14,9 @@ final class DeviceCenter {
     @ObservationIgnored var standIns: [ConnectedDevice] = [] {
         didSet { publish(browser?.devices ?? []) }
     }
+    /// Camera cards (drives with a DCIM folder, R-4303), read as folders.
+    @ObservationIgnored private var cards: [ConnectedDevice] = []
+    @ObservationIgnored private var cardSources: [String: FolderDeviceSource] = [:]
 
     /// The record of imports, in Application Support (R-4105); the self-test keeps its own.
     let recordsFolder: URL = SelfTestRunner.isActive
@@ -29,7 +32,23 @@ final class DeviceCenter {
     }
 
     private func publish(_ found: [ConnectedDevice]) {
-        devices = standIns + found
+        devices = standIns + cards + found
+    }
+
+    /// Drives came or went: camera cards are devices too, known by their volume UUID so the record of imports follows the
+    /// card, not its name (R-4303).
+    func drivesChanged(_ drives: [DriveInfo]) {
+        var sources: [String: FolderDeviceSource] = [:]
+        cards = drives.filter(\.isCameraCard).map { drive in
+            let id = "volume:\(drive.id)"
+            let source = cardSources[id] ?? FolderDeviceSource(
+                root: drive.url, identity: DeviceIdentity(name: drive.name, serial: id, vendorID: 0, productID: 0)
+            )
+            sources[id] = source
+            return ConnectedDevice(id: id, name: drive.name, symbol: "sdcard", isApple: false, state: .ready(source))
+        }
+        cardSources = sources
+        publish(browser?.devices ?? [])
     }
 
     func index(for source: any DeviceSource) -> ImportedIndex {

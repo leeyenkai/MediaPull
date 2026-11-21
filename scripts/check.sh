@@ -161,6 +161,20 @@ else
     NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-details 2>&1 \
       | grep -E "(details|organise): (PASS|FAIL)" | tee /dev/stderr | grep -c ": PASS" | grep -q "^2$" || FAILED=1
   fi
+  # Drives (section 43) on a small exFAT disk image, attached here because the app may not start processes.
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    hdiutil create -size 64m -fs ExFAT -volname MPSELFTEST "$OUT/card.dmg" >/dev/null 2>&1
+    MOUNT="$(hdiutil attach "$OUT/card.dmg" 2>/dev/null | awk -F'\t' '/MPSELFTEST/ {print $NF}' | tail -1)"
+    if [[ -n "$MOUNT" ]]; then
+      NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-drives "$MOUNT" 2>&1 \
+        | grep -E "drives: (PASS|FAIL)" | tee /dev/stderr | grep -q "drives: PASS" || FAILED=1
+      [[ -d "$MOUNT" ]] && hdiutil detach "$MOUNT" -force >/dev/null 2>&1
+    else
+      echo "error: the exFAT test image could not be attached"
+      FAILED=1
+    fi
+  fi
   # Formats, units and posts, offline (section 42).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
   if [[ -x "$APP" ]]; then

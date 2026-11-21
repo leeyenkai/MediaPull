@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import MediaPullCore
+import MediaPullMedia
 
 /// An MTP device in memory, answering as a phone would: for tests and the offline self-test (`--selftest-devices`). It
 /// records every operation it is sent, so a test can check that only reads arrived.
@@ -137,8 +138,8 @@ public actor MTPResponderSimulator: MTPTransport {
     }
 }
 
-/// A folder on the Mac standing in for an iPhone (the offline self-test): its subfolders are the device's folders, its
-/// files the device's files, and a still and a clip with the same name are a Live Photo.
+/// A folder as a device: a camera card's drive (R-4303), or a stand-in iPhone in the offline self-test. Its subfolders are
+/// the device's folders, its files the device's files, and files of one shot share a name (R-4206).
 public final class FolderDeviceSource: DeviceSource {
     public let identity: DeviceIdentity
     let root: URL
@@ -171,16 +172,18 @@ public final class FolderDeviceSource: DeviceSource {
 
     public func thumbnail(_ entry: DeviceEntry, maxPixel: Int) async -> CGImage? {
         let url = root.appendingPathComponent(entry.ref)
-        return await Task.detached(priority: .utility) {
-            (try? Data(contentsOf: url)).flatMap { DeviceThumbnails.decode($0, maxPixel: maxPixel) }
-        }.value
+        if entry.kind == .video { return await Thumbnailer.videoFrame(at: url, maxPixel: maxPixel) }
+        // The picture's own embedded preview where it has one large enough (RAW, HEIC), so a card of RAW files lists quickly.
+        return await Task.detached(priority: .utility) { Thumbnailer.image(at: url, maxPixel: maxPixel) }.value
     }
 
     public func download(_ entry: DeviceEntry, to url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws {
         let source = root.appendingPathComponent(entry.ref)
         try await Task.detached(priority: .userInitiated) {
-            // A new file in the importer's own staging folder, never the person's; the source is only read.
-            try Data(contentsOf: source).write(to: url, options: .withoutOverwriting)
+            // Copied (never moved) into the importer's own staging folder; the card is only read. A copy streams, so a
+            // large video never sits in memory.
+            guard FileManager.default.fileExists(atPath: source.path) else { throw DeviceError.disconnected }
+            try FileManager.default.copyItem(at: source, to: url)
         }.value
         progress(entry.size)
     }

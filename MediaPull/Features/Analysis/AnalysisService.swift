@@ -146,13 +146,19 @@ final class AnalysisService {
 
     /// Every library folder is watched, including those left out of analysis, so every pane updates live when files
     /// change in the Finder (R-1704); only `scanFolders` are analysed.
-    func updateWatch() {
+    /// `excluding`: a drive about to be ejected, which nothing may keep watching (R-4302). Drives that went away are left
+    /// out, so a watch is restarted when one comes back.
+    func updateWatch(excluding drive: URL? = nil) {
         let roots = app.roots.filter { !app.missingRoots.contains($0.id) }.map(\.url)
         // Watched only, not analysed: a window's save folder outside the library, so its tree follows the Finder too.
         let others = app.windows.compactMap(\.library.otherFolder)
         let extras = (extraFolders.map { URL(fileURLWithPath: $0, isDirectory: true) } + others)
             .filter { folder in !roots.contains { folder.path.hasPrefix($0.path + "/") || folder.path == $0.path } }
-        watcher.watch(Array(Set((roots + extras).map(\.path))))
+        let paths = Set((roots + extras).map(\.path)).filter { path in
+            if let drive, path == drive.path || path.hasPrefix(drive.path + "/") { return false }
+            return !app.driveCenter.isOnMissingDrive(URL(fileURLWithPath: path))
+        }
+        watcher.watch(Array(paths))
     }
 
     /// Library roots (minus those excluded in Settings) and folders open in Organise.
@@ -226,10 +232,11 @@ final class AnalysisService {
         // is forgotten, so its people and corrections survive (audit 3, B3-M2).
         let holding = app.roots.filter { app.missingRoots.contains($0.id) }.map(\.path)
         let journal = app.journal
+        let volumes = app.driveCenter.volumes.snapshot
         scanTask = Task { [weak self] in
             let skip = self?.noPicture ?? []
             var (work, gone) = await Self.findWork(folders: folders, store: store, wantFaces: wantFaces, embeddings: images != nil,
-                                                   noPicture: skip, keep: keep, holding: holding)
+                                                   noPicture: skip, keep: keep, holding: holding, volumes: volumes)
             // Files MediaPull moved to the Trash that Undo can still put back keep their faces and corrections until the
             // Trash lets them go (audit 5, B5-M3).
             var held = Set<String>()
@@ -317,7 +324,8 @@ final class AnalysisService {
     /// Files that need analysing (new, changed, analysed by an older version, or not yet checked for people), and paths gone from disk.
     @concurrent
     private static func findWork(folders: [URL], store: AnalysisStore, wantFaces: Bool, embeddings: Bool,
-                                 noPicture: Set<String>, keep: [String], holding: [String]) async -> ([Work], [String])
+                                 noPicture: Set<String>, keep: [String], holding: [String],
+                                 volumes: [String: Set<String>]) async -> ([Work], [String])
     {
         var files: [Work] = []
         for folder in folders {
@@ -362,7 +370,8 @@ final class AnalysisService {
             if unreachable.contains(where: { path.hasPrefix($0.path + "/") }) { return false }
             if holding.contains(where: { path.hasPrefix($0 + "/") }) { return false }
             guard keep.contains(where: { path.hasPrefix($0 + "/") }) else { return true }
-            return Self.isGoneOutsideScan(path)
+            // On a drive, only when the drive mounted there is the one drive ever seen there (R-4305).
+            return Volumes.isGone(path, seen: volumes) { Volumes.uuid(of: URL(fileURLWithPath: $0)) }
         }
         return (work, Array(gone))
     }
@@ -872,16 +881,6 @@ final class AnalysisService {
     }
 
     /// A path outside the scanned folders is gone only when its disk is mounted and the file is missing.
-    nonisolated static func isGoneOutsideScan(_ path: String) -> Bool {
-        let fm = FileManager.default
-        if fm.fileExists(atPath: path) { return false }
-        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
-        if parts.first == "Volumes", parts.count > 1 {
-            return fm.fileExists(atPath: "/Volumes/\(parts[1])")
-        }
-        return true
-    }
-
     /// Removes vector files of other models than the ones in use. Only when the models loaded: without them, nothing is
     /// known to be replaced.
     nonisolated static func removeOtherVectorFiles(in folder: URL, keeping: [String], modelsLoaded: Bool) {

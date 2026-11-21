@@ -331,7 +331,7 @@ public actor OperationJournal {
     // MARK: Identities
 
     /// A reference to the file or folder at `path`, which keeps naming it when it is renamed, moved or put in the Trash.
-    static func reference(_ path: String) -> String? {
+    public static func reference(_ path: String) -> String? {
         guard let ref = CFURLCreateFileReferenceURL(nil, URL(fileURLWithPath: path) as CFURL, nil)?.takeRetainedValue() else {
             return nil
         }
@@ -339,7 +339,7 @@ public actor OperationJournal {
     }
 
     /// Where a reference's file or folder is now; nil when it is gone (or its disk is not connected).
-    static func resolve(_ reference: String) -> String? {
+    public static func resolve(_ reference: String) -> String? {
         guard let url = CFURLCreateWithString(nil, reference as CFString, nil),
               let path = CFURLCreateFilePathURL(nil, url, nil)?.takeRetainedValue() else { return nil }
         return (path as URL).standardizedFileURL.path
@@ -596,7 +596,12 @@ public actor OperationJournal {
 
     func trashItem(_ item: URL, entry: inout JournalEntry) throws {
         var trashed: NSURL?
-        try fm.trashItem(at: item, resultingItemURL: &trashed)
+        do {
+            try fm.trashItem(at: item, resultingItemURL: &trashed)
+        } catch CocoaError.featureUnsupported {
+            // Some drives (a FAT card, a disk image) have no Trash; nothing is ever deleted instead (R-4305).
+            throw CocoaError(.featureUnsupported, userInfo: [NSLocalizedDescriptionKey: "This drive has no Trash, so nothing was moved."])
+        }
         let inTrash = (trashed as URL?)?.path ?? ""
         entry.steps.append(.trash(original: item.path, trashed: inTrash))
         note(item.deletingLastPathComponent().path, in: &entry)

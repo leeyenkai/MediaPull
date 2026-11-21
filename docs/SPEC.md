@@ -79,6 +79,7 @@ Decisions that changed during implementation are D-13 and D-24 to D-56 (and D-68
 40. Profile views
 41. Devices
 42. Formats, units and posts
+43. Drives
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -264,7 +265,7 @@ The package builds for iOS from the first milestone so the port stays cheap. The
 2. Neither MediaPull's own code nor the engines perform any write action on any account or service.
 3. MediaPull sends no telemetry, analytics or crash reports.
 4. The browser pane is the one honest exception to "MediaPull sends nothing": pages loaded in it run their own code and send what any browser sends (sign-in details typed into a login form, a search, cookies, a page's own requests). The pane still cannot upload files from the Mac (5.4).
-5. *(D-116)* Phones and cameras plugged into the Mac are only ever read: MediaPull never deletes, renames, moves, uploads or changes anything on them and sends them no data (R-4107).
+5. *(D-116, amended by D-123)* Phones and cameras that connect as devices (not as drives) are only ever read: MediaPull never deletes, renames, moves, uploads or changes anything on them and sends them no data (R-4107). Drives, camera cards included, are ordinary folders on the Mac and are read and written like any folder (section 43).
 
 ### 5.2 Swift network gate
 
@@ -1324,6 +1325,7 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-120 | Units (R-4206, R-4207): RAW+JPEG/HEIF and Live Photos are one item that moves, renames and trashes as one, found by name in a folder, never by reading files while listing (iCloud placeholders stay untouched). A unit is analysed from its lead: a RAW is read from its embedded preview, as quick as its JPEG, so no member is analysed instead. Splitting a Live Photo whose still and clip carry different content identifiers is left for later; same-named files in one folder are one shot in practice | Requested; otherwise moves and renames split pairs and Trash Extra Copies could remove half a pair |
 | D-121 | The person's own files keep their format on every route: a file dropped or copied into an Archive library folder is no longer converted (amends R-1502, R-1604, R-1801, §1.2); the Converter converts when asked, and the Editor keeps HEIC as HEIC. Saves from the web still convert as before | Requested; an audit found an iPhone HEIC re-encoded as JPEG when dropped into an Archive folder but kept by every other route |
 | D-122 | MediaPull is presented as collecting, bringing in and organising (§1.1). Instagram posts stay together in Organise (R-4208, R-4209): sorts place a whole post, copies inside an account folder stop posing as the post, Trash Extra Copies spares a post's own pictures, Find Missing does not fetch items moved elsewhere in the library, and grids show "2 of 5" | Requested; an audit found sorts by Subject or Person splitting carousels, copies duplicating a post's items in Profile views, and moved items downloaded again |
+| D-123 | Drives and camera cards appear by themselves in Organise and, with a DCIM folder, in Devices (section 43). They are ordinary folders, read and written like any other, so §5.1's read-only rule now covers only phones and cameras that connect as devices. Volumes are known by UUID (D-91), which exFAT cards have and keep across unplugging (spike S3) | Requested: DSLR cards and external drives should be organised directly; an audit found two cards with one name could drop each other's analysis and people |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1583,6 +1585,20 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 **R-4209** A copy made inside the account folder that holds the original (D-79) drops the keys that make it an item of a post (D-105); a copy into any other folder keeps them, so a copied account folder still shows as the account. Trash Extra Copies never moves a file that belongs to the same post as the file it keeps. Grids show a post picture's place in its post ("2 of 5"). Find Missing counts an item as present when the library knows it anywhere (an archive entry with its key), so an item moved out of its account folder is not downloaded again. Renaming one file in an Archive folder keeps its date prefix (R-1504).
 
 **R-4210** *(D-119)* Facts read from files (dates, offsets, camera, place, audio tags, units and post keys) carry their own version: when reading them changes, they are read again without running any learned model again.
+
+---
+
+## 43. Drives
+
+**R-4301** *(D-123)* Drives plugged into the Mac (SD and CF cards, external SSDs and disks, USB sticks: anything ejectable, removable or external, mounted locally and not the startup disk) appear by themselves in Organise's folder menu under **Drives**, each with **Eject**, as they come and go. Opening one organises it like any folder; everything in sections 38 and 42 works on it. A pane showing a drive that went away says "The drive was ejected." and shows nothing from it.
+
+**R-4302** Eject first stops everything MediaPull is doing on the drive (watching it for changes, analysing it), then ejects it. When the system cannot eject it because another app has a file open, the person is told so and the drive stays.
+
+**R-4303** A drive with a `DCIM` folder at its top (a camera card) also appears in the Devices section (section 41), so Import New brings in only what was not imported before. The card is known by its volume UUID, so the record of what was imported (R-4105) follows the card, not its name.
+
+**R-4304** A locked card (read-only) can be browsed and imported from; changes to it are not offered.
+
+**R-4305** Volumes are told apart by their UUID, not their name (spike `docs/spikes/exfat-identity.md`): analysis results for files on a drive that is not connected are kept until the same drive is connected again without them, and are never dropped because another drive with the same name is connected in its place. Files on exFAT and FAT drives are moved, copied, sorted, renamed and undone as on the Mac's own disk; where the drive cannot rename without overwriting, MediaPull checks the name is free first, and a drive without a Trash says "This drive has no Trash, so nothing was moved." Nothing is ever deleted permanently.
 
 ---
 

@@ -60,7 +60,15 @@ struct OrganiseFolderPane: View {
             .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: headerTargeted ? 2 : 0).allowsHitTesting(false))
             .onDrop(of: [.fileURL], isTargeted: $headerTargeted) { openDropped($0) }
             Divider()
-            if pane.root != nil, mode == .profile, let source = pane.profileSource {
+            if let root = pane.root, app.driveCenter.isOnMissingDrive(root) {
+                // Nothing is shown from a drive that went away; it comes back when the drive does (R-4301).
+                VStack(spacing: 8) {
+                    Image(systemName: "externaldrive.badge.xmark").font(.system(size: 28, weight: .light)).foregroundStyle(.tertiary)
+                    Text("The drive was ejected.").font(.headline)
+                    Text("Connect it again, or choose another folder.").font(.callout).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if pane.root != nil, mode == .profile, let source = pane.profileSource {
                 // The folder as its site showed it, from its saved files (D-113).
                 ProfilePane(source: source, revision: pane.profileRevision, visible: organise.window?.section == .organise)
             } else if let root = pane.root {
@@ -179,6 +187,17 @@ struct FolderMenu: View {
         Menu {
             Section("Library Folders") {
                 ForEach(app.roots) { root in Button(root.name) { organise.open(root.url, in: pane) } }
+            }
+            // Drives plugged in now, each with Eject (R-4301, R-4302).
+            if !app.driveCenter.drives.isEmpty {
+                Section("Drives") {
+                    ForEach(app.driveCenter.drives) { drive in
+                        Button(drive.isReadOnly ? "\(drive.name) (locked)" : drive.name) { organise.open(drive.url, in: pane) }
+                    }
+                }
+                Menu("Eject") {
+                    ForEach(app.driveCenter.drives) { drive in Button(drive.name) { app.driveCenter.eject(drive) } }
+                }
             }
             let recent = organise.recentFolders.filter { r in !app.roots.contains { $0.url.path == r.path } }
             if !recent.isEmpty {

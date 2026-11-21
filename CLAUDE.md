@@ -83,7 +83,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   video and gallery downloads, never redirected), `--selftest-details` (a photo's camera, date and place, maps off; add
   `--selftest-map` to load the map; also Organise's duplicates and Details tab), `--selftest-profile` (offline: Profile, Channel,
   Timeline and Board views), `--selftest-devices` (offline: a stand-in iPhone and a simulated Android phone, browse and import),
-  `--selftest-formats` (offline: RAW+JPEG and Live Photo units, .hif, tagged audio, a post kept together)
+  `--selftest-formats` (offline: RAW+JPEG and Live Photo units, .hif, tagged audio, a post kept together,
+  `--selftest-drives <mount>` (an exFAT image check.sh attaches: a camera card imported, a pair moved and undone, Eject))
   (theme and layout are restored afterwards).
 
 ## Rules
@@ -145,6 +146,9 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `FolderOperations` so `freeDestination(alsoFree:)` keeps one shared name for the whole unit.
 - Facts read from files have their own version (`AnalysisRecord.currentFactsVersion`): bump it, not `currentVersion`, when only
   reading facts changes, so no model runs again. Local files never change format on the way into a folder (D-121).
+- Drives (D-123, `DriveCenter`, `Volumes`): volumes are told apart by UUID, never by name; analysis of a drive that is not
+  connected is pruned only when the one drive ever seen at that mount point is back (`Volumes.isGone`). Drives are ordinary
+  folders; only phones and cameras that connect as devices are read-only.
 - How real Android phones in File transfer mode are handed over is settled by `docs/spikes/device-access.md` (run
   `swift docs/spikes/device-probe.swift usb|icc` with a phone plugged in); record the results there and in D-116.
 

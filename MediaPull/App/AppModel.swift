@@ -49,6 +49,8 @@ final class AppModel {
     let analysis = AnalysisService()
     /// Phones and cameras plugged in (SPEC section 41).
     let deviceCenter = DeviceCenter()
+    /// Drives plugged in (SPEC section 43). Made when first asked for, after the app model exists.
+    @ObservationIgnored lazy var driveCenter = DriveCenter()
     /// Undo history for Organise (D-63).
     let journal = OperationJournal(folder: SelfTestRunner.isActive
         ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-journal-\(UUID().uuidString)")

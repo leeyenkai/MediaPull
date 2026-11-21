@@ -857,6 +857,11 @@ final class OrganiseModel {
             message = "A library folder is not changed from Organise. Rename or remove it in the Library."
             return
         }
+        // A locked card can be read and imported from, never changed (R-4304).
+        if let drive = app.driveCenter.drive(containing: plan.root), drive.isReadOnly {
+            message = "“\(drive.name)” is locked, so nothing on it can be changed. Copy to a target folder instead."
+            return
+        }
         guard !plan.isEmpty else {
             let nothing = plan.unsorted > 0
                 ? "Nothing to change: \(plan.unsorted) file\(plan.unsorted == 1 ? "" : "s") could not be sorted."

@@ -117,23 +117,30 @@ public enum FileOps {
     /// Renames `source` to `target` only when nothing is there; on another volume it is copied beside `target` first and
     /// then renamed the same way, and the source removed after. Never replaces anything.
     public static func renameExclusive(_ source: URL, to target: URL) throws {
-        if renamex_np(source.path, target.path, UInt32(RENAME_EXCL)) == 0 { return }
-        let code = errno
-        // A volume without exclusive renames (exFAT, some network shares): a plain move, which never replaces a file either.
-        if code == ENOTSUP || code == EINVAL {
-            guard !FileManager.default.fileExists(atPath: target.path) else { throw error(EEXIST, target) }
-            try FileManager.default.moveItem(at: source, to: target)
-            return
-        }
-        guard code == EXDEV else { throw error(code, target) }
+        if try exclusiveOrMove(source, to: target) { return }
         let fm = FileManager.default
         let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                  appropriateFor: target.deletingLastPathComponent(), create: true)
         defer { try? fm.removeItem(at: staging) }
         let staged = staging.appendingPathComponent(target.lastPathComponent)
         try fm.copyItem(at: source, to: staged)
-        guard renamex_np(staged.path, target.path, UInt32(RENAME_EXCL)) == 0 else { throw error(errno, target) }
+        // The second step lands on the target's volume, which may be an exFAT card (R-4305).
+        guard try exclusiveOrMove(staged, to: target) else { throw error(EXDEV, target) }
         try fm.removeItem(at: source)
+    }
+
+    /// An exclusive rename, or on a volume without them (exFAT, FAT, some network shares) a plain move once the name is
+    /// checked free; neither replaces a file. False when the two are on different volumes.
+    static func exclusiveOrMove(_ source: URL, to target: URL) throws -> Bool {
+        if renamex_np(source.path, target.path, UInt32(RENAME_EXCL)) == 0 { return true }
+        let code = errno
+        if code == ENOTSUP || code == EINVAL {
+            guard !FileManager.default.fileExists(atPath: target.path) else { throw error(EEXIST, target) }
+            try FileManager.default.moveItem(at: source, to: target)
+            return true
+        }
+        guard code == EXDEV else { throw error(code, target) }
+        return false
     }
 
     static func error(_ code: Int32, _ target: URL) -> Error {
