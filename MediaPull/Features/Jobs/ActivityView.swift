@@ -171,6 +171,7 @@ struct JobRow: View {
         case .analyse: "sparkle.magnifyingglass"
         case .organise: "folder.badge.gearshape"
         case .importing: "iphone.and.arrow.forward"
+        case .export: "square.and.arrow.up"
         }
     }
 

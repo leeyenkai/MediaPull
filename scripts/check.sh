@@ -74,6 +74,10 @@ check_only_in 'requestDelete|requestUpload|requestSyncClock|requestTakePicture|d
 check_only_in 'CLGeocoder|MKLocalSearch|MKReverseGeocod|MKGeocod|MKMapItem|MKDirections|MKLookAround|downloadAssets|MLModelCollection|import CoreLocation' 'NONE' 'Online analysis'
 # The one map (D-110): drawn in one file, only after the person allows maps.
 check_only_in '^(@[A-Za-z]+ +)*((public|internal|package|private|fileprivate) +)?import +((struct|class|enum|protocol|func|var|let|typealias) +)?MapKit\b' 'MediaPull/Platform/LocationMap.swift' 'MapKit'
+# Edit/Frame renders with Core Image and Core Text in one module (D-128), so preview and export are the same renderer.
+check_only_in '^(@[A-Za-z]+ +)*import +(CoreImage|CoreText)\b' 'MediaPullKit/Sources/MediaPullEdit/' 'Core Image and Core Text'
+# Apple's downloadable fonts are fetched in one file, only after the person allows it (D-129).
+check_only_in 'CTFontDescriptorMatchFontDescriptorsWithProgressHandler' 'MediaPullKit/Sources/MediaPullEdit/FontCatalog.swift' 'Font downloads'
 if grep -rn "runOpenPanelWith" MediaPull MediaPullKit/Sources --include=*.swift; then
   echo "error: the browser pane must not implement a file open panel"
   FAILED=1
@@ -180,6 +184,12 @@ else
   if [[ -x "$APP" ]]; then
     NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-formats 2>&1 \
       | grep -E "formats: (PASS|FAIL)" | tee /dev/stderr | grep -q "formats: PASS" || FAILED=1
+  fi
+  # Edit/Frame for photos, offline (section 46).
+  rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"
+  if [[ -x "$APP" ]]; then
+    NSUnbufferedIO=YES "$APP" -NSAppSleepDisabled YES --selftest-url about:blank --selftest-out "$OUT" --selftest-edit-photo 2>&1 \
+      | grep -E "edit-photo: (PASS|FAIL)" | tee /dev/stderr | grep -q "edit-photo: PASS" || FAILED=1
   fi
   # Metadata edits, offline (section 45).
   rm -rf "$OUT"; OUT="$(mktemp -d "${TMPDIR:-/tmp}/mediapull-selftest.XXXXXX")"

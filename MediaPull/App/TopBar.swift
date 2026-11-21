@@ -7,7 +7,7 @@ struct SectionTabs: View {
 
     var body: some View {
         ChipTabs(selection: $section, items: WindowSection.allCases, label: \.label, symbol: \.symbol)
-            .help("Collect media from the web, or organise media in folders (⌃⌘1, ⌃⌘2)")
+            .help("Collect media from the web, organise folders, bring in from devices, or edit and frame (⌃⌘1 to ⌃⌘4)")
     }
 }
 
@@ -115,6 +115,7 @@ extension WindowSection {
         case .collect: "square.and.arrow.down.on.square"
         case .organise: "folder"
         case .devices: "iphone"
+        case .edit: "slider.horizontal.3"
         }
     }
 }

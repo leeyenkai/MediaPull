@@ -14,7 +14,7 @@ let package = Package(
             name: "MediaPullKit",
             targets: [
                 "MediaPullCore", "MediaPullNet", "MediaPullMedia", "MediaPullEngines",
-                "MediaPullLibrary", "MediaPullStore", "MediaPullBrowser", "MediaPullAnalysis", "MediaPullDevices",
+                "MediaPullLibrary", "MediaPullStore", "MediaPullBrowser", "MediaPullAnalysis", "MediaPullDevices", "MediaPullEdit",
             ]
         ),
     ],
@@ -49,11 +49,12 @@ let package = Package(
             dependencies: ["MediaPullCore", "MediaPullMedia", "MediaPullLibrary"],
             swiftSettings: settings
         ),
+        .target(name: "MediaPullEdit", dependencies: ["MediaPullCore", "MediaPullMedia"], swiftSettings: settings),
         .testTarget(
             name: "MediaPullKitTests",
             dependencies: [
                 "MediaPullCore", "MediaPullNet", "MediaPullMedia", "MediaPullEngines",
-                "MediaPullLibrary", "MediaPullStore", "MediaPullBrowser", "MediaPullAnalysis", "MediaPullDevices",
+                "MediaPullLibrary", "MediaPullStore", "MediaPullBrowser", "MediaPullAnalysis", "MediaPullDevices", "MediaPullEdit",
             ],
             resources: [.copy("Fixtures")],
             swiftSettings: settings

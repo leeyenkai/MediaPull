@@ -375,6 +375,7 @@ struct FileDetails: View {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
                     Button("Open") { NSWorkspace.shared.open(file) }
                     Button("Quick Look") { QuickLook.shared.show([file]) }
+                    Button("Open in Edit/Frame") { model.openInEdit([file]) }
                 }
                 .controlSize(.small)
             }

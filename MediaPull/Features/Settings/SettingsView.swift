@@ -112,6 +112,11 @@ struct GeneralSettings: View {
                     + "place are always shown, worked out on this Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("Download Apple's extra fonts when chosen", isOn: $preferences.allowFontDownloads)
+                Text("Edit/Frame lists Apple's fonts that macOS downloads on request; choosing one fetches it from Apple. Fonts "
+                    + "already on this Mac never need it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Browser") {
                 Toggle("Remember browsing history", isOn: $preferences.rememberHistory)

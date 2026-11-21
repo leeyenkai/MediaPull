@@ -466,6 +466,7 @@ final class OrganisePane: MediaGridOwner {
             menu.addItem(copies)
         }
         let role = role
+        if let open = owner.window?.openInEditMenuItem(chosen) { menu.addItem(open) }
         for item in owner.window?.metadataMenuItems(for: chosen, showDetails: { [weak owner] photos in
             owner?.details = (photos[0], role)
             owner?.tab = .details

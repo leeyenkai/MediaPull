@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import MediaPullBrowser
 import MediaPullCore
+import MediaPullEdit
 import MediaPullEngines
 import MediaPullLibrary
 import MediaPullNet
@@ -51,6 +52,10 @@ final class AppModel {
     let deviceCenter = DeviceCenter()
     /// Drives plugged in (SPEC section 43). Made when first asked for, after the app model exists.
     @ObservationIgnored lazy var driveCenter = DriveCenter()
+    /// Edit/Frame recipes (R-4602), in Application Support; self-tests keep theirs apart.
+    let recipes = RecipeStore(folder: SelfTestRunner.isActive
+        ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-edits-\(UUID().uuidString)")
+        : RecipeStore.defaultFolder)
     /// Undo history for Organise (D-63).
     let journal = OperationJournal(folder: SelfTestRunner.isActive
         ? FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-selftest-journal-\(UUID().uuidString)")

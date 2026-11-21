@@ -22,6 +22,8 @@ struct MainWindow: View {
     @State private var organiseShown = false
     /// Devices, like Organise, is made when first shown and then kept.
     @State private var devicesShown = false
+    /// Edit/Frame, like Devices, is made when first shown and then kept.
+    @State private var editShown = false
     @State private var showActivity = false
     @State private var showNotes = false
 
@@ -80,6 +82,23 @@ struct MainWindow: View {
                 .accessibilityHidden(model.section != .devices)
                 .onAppear { devicesShown = true }
             }
+            if editShown || model.section == .edit {
+                PaneSplit(
+                    arrangement: app.preferences.editArrangement,
+                    visible: model.editVisiblePanes,
+                    panes: [
+                        .editMedia: AnyView(EditMediaPane(model: model, edit: model.edit)),
+                        .editCanvas: AnyView(EditCanvasPane(model: model, edit: model.edit)),
+                        .editInspector: AnyView(EditInspectorPane(model: model, edit: model.edit)),
+                    ]
+                )
+                .background(Color(nsColor: .windowBackgroundColor))
+                .opacity(model.section == .edit ? 1 : 0)
+                .allowsHitTesting(model.section == .edit)
+                .accessibilityHidden(model.section != .edit)
+                .onChange(of: app.fileChangeRevision) { _, _ in model.edit.filesChanged() }
+                .onAppear { editShown = true }
+            }
         }
         .tint(app.preferences.theme.accent)
         .frame(minWidth: 1100, minHeight: 700)
@@ -131,7 +150,7 @@ struct MainWindow: View {
         }
         .sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.flexible)
-        if model.section == .devices {
+        if model.section == .devices || model.section == .edit {
             ToolbarItem(placement: .automatic) { activityButton }
                 .sharedBackgroundVisibility(.hidden)
         } else if model.section == .organise {
@@ -171,6 +190,7 @@ struct MainWindow: View {
         switch model.section {
         case .organise: model.organise.source.root?.lastPathComponent ?? "Organise"
         case .devices: model.devices.device?.name ?? "Devices"
+        case .edit: model.edit.current?.lastPathComponent ?? "Edit/Frame"
         case .collect: model.browser.title.isEmpty ? "MediaPull" : model.browser.title
         }
     }

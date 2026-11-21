@@ -132,6 +132,11 @@ final class SelfTestRunner {
             quit()
             return
         }
+        if CommandLine.arguments.contains("--selftest-edit-photo") {
+            await exerciseEditPhoto(out: out)
+            quit()
+            return
+        }
         if CommandLine.arguments.contains("--selftest-edits") {
             await exerciseEdits(out: out)
             quit()
@@ -1505,6 +1510,145 @@ final class SelfTestRunner {
         check(entry("IMG_1.HEIC")?.record?.analysedAt == analysedAt, "the analysis is still the first one")
         model.section = .collect
         note("edits: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// Edit/Frame for photos (section 46), offline: adjustments, a look, the Poster template with three fonts, export at a
+    /// social size, the original untouched, the recipe kept and reopened, Revert and ⌘Z.
+    private func exerciseEditPhoto(out: URL) async {
+        let app = AppModel.shared
+        let fm = FileManager.default
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            note("edit-photo: \(ok ? "ok" : "FAIL") \(what)")
+            if !ok { failures.append(what) }
+        }
+        let folder = out.appendingPathComponent("Framing", isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        // An 800 × 600 photo: a blue-green gradient, with a date and a place.
+        let photo = folder.appendingPathComponent("street.jpg")
+        if let context = CGContext(data: nil, width: 800, height: 600, bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        {
+            for y in 0 ..< 600 {
+                context.setFillColor(red: 0.1, green: 0.2 + CGFloat(y) / 1500, blue: 0.4 + CGFloat(y) / 1200, alpha: 1)
+                context.fill(CGRect(x: 0, y: y, width: 800, height: 1))
+            }
+            if let image = context.makeImage(),
+               let destination = CGImageDestinationCreateWithURL(photo as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
+            {
+                CGImageDestinationAddImage(destination, image, [
+                    kCGImagePropertyExifDictionary: [kCGImagePropertyExifDateTimeOriginal: "2024:12:22 21:00:00"],
+                    kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 38.9, kCGImagePropertyGPSLatitudeRef: "N",
+                                                    kCGImagePropertyGPSLongitude: 77.0, kCGImagePropertyGPSLongitudeRef: "W"],
+                ] as CFDictionary)
+                CGImageDestinationFinalize(destination)
+            }
+        }
+        let original = (try? FileHasher.sha256(of: photo)) ?? ""
+        let edit = model.edit
+        model.openInEdit([photo])
+        await waitUntil(timeout: 30) { edit.session != nil && edit.preview != nil }
+        check(model.section == .edit && edit.preview != nil, "the photo opened on the canvas")
+        check(edit.entries.contains { $0.name == "street.jpg" }, "the Media pane lists its folder")
+
+        edit.change { recipe in
+            recipe.adjust.exposure = 0.4
+            recipe.adjust.contrast = 15
+            recipe.look = Look(name: .film, amount: 0.6)
+            EditTemplate.poster.apply(to: &recipe)
+            for index in recipe.layers.indices {
+                guard case var .text(style) = recipe.layers[index].kind else { continue }
+                if style.text == "The Title" { style.text = "The Post" }
+                if style.text.hasPrefix("First Name") { style.text = "Streep\nHanks" }
+                recipe.layers[index].kind = .text(style)
+            }
+        }
+        await waitUntil(timeout: 20) { edit.missingFonts.isEmpty && edit.preview != nil }
+        let fonts = Set((edit.recipe?.layers ?? []).compactMap { layer -> String? in
+            if case let .text(style) = layer.kind { return style.family }
+            return nil
+        })
+        check(fonts.count >= 2 && edit.missingFonts.isEmpty, "the Poster template's fonts are on this Mac (\(fonts.sorted()))")
+        edit.tab = .text
+        try? await Task.sleep(for: .seconds(1))
+        snapshot(to: out.appendingPathComponent("edit-frame.png"))
+
+        // Kept as a recipe, in Application Support only.
+        await waitUntil(timeout: 10) { edit.editedPaths.contains(photo.standardizedFileURL.path) }
+        let stored = await app.recipes.recipe(for: photo)
+        check(stored?.layers.count == 5 && stored?.look?.name == .film, "the recipe is kept as it was made")
+        check(((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []) == ["street.jpg"], "nothing is written beside the photo")
+
+        // Export for a post: 4:5 at most, a 2:3 poster inside it.
+        edit.change { $0.export.size = .post45 }
+        edit.export()
+        let exported = folder.appendingPathComponent("street-edited.jpg")
+        await waitUntil(timeout: 60) { !edit.exporting && fm.fileExists(atPath: exported.path) }
+        check(fm.fileExists(atPath: exported.path), "Export wrote street-edited.jpg")
+        check((try? FileHasher.sha256(of: photo)) == original, "the original is unchanged")
+        if let source = CGImageSourceCreateWithURL(exported as CFURL, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        {
+            check(image.width <= 1080 && image.height <= 1350 && abs(Double(image.width) / Double(image.height) - 2.0 / 3) < 0.01,
+                  "the export fits a post and keeps the poster's shape (\(image.width) × \(image.height))")
+            let corner = Self.colour(image, x: 3, y: 3)
+            check(corner.r > 240 && corner.g > 240 && corner.b > 240, "the border is white (\(corner))")
+            // Dark ink of the date and credits in the bottom border, white title text over the photo.
+            var dark = 0
+            for x in stride(from: image.width / 2, to: image.width - 8, by: 2) {
+                for y in stride(from: Int(Double(image.height) * 0.8), to: Int(Double(image.height) * 0.86), by: 2)
+                    where Self.colour(image, x: x, y: y).r < 90
+                {
+                    dark += 1
+                }
+            }
+            check(dark > 15, "the script date is drawn in the border (\(dark) dark points)")
+            var light = 0
+            for x in stride(from: Int(Double(image.width) * 0.06), to: Int(Double(image.width) * 0.6), by: 2) {
+                for y in stride(from: Int(Double(image.height) * 0.66), to: Int(Double(image.height) * 0.73), by: 2) {
+                    let pixel = Self.colour(image, x: x, y: y)
+                    if pixel.r > 220, pixel.g > 220 { light += 1 }
+                }
+            }
+            check(light > 40, "the white title is drawn over the photo (\(light) light points)")
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            check(properties?[kCGImagePropertyGPSDictionary] != nil, "the location is kept, as set")
+        } else {
+            check(false, "the export can be read")
+        }
+
+        // Reopened: the same recipe.
+        edit.load(exported)
+        await waitUntil(timeout: 20) { edit.session != nil && edit.current == exported }
+        edit.load(photo)
+        await waitUntil(timeout: 20) { edit.session != nil && edit.current == photo && edit.recipe != nil }
+        check(edit.recipe?.layers.count == 5 && edit.recipe?.adjust.exposure == 0.4, "reopening the photo brings its recipe back")
+
+        // Revert, then ⌘Z.
+        // In use each change is its own event (a click, a drag), which closes its undo group. A self-test has no events,
+        // so the group stays open: here the test closes it and makes Revert a group of its own, as a click would.
+        let manager = model.hostWindow?.undoManager
+        manager?.groupsByEvent = false
+        while let manager, manager.groupingLevel > 0 { manager.endUndoGrouping() }
+        manager?.beginUndoGrouping()
+        edit.revert()
+        manager?.endUndoGrouping()
+        check(edit.recipe?.isEdited == false, "Revert clears the edits")
+        manager?.undo()
+        manager?.groupsByEvent = true
+        check(edit.recipe?.layers.count == 5, "⌘Z brings them back")
+        model.section = .collect
+        note("edit-photo: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
+    }
+
+    /// The colour of one pixel, origin top left.
+    static func colour(_ image: CGImage, x: Int, y: Int) -> (r: Int, g: Int, b: Int) {
+        var data = [UInt8](repeating: 0, count: 4)
+        guard let context = CGContext(data: &data, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (0, 0, 0) }
+        context.draw(image, in: CGRect(x: -x, y: -(image.height - 1 - y), width: image.width, height: image.height))
+        return (Int(data[0]), Int(data[1]), Int(data[2]))
     }
 
     /// A short tagged AAC file, made with the system's encoder (no ffmpeg needed).

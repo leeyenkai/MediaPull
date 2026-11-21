@@ -180,6 +180,7 @@ extension AppModel {
     private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID) async {
         guard !moves.isEmpty else { return }
         await analysis.noteMoves(moves)
+        await recipes.movePaths(moves)
         await store?.moveArchivePaths(moves)
         await accountFolders.moveFolders(moves)
         // Queued and running jobs show where their folder is now (audit 6, B6-m8), once (audit 8, B8-m6).
@@ -447,6 +448,7 @@ extension WindowModel {
         case .organise: organise.message = text
         case .collect: library.message = text
         case .devices: devices.message = text
+        case .edit: edit.message = text
         }
     }
 }

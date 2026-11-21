@@ -209,9 +209,11 @@ struct AppCommands: Commands {
                 .keyboardShortcut("2", modifiers: [.command, .control])
             Button("Devices") { window?.section = .devices }
                 .keyboardShortcut("3", modifiers: [.command, .control])
+            Button("Edit/Frame") { window?.section = .edit }
+                .keyboardShortcut("4", modifiers: [.command, .control])
             Divider()
             if let section = window?.section, section != .collect {
-                ForEach(Array(PaneID.panes(in: section == .organise ? .organise : .devices).enumerated()), id: \.element) { index, pane in
+                ForEach(Array(PaneID.panes(in: section.paneGroup).enumerated()), id: \.element) { index, pane in
                     paneToggle(pane, key: Character("\(index + 1)"))
                 }
             } else {
@@ -225,11 +227,7 @@ struct AppCommands: Commands {
                     .keyboardShortcut("i")
             }
             Menu("Arrange Panes") {
-                let group: PaneGroup = switch window?.section {
-                case .organise: .organise
-                case .devices: .devices
-                default: .collect
-                }
+                let group: PaneGroup = window?.section.paneGroup ?? .collect
                 LayoutPresetCommands(group: group)
                 Divider()
                 ForEach(PaneID.panes(in: group), id: \.self) { pane in

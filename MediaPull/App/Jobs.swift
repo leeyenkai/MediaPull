@@ -14,6 +14,7 @@ enum JobKind: String {
     case analyse = "Analyse"
     case organise = "Organise"
     case importing = "Import"
+    case export = "Export"
 }
 
 enum JobState: Equatable {

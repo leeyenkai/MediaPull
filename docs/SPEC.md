@@ -83,6 +83,7 @@ Decisions that changed during implementation are D-13 and D-24 to D-56 (and D-68
 43. Drives
 44. Map and Timeline
 45. Metadata edits
+46. Edit/Frame
 
 Appendices: A. Bridge protocol, B. Extraction message schema, C. Sidecar schema and examples, D. CDN original-size rules, E. Engine configuration template
 
@@ -1332,6 +1333,11 @@ The icon is a Liquid Glass icon in Icon Composer's format: `MediaPull/Resources/
 | D-124 | Organise gains a Map & Timeline pane (section 44): an optional pane rather than a view mode, so the grid stays beside it, following the Source or Target pane last worked in. Pins are clustered by MediaPull's own grid (no map search), and the map stays behind the existing opt-in (D-110). The timeline is drawn by MediaPull itself; no charting framework is added | Requested: see where and when photos were taken, and pick them from there to organise |
 | D-125 | Metadata edits (section 45) write JPEG and HEIC in place, losslessly, through ImageIO's copy of the image data with a full copy of the file's metadata and removals made explicitly; measured (2026-11-21): a real iPhone portrait HEIC kept its pixels, gain maps, depth, mattes and all 58 maker-note entries, while PNG and TIFF dropped tags on that route, so they and every other format use a `.xmp` beside the file. Each write is checked by decoding and reading back. The new version replaces the file by a name swap (or hidden names), and the old bytes are not kept (amends "nothing is deleted permanently" for this one case, as the person chose): Undo writes the old values back. Videos and audio wait for spike S1 | Requested: fix dates, places, ratings and keywords on the person's own photos, in the files, without re-encoding and without a second copy of every photo |
 | D-126 | An edit changes a file's checksum, which keys analysis (D-60), so the edit carries the results across: the record, its faces with their people and corrections, and their vectors are copied to the new checksum before the file is replaced (copied, not moved, so other copies keep theirs; pruning removes what no file holds), the facts are read again, and analysis does not pick the file up while the edit is under way. `.xmp` values are read per path when files are listed, never stored in the shared record, since copies share it | Otherwise every edit would rerun every model and drop the person's face corrections |
+| D-127 | Edit/Frame is a section of its own (section 46), not a bigger Preview editor: editing in depth needs a canvas and an inspector beside the media. Edits are recipes, the original is never changed, and Export writes a new file (the person's choice), like a non-destructive photo editor. Recipes live in Application Support, keyed by a file reference, path and checksum, and follow MediaPull's moves | Requested: a basic, simple in-depth editor and framer, good for posting |
+| D-128 | Rendering for Edit/Frame is Core Image (adjustments, looks, RAW develop) and Core Text (layers) in a module of its own, `MediaPullEdit`, the only place they are used; preview and export use the same renderer, laid out in units of the canvas, so the export matches what was shown | One renderer keeps preview and export the same; no third-party code |
+| D-129 | Fonts: the Mac's installed fonts, plus Apple's downloadable system fonts after a one-time opt-in, fetched by macOS from Apple (the only download Edit/Frame makes; §5.1 forbids uploads, not this). No fonts are bundled | Requested: a wide variety of fonts |
+| D-130 | Video edits that only cut, rotate, flip or mute are written without re-encoding (AVFoundation passthrough, verified); looks, crop, frames, layers, speed and fades re-encode with the Mac's HEVC or H.264 encoder | Requested; re-encode only when the picture itself changes |
+| D-131 | Audio edits run through the bundled ffmpeg: stream copy where the format allows, its filters otherwise. MP3 output needs an MP3 encoder, so the build adds LAME (LGPL, built from source pinned by SHA-256), with `flac` and `alac` encoders and the `atrim`, `afade`, `volume`, `loudnorm`, `concat` and `asetpts` filters | Requested: MP3 output; the Mac's own encoders cannot write MP3 |
 | D-44 | Concurrency is 6 requests per host and 16 in total (Instagram's CDN stays at 2); identical content saved concurrently is reserved by checksum so only one copy is written; cancelling a job stops a running ffmpeg | Faster probing of large pages; correct duplicates; cancel means stop |
 | D-32 | When a version of an item cannot be converted (for example AV1 on a Mac without an AV1 decoder), the next version is tried; only if none works is the original codec kept, with a note | Prefers a playable H.264 or HEVC copy whenever the page offers one |
 
@@ -1637,6 +1643,32 @@ Where results go (D-68): **In Place** (no target; folders inside the source fold
 **R-4507** Ratings and keywords are facts read from the file or its `.xmp` (XMP rating and subject, IPTC keywords). They show in a file's details; the filters offer **Rating** (at least one to five stars) and **Keywords**, and the sorts offer **Rating**, in the Library and in Organise.
 
 **R-4508** The context menu of a file in the Library and in Organise has **Rating** (No Rating, one to five stars) and **Edit Details**, which opens the Edit section of the file's details (Preview pane, Organise's Details tab): stars, keywords, a date shift or time zone, and the location (**Set on Map** once maps are allowed, R-514; otherwise a search of the bundled place list; **Remove Location**). No sheet opens (D-69). What cannot be changed for a file is shown with the reason.
+
+---
+
+## 46. Edit/Frame
+
+**R-4601** *(D-127)* A fourth section, **Edit/Frame** (⌃⌘4), edits photos, videos and audio in depth. Its panes are **Media** (a folder's photos, videos and audio; files that have edits are marked), **Canvas** (the file as edited, with Before/After) and **Inspector** (the tools for the file's kind). Files open there from **Open in Edit/Frame** in the Library, Organise and the Preview pane, or by dragging them onto the section. The Preview pane's quick editor (section 32) stays.
+
+**R-4602** *(D-127)* The original is never changed. A file's edits are a **recipe** kept in Application Support (never in a library folder, as R-601), saved as the person works and reopened whenever the file is opened again, also after it was moved or renamed by MediaPull; **Revert** clears it. **Export** writes the result as a new file. Changes to a recipe are undone and redone with ⌘Z while the section is shown.
+
+**R-4603** Photo adjustments, each a slider with its own reset: Exposure, Contrast, Highlights, Shadows, Whites, Blacks (Light); Temperature, Tint, Vibrance, Saturation (Colour); Clarity, Sharpen, Vignette, Grain (Effects). **Looks** apply a style at a chosen strength (Mono, Noir, Silvertone, Film, Fade, Warm, Cool, Vivid, Chrome, Instant). Camera RAW files are developed from their raw data (R-4203: the RAW itself stays as it is).
+
+**R-4604** Geometry: crop with the quick editor's aspect presets (Free, Original, Square, 4:5, 3:4, 16:9, 9:16, plus 2:3 and 3:2), straighten (−45° to 45°, cropped to fit), rotate and flip.
+
+**R-4605** *(D-128)* A **frame** puts the photo on a canvas: the canvas shape (the photo's own, 1:1, 4:5, 9:16, 3:2, 2:3, or the photo's with a border), its background (any colour, white by default; a blurred copy of the photo; or a two-colour gradient), the photo's inset from each edge (one value for all, or a thicker bottom), its corner radius and an optional shadow. Templates start a frame: Gallery Border, Polaroid, Poster, Caption Below and Centred Title.
+
+**R-4606** Layers on top: **text** (any font family and face, size, colour, opacity, alignment, letter spacing, line height, capitals, rotation, an optional shadow or outline, placed and sized by dragging on the canvas, over the photo, the border or both), **shapes** (rectangle, ellipse, line; fill or outline; colour and opacity) and **images** (a picture from a file, such as a logo). Layers are listed in the order they are drawn, and can be shown, hidden, reordered and removed.
+
+**R-4607** *(D-129)* Fonts: every font installed on the Mac, and Apple's fonts that macOS downloads on request, marked as such. A downloadable font is fetched from Apple only after the person allows font downloads once (Settings can turn it off again); nothing is uploaded. The font list can be searched and shows each family in its own face. A recipe whose font is missing draws with the system font and says so.
+
+**R-4608** Photo export: JPEG, HEIC or PNG; size (Original, long edge 1080, 2048 or 4096 px, or 1080 × 1350, 1080 × 1080, 1080 × 1920 for social posts); colour (sRGB or Display P3); metadata kept, with options to leave out the location and the camera details. It goes beside the original as `<name>-edited.<ext>` (a free name) or into a chosen folder; a MediaPull metadata file comes along as a copy's does (D-105) and records `edited`. HDR is kept only if spike S2 shows it can be; otherwise the export is SDR and says so.
+
+**R-4609** *(D-130)* Video: trim, cut out parts and split; rotate and flip; mute; frame grabs — these alone are written without re-encoding (checked). Looks and adjustments, crop and resize (9:16, 4:5, 1:1), the frame and layers of R-4605 and R-4606, speed (0.25× to 4×) and fades of picture and sound are rendered into a new HEVC or H.264 file (MP4 or MOV). Exports run as jobs with progress and Cancel.
+
+**R-4610** *(D-131)* Audio: the waveform, playing a selection, trim and cutting out parts (without re-encoding for MP3, AAC and M4A), fades, volume and loudness normalisation, conversion to MP3, M4A (AAC or Apple Lossless), FLAC, WAV or AIFF, and tags and artwork. Exports run as jobs with progress and Cancel.
+
+**R-4611** **Copy Settings** and **Paste Settings** carry the look, adjustments, frame and layers (each chosen) from one file to others; **Export Selected** exports several files with one export setting, as one job with progress and Cancel.
 
 ---
 

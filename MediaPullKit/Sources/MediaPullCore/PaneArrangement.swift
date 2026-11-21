@@ -1,8 +1,8 @@
 import Foundation
 
-/// The sections of the window, each with its own panes (D-62, D-115).
+/// The sections of the window, each with its own panes (D-62, D-115, D-127).
 public enum PaneGroup: String, Codable, Sendable, Hashable {
-    case collect, organise, devices
+    case collect, organise, devices, edit
 }
 
 /// The window's panes (SPEC sections 7 and 38).
@@ -10,6 +10,7 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
     case source, extracted, preview, library, downloads
     case organiseSource, organiseWork, organiseTarget, organiseMap
     case devicesList, devicesMedia, devicesImport
+    case editMedia, editCanvas, editInspector
 
     public var title: String {
         switch self {
@@ -25,6 +26,9 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
         case .devicesList: "Devices"
         case .devicesMedia: "Media"
         case .devicesImport: "Import"
+        case .editMedia: "Media"
+        case .editCanvas: "Canvas"
+        case .editInspector: "Inspector"
         }
     }
 
@@ -32,6 +36,7 @@ public enum PaneID: String, Codable, CaseIterable, Sendable, Hashable {
         switch self {
         case .organiseSource, .organiseWork, .organiseTarget, .organiseMap: .organise
         case .devicesList, .devicesMedia, .devicesImport: .devices
+        case .editMedia, .editCanvas, .editInspector: .edit
         default: .collect
         }
     }
@@ -96,11 +101,20 @@ public struct PaneArrangement: Codable, Equatable, Sendable, Hashable {
         ("Import Below Devices", .devicesImportBelow),
     ]
 
+    public static let editStandard = PaneArrangement(columns: [[.editMedia], [.editCanvas], [.editInspector]])
+    public static let editMediaBelow = PaneArrangement(columns: [[.editCanvas, .editMedia], [.editInspector]])
+
+    public static let editPresets: [(name: String, arrangement: PaneArrangement)] = [
+        ("Standard", .editStandard),
+        ("Media Below Canvas", .editMediaBelow),
+    ]
+
     public static func presets(for group: PaneGroup) -> [(name: String, arrangement: PaneArrangement)] {
         switch group {
         case .collect: presets
         case .organise: organisePresets
         case .devices: devicesPresets
+        case .edit: editPresets
         }
     }
 

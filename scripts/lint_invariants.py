@@ -70,7 +70,7 @@ APPLE_AND_OWN = {
     "IOKit", "ImageCaptureCore", "ImageIO", "MapKit", "Observation", "PackageDescription", "Quartz", "QuartzCore", "Security", "SwiftData", "SwiftUI",
     "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "Vision", "WebKit", "XCTest", "os",
     "MediaPullAnalysis", "MediaPullBrowser", "MediaPullCore", "MediaPullEngines", "MediaPullLibrary", "MediaPullMedia",
-    "MediaPullNet", "MediaPullStore", "MediaPullDevices",
+    "MediaPullNet", "MediaPullStore", "MediaPullDevices", "MediaPullEdit", "CoreImage", "CoreText",
 }
 RULES.append({
     "id": "framework",

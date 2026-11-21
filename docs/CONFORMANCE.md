@@ -259,6 +259,17 @@ change as the code.
 | R-4506 | built | `AnalysisStore.rekey`, `AnalysisService.followEdit`, `AnalysisService.beginEdit` | `--selftest-edits` | The record, faces and vectors are copied; facts are read again |
 | R-4507 | built | `MediaFacts.rating`, `LibraryFilter.minRating`, `LibrarySort.rating`, `MediaFacts.applying` | `--selftest-edits` | Keywords also match search |
 | R-4508 | person | `WindowModel.metadataMenuItems`, `MetadataEditSection`, `LocationPicker`, `OfflineGeocoder.search` | `--selftest-edits` | The menus, the Edit section and the map picker need a person |
+| R-4601 | built | `EditModel`, `EditMediaPane`, `EditCanvasPane`, `EditInspectorPane`, `WindowModel.openInEdit` | `--selftest-edit-photo` | Photos now; videos and audio show that their editing comes next (R-4609, R-4610) |
+| R-4602 | built | `RecipeStore`, `EditRecipe`, `EditModel.change`, `EditModel.revert` | `testTheStoreKeepsRecipesFollowsMovesAndForgetsBlankOnes`, `testRecipesRoundTripAndReadOverABlankOne`, `--selftest-edit-photo` | |
+| R-4603 | built | `PhotoRenderer.adjust`, `PhotoRenderer.apply`, `CIRAWFilter` in `PhotoRenderer.source` | `testAdjustmentsMoveThePictureTheRightWay` | The look of each slider needs a person |
+| R-4604 | built | `PhotoRenderer.geometry`, `EditCropOverlay`, `EditGeometry.straightenScale` | `testGeometryTurnsCropsAndStraightens`, `testGeometryAndSizes` | Dragging the crop needs a person |
+| R-4605 | built | `FrameRenderer`, `Frame`, `EditTemplate` | `testFrameLayout`, `testAFrameAndTextAreDrawnWhereTheRecipeSays`, `--selftest-edit-photo` | |
+| R-4606 | built | `LayerRenderer`, `EditLayerOverlay`, `LayersTab` in `MediaPull/Features/EditFrame/EditInspector.swift` | `testAFrameAndTextAreDrawnWhereTheRecipeSays`, `--selftest-edit-photo` | Dragging layers needs a person |
+| R-4607 | built | `FontCatalog`, `LayerRenderer.font`, `FontPicker` in `MediaPull/Features/EditFrame/EditInspector.swift`, `Preferences.allowFontDownloads` | `testAFrameAndTextAreDrawnWhereTheRecipeSays`, `docs/spikes/fonts.md` | A real download from Apple needs a person |
+| R-4608 | built | `PhotoExporter`, `EditModel.export` | `testExportWritesANewFileAndLeavesTheOriginal`, `--selftest-edit-photo` | HDR waits for spike S2 |
+| R-4609 | missing | | | Video editing: next step |
+| R-4610 | missing | | | Audio editing: next step |
+| R-4611 | missing | | | Copy and Paste Settings, Export Selected: next step |
 | R-4003 | built | `AccountProfileView`, `ProfileBuilder.instagram` | `testAnInstagramFolderBecomesItsProfile`, `testAFlatFolderIsSortedByItsMetadata`, `--selftest-profile` | Header, highlights, tabs, grid marks, pinned first |
 | R-4004 | person | `PostDetailView`, `StoryPlayerView` | none | Carousel, caption and story player need a person to try |
 | R-4005 | built | `ChannelView`, `VideoDetailView`, `ProfileBuilder.channel` | `testAFolderOfAccountsAndOtherSites`, `--selftest-profile` | Videos and playlists; playing needs a person |

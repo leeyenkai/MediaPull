@@ -943,6 +943,7 @@ final class LibraryModel: MediaGridOwner {
         {
             menu.addItem(copies)
         }
+        if let window, let open = window.openInEditMenuItem(chosen.map(\.url)) { menu.addItem(open) }
         if let window {
             for item in window.metadataMenuItems(for: chosen.map(\.url), showDetails: { [weak window] photos in
                 window?.showPreview = true

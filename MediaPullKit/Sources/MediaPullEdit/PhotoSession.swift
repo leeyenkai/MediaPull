@@ -1,0 +1,65 @@
+import CoreGraphics
+import CoreImage
+import Foundation
+import MediaPullCore
+
+/// A photo open in Edit/Frame: decoded once, with a smaller copy for the canvas, rendered with any recipe off the main
+/// actor. The app holds it without seeing Core Image (D-128). Core Image images never change, so sharing is safe.
+public final class PhotoSession: @unchecked Sendable {
+    public let url: URL
+    /// The photo's size upright, before any edit.
+    public let size: CGSize
+    private let proxy: CIImage
+
+    /// The canvas never needs more than this many pixels on its long edge.
+    public static let proxyEdge: CGFloat = 2400
+
+    /// Reads the photo; nil when it cannot be decoded. Slow for large files: call off the main actor.
+    public init?(url: URL) {
+        guard let source = PhotoRenderer.source(url, draft: true), source.extent.width > 0 else { return nil }
+        let upright = source.transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
+        self.url = url
+        size = upright.extent.size
+        // Rendered once into memory, so every slider move starts from decoded pixels, not the file.
+        let small = PhotoRenderer.scaled(upright, toFit: CGSize(width: Self.proxyEdge, height: Self.proxyEdge))
+        if let bitmap = PhotoRenderer.cgImage(small) {
+            proxy = CIImage(cgImage: bitmap)
+        } else {
+            proxy = small
+        }
+    }
+
+    /// The result for the canvas, fitted to `fit` points × scale. `before` shows the photo with no edits (Before/After).
+    public func preview(_ recipe: EditRecipe, fit: CGSize, before: Bool = false) -> CGImage? {
+        if before { return PhotoRenderer.cgImage(PhotoRenderer.scaled(proxy, toFit: fit)) }
+        let canvas = PhotoRenderer.render(proxy, recipe: recipe, fit: fit) { size in
+            LayerRenderer.image(recipe.layers, canvas: size)
+        }
+        return PhotoRenderer.cgImage(canvas)
+    }
+
+    /// The picture turned and straightened but not cropped, for choosing the crop; no frame or layers.
+    public func uncropped(_ recipe: EditRecipe, fit: CGSize) -> CGImage? {
+        var plain = recipe
+        plain.geometry.crop = nil
+        plain.frame = nil
+        plain.layers = []
+        return PhotoRenderer.cgImage(PhotoRenderer.scaled(PhotoRenderer.picture(proxy, recipe: plain), toFit: fit))
+    }
+
+    /// Small previews of each look, for the look picker.
+    public func lookPreview(_ recipe: EditRecipe, look: LookName, edge: CGFloat) -> CGImage? {
+        var styled = recipe
+        styled.look = Look(name: look)
+        styled.frame = nil
+        styled.layers = []
+        let small = PhotoRenderer.scaled(proxy, toFit: CGSize(width: edge * 2, height: edge * 2))
+        return PhotoRenderer.cgImage(PhotoRenderer.render(small, recipe: styled, fit: CGSize(width: edge, height: edge)))
+    }
+
+    /// Width over height of the picture once turned and straightened (what the crop's shape is measured against).
+    public func turnedRatio(_ geometry: EditGeometry) -> Double {
+        let turned = geometry.turnedSize(size)
+        return turned.height > 0 ? turned.width / turned.height : 1
+    }
+}

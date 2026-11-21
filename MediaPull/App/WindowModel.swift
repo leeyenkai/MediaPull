@@ -43,11 +43,13 @@ final class WindowModel: Identifiable, MediaGridOwner {
     let organise: OrganiseModel
     /// The Devices section of this window (SPEC section 41).
     let devices: DevicesModel
+    let edit: EditModel
     /// Which section the window shows: Collect (browser, extracted media, preview, library) or Organise (D-62).
     var section: WindowSection = .collect {
         didSet {
             if section == .organise { organise.updateAnalysisFolders() }
             if section == .devices { devices.shown() }
+            if section == .edit { edit.shown() }
             // The hidden section stays in place (opacity, D-62): nothing in it may keep the keyboard, or Space, Return
             // and ⌘⌫ would act on a selection the person cannot see, and typing would go to a field they cannot see.
             if section != oldValue { hostWindow?.makeFirstResponder(nil) }
@@ -113,6 +115,9 @@ final class WindowModel: Identifiable, MediaGridOwner {
     var showDevicesList = true
     var showDevicesMedia = true
     var showDevicesImport = true
+    var showEditMedia = true
+    var showEditCanvas = true
+    var showEditInspector = true
     /// What the Preview pane shows: the last item or file selected on its own.
     var previewSubject: PreviewSubject?
     /// The photos Edit Details was chosen for (R-4508), until the selection changes.
@@ -191,12 +196,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
         library = LibraryModel()
         organise = OrganiseModel()
         devices = DevicesModel()
+        edit = EditModel()
         let first = BrowserController()
         tabs = [first]
         selectedTabID = first.id
         library.window = self
         organise.window = self
         devices.window = self
+        edit.window = self
         if !SelfTestRunner.isActive { filter = AppModel.shared.preferences.extractedFilter }
         wire(first)
         let stream = ingestor.snapshots
@@ -791,6 +798,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
         return panes
     }
 
+    var editVisiblePanes: Set<PaneID> {
+        var panes = Set<PaneID>()
+        if showEditMedia { panes.insert(.editMedia) }
+        if showEditCanvas { panes.insert(.editCanvas) }
+        if showEditInspector { panes.insert(.editInspector) }
+        return panes
+    }
+
     var devicesVisiblePanes: Set<PaneID> {
         var panes = Set<PaneID>()
         if showDevicesList { panes.insert(.devicesList) }
@@ -832,7 +847,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
     /// pane holding a text field that has the keyboard, else the pane last clicked, else its Source.
     var keyboardFolderPane: PaneID? {
         // Devices are read-only: no folder pane there takes ⌘F, ⌘R or New Folder, and the hidden Library never does.
-        if section == .devices { return nil }
+        if section == .devices || section == .edit { return nil }
         if section == .organise {
             let panes: [PaneID] = [.organiseSource, .organiseTarget]
             if let responder = hostWindow?.firstResponder, responder is NSText || responder is NSTextField,
@@ -923,7 +938,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
             }
         case .collect:
             isShowing(.library) ? library.selectedFolder : nil
-        case .devices:
+        case .devices, .edit:
             nil
         }
     }
@@ -946,6 +961,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         case .collect: [.library, .extracted]
         case .organise: [.organiseSource, .organiseTarget]
         case .devices: [.devicesMedia]
+        case .edit: [.editMedia]
         }
         if let focusedPane, candidates.contains(focusedPane), isShowing(focusedPane) { return focusedPane }
         return candidates.first(where: isShowing) ?? candidates[0]
@@ -956,6 +972,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
         case .collect: visiblePanes.contains(pane)
         case .organise: organiseVisiblePanes.contains(pane)
         case .devices: devicesVisiblePanes.contains(pane)
+        case .edit: editVisiblePanes.contains(pane)
         }
     }
 
@@ -973,10 +990,14 @@ final class WindowModel: Identifiable, MediaGridOwner {
         case .devicesList: showDevicesList = show
         case .devicesMedia: showDevicesMedia = show
         case .devicesImport: showDevicesImport = show
+        case .editMedia: showEditMedia = show
+        case .editCanvas: showEditCanvas = show
+        case .editInspector: showEditInspector = show
         }
         if visiblePanes.subtracting([.downloads]).isEmpty { showExtracted = true }
         if organiseVisiblePanes.isEmpty { showOrganiseSource = true }
         if devicesVisiblePanes.isEmpty { showDevicesMedia = true }
+        if editVisiblePanes.isEmpty { showEditCanvas = true }
     }
 
     /// Switches the Preview pane to a new subject, unless an edit with unsaved changes is open.
@@ -1396,13 +1417,24 @@ struct WeakView {
 }
 
 enum WindowSection: String, CaseIterable {
-    case collect, organise, devices
+    case collect, organise, devices, edit
+
+    /// The panes this section shows.
+    var paneGroup: PaneGroup {
+        switch self {
+        case .collect: .collect
+        case .organise: .organise
+        case .devices: .devices
+        case .edit: .edit
+        }
+    }
 
     var label: String {
         switch self {
         case .collect: "Collect"
         case .organise: "Organise"
         case .devices: "Devices"
+        case .edit: "Edit/Frame"
         }
     }
 }

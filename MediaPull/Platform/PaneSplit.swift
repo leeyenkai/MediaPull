@@ -87,6 +87,9 @@ final class PaneSplitController: NSViewController {
         case .devicesList: 220
         case .devicesMedia: 320
         case .devicesImport: 240
+        case .editMedia: 200
+        case .editCanvas: 360
+        case .editInspector: 280
         }
     }
 
@@ -104,6 +107,9 @@ final class PaneSplitController: NSViewController {
         case .devicesList: 22
         case .devicesMedia: 52
         case .devicesImport: 26
+        case .editMedia: 20
+        case .editCanvas: 56
+        case .editInspector: 24
         }
     }
 
@@ -121,6 +127,9 @@ final class PaneSplitController: NSViewController {
         case .devicesList: 50
         case .devicesMedia: 50
         case .devicesImport: 50
+        case .editMedia: 30
+        case .editCanvas: 70
+        case .editInspector: 50
         }
     }
 
@@ -139,6 +148,9 @@ final class PaneSplitController: NSViewController {
         case .devicesList: 258
         case .devicesMedia: 250
         case .devicesImport: 256
+        case .editMedia: 256
+        case .editCanvas: 250
+        case .editInspector: 258
         }
     }
 

@@ -36,8 +36,13 @@ final class Preferences {
     var paneArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(paneArrangement), "paneArrangement") } }
     var organiseArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(organiseArrangement), "organiseArrangement") } }
     var devicesArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(devicesArrangement), "devicesArrangement") } }
+    var editArrangement: PaneArrangement { didSet { set(try? JSONEncoder().encode(editArrangement), "editArrangement") } }
     /// Where imports from devices go; nil for the default library folder (R-4104).
     var deviceImportFolder: String? { didSet { set(deviceImportFolder, "deviceImportFolder") } }
+    /// The folder last shown in Edit/Frame's Media pane.
+    var editFolder: String? { didSet { set(editFolder, "editFolder") } }
+    /// Apple's downloadable fonts may be fetched (R-4607, D-129); off until the person allows it.
+    var allowFontDownloads: Bool { didSet { set(allowFontDownloads, "allowFontDownloads") } }
     var includeLivePhotoClips: Bool { didSet { set(includeLivePhotoClips, "includeLivePhotoClips") } }
     /// Automatic sorts put a whole post in one folder unless this is on (R-4208).
     var sortPostImagesIndividually: Bool { didSet { set(sortPostImagesIndividually, "sortPostImagesIndividually") } }
@@ -47,6 +52,7 @@ final class Preferences {
         case .collect: paneArrangement
         case .organise: organiseArrangement
         case .devices: devicesArrangement
+        case .edit: editArrangement
         }
     }
 
@@ -55,6 +61,7 @@ final class Preferences {
         case .collect: paneArrangement = arrangement
         case .organise: organiseArrangement = arrangement
         case .devices: devicesArrangement = arrangement
+        case .edit: editArrangement = arrangement
         }
     }
     var rememberHistory: Bool { didSet { set(rememberHistory, "rememberHistory") } }
@@ -126,7 +133,11 @@ final class Preferences {
             .flatMap { $0.group == .organise ? $0 : nil } ?? .organiseStandard
         devicesArrangement = d.data(forKey: "devicesArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
             .flatMap { $0.group == .devices ? $0 : nil } ?? .devicesStandard
+        editArrangement = d.data(forKey: "editArrangement").flatMap { try? JSONDecoder().decode(PaneArrangement.self, from: $0) }
+            .flatMap { $0.group == .edit ? $0 : nil } ?? .editStandard
         deviceImportFolder = d.string(forKey: "deviceImportFolder")
+        editFolder = d.string(forKey: "editFolder")
+        allowFontDownloads = d.bool(forKey: "allowFontDownloads")
         includeLivePhotoClips = d.bool(forKey: "includeLivePhotoClips")
         sortPostImagesIndividually = d.bool(forKey: "sortPostImagesIndividually")
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true

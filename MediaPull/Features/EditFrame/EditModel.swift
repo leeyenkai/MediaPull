@@ -1,0 +1,492 @@
+import AppKit
+import MediaPullCore
+import MediaPullEdit
+import MediaPullLibrary
+import MediaPullMedia
+import MediaPullNet
+import SwiftUI
+
+/// The tools of the Inspector (R-4601), by the kind of file open.
+enum EditTab: String, CaseIterable, Identifiable {
+    case adjust, crop, frame, text, export
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .adjust: "Adjust"
+        case .crop: "Crop"
+        case .frame: "Frame"
+        case .text: "Text & Shapes"
+        case .export: "Export"
+        }
+    }
+}
+
+/// Edit/Frame (section 46): the folder shown in Media, the file open on the Canvas, its recipe, and Export. The original
+/// is only read (R-4602); the recipe is saved as the person works and changes to it are undone with ⌘Z.
+@Observable
+final class EditModel: MediaGridOwner {
+    @ObservationIgnored weak var window: WindowModel?
+
+    // MARK: Media pane
+
+    var folder: URL?
+    var entries: [MediaEntry] = []
+    var selection: Set<String> = []
+    var cellSize: CGFloat = 96
+    var revision = 0
+    var loadingFolder = false
+    /// Files with a recipe, marked in the Media pane.
+    var editedPaths: Set<String> = []
+
+    // MARK: The open file
+
+    var current: URL?
+    var kind: MediaKind?
+    var recipe: EditRecipe?
+    var preview: CGImage?
+    /// The picture turned and straightened but not cropped, shown while cropping.
+    var cropImage: CGImage?
+    var showingBefore = false {
+        didSet { if showingBefore != oldValue { render() } }
+    }
+
+    var tab: EditTab = .adjust {
+        didSet { if tab != oldValue { render() } }
+    }
+
+    var loadingFile = false
+    var loadError: String?
+    var lookPreviews: [LookName: CGImage] = [:]
+    /// The layer chosen on the canvas or in the list.
+    var selectedLayer: UUID?
+    /// Where Export puts files: nil beside the original.
+    var exportFolder: URL?
+    var exporting = false
+    /// Text layers whose font is not on this Mac (R-4607).
+    var missingFonts: [String] = []
+    /// The canvas's size in points, set by the Canvas pane, so previews are rendered at the size shown.
+    var canvasSize = CGSize(width: 900, height: 700) {
+        didSet {
+            if abs(canvasSize.width - oldValue.width) > 40 || abs(canvasSize.height - oldValue.height) > 40 { render() }
+        }
+    }
+
+    var message: String? {
+        didSet {
+            messageTask?.cancel()
+            guard message != nil else { return }
+            messageTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                guard !Task.isCancelled else { return }
+                self?.message = nil
+            }
+        }
+    }
+
+    @ObservationIgnored private var messageTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var session: PhotoSession?
+    @ObservationIgnored private var renderTask: Task<Void, Never>?
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var openTask: Task<Void, Never>?
+    @ObservationIgnored private var gestureStart: EditRecipe?
+    @ObservationIgnored private var renderGeneration = 0
+
+    private var app: AppModel { .shared }
+
+    var tabs: [EditTab] {
+        kind == .image ? EditTab.allCases : []
+    }
+
+    // MARK: Opening
+
+    /// The section was shown: the folder last used, else the window's save folder.
+    func shown() {
+        guard folder == nil else { return }
+        if let saved = app.preferences.editFolder.map({ URL(fileURLWithPath: $0, isDirectory: true) }),
+           FileManager.default.fileExists(atPath: saved.path)
+        {
+            show(folder: saved)
+        } else {
+            if let fallback = window?.saveFolder { show(folder: fallback) }
+        }
+    }
+
+    /// Opens files in the section (R-4601): their folder in Media, the first on the Canvas.
+    func open(_ files: [URL]) {
+        guard let first = files.first else { return }
+        window?.section = .edit
+        show(folder: first.deletingLastPathComponent(), selecting: first)
+        load(first)
+    }
+
+    func show(folder: URL, selecting file: URL? = nil) {
+        let changed = self.folder?.standardizedFileURL != folder.standardizedFileURL
+        self.folder = folder
+        app.preferences.editFolder = folder.path
+        if let file { selection = [file.path] }
+        if changed || entries.isEmpty { reloadFolder() }
+    }
+
+    func reloadFolder() {
+        guard let folder else { return }
+        loadingFolder = true
+        Task { [weak self] in
+            let listed = await MediaListing.load(folder, recursive: false).entries
+            let edited = await AppModel.shared.recipes.editedPaths()
+            guard let self, self.folder == folder else { return }
+            entries = listed.filter { [.image, .animatedImage, .video, .audio].contains($0.kind) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            editedPaths = edited
+            loadingFolder = false
+            revision += 1
+        }
+    }
+
+    /// Files changed somewhere (a move, a rename, an export placed here): the folder is listed again.
+    func filesChanged() {
+        guard folder != nil else { return }
+        reloadFolder()
+    }
+
+    /// Opens a file on the Canvas with its recipe, or a new one.
+    func load(_ url: URL) {
+        guard url.standardizedFileURL != current?.standardizedFileURL else { return }
+        flushSave()
+        openTask?.cancel()
+        current = url
+        let format = MediaFormat.fromExtension(url.pathExtension)
+        kind = format?.kind
+        recipe = nil
+        preview = nil
+        cropImage = nil
+        lookPreviews = [:]
+        loadError = nil
+        session = nil
+        missingFonts = []
+        loadingFile = true
+        openTask = Task { [weak self] in
+            let stored = await AppModel.shared.recipes.recipe(for: url)
+            let opened: PhotoSession? = if format?.kind == .image, !MediaFormat.isSequenceExtension(url.pathExtension) {
+                await Task.detached(priority: .userInitiated) { PhotoSession(url: url) }.value
+            } else {
+                nil
+            }
+            guard let self, !Task.isCancelled, current == url else { return }
+            loadingFile = false
+            guard let kind = format?.kind else { return }
+            recipe = stored ?? EditRecipe(source: EditSource(path: url.standardizedFileURL.path, kind: kind))
+            if kind == .image {
+                guard let opened else {
+                    loadError = "This picture could not be read."
+                    return
+                }
+                session = opened
+                if !tabs.contains(tab) { tab = .adjust }
+                render()
+                renderLooks()
+            }
+        }
+    }
+
+    // MARK: Changing the recipe (R-4602)
+
+    /// Applies a change to the recipe, saves it and draws it again. `undoable`: registered with ⌘Z now; a slider drag
+    /// registers once, when it ends (`beginGesture`, `endGesture`).
+    func change(undoable: Bool = true, _ body: (inout EditRecipe) -> Void) {
+        guard var edited = recipe else { return }
+        let before = edited
+        body(&edited)
+        guard edited != before else { return }
+        recipe = edited
+        if undoable, gestureStart == nil { registerUndo(before) }
+        scheduleSave()
+        render()
+    }
+
+    func beginGesture() {
+        if gestureStart == nil { gestureStart = recipe }
+    }
+
+    func endGesture() {
+        guard let start = gestureStart else { return }
+        gestureStart = nil
+        if start != recipe { registerUndo(start) }
+    }
+
+    /// ⌘Z puts the recipe back as it was, for the file it belongs to, and ⇧⌘Z does it again.
+    private func registerUndo(_ previous: EditRecipe) {
+        guard let manager = window?.hostWindow?.undoManager, let now = recipe else { return }
+        manager.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated { model.restore(previous, redo: now) }
+        }
+        manager.setActionName("Edit")
+    }
+
+    private func restore(_ recipe: EditRecipe, redo: EditRecipe) {
+        if let manager = window?.hostWindow?.undoManager {
+            manager.registerUndo(withTarget: self) { model in
+                MainActor.assumeIsolated { model.restore(redo, redo: recipe) }
+            }
+            manager.setActionName("Edit")
+        }
+        if recipe.source.path == self.recipe?.source.path {
+            self.recipe = recipe
+            scheduleSave()
+            render()
+        } else {
+            Task { await AppModel.shared.recipes.save(recipe); filesChanged() }
+        }
+    }
+
+    /// Revert: the recipe goes and the photo is shown as it is (R-4602); ⌘Z brings it back.
+    func revert() {
+        guard let recipe else { return }
+        change { $0 = EditRecipe(id: recipe.id, source: recipe.source) }
+    }
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        guard let recipe else { return }
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            await AppModel.shared.recipes.save(recipe)
+            let edited = await AppModel.shared.recipes.editedPaths()
+            guard let self, edited != editedPaths else { return }
+            editedPaths = edited
+            revision += 1
+        }
+    }
+
+    /// Saves now (another file is opened, the window closes).
+    func flushSave() {
+        guard saveTask != nil, let recipe else { return }
+        saveTask?.cancel()
+        saveTask = nil
+        Task {
+            await AppModel.shared.recipes.save(recipe)
+            let edited = await AppModel.shared.recipes.editedPaths()
+            self.editedPaths = edited
+            self.revision += 1
+        }
+    }
+
+    // MARK: Drawing
+
+    /// Renders the canvas off the main actor at the size shown; a newer change replaces a render under way.
+    func render() {
+        guard let session, let recipe else { return }
+        renderGeneration += 1
+        let generation = renderGeneration
+        let scale = window?.hostWindow?.backingScaleFactor ?? 2
+        let fit = CGSize(width: min(canvasSize.width * scale, PhotoSession.proxyEdge),
+                         height: min(canvasSize.height * scale, PhotoSession.proxyEdge))
+        let before = showingBefore, cropping = tab == .crop
+        renderTask?.cancel()
+        renderTask = Task { [weak self] in
+            let (image, uncropped, missing) = await Task.detached(priority: .userInitiated) { () -> (CGImage?, CGImage?, [String]) in
+                let image = session.preview(recipe, fit: fit, before: before)
+                let uncropped = cropping ? session.uncropped(recipe, fit: fit) : nil
+                return (image, uncropped, FontLookup.missing(in: recipe.layers))
+            }.value
+            guard let self, !Task.isCancelled, generation == renderGeneration else { return }
+            preview = image
+            cropImage = uncropped
+            missingFonts = missing
+        }
+    }
+
+    private func renderLooks() {
+        guard let session, let recipe else { return }
+        Task { [weak self] in
+            let previews = await Task.detached(priority: .utility) { () -> [LookName: CGImage] in
+                var out: [LookName: CGImage] = [:]
+                for look in LookName.allCases {
+                    if let image = session.lookPreview(recipe, look: look, edge: 72) { out[look] = image }
+                }
+                return out
+            }.value
+            guard let self, self.session === session else { return }
+            lookPreviews = previews
+        }
+    }
+
+    /// Width over height of the picture the crop is chosen on.
+    var cropRatio: Double {
+        guard let session, let recipe else { return 1 }
+        if let cropImage, cropImage.height > 0 { return Double(cropImage.width) / Double(cropImage.height) }
+        return session.turnedRatio(recipe.geometry)
+    }
+
+    func setAspect(_ aspect: EditAspect) {
+        let ratio = cropRatio
+        change {
+            $0.geometry.aspect = aspect
+            if let wanted = aspect.ratio(original: ratio) {
+                $0.geometry.crop = UnitRect.centred(ratio: wanted, in: CGSize(width: ratio, height: 1))
+            } else if aspect == .free, $0.geometry.crop == nil {
+                $0.geometry.crop = nil
+            }
+        }
+    }
+
+    // MARK: Export (R-4608)
+
+    /// Writes the edited photo as a new file beside the original (or into the chosen folder), as a job.
+    func export() {
+        guard let url = current, let recipe, kind == .image, !exporting else { return }
+        flushSave()
+        let destination = exportFolder ?? url.deletingLastPathComponent()
+        let job = Job(kind: .export, title: "Export “\(url.lastPathComponent)”")
+        job.state = .running
+        app.jobs.add(job)
+        exporting = true
+        job.task = Task { [weak self] in
+            let result = await Self.export(url, recipe: recipe, into: destination)
+            switch result {
+            case let .success(placed):
+                AppModel.shared.jobs.finish(job, .completed, notify: false)
+                self?.message = "Exported “\(placed.lastPathComponent)”."
+                AppModel.shared.fileChangeRevision += 1
+            case let .failure(error):
+                AppModel.shared.jobs.finish(job, .failed(error.localizedDescription), notify: false)
+                self?.message = error.localizedDescription
+            }
+            self?.exporting = false
+        }
+    }
+
+    /// Renders and writes off the main actor, then places the file at a free name with a copy's metadata file (D-105).
+    static func export(_ url: URL, recipe: EditRecipe, into folder: URL) async -> Result<URL, Error> {
+        do {
+            let fm = FileManager.default
+            let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
+            defer { try? fm.removeItem(at: staging) }
+            let ext = recipe.export.format.fileExtension
+            let stem = url.deletingPathExtension().lastPathComponent
+            let staged = staging.appendingPathComponent("\(stem)-edited.\(ext)")
+            let metadata = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
+                let size = try PhotoExporter.export(url, recipe: recipe, to: staged)
+                let values: [String: FileOps.MetadataValue] = [
+                    "edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: staged)),
+                    "width": .int(Int(size.width)), "height": .int(Int(size.height)),
+                ]
+                return try FileOps.metadata(of: url, applying: .init(values: values, isCopy: true))
+            }.value
+            let wanted = folder.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
+            let placed = try await FileOps.place(staged, as: wanted, with: metadata.map(FileOps.Companion.data) ?? .none)
+            return .success(placed.url)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    // MARK: Media grid
+
+    var gridSections: [GridSection] { [GridSection(id: "edit", title: "", ids: entries.map(\.path))] }
+
+    private func entry(_ id: String) -> MediaEntry? { entries.first { $0.path == id } }
+
+    func gridInfo(_ id: String) -> GridCellInfo? {
+        guard let entry = entry(id) else { return nil }
+        var info = GridCellInfo(title: entry.name, detail: entry.format?.label ?? "", secondary: "")
+        if entry.kind == .video { info.kindSymbol = "video.fill" }
+        if entry.kind == .audio {
+            info.kindSymbol = "waveform"
+            info.placeholderSymbol = "waveform"
+        }
+        if editedPaths.contains(URL(fileURLWithPath: id).standardizedFileURL.path) {
+            info.stateSymbol = "slider.horizontal.3"
+            info.stateColor = .controlAccentColor
+        }
+        info.stamp = "\(entry.modified.timeIntervalSince1970)"
+        return info
+    }
+
+    func gridThumbnail(_ id: String, maxPixel: Int) async -> CGImage? {
+        await app.thumbnails.localThumbnail(for: URL(fileURLWithPath: id), maxPixel: maxPixel)?.image
+    }
+
+    func gridSelectionChanged(_ ids: Set<String>) {
+        selection = ids
+        if ids.count == 1, let id = ids.first { load(URL(fileURLWithPath: id)) }
+    }
+
+    func gridActivate(_ id: String) { load(URL(fileURLWithPath: id)) }
+
+    func gridQuickLook() {
+        QuickLook.shared.show(selection.sorted().map { URL(fileURLWithPath: $0) })
+    }
+
+    func gridWriter(_ id: String) -> NSPasteboardWriting? { URL(fileURLWithPath: id) as NSURL }
+
+    func gridMenu(_ ids: Set<String>) -> NSMenu? {
+        let chosen = ids.sorted().map { URL(fileURLWithPath: $0) }
+        guard !chosen.isEmpty else { return nil }
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(chosen) })
+        let edited = chosen.filter { editedPaths.contains($0.standardizedFileURL.path) }
+        if !edited.isEmpty {
+            menu.addItem(ActionMenuItem(edited.count == 1 ? "Revert Edits" : "Revert Edits of \(edited.count) Files") { [weak self] in
+                self?.revert(edited)
+            })
+        }
+        return menu
+    }
+
+    /// Revert for files not open on the canvas: their recipes go (the original was never changed).
+    func revert(_ files: [URL]) {
+        for file in files where file.standardizedFileURL == current?.standardizedFileURL {
+            revert()
+        }
+        Task { [weak self] in
+            for file in files where file.standardizedFileURL != self?.current?.standardizedFileURL {
+                await AppModel.shared.recipes.remove(file.path)
+            }
+            self?.filesChanged()
+        }
+    }
+
+    func gridAppeared(_: String) {}
+
+    var gridAcceptsDrops: Bool { true }
+
+    /// Files dragged here open in the section (R-4601); nothing is copied.
+    func gridAcceptDrop(_ pasteboard: NSPasteboard, operation _: NSDragOperation) -> Bool {
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        let media = urls.filter { MediaFormat.fromExtension($0.pathExtension) != nil }
+        guard !media.isEmpty else { return false }
+        open(media)
+        return true
+    }
+}
+
+/// Fonts a recipe names that this Mac does not have (R-4607).
+enum FontLookup {
+    nonisolated static func missing(in layers: [Layer]) -> [String] {
+        var out: [String] = []
+        for layer in layers where !layer.hidden {
+            guard case let .text(style) = layer.kind, LayerRenderer.font(style, canvasHeight: 100).missing,
+                  !out.contains(style.family) else { continue }
+            out.append(style.family)
+        }
+        return out
+    }
+}
+
+extension WindowModel {
+    /// "Open in Edit/Frame" (R-4601).
+    func openInEdit(_ files: [URL]) {
+        let media = files.filter { MediaFormat.fromExtension($0.pathExtension) != nil }
+        guard !media.isEmpty else { return }
+        edit.open(media)
+    }
+
+    func openInEditMenuItem(_ files: [URL]) -> NSMenuItem? {
+        let media = files.filter { MediaFormat.fromExtension($0.pathExtension) != nil }
+        guard !media.isEmpty else { return nil }
+        return ActionMenuItem("Open in Edit/Frame") { [weak self] in self?.openInEdit(media) }
+    }
+}
