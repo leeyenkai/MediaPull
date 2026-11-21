@@ -136,14 +136,7 @@ private struct CropTab: View {
             .controlSize(.small)
             HStack {
                 Button {
-                    // The crop mirrors with the picture, so the same part stays cropped (audit 2026-11-21-8, B8-5).
-                    edit.change { recipe in
-                        recipe.geometry.flipped.toggle()
-                        if var crop = recipe.geometry.crop {
-                            crop.x = 1 - crop.x - crop.width
-                            recipe.geometry.crop = crop
-                        }
-                    }
+                    edit.change { $0.geometry.flip() }
                 } label: { Label("Flip", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right") }
                 Button("Reset Crop") { edit.change { $0.geometry = EditGeometry() } }
                     .disabled(edit.recipe?.geometry == EditGeometry())

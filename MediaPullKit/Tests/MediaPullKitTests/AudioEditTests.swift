@@ -126,6 +126,14 @@ final class AudioEditTests: XCTestCase {
         XCTAssertEqual(AudioOutput.like("oga", codec: "flac"), .flac)
     }
 
+    func testAACFromHighResolutionIsResampledByName() {
+        // A 96 kHz source with a volume change: ffmpeg needs the rate named for AAC (C9-3).
+        var loud = plan("a.flac", .aac)
+        loud.sourceFormat = AudioSourceFormat(duration: 10, sampleRate: 96000, bits: 24, codec: "flac")
+        loud.volume = 0.5
+        XCTAssertTrue(AudioEdit.filterGraph(loud).contains("volume=0.500,aresample=48000,aformat"), AudioEdit.filterGraph(loud))
+    }
+
     func testTheLastFortyMillisecondsCanBeCut() {
         // Only the last part ending at the measured end runs open; 40 ms before it is cut there (C8-4).
         var cut = plan("a.flac", .flac, kept: [TimeRange(start: 0, end: 9.96)])

@@ -126,6 +126,17 @@ public struct EditGeometry: Codable, Sendable, Hashable {
         let scaleH = height / (width * sin + height * cos)
         return min(scaleW, scaleH)
     }
+
+    /// Flip as the canvas shows it: the edited picture mirrored, so the crop mirrors with it and a straightened photo
+    /// turns the other way (audit 2026-11-21-8, B8-5; round 9, B9-3).
+    public mutating func flip() {
+        flipped.toggle()
+        straighten = -straighten
+        if var mirrored = crop {
+            mirrored.x = 1 - mirrored.x - mirrored.width
+            crop = mirrored
+        }
+    }
 }
 
 /// A rectangle in units of a picture (0 to 1), origin top left.

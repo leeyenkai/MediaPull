@@ -155,7 +155,7 @@ final class Audit2026Round8MetadataTests: XCTestCase {
             .write(to: y.appendingPathComponent("P.xmp"))
         let journal = journal()
         let copy = await journal.run(FolderOperations.copy([x.appendingPathComponent("P.png")], to: y))
-        XCTAssertTrue(all(y).contains("P.png"))
+        XCTAssertTrue(all(y).contains("P 2.png"), "another shot's name is not taken (A9-3)")
         _ = await journal.undo(copy.id)
         XCTAssertEqual(all(y), ["P.jpg", "P.xmp"], "the untouched copy was kept")
     }

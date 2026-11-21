@@ -36,7 +36,9 @@ public enum MediaUnits {
     /// Every unit among the names of one folder.
     public static func units(in names: [String]) -> [Unit] {
         var byStem: [String: [String]] = [:]
-        for name in names where !name.hasPrefix(".") {
+        // Hidden names are not shots, except a unit's files under the temporary names of a rename that swaps names, which
+        // must stay one unit through it (audit 2026-11-21-9, A9-1).
+        for name in names where !name.hasPrefix(".") || name.hasPrefix(".mediapull-rename-") {
             let e = ext(name)
             guard MediaFormat.rawExtensions.contains(e) || photoExtensions.contains(e) || clipExtensions.contains(e) else { continue }
             byStem[stem(name), default: []].append(name)

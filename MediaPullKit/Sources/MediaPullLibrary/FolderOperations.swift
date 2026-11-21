@@ -250,11 +250,12 @@ public enum FolderOperations {
     /// Picks a free name in `folder`, numbering `name 2.jpg`, `name 3.jpg` so an Archive date prefix stays first.
     /// `alsoFree`: the parts after the stem of the file's companions (R-4206), which must be free under the same number.
     public static func freeDestination(for name: String, in folder: URL, taken: inout Set<String>,
-                                       alsoFree: [String] = []) -> (url: URL, renamed: Bool)
+                                       alsoFree: [String] = [], leaving: [String] = []) -> (url: URL, renamed: Bool)
     {
         let ns = name as NSString
         let stem = ns.deletingPathExtension, ext = ns.pathExtension
         let fm = FileManager.default
+        let shots = shotStems(in: folder, leaving: leaving, isFile: !ext.isEmpty)
         var n = 1
         while true {
             let candidateStem = n == 1 ? stem : "\(stem) \(n)"
@@ -264,9 +265,11 @@ public enum FolderOperations {
             let others = alsoFree.map { folder.appendingPathComponent(candidateStem + $0) }
             if !taken.contains(key), !fm.fileExists(atPath: url.path),
                !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path) || ext.isEmpty,
+               ext.isEmpty || !shots.contains(candidateStem.lowercased()) && !taken.contains(shotKey(folder, candidateStem)),
                others.allSatisfy({ !taken.contains(OrganisePlan.key($0)) && !fm.fileExists(atPath: $0.path) })
             {
                 taken.insert(key)
+                if !ext.isEmpty { taken.insert(shotKey(folder, candidateStem)) }
                 for other in others {
                     taken.insert(OrganisePlan.key(other))
                 }
@@ -274,6 +277,26 @@ public enum FolderOperations {
             }
             n += 1
         }
+    }
+
+    /// A name a file put in `folder` cannot take: another shot is there under it (a photo, clip or edit file of that
+    /// stem, any case), and same-named files in one folder are one shot (D-120). Without this a phone's IMG_1.JPG sorted
+    /// beside a camera's IMG_1.CR3 became one RAW+JPEG unit, and a photo shared another's `.xmp` (audit 2026-11-21-9,
+    /// A9-3). `leaving`: names of the item itself and its unit, renamed in their own folder.
+    static func shotStems(in folder: URL, leaving: [String], isFile: Bool) -> Set<String> {
+        guard isFile else { return [] }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        let skip = Set(leaving.map { $0.lowercased() })
+        return Set(names.compactMap { name -> String? in
+            guard !name.hasPrefix("."), !skip.contains(name.lowercased()) else { return nil }
+            let ext = (name as NSString).pathExtension.lowercased()
+            guard MediaFormat.fromExtension(ext) != nil || ["xmp", "aae"].contains(ext) else { return nil }
+            return (name as NSString).deletingPathExtension.lowercased()
+        })
+    }
+
+    static func shotKey(_ folder: URL, _ stem: String) -> String {
+        "shot:" + OrganisePlan.key(folder.appendingPathComponent(stem.lowercased()))
     }
 
     // MARK: Folder operations (R-3803)
@@ -421,8 +444,10 @@ public enum FolderOperations {
             return plan
         }
         var taken = Set<String>()
+        let units = UnitFiles()
         let dest = freeDestination(for: newName, in: item.deletingLastPathComponent(), taken: &taken,
-                                   alsoFree: isFolder ? [] : UnitFiles().suffixes(of: item))
+                                   alsoFree: isFolder ? [] : units.suffixes(of: item),
+                                   leaving: [item.lastPathComponent] + units.companions(of: item).map(\.lastPathComponent))
         plan.moves = [PlannedMove(source: item, destination: dest.url)]
         return plan
     }
@@ -454,12 +479,22 @@ public enum FolderOperations {
         let vacated = Set(files.map { OrganisePlan.key($0) }).subtracting(keeping)
         var chosen = keeping
         let units = UnitFiles()
+        // Shots in each folder not being renamed here: their names are taken (A9-3).
+        let renaming = Set(files.flatMap { [$0.lastPathComponent] + units.companions(of: $0).map(\.lastPathComponent) })
+        var others: [String: Set<String>] = [:]
+        func otherShots(_ folder: URL) -> Set<String> {
+            if let known = others[folder.path] { return known }
+            let found = shotStems(in: folder, leaving: Array(renaming), isFile: true)
+            others[folder.path] = found
+            return found
+        }
         // A unit's other files take the same new name (R-4206), so theirs must be free too.
         func free(_ url: URL, alsoFree suffixes: [String]) -> Bool {
             let key = OrganisePlan.key(url)
             guard !chosen.contains(key) else { return false }
-            if vacated.contains(key) { return true }
             let stem = url.deletingPathExtension().lastPathComponent, folder = url.deletingLastPathComponent()
+            guard !otherShots(folder).contains(stem.lowercased()) else { return false }
+            if vacated.contains(key) { return true }
             return !fm.fileExists(atPath: url.path) && !fm.fileExists(atPath: Sidecar.sidecarURL(for: url).path)
                 && suffixes.allSatisfy { !fm.fileExists(atPath: folder.appendingPathComponent(stem + $0).path) }
         }

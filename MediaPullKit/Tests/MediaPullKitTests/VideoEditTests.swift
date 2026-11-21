@@ -370,6 +370,42 @@ final class VideoEditTests: XCTestCase {
         return output
     }
 
+    /// The 4 s clip with its picture missing from 1.5 s to 2.5 s (an empty edit in the middle), its sound throughout.
+    func gappedPicture() async throws -> URL {
+        let source = AVURLAsset(url: try await clip())
+        let composition = AVMutableComposition()
+        let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        let picture = try await source.loadTracks(withMediaType: .video)[0]
+        func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferredTimescale: 600) }
+        try video.insertTimeRange(CMTimeRange(start: .zero, end: seconds(1.5)), of: picture, at: .zero)
+        try video.insertTimeRange(CMTimeRange(start: seconds(2.5), end: seconds(4)), of: picture, at: seconds(2.5))
+        let audio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try audio.insertTimeRange(CMTimeRange(start: .zero, end: seconds(4)), of: try await source.loadTracks(withMediaType: .audio)[0],
+                                  at: .zero)
+        let output = folder.appendingPathComponent("gap-\(UUID().uuidString).mov")
+        let session = try XCTUnwrap(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough))
+        try await session.export(to: output, as: .mov)
+        return output
+    }
+
+    func testAGapInThePictureIsNeverTakenAsPicture() async throws {
+        let gapped = try await gappedPicture()
+        // A still inside the gap is the nearest picture (C9-2).
+        let still = await VideoComposer.frame(gapped, at: 2)
+        XCTAssertNotNil(still)
+        // A part kept inside the gap is refused (C9-1).
+        var edit = recipe(gapped)
+        var time = EditTimeline()
+        time.kept = [TimeRange(start: 1.6, end: 2.4)]
+        edit.timeline = time
+        do {
+            _ = try await VideoComposer.export(gapped, recipe: edit, to: folder.appendingPathComponent("gap.mov")) { _ in }
+            XCTFail("written, though the part kept has no picture")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("no picture"), error.localizedDescription)
+        }
+    }
+
     func testALatePictureIsKnownByItsMedia() async throws {
         let late = try await latePicture()
         let track = try await AVURLAsset(url: late).loadTracks(withMediaType: .video)[0]

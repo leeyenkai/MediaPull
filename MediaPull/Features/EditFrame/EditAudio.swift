@@ -286,8 +286,10 @@ struct AudioExportSettings: View {
         if let recipe = edit.recipe, let url = edit.current {
             let plan = AudioEditPlan(source: url, output: url, recipe: recipe,
                                      format: edit.audioSource ?? AudioSourceFormat(duration: edit.mediaDuration))
+            // FLAC and Apple Lossless hold at most 24 bits: a 32-bit source is said (C9-4).
+            let deep = [.flac, .alac].contains(plan.format) && (plan.sourceFormat?.bits ?? 0) > 24 && !plan.isFloat
             Text(plan.copiesStreams ? "Only cuts: the sound is copied, not encoded again."
-                : "Encoded as \(plan.format.label)\(plan.format == .mp3 ? " (about 190 kbps)" : "").")
+                : "Encoded as \(plan.format.label)\(plan.format == .mp3 ? " (about 190 kbps)" : deep ? " at 24 bits" : "").")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Text("Tags").font(.caption.weight(.semibold)).foregroundStyle(.secondary)

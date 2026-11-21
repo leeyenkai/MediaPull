@@ -409,7 +409,9 @@ struct FileDetails: View {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
                     Button("Open") { NSWorkspace.shared.open(file) }
                     Button("Quick Look") { QuickLook.shared.show([file]) }
-                    Button("Open in Edit/Frame") { model.openInEdit([file]) }
+                    if !EditModel.editable([file]).isEmpty {
+                        Button("Open in Edit/Frame") { model.openInEdit([file]) }
+                    }
                 }
                 .controlSize(.small)
             }

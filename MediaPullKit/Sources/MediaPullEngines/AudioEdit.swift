@@ -82,7 +82,7 @@ public struct AudioEditPlan: Sendable, Equatable {
     var codec: String { sourceFormat?.codec?.lowercased() ?? "" }
 
     /// A floating-point PCM source.
-    var isFloat: Bool { codec.hasPrefix("pcm_f") }
+    public var isFloat: Bool { codec.hasPrefix("pcm_f") }
 
     /// Only cuts (and tags), into the same lossy format: the frames are copied, not encoded again. MP3 and AAC only; a
     /// lossless format is encoded again losslessly, which cuts to the sample.
@@ -139,7 +139,12 @@ public enum AudioEdit {
         if plan.volume != 1 { effects.append(String(format: "volume=%.3f", plan.volume)) }
         // Loudness normalisation works at 192 kHz; the result is brought back to 44.1 kHz, which every format takes.
         if plan.normalize { effects.append("loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100") }
-        if plan.format == .aac { effects.append(aacRates) }
+        // A source above 48 kHz is resampled by name first: ffmpeg cannot choose a rate for AAC after a volume change
+        // (audit 2026-11-21-9, C9-3).
+        if plan.format == .aac {
+            if (plan.sourceFormat?.sampleRate ?? 0) > 48000 { effects.append("aresample=48000") }
+            effects.append(aacRates)
+        }
         // Frames no longer than an encoder takes (loudness normalisation hands on one long frame; FLAC takes 65,535 samples).
         effects.append("asetnsamples=n=4096:p=0")
         chains.append(current + effects.joined(separator: ",") + "[out]")

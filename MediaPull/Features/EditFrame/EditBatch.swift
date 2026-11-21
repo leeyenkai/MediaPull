@@ -79,7 +79,8 @@ extension EditModel {
             reloadCurrentRecipe()
             Self.recipesChanged(Set(before.map(\.path)), by: self)
             if let first = failed.first {
-                message = "Settings pasted onto \(before.count) of \(before.count + failed.count) files; “\(first)” "
+                let total = before.count + failed.count
+                message = "Settings pasted onto \(before.count) of \(total) file\(total == 1 ? "" : "s"); “\(first)” "
                     + "is no longer there or the disk is full."
                 filesChanged()
             } else {

@@ -162,24 +162,27 @@ public actor RecipeStore {
         if let stored = byID[recipe.id] {
             recipe.source = stored.source
         } else {
-            let path = Self.key(recipe.source.path)
-            if let existing = belonging(at: path) {
+            // A new recipe goes with the file it was made for (audit 2026-11-21-8, B8-1; round 9, B9-1, B9-2): the file at
+            // its path when that is the one (same creation date); else where its reference leads (renamed in the Finder
+            // while open); never to a newcomer at its name; none for a file no longer anywhere (B8-3).
+            var path = Self.key(recipe.source.path)
+            var own = FileManager.default.fileExists(atPath: path) && Self.belongs(recipe, to: path)
+            if !own, let moved = relocated(recipe), moved != path {
+                path = moved
+                own = true
+            }
+            guard own || FileManager.default.fileExists(atPath: path) else { return nil }
+            recipe.source.path = path
+            if own, let existing = belonging(at: path) {
+                // The file has its recipe already (another window, a paste): this one takes its place.
                 merged[recipe.id] = existing.id
                 recipe.id = existing.id
                 recipe.source = existing.source
-            } else {
-                // Only for a file that is there (a stale entry is refused, B8-3), and only the file it was made for: a
-                // newcomer at its name after a Finder rename never takes it (B8-1); its own reference then follows it.
-                guard FileManager.default.fileExists(atPath: path) else { return nil }
-                recipe.source.path = path
-                if Self.belongs(recipe, to: path) {
-                    recipe.source.reference = Self.reference(path) ?? recipe.source.reference
-                    recipe.source.created = Self.created(path) ?? recipe.source.created
-                } else if let moved = relocated(recipe) {
-                    // Its file was renamed in the Finder since it was opened: kept where that file is now.
-                    recipe.source.path = moved
-                }
+            } else if own {
+                recipe.source.reference = Self.reference(path) ?? recipe.source.reference
+                recipe.source.created = Self.created(path) ?? recipe.source.created
             }
+            // Else a newcomer has its name: kept apart under its own creation date, never shown for the newcomer.
         }
         recipe.modified = Date()
         byID[recipe.id] = recipe

@@ -552,6 +552,14 @@ public actor OperationJournal {
         return noted == now
     }
 
+    /// Whether the file at `path` is the one the change noted there only through MediaPull's own rewrites of it.
+    func rewrittenByMediaPull(_ path: String, in entry: JournalEntry) -> Bool {
+        guard let noted = entry.identities?[path], let now = AccountFolderRecord.number(of: URL(fileURLWithPath: path)) else {
+            return false
+        }
+        return noted != now && isSame(path, in: entry)
+    }
+
     /// Creates a destination folder that is not there (deleted after the preview) and journals each folder it makes, so
     /// Undo removes them again once they are empty.
     func makeMissingFolders(_ folder: URL, allowed: Set<String>, entry: inout JournalEntry) throws {
@@ -727,8 +735,12 @@ public actor OperationJournal {
     /// After a unit's Undo or Redo: its photo's edit files follow it, if it moved.
     func carryEditFiles(after unit: [JournalStep], undoing: Bool, report: inout UndoReport) {
         guard case let .move(from, to, _, _) = unit[0] else { return }
+        // An editor Replace never moves edit files (they stay with the original, A9-2), and a folder takes only what
+        // is inside it (A9-m3).
+        guard !URL(fileURLWithPath: from).lastPathComponent.hasPrefix(Self.editPrefix),
+              !URL(fileURLWithPath: to).lastPathComponent.hasPrefix(Self.editPrefix) else { return }
         let was = undoing ? to : from
-        guard let now = report.moves.last(where: { $0.from == was })?.to else { return }
+        guard let now = report.moves.last(where: { $0.from == was })?.to, !Self.isFolder(URL(fileURLWithPath: now)) else { return }
         let sources = Set(unit.compactMap { step -> String? in
             if case let .move(from, to, _, _) = step { undoing ? to : from } else { nil }
         })
@@ -1210,7 +1222,9 @@ public actor OperationJournal {
                     : "\(Self.shownName(to, otherwise: from)) is no longer where the change put it, so it was left where it is")
                 return false
             }
-            if let size {
+            // Rewritten in place by MediaPull since (a rating): not a change by something else, so it goes back with its
+            // unit (R-4505, audit 2026-11-21-9, A9-m2).
+            if let size, !rewrittenByMediaPull(to, in: entry) {
                 let values = try? dest.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 if values?.fileSize.map(Int64.init) != size
                     || abs((values?.contentModificationDate ?? .distantPast).timeIntervalSince(modified ?? .distantPast)) > 1

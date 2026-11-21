@@ -312,7 +312,9 @@ final class AnalysisService {
                 }
             }
             progress = nil
-            if !Task.isCancelled, deletions == 0 {
+            // Never while an edit is being followed: its new content is held by no path until the follow ends, and a prune
+            // then would take its record and corrections (audit 2026-11-21-9, A9-m1). The next scan prunes.
+            if !Task.isCancelled, deletions == 0, editingCounts.isEmpty {
                 let pruned = await store.pruneOrphans()
                 await faces?.remove(pruned.faceKeys)
                 await images?.remove(pruned.sha256s)

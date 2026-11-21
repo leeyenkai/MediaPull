@@ -47,7 +47,8 @@ final class Audit2026Round7MetadataTests: XCTestCase {
         _ = await journal.editMetadata([raw], .rating(2), title: "Rate")
         XCTAssertEqual(names(b), ["IMG_0001.NEF", "IMG_0001.xmp"])
         let move = await journal.run(FolderOperations.move([jpeg], to: b))
-        XCTAssertEqual(names(b), ["IMG_0001.JPG", "IMG_0001.NEF", "IMG_0001.xmp"])
+        // Another shot of that name is there: the JPEG takes the next number, never pairing with it (A9-3).
+        XCTAssertEqual(names(b), ["IMG_0001 2.JPG", "IMG_0001.NEF", "IMG_0001.xmp"])
         _ = await journal.undo(move.id)
         XCTAssertEqual(names(a), ["IMG_0001.JPG"], "the RAW's .xmp went with the JPEG")
         XCTAssertEqual(names(b), ["IMG_0001.NEF", "IMG_0001.xmp"])

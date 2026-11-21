@@ -336,14 +336,15 @@ final class EditModel: MediaGridOwner {
 
     private func scheduleSave() {
         saveTask?.cancel()
-        guard recipe != nil else { return }
+        guard let snapshot = recipe else { return }
         unsaved = true
         saveGeneration += 1
         let generation = saveGeneration
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
-            // The recipe as it is when it is saved, so a move meanwhile (its new path and date) is in it.
-            guard !Task.isCancelled, let recipe = self?.recipe else { return }
+            // The recipe as it is when it is saved, so a move meanwhile (its new path and date) is in it; the change as it
+            // was made when the window has closed meanwhile (audit 2026-11-21-9, B9-4).
+            guard !Task.isCancelled, let recipe = self == nil ? snapshot : self?.recipe else { return }
             if let kept = await AppModel.shared.recipes.store(recipe) {
                 if self?.saveGeneration == generation { self?.unsaved = false }
                 self?.adopt(kept, for: recipe)
@@ -429,6 +430,8 @@ final class EditModel: MediaGridOwner {
                 self.adopt(kept, for: recipe)
                 Self.recipesChanged([kept.source.path], by: self)
             } else {
+                // Still unsaved, so quit tries again.
+                if self.recipe?.id == recipe.id { self.unsaved = true }
                 self.message = "The edits could not be saved: the file is no longer there, or the disk is full."
             }
             let edited = await AppModel.shared.recipes.editedPaths()
@@ -722,7 +725,13 @@ extension WindowModel {
     /// "Open in Edit/Frame" (R-4601).
     func openInEdit(_ files: [URL]) {
         let media = EditModel.editable(files)
-        guard !media.isEmpty else { return }
+        guard !media.isEmpty else {
+            // Said, never nothing (a dropped MKV or WebM, a folder; audit 2026-11-21-9, C9-5).
+            if !files.isEmpty {
+                edit.message = "Edit/Frame opens photos, videos and audio the Mac can read; MKV and WebM videos cannot be edited here."
+            }
+            return
+        }
         edit.open(media)
     }
 

@@ -83,17 +83,23 @@ public enum VideoComposer {
             ? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) : nil
         // Each track only where it has media: the file's length is its longest track, and a picture that ends before the
         // sound (or starts after it) has no frames there (audit 2026-11-21-3, C3-1).
-        let videoRange = await mediaRange(of: video)
-        let audioRange: CMTimeRange? = if let audio { await mediaRange(of: audio) } else { nil }
-        /// Where the inserted part lies on the composition's timeline, or nil when the track has nothing there.
-        func insert(_ part: CMTimeRange, of source: AVAssetTrack, within range: CMTimeRange, into track: AVMutableCompositionTrack,
+        let videoRange = await mediaSegments(of: video)
+        let audioRange: [CMTimeRange]? = if let audio { await mediaSegments(of: audio) } else { nil }
+        /// Where the inserted part lies on the composition's timeline, or nil when the track has nothing there: each of the
+        /// track's media segments it overlaps is inserted, never a gap between them (audit 2026-11-21-9, C9-1).
+        func insert(_ part: CMTimeRange, of source: AVAssetTrack, within segments: [CMTimeRange], into track: AVMutableCompositionTrack,
                     at cursor: CMTime) throws -> CMTimeRange?
         {
-            let clamped = part.intersection(range)
-            guard clamped.duration > .zero else { return nil }
-            let at = cursor + (clamped.start - part.start)
-            try track.insertTimeRange(clamped, of: source, at: at)
-            return CMTimeRange(start: at, duration: clamped.duration)
+            var placed: CMTimeRange?
+            for segment in segments {
+                let clamped = part.intersection(segment)
+                guard clamped.duration > .zero else { continue }
+                let at = cursor + (clamped.start - part.start)
+                try track.insertTimeRange(clamped, of: source, at: at)
+                let range = CMTimeRange(start: at, duration: clamped.duration)
+                placed = placed.map { $0.union(range) } ?? range
+            }
+            return placed
         }
         var cursor = CMTime.zero
         // Where the picture and the sound each start and end: where the sound outlasts the picture the last picture stays
@@ -239,10 +245,17 @@ public enum VideoComposer {
     /// Where a track has media: its time range without the empty edits a file stores a late start as (a track's own
     /// `timeRange` counts them; audit 2026-11-21-8, C8-1, C8-2).
     static func mediaRange(of track: AVAssetTrack) async -> CMTimeRange {
-        let whole = (try? await track.load(.timeRange)) ?? .zero
+        let segments = await mediaSegments(of: track)
+        guard let first = segments.first else { return .zero }
+        return segments.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    /// The track's media segments in time order, without its empty edits (a late start, a gap in the middle).
+    static func mediaSegments(of track: AVAssetTrack) async -> [CMTimeRange] {
         let filled = ((try? await track.load(.segments)) ?? []).filter { !$0.isEmpty }.map(\.timeMapping.target)
-        guard let first = filled.first else { return whole }
-        return filled.dropFirst().reduce(first) { $0.union($1) }
+            .sorted { $0.start < $1.start }
+        if !filled.isEmpty { return filled }
+        return [(try? await track.load(.timeRange)) ?? .zero]
     }
 
     /// A player item for the canvas: the result as it will be exported.
@@ -332,11 +345,16 @@ public enum VideoComposer {
         generator.requestedTimeToleranceAfter = .zero
         // Past the picture's end (the sound goes on), the last picture is the one shown, so it is the one saved (C5-3).
         // Before a picture that starts late, its first picture (C8-3).
+        // Inside a gap in the picture, the nearest picture (C9-2).
         var time = seconds
         if let track = try? await asset.loadTracks(withMediaType: .video).first {
-            let range = await mediaRange(of: track)
-            let rate = Double((try? await track.load(.nominalFrameRate)) ?? 30)
-            time = max(range.start.seconds, min(time, range.end.seconds - 1 / max(rate, 1)))
+            let frame = 1 / max(Double((try? await track.load(.nominalFrameRate)) ?? 30), 1)
+            let segments = await mediaSegments(of: track).map { ($0.start.seconds, max($0.start.seconds, $0.end.seconds - frame)) }
+            if !segments.contains(where: { time >= $0.0 && time <= $0.1 }), let nearest = segments.min(by: { a, b in
+                min(abs(time - a.0), abs(time - a.1)) < min(abs(time - b.0), abs(time - b.1))
+            }) {
+                time = abs(time - nearest.0) < abs(time - nearest.1) ? nearest.0 : nearest.1
+            }
         }
         return try? await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image
     }
