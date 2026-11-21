@@ -197,14 +197,18 @@ final class MetadataEditTests: XCTestCase {
         XCTAssertTrue(text.contains("Exposure2012"), text)
         let back = MetadataWriter.values(ofXMP: data)
         XCTAssertTrue(back.agrees(with: wanted), "\(back)")
-        XCTAssertFalse(back.fields.contains(.location))
+        // The location removed is recorded as cleared, so it lies over the file's own (audit A1-1).
+        XCTAssertTrue(back.fields.contains(.location))
+        XCTAssertNil(back.latitude)
 
         // Over the file's own values, field by field.
         let file = MetadataValues(fields: Set(MetadataField.allCases), rating: 1, keywords: ["cat"], latitude: 1, longitude: 2)
         let effective = file.merging(back)
         XCTAssertEqual(effective.rating, 5)
         XCTAssertEqual(effective.keywords, ["dog"])
-        XCTAssertEqual(effective.latitude, 1)
+        XCTAssertNil(effective.latitude)
+        // A field the `.xmp` holds nothing about leaves the file's own value.
+        XCTAssertEqual(file.merging(MetadataValues(fields: [.rating], rating: 4)).latitude, 1)
 
         let names = ["IMG_1.CR3", "IMG_1.XMP", "IMG_2.CR3"]
         XCTAssertEqual(MetadataWriter.xmpURL(for: URL(fileURLWithPath: "/f/IMG_1.CR3"), existing: names).lastPathComponent, "IMG_1.XMP")
@@ -379,5 +383,87 @@ final class MetadataEditTests: XCTestCase {
         let undo = await journal.undo(try XCTUnwrap(result.entry?.id))
         XCTAssertEqual(undo.done, 2, "\(undo.skipped)")
         XCTAssertEqual(files.map { MetadataWriter.values(of: $0).rating }, [nil, nil, nil, nil])
+    }
+
+    func testRemovalsInAnXMPLieOverTheFile() throws {
+        // A file with its own rating, keywords and place, and a `.xmp` that clears them.
+        let data = try MetadataWriter.xmpData(setting: MetadataValues(fields: [.rating, .keywords, .location]), over: nil)
+        let read = MetadataWriter.values(ofXMP: data)
+        XCTAssertEqual(read.fields, [.rating, .keywords, .location])
+        let file = MetadataValues(fields: Set(MetadataField.allCases), rating: 3, keywords: ["a", "b"], latitude: 1, longitude: 2)
+        let shown = file.merging(read)
+        XCTAssertNil(shown.rating)
+        XCTAssertNil(shown.keywords)
+        XCTAssertNil(shown.latitude)
+        // A value set again is no longer cleared.
+        let again = try MetadataWriter.xmpData(setting: MetadataValues(fields: [.rating], rating: 4), over: data)
+        let reread = MetadataWriter.values(ofXMP: again)
+        XCTAssertEqual(reread.rating, 4)
+        XCTAssertEqual(reread.fields, [.rating, .keywords, .location])
+        // Keywords removed one at a time stay removed.
+        var words = MetadataValues(fields: [.keywords], keywords: ["a", "b", "c"])
+        var xmp = try MetadataWriter.xmpData(setting: words, over: nil)
+        for word in ["a", "b", "c"] {
+            let current = file.merging(MetadataWriter.values(ofXMP: xmp))
+            words = try XCTUnwrap(MetadataEdit.keywords(add: [], remove: [word]).apply(to: current))
+            xmp = try MetadataWriter.xmpData(setting: words, over: xmp)
+        }
+        XCTAssertNil(file.merging(MetadataWriter.values(ofXMP: xmp)).keywords)
+    }
+
+    func testRemovingALocationRemovesEveryGPSValue() throws {
+        let photo = folder.appendingPathComponent("gps.jpg")
+        Self.photo(photo, type: .jpeg, gps: (10, 20))
+        let copy = folder.appendingPathComponent("gps-2.jpg")
+        try MetadataWriter.writeCopy(of: photo, setting: MetadataValues(fields: [.location]), to: copy)
+        let props = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(CGImageSourceCreateWithURL(copy as CFURL, nil)!, 0, nil)
+            as? [CFString: Any])
+        let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any] ?? [:]
+        XCTAssertNil(gps[kCGImagePropertyGPSLatitude])
+        XCTAssertNil(gps[kCGImagePropertyGPSAltitude])
+    }
+
+    func testUndoOfAnOlderChangeLeavesANewerValue() async throws {
+        let photo = folder.appendingPathComponent("IMG_9.JPG")
+        Self.photo(photo, type: .jpeg)
+        let journal = journal()
+        let first = await journal.editMetadata([photo], .rating(2), title: "Rate")
+        let second = await journal.editMetadata([photo], .rating(4), title: "Rate")
+        XCTAssertNotNil(second.entry)
+        // Undoing the first while the second's value stands would write a stale value: it is left and said (D-93).
+        let undo = await journal.undo(try XCTUnwrap(first.entry?.id))
+        XCTAssertEqual(undo.done, 0)
+        XCTAssertFalse(undo.skipped.isEmpty)
+        XCTAssertEqual(MetadataWriter.values(of: photo).rating, 4)
+        // In order, both come back.
+        _ = await journal.undo(try XCTUnwrap(second.entry?.id))
+        _ = await journal.undo(try XCTUnwrap(first.entry?.id))
+        XCTAssertNil(MetadataWriter.values(of: photo).rating)
+    }
+
+    func testASharedNameAndALockedFileAreRefused() async throws {
+        let png = folder.appendingPathComponent("cover.png")
+        let jpeg = folder.appendingPathComponent("cover.jpg")
+        Self.photo(png, type: .png)
+        Self.photo(jpeg, type: .jpeg)
+        let journal = journal()
+        // The PNG needs a `.xmp`, which the JPEG of the same name would read too.
+        let shared = await journal.editMetadata([png], .rating(3), title: "Rate")
+        XCTAssertNil(shared.entry)
+        XCTAssertTrue(shared.skipped.first?.contains("same name") == true, "\(shared.skipped)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("cover.xmp").path))
+        // The JPEG is written in place: no `.xmp`, so nothing is shared.
+        let inPlace = await journal.editMetadata([jpeg], .rating(3), title: "Rate")
+        XCTAssertEqual(inPlace.changed, 1)
+
+        let locked = folder.appendingPathComponent("locked.jpg")
+        Self.photo(locked, type: .jpeg)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: locked.path) }
+        let refused = await journal.editMetadata([locked], .rating(1), title: "Rate")
+        XCTAssertNil(refused.entry)
+        XCTAssertTrue(refused.skipped.first?.contains("locked") == true)
+        let hidden = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasPrefix(".mediapull-edit-") }
+        XCTAssertTrue(hidden.isEmpty, "\(hidden)")
     }
 }

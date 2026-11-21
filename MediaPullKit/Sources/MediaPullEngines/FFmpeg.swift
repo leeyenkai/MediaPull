@@ -37,7 +37,7 @@ public enum FFmpegError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .missing: "ffmpeg is not available in this copy of MediaPull."
-        case let .failed(message): "Video conversion failed: \(message)"
+        case let .failed(message): "The conversion failed: \(message)"
         }
     }
 }
@@ -92,7 +92,9 @@ public struct FFmpeg: Sendable {
         return info
     }
 
-    /// Tags, codec, bit rate and length of an audio file the system cannot open (R-4205).
+    /// Tags, codec, bit rate and length of an audio file the system cannot open (R-4205). Off the main actor: it parses
+    /// ffprobe's output.
+    @concurrent
     public func audioTags(_ url: URL) async -> (tags: AudioTags, duration: Double?)? {
         guard let output = try? await Self.run(ffprobe, [
             "-v", "error", "-print_format", "json", "-show_streams", "-show_format", url.path,
@@ -136,12 +138,35 @@ public struct FFmpeg: Sendable {
         return output.stdout.split(separator: "\n").first.flatMap { line in line.split(separator: "=").last.map(String.init) }
     }
 
-    /// A copy of an audio file the system cannot play (Ogg, Opus) that it can, for the preview only (R-4205).
+    /// A copy of an audio file the system cannot play (Ogg, Opus) that it can, for the preview only (R-4205). Nothing is
+    /// left behind when it fails.
     public func playableCopy(of url: URL, to output: URL) async throws {
-        _ = try await Self.run(ffmpeg, [
-            "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", url.path, "-vn", "-map", "0:a:0", "-c:a", "aac_at", "-b:a", "192k",
-            output.path,
-        ])
+        do {
+            _ = try await Self.run(ffmpeg, [
+                "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", url.path, "-vn", "-map", "0:a:0",
+                "-af", AudioEdit.aacRates, "-c:a", "aac_at", "-b:a", "192k", output.path,
+            ])
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            throw error
+        }
+    }
+
+    /// What an audio file holds, read by ffprobe: its true length (the system can guess short or long), sample rate,
+    /// bits per sample and codec (R-4610).
+    @concurrent
+    public func audioFormat(_ url: URL) async -> AudioSourceFormat? {
+        guard let output = try? await Self.run(ffprobe, [
+            "-v", "error", "-print_format", "json", "-show_streams", "-show_format", "-select_streams", "a:0", url.path,
+        ]), let data = output.stdout.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let stream = (json["streams"] as? [[String: Any]])?.first
+        let format = json["format"] as? [String: Any]
+        let duration = (stream?["duration"] as? String).flatMap(Double.init) ?? (format?["duration"] as? String).flatMap(Double.init)
+        let bits = (stream?["bits_per_raw_sample"] as? String).flatMap(Int.init) ?? (stream?["bits_per_sample"] as? Int)
+        return AudioSourceFormat(duration: duration ?? 0, sampleRate: (stream?["sample_rate"] as? String).flatMap(Int.init),
+                                 bits: bits, codec: stream?["codec_name"] as? String)
     }
 
     /// Copies streams into an MP4 container without re-encoding.

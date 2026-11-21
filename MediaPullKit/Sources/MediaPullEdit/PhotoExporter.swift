@@ -8,12 +8,13 @@ import UniformTypeIdentifiers
 /// Writes an edited photo as a new file (R-4608). The original is only read.
 public enum PhotoExporter {
     public enum Failure: Error, LocalizedError {
-        case unreadable, notWritten
+        case unreadable, notWritten, tooLargeForLayers
 
         public var errorDescription: String? {
             switch self {
             case .unreadable: "The photo could not be read."
             case .notWritten: "The edited photo could not be written."
+            case .tooLargeForLayers: "This picture is too large to draw text and shapes on. Choose a smaller export size."
             }
         }
     }
@@ -23,9 +24,14 @@ public enum PhotoExporter {
         guard let input = PhotoRenderer.source(source) else { throw Failure.unreadable }
         let full = PhotoRenderer.render(input, recipe: recipe)
         let target = recipe.export.size.pixels(for: full.extent.size)
+        var layersDrawn = true
         let canvas = PhotoRenderer.render(input, recipe: recipe, fit: target) { size in
-            LayerRenderer.image(recipe.layers, canvas: size)
+            let overlay = LayerRenderer.image(recipe.layers, canvas: size)
+            layersDrawn = overlay != nil
+            return overlay
         }
+        // Never written without its text and shapes (a canvas over 30,000 px cannot hold them).
+        guard layersDrawn || recipe.layers.allSatisfy(\.hidden) else { throw Failure.tooLargeForLayers }
         guard let image = PhotoRenderer.cgImage(canvas, displayP3: recipe.export.displayP3, exact: exact) else { throw Failure.notWritten }
         return image
     }
@@ -67,6 +73,14 @@ public enum PhotoExporter {
         if settings.keepCamera { blocks += [kCGImagePropertyExifAuxDictionary, kCGImagePropertyTIFFDictionary] }
         for key in blocks {
             if let value = original[key] { properties[key] = value }
+        }
+        if !settings.keepLocation, var iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+            for key in [kCGImagePropertyIPTCCity, kCGImagePropertyIPTCSubLocation, kCGImagePropertyIPTCProvinceState,
+                        kCGImagePropertyIPTCCountryPrimaryLocationName, kCGImagePropertyIPTCCountryPrimaryLocationCode]
+            {
+                iptc[key] = nil
+            }
+            properties[kCGImagePropertyIPTCDictionary] = iptc
         }
         if var exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] {
             exif[kCGImagePropertyExifPixelXDimension] = Int(size.width)

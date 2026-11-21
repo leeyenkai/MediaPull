@@ -1,6 +1,7 @@
 import AppKit
 import MediaPullCore
 import MediaPullEdit
+import MediaPullEngines
 import MediaPullLibrary
 import MediaPullMedia
 import MediaPullNet
@@ -57,8 +58,9 @@ final class EditModel: MediaGridOwner {
     var tab: EditTab = .adjust {
         didSet {
             guard tab != oldValue else { return }
-            // The timeline is cut from the original.
+            // The timeline is cut from the original; leaving it stops the sound, which has no control elsewhere.
             if tab == .trim, playingResult { loadPlayer() }
+            if oldValue == .trim, kind == .video { player.player.pause() }
             render()
         }
     }
@@ -73,6 +75,8 @@ final class EditModel: MediaGridOwner {
     var exporting = false
     /// Text layers whose font is not on this Mac (R-4607).
     var missingFonts: [String] = []
+    /// Picture layers whose file is gone: drawn without them, and said so.
+    var missingPictures: [String] = []
     /// The canvas's size in points, set by the Canvas pane, so previews are rendered at the size shown.
     var canvasSize = CGSize(width: 900, height: 700) {
         didSet {
@@ -129,6 +133,11 @@ final class EditModel: MediaGridOwner {
     var audioSelection: TimeRange?
     /// The audio file's own tags, shown where nothing new is typed.
     var currentTags: AudioTags?
+    /// What the audio holds, by ffprobe (length, codec, depth).
+    var audioSource: AudioSourceFormat?
+    /// The waveform could not be read (a format the build cannot decode, or no ffmpeg).
+    var waveformFailed = false
+    @ObservationIgnored var waveformTask: Task<Void, Never>?
 
     // MARK: Opening
 
@@ -225,7 +234,7 @@ final class EditModel: MediaGridOwner {
             mediaDuration = duration
             recipe = stored ?? EditRecipe(source: EditSource(path: url.standardizedFileURL.path, kind: kind))
             // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
-            if previousKind != kind || !tabs.contains(tab) { tab = tabs[0] }
+            if previousKind != kind || !tabs.contains(tab), let first = tabs.first { tab = first }
             if kind == .video || kind == .audio {
                 loadPlayer()
                 if kind == .audio { loadWaveform() }
@@ -283,7 +292,8 @@ final class EditModel: MediaGridOwner {
             }
             manager.setActionName("Edit")
         }
-        if recipe.source.path == self.recipe?.source.path {
+        // The same recipe, wherever its file is now (it may have been renamed since).
+        if recipe.id == self.recipe?.id {
             self.recipe = recipe
             scheduleSave()
             render()
@@ -304,12 +314,49 @@ final class EditModel: MediaGridOwner {
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            await AppModel.shared.recipes.save(recipe)
+            if await !AppModel.shared.recipes.save(recipe) {
+                self?.message = "The edits could not be saved. Check that the disk has space."
+            }
             let edited = await AppModel.shared.recipes.editedPaths()
             guard let self, edited != editedPaths else { return }
             editedPaths = edited
             revision += 1
         }
+    }
+
+    /// Files MediaPull moved or renamed: the open file, its recipe and the Media folder follow (R-4602).
+    func followMoves(_ moves: [(from: String, to: String)]) {
+        guard !moves.isEmpty else { return }
+        // Standardized (a doubled slash, a "."), as the model's own paths are.
+        let remap = PathMoves(moves.map {
+            (URL(fileURLWithPath: $0.from).standardizedFileURL.path, URL(fileURLWithPath: $0.to).standardizedFileURL.path)
+        })
+        // As written, or with links resolved (a folder reached through /var is /private/var to the journal).
+        func destination(_ url: URL) -> String? {
+            remap.destination(of: url.standardizedFileURL.path) ?? remap.destination(of: url.resolvingSymlinksInPath().path)
+        }
+        if let folder, let moved = destination(folder) {
+            self.folder = URL(fileURLWithPath: moved, isDirectory: true)
+            app.preferences.editFolder = moved
+        }
+        if let current, let moved = destination(current) {
+            self.current = URL(fileURLWithPath: moved)
+            recipe?.source.path = moved
+        }
+        selection = Set(selection.map { remap.destination(of: $0) ?? $0 })
+    }
+
+    /// Leaving the section: edits are saved, and ⌘Z elsewhere never undoes a recipe change out of sight (R-4602).
+    func leftSection() {
+        flushSave()
+        undoManager?.removeAllActions(withTarget: self)
+        player.player.pause()
+    }
+
+    /// At quit: the last change is written at once.
+    func saveBeforeQuit() {
+        saveTask?.cancel()
+        if let recipe { AppModel.shared.recipes.saveNow(recipe) }
     }
 
     /// Saves now (another file is opened, the window closes).
@@ -336,17 +383,23 @@ final class EditModel: MediaGridOwner {
         let fit = CGSize(width: min(canvasSize.width * scale, PhotoSession.proxyEdge),
                          height: min(canvasSize.height * scale, PhotoSession.proxyEdge))
         let before = showingBefore, cropping = tab == .crop
-        renderTask?.cancel()
+        // One render at a time: a slider drag asks for many; the newest waits for the one under way and the rest are
+        // dropped, so renders never pile up.
+        let previous = renderTask
         renderTask = Task { [weak self] in
-            let (image, uncropped, missing) = await Task.detached(priority: .userInitiated) { () -> (CGImage?, CGImage?, [String]) in
+            await previous?.value
+            guard let self, generation == renderGeneration else { return }
+            let (image, uncropped, fonts, pictures) = await Task.detached(priority: .userInitiated) {
+                () -> (CGImage?, CGImage?, [String], [String]) in
                 let image = session.preview(recipe, fit: fit, before: before)
                 let uncropped = cropping ? session.uncropped(recipe, fit: fit) : nil
-                return (image, uncropped, FontLookup.missing(in: recipe.layers))
+                return (image, uncropped, FontLookup.missing(in: recipe.layers), FontLookup.missingPictures(in: recipe.layers))
             }.value
-            guard let self, !Task.isCancelled, generation == renderGeneration else { return }
+            // Shown even when a newer render waits: the canvas follows a drag instead of standing still.
             preview = image
             cropImage = uncropped
-            missingFonts = missing
+            missingFonts = fonts
+            missingPictures = pictures
         }
     }
 
@@ -380,6 +433,18 @@ final class EditModel: MediaGridOwner {
                 $0.geometry.crop = UnitRect.centred(ratio: wanted, in: CGSize(width: ratio, height: 1))
             } else if aspect == .free, $0.geometry.crop == nil {
                 $0.geometry.crop = nil
+            }
+        }
+    }
+
+    /// A quarter turn; a chosen crop shape is kept, centred on the turned picture.
+    func turn(by quarters: Int) {
+        guard let session else { return }
+        change { recipe in
+            recipe.geometry.quarterTurns = ((recipe.geometry.quarterTurns + quarters) % 4 + 4) % 4
+            let turned = session.turnedRatio(recipe.geometry)
+            recipe.geometry.crop = recipe.geometry.aspect.ratio(original: turned).flatMap { wanted in
+                recipe.geometry.aspect == .original ? nil : UnitRect.centred(ratio: wanted, in: CGSize(width: turned, height: 1))
             }
         }
     }
@@ -431,7 +496,8 @@ final class EditModel: MediaGridOwner {
             defer { try? fm.removeItem(at: staging) }
             let ext = recipe.export.format.fileExtension
             let stem = url.deletingPathExtension().lastPathComponent
-            let staged = staging.appendingPathComponent("\(stem)-edited.\(ext)")
+            // Named as it will be placed, within the name budget, so a long name never fails to stage.
+            let staged = staging.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
             let metadata = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
                 let size = try PhotoExporter.export(url, recipe: recipe, to: staged)
                 let values: [String: FileOps.MetadataValue] = [
@@ -506,15 +572,18 @@ final class EditModel: MediaGridOwner {
     }
 
     /// Revert for files not open on the canvas: their recipes go (the original was never changed).
+    /// Revert for several files: their recipes go as one change ⌘Z brings back (R-4602).
     func revert(_ files: [URL]) {
-        for file in files where file.standardizedFileURL == current?.standardizedFileURL {
-            revert()
-        }
+        flushSave()
         Task { [weak self] in
-            for file in files where file.standardizedFileURL != self?.current?.standardizedFileURL {
+            var before: [(path: String, recipe: EditRecipe?)] = []
+            for file in files {
+                before.append((file.standardizedFileURL.path, await AppModel.shared.recipes.recipe(for: file)))
                 await AppModel.shared.recipes.remove(file.path)
             }
-            self?.filesChanged()
+            guard let self else { return }
+            registerBatchUndo(before, name: "Revert Edits")
+            reloadCurrentRecipe()
         }
     }
 
@@ -525,10 +594,18 @@ final class EditModel: MediaGridOwner {
     /// Files dragged here open in the section (R-4601); nothing is copied.
     func gridAcceptDrop(_ pasteboard: NSPasteboard, operation _: NSDragOperation) -> Bool {
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-        let media = urls.filter { MediaFormat.fromExtension($0.pathExtension) != nil }
+        let media = Self.editable(urls)
         guard !media.isEmpty else { return false }
         open(media)
         return true
+    }
+
+    /// Photos (not image sequences), videos and audio: what Edit/Frame opens. A drawing or a stream address is not.
+    nonisolated static func editable(_ files: [URL]) -> [URL] {
+        files.filter { url in
+            guard let kind = MediaFormat.fromExtension(url.pathExtension)?.kind else { return false }
+            return [.image, .video, .audio].contains(kind) && !MediaFormat.isSequenceExtension(url.pathExtension)
+        }
     }
 }
 
@@ -543,18 +620,26 @@ enum FontLookup {
         }
         return out
     }
+
+    /// Picture layers whose file is no longer there.
+    nonisolated static func missingPictures(in layers: [Layer]) -> [String] {
+        layers.compactMap { layer in
+            guard !layer.hidden, case let .image(path) = layer.kind, !FileManager.default.fileExists(atPath: path) else { return nil }
+            return (path as NSString).lastPathComponent
+        }
+    }
 }
 
 extension WindowModel {
     /// "Open in Edit/Frame" (R-4601).
     func openInEdit(_ files: [URL]) {
-        let media = files.filter { MediaFormat.fromExtension($0.pathExtension) != nil }
+        let media = EditModel.editable(files)
         guard !media.isEmpty else { return }
         edit.open(media)
     }
 
     func openInEditMenuItem(_ files: [URL]) -> NSMenuItem? {
-        let media = files.filter { MediaFormat.fromExtension($0.pathExtension) != nil }
+        let media = EditModel.editable(files)
         guard !media.isEmpty else { return nil }
         return ActionMenuItem("Open in Edit/Frame") { [weak self] in self?.openInEdit(media) }
     }

@@ -50,9 +50,17 @@ extension AppModel {
         analysis.beginEdit(files)
         let previous = await analysis.currentStates(files)
         let result = await journal.editMetadata(items, edit, title: title, progress: progress)
+        analysis.forgetXMP(result.xmpWritten)
         await analysis.followEdit(result.rewritten, previous: previous, editing: files)
         fileChangeRevision += 1
         return result
+    }
+
+    /// The `.xmp` files metadata steps write, read again afterwards.
+    private static func xmpPaths(_ steps: [JournalStep]) -> [String] {
+        steps.compactMap { step in
+            if case let .metadata(path, _, _, _) = step, path.lowercased().hasSuffix(".xmp") { path } else { nil }
+        }
     }
 
     /// The files metadata steps write, so analysis waits for them and follows them (R-4506).
@@ -129,6 +137,7 @@ extension AppModel {
         analysis.beginEdit(edited)
         let previous = await analysis.currentStates(edited)
         let report = await journal.undo(id, progress: progress)
+        analysis.forgetXMP(Self.xmpPaths(entry.steps))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await followMoves(report.moves, changedBy: id)
         foldersGone(foldersRemoved(by: entry.steps))
@@ -144,6 +153,7 @@ extension AppModel {
         analysis.beginEdit(edited)
         let previous = await analysis.currentStates(edited)
         let report = await journal.redo(id, progress: progress)
+        analysis.forgetXMP(Self.xmpPaths(before?.undoneSteps ?? []))
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await followMoves(report.moves, changedBy: id)
         if let entry = await journal.entry(id) {
@@ -195,6 +205,7 @@ extension AppModel {
             }
             // Organise's folders follow too, so its panes and its target stay on the folders they showed (audit 4, B4-m2).
             window.organise.foldersMoved(moves)
+            window.edit.followMoves(moves)
         }
     }
 }

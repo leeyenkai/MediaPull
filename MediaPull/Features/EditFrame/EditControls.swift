@@ -157,12 +157,10 @@ struct EditCropOverlay: View {
         if corner < 2 { top += dy } else { bottom += dy }
         var width = max(0.02, right - left), height = max(0.02, bottom - top)
         if let ratio = unitRatio {
-            // The shape is kept: the height follows the width.
+            // The shape is kept: the width stays inside the picture (and short enough for its height to), and the
+            // height follows it.
+            width = min(width, 1, ratio)
             height = width / ratio
-            if height > 1 {
-                height = 1
-                width = ratio
-            }
         }
         let x = corner % 2 == 0 ? base.x + base.width - width : base.x
         let y = corner < 2 ? base.y + base.height - height : base.y

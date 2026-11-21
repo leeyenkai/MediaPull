@@ -293,4 +293,61 @@ final class EditFrameTests: XCTestCase {
         let left = try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("Edits2").path)
         XCTAssertTrue(left.isEmpty)
     }
+
+    // MARK: Audit round 1
+
+    func testAStoredRecipeMissingNestedFieldsStillReads() throws {
+        let id = UUID().uuidString
+        let json = #"{"id":"\#(id)","source":{"path":"/x/a.jpg","kind":"image"},"adjust":{"exposure":1.5},"#
+            + #""frame":{"shape":"square","top":0.1},"layers":[{"kind":{"text":{"_0":{"text":"Hi"}}},"x":0.2}]}"#
+        let read = try XCTUnwrap(EditRecipe.decode(Data(json.utf8)))
+        XCTAssertEqual(read.adjust.exposure, 1.5)
+        XCTAssertEqual(read.frame?.shape, .square)
+        XCTAssertEqual(read.frame?.top, 0.1)
+        XCTAssertEqual(read.frame?.fill, false)
+        XCTAssertEqual(read.layers.count, 1)
+        XCTAssertEqual(read.layers.first?.x, 0.2)
+        guard case let .text(style)? = read.layers.first?.kind else { return XCTFail("a text layer") }
+        XCTAssertEqual(style.text, "Hi")
+        XCTAssertEqual(style.family, "Helvetica Neue")
+        XCTAssertTrue(read.isEdited)
+    }
+
+    func testMovesThatSwapPathsKeepBothRecipes() async {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let one = photo("1.jpg"), two = photo("2.jpg")
+        var first = recipe(for: one)
+        first.adjust.contrast = 10
+        var second = recipe(for: two)
+        second.adjust.contrast = 20
+        await store.save(first)
+        await store.save(second)
+        let three = folder.appendingPathComponent("3.jpg").standardizedFileURL.path
+        await store.movePaths([(two.standardizedFileURL.path, three), (one.standardizedFileURL.path, two.standardizedFileURL.path)])
+        let atTwo = await store.recipe(for: two)
+        let paths = await store.editedPaths()
+        XCTAssertEqual(atTwo?.adjust.contrast, 10)
+        XCTAssertEqual(paths.count, 2)
+    }
+
+    func testAnotherFileGivenTheSameNameDoesNotTakeTheEdits() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let url = photo("same.jpg")
+        var edit = recipe(for: url)
+        edit.adjust.contrast = 30
+        await store.save(edit)
+        try FileManager.default.removeItem(at: url)
+        _ = photo("same.jpg")
+        try FileManager.default.setAttributes([.creationDate: Date().addingTimeInterval(3600)], ofItemAtPath: url.path)
+        let found = await store.recipe(for: url)
+        XCTAssertNil(found)
+    }
+
+    func testThePhotosOwnShapeKeepsItsProportions() {
+        var frame = Frame()
+        frame.shape = .photoShape
+        let layout = FrameRenderer.layout(picture: CGSize(width: 1600, height: 900), frame: frame)
+        XCTAssertEqual(layout.canvas.width / layout.canvas.height, 16.0 / 9, accuracy: 0.01)
+        XCTAssertLessThan(layout.photo.width, 1600)
+    }
 }

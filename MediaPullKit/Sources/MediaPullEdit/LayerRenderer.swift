@@ -101,7 +101,8 @@ public enum LayerRenderer {
         let frameRect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: height)
         context.saveGState()
         if style.shadow {
-            context.setShadow(offset: CGSize(width: 0, height: canvas.height * 0.002), blur: canvas.height * 0.006,
+            // Shadow offsets are in the bitmap's own space, where y points up: a negative height falls down.
+            context.setShadow(offset: CGSize(width: 0, height: -canvas.height * 0.002), blur: canvas.height * 0.006,
                               color: CGColor(gray: 0, alpha: 0.55))
         }
         // Core Text draws with its origin bottom left: flip within the box.

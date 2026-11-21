@@ -127,10 +127,10 @@ private struct CropTab: View {
             ), range: -45 ... 45, format: { String(format: "%+.1f°", $0) }, model: edit)
             HStack {
                 Button {
-                    edit.change { $0.geometry.quarterTurns = ($0.geometry.quarterTurns + 3) % 4; $0.geometry.crop = nil }
+                    edit.turn(by: 3)
                 } label: { Label("Rotate Left", systemImage: "rotate.left") }
                 Button {
-                    edit.change { $0.geometry.quarterTurns = ($0.geometry.quarterTurns + 1) % 4; $0.geometry.crop = nil }
+                    edit.turn(by: 1)
                 } label: { Label("Rotate Right", systemImage: "rotate.right") }
             }
             .controlSize(.small)
@@ -533,13 +533,17 @@ private struct ExportTab: View {
         Picker("Codec", selection: edit.value(\.export.videoCodec, fallback: .hevc)) {
             ForEach(ExportSettings.VideoCodec.allCases, id: \.self) { Text($0.label).tag($0) }
         }
-        Picker("File", selection: edit.value(\.export.videoContainer, fallback: .mp4)) {
-            ForEach(ExportSettings.VideoContainer.allCases, id: \.self) { Text($0.label).tag($0) }
+        Picker("File", selection: Binding(
+            get: { edit.recipe?.export.videoContainer },
+            set: { value in edit.change { $0.export.videoContainer = value } }
+        )) {
+            Text("Like the Original").tag(ExportSettings.VideoContainer?.none)
+            ForEach(ExportSettings.VideoContainer.allCases, id: \.self) { Text($0.label).tag(Optional($0)) }
         }
         if let recipe = edit.recipe {
             Text(VideoComposer.isLossless(recipe)
-                ? "Only cuts, turns or muting: written without re-encoding, exactly as recorded."
-                : "The picture changes, so it is encoded again with \(recipe.export.videoCodec.label).")
+                ? "Only cuts, turns or muting: the picture is not encoded again. The first sound track is kept."
+                : "The picture or the sound changes, so it is encoded again with \(recipe.export.videoCodec.label).")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

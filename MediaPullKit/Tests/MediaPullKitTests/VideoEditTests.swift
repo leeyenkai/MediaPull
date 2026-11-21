@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import CoreGraphics
+import CoreImage
 import Foundation
 @testable import MediaPullCore
 @testable import MediaPullEdit
@@ -111,6 +112,33 @@ final class VideoEditTests: XCTestCase {
         var looked = EditRecipe(source: EditSource(path: "/x.mov", kind: .video))
         looked.look = Look(name: .mono)
         XCTAssertFalse(VideoComposer.isLossless(looked))
+    }
+
+    /// A lossless turn and flip puts a corner where the canvas does (audit C1-m1).
+    func testALosslessTurnAndFlipMatchTheCanvas() {
+        let size = CGSize(width: 200, height: 100)
+        for turns in 0 ..< 4 {
+            for flipped in [false, true] {
+                var geometry = EditGeometry()
+                geometry.quarterTurns = turns
+                geometry.flipped = flipped
+                // The top-left corner (origin top left) of the source, through the video transform.
+                let video = CGPoint(x: 1.5, y: 1.5).applying(VideoComposer.turn(geometry, size: size))
+                // The same corner through the photo renderer: a 200 × 100 picture with one red pixel at the top left.
+                let picture = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size))
+                let dot = CIImage(color: .red).cropped(to: CGRect(x: 1, y: 98, width: 1, height: 1))
+                let turned = PhotoRenderer.geometry(dot.composited(over: picture), geometry)
+                let bitmap = PhotoRenderer.cgImage(turned, exact: true)!
+                var found = CGPoint(x: -1, y: -1)
+                for y in 0 ..< bitmap.height {
+                    for x in 0 ..< bitmap.width where pixel(bitmap, x, y).r > 200 {
+                        found = CGPoint(x: x, y: y)
+                    }
+                }
+                XCTAssertEqual(Int(video.x.rounded(.down)), Int(found.x), "turns \(turns) flipped \(flipped)")
+                XCTAssertEqual(Int(video.y.rounded(.down)), Int(found.y), "turns \(turns) flipped \(flipped)")
+            }
+        }
     }
 
     func testTurningAndCuttingAreNotReEncoded() async throws {

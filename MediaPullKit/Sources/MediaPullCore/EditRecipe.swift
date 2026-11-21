@@ -28,7 +28,8 @@ public struct EditRecipe: Codable, Sendable, Hashable, Identifiable {
             || (timeline.map { $0 != EditTimeline() } ?? false) || (tags.map { $0 != AudioTagEdit() } ?? false)
     }
 
-    /// Reads a stored recipe; a missing or newer field falls back to its neutral value.
+    /// Reads a stored recipe; a missing field, at any depth, falls back to its neutral value, so a recipe written before a
+    /// field was added still reads whole.
     public static func decode(_ data: Data) -> EditRecipe? {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let source = object["source"] as? [String: Any], let path = source["path"] as? String,
@@ -36,22 +37,60 @@ public struct EditRecipe: Codable, Sendable, Hashable, Identifiable {
         else { return nil }
         let blank = EditRecipe(id: (object["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID(),
                                source: EditSource(path: path, kind: kind))
-        return LenientJSON.decode(EditRecipe.self, from: data, over: blank)
+        guard let filled = try? JSONSerialization.data(withJSONObject: Self.filled(object)) else { return nil }
+        return LenientJSON.decode(EditRecipe.self, from: filled, over: blank)
+    }
+
+    /// The stored object with each nested part laid over its own neutral value (the blank recipe has none of them).
+    static func filled(_ object: [String: Any]) -> [String: Any] {
+        func json(_ value: some Encodable) -> [String: Any] {
+            (try? JSONEncoder().encode(value)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        }
+        func over(_ saved: Any?, _ base: [String: Any], without: [String] = []) -> Any? {
+            guard let saved = saved as? [String: Any] else { return saved }
+            var base = base
+            // An enum's own case comes from what was saved (both would make two cases); kept from the base otherwise.
+            for key in without where saved[key] != nil {
+                base[key] = nil
+            }
+            return LenientJSON.overlay(saved, on: base)
+        }
+        var out = object
+        out["frame"] = over(object["frame"], json(Frame()), without: ["background"])
+        out["look"] = over(object["look"], json(Look(name: .mono)), without: ["name"])
+        out["timeline"] = over(object["timeline"], json(EditTimeline()))
+        out["tags"] = over(object["tags"], json(AudioTagEdit()))
+        if let layers = object["layers"] as? [[String: Any]] {
+            out["layers"] = layers.map { saved -> [String: Any] in
+                var layer = (over(saved, json(Layer(kind: .shape(LayerShape()))), without: ["kind"]) as? [String: Any]) ?? saved
+                if var kind = saved["kind"] as? [String: Any] {
+                    if let text = (kind["text"] as? [String: Any])?["_0"] {
+                        kind["text"] = ["_0": over(text, json(TextStyle(text: "")))]
+                    } else if let shape = (kind["shape"] as? [String: Any])?["_0"] {
+                        kind["shape"] = ["_0": over(shape, json(LayerShape()))]
+                    }
+                    layer["kind"] = kind
+                }
+                return layer
+            }
+        }
+        return out
     }
 }
 
 /// The file a recipe belongs to: where it was, a reference that follows it through renames and moves on its disk, and
-/// its checksum when the recipe was made (to notice a file replaced by another).
+/// the file's creation date when the recipe was made, so another file later given the same name does not take its edits
+/// (a metadata edit keeps the creation date, D-125; a different file has its own).
 public struct EditSource: Codable, Sendable, Hashable {
     public var path: String
     public var reference: String?
-    public var sha256: String?
+    public var created: Date?
     public var kind: MediaKind
 
-    public init(path: String, reference: String? = nil, sha256: String? = nil, kind: MediaKind) {
+    public init(path: String, reference: String? = nil, created: Date? = nil, kind: MediaKind) {
         self.path = path
         self.reference = reference
-        self.sha256 = sha256
+        self.created = created
         self.kind = kind
     }
 }
@@ -281,11 +320,14 @@ public struct Frame: Codable, Sendable, Hashable {
     public enum Shape: String, Codable, Sendable, CaseIterable {
         /// The photo's own shape, grown by the insets.
         case photo
+        /// The canvas keeps the photo's proportions, with the photo inset inside it.
+        case photoShape
         case square, portrait45, story916, landscape32, portrait23
 
         public var label: String {
             switch self {
             case .photo: "Photo with Border"
+            case .photoShape: "Photo's Own Shape"
             case .square: "1:1"
             case .portrait45: "4:5"
             case .story916: "9:16"
@@ -297,7 +339,7 @@ public struct Frame: Codable, Sendable, Hashable {
         /// Width over height, nil for the photo's own shape plus its border.
         public var ratio: Double? {
             switch self {
-            case .photo: nil
+            case .photo, .photoShape: nil
             case .square: 1
             case .portrait45: 4.0 / 5
             case .story916: 9.0 / 16
@@ -426,7 +468,8 @@ public struct EditTimeline: Codable, Sendable, Hashable {
             .sorted { $0.start < $1.start }
         var merged: [TimeRange] = []
         for part in clamped {
-            if let last = merged.last, part.start <= last.end {
+            // Overlapping parts join; parts that only touch stay apart (Split Here makes them).
+            if let last = merged.last, part.start < last.end {
                 merged[merged.count - 1].end = max(last.end, part.end)
             } else {
                 merged.append(part)
@@ -508,14 +551,16 @@ public enum AudioOutput: String, Codable, Sendable, CaseIterable {
     /// Whether a picture can be stored with it.
     public var holdsArtwork: Bool { [.mp3, .aac, .alac, .flac].contains(self) }
 
-    /// The output like the original where MediaPull can write that format; Ogg and Opus become AAC.
-    public static func like(_ fileExtension: String) -> AudioOutput {
+    /// The output like the original where MediaPull can write that format; Ogg and Opus become AAC. An M4A holding
+    /// Apple Lossless (`codec` "alac") stays lossless.
+    public static func like(_ fileExtension: String, codec: String? = nil) -> AudioOutput {
+        if codec?.lowercased() == "alac" { return .alac }
         switch fileExtension.lowercased() {
-        case "mp3": .mp3
-        case "flac": .flac
-        case "wav": .wav
-        case "aif", "aiff", "aifc": .aiff
-        default: .aac
+        case "mp3": return .mp3
+        case "flac": return .flac
+        case "wav": return .wav
+        case "aif", "aiff", "aifc": return .aiff
+        default: return .aac
         }
     }
 }
@@ -539,9 +584,9 @@ public struct ExportSettings: Codable, Sendable, Hashable {
             case .long1080: "Long Edge 1080 px"
             case .long2048: "Long Edge 2048 px"
             case .long4096: "Long Edge 4096 px"
-            case .post45: "Post 1080 × 1350"
-            case .square: "Square 1080 × 1080"
-            case .story: "Story 1080 × 1920"
+            case .post45: "Post (fits 1080 × 1350)"
+            case .square: "Square Post (fits 1080 × 1080)"
+            case .story: "Story (fits 1080 × 1920)"
             }
         }
 
@@ -580,7 +625,8 @@ public struct ExportSettings: Codable, Sendable, Hashable {
     public var format: PhotoFormat = .jpeg
     public var size: Size = .original
     public var videoCodec: VideoCodec = .hevc
-    public var videoContainer: VideoContainer = .mp4
+    /// Nil: like the original (a MOV stays MOV, keeping its camera details and ProRes).
+    public var videoContainer: VideoContainer?
     /// Nil: like the original (`AudioOutput.like`).
     public var audioFormat: AudioOutput?
     /// 0.5 to 1.

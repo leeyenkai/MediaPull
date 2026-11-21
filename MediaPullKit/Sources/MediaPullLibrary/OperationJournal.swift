@@ -388,7 +388,6 @@ public actor OperationJournal {
         remade[old] = new
         remadeDates[old] = Date()
         remadeChanged = true
-        saveRemade()
     }
 
     /// The map outlives the session: History's Redo can run after a relaunch (audit 14, B14-M1). Pairs are kept in the
@@ -405,7 +404,7 @@ public actor OperationJournal {
         remadeOrder = rows.map(\.old)
     }
 
-    private func saveRemade() {
+    func saveRemade() {
         guard remadeChanged else { return }
         remadeChanged = false
         let rows = remadeOrder.compactMap { old in remade[old].map { RemadePair(old: old, new: $0, date: remadeDates[old] ?? Date()) } }
@@ -478,7 +477,16 @@ public actor OperationJournal {
     /// Changes that left items under temporary names (MediaPull stopped mid-way, a crash): taken back at launch (audit 17,
     /// B17-M1, C17-M2).
     public func stranded() -> [UUID] {
-        entries().filter { !$0.undone && Self.hiddenPresent($0) }.map(\.id)
+        var out: [UUID] = []
+        for var entry in entries() {
+            if entry.undone {
+                // An undone change whose Redo stopped part way: its hidden names are settled here (R-4503).
+                if (entry.swaps ?? [:]).keys.contains(where: { fm.fileExists(atPath: $0) }) { settleSwaps(&entry) }
+                continue
+            }
+            if Self.hiddenPresent(entry) { out.append(entry.id) }
+        }
+        return out
     }
 
     static func isTemporary(_ path: String) -> Bool {
@@ -640,6 +648,8 @@ public actor OperationJournal {
     }
 
     private var lastTrashSave = Date.distantPast
+    /// When a metadata edit last saved its record (they save now and then, `putInPlace`).
+    var lastEditSave = Date.distantPast
 
     /// Whether two paths name the same file, as a case-only rename's old and new names do on most Mac volumes.
     static func sameFile(_ a: String, _ b: String) -> Bool {
@@ -675,7 +685,8 @@ public actor OperationJournal {
             if park { report.skipped += parkEdits(&entry) }
             entry.undone = true
             report.done = 1
-            if !save(entry) { report.unsaved = true }
+            saveRemade()
+        if !save(entry) { report.unsaved = true }
             return report
         }
         // An editor Replace is undone only when its original can come back: otherwise the edit stays where it is, never
@@ -744,6 +755,7 @@ public actor OperationJournal {
         // again later; files changed or deleted since are reported and left. The entry is undone when nothing is left.
         entry.steps = later + left.reversed().flatMap { $0 }
         entry.undone = entry.steps.isEmpty
+        saveRemade()
         if !save(entry) { report.unsaved = true }
         return report
     }
@@ -821,6 +833,7 @@ public actor OperationJournal {
         }
         entry.undone = false
         entry.undoneSteps = notReached.isEmpty ? nil : notReached
+        saveRemade()
         if !save(entry) { report.unsaved = true }
         return report
     }
@@ -901,7 +914,7 @@ public actor OperationJournal {
                 report.done += 1
                 return true
             case let .metadata(path, before, after, made):
-                return rewrite(path, with: after, again: (before, made), entry: &entry, report: &report)
+                return rewrite(path, with: after, expecting: before, again: (before, made), entry: &entry, report: &report)
             case let .trash(original, _):
                 guard fm.fileExists(atPath: original) else { return true }
                 guard isSame(original, in: entry) else {
@@ -957,6 +970,11 @@ public actor OperationJournal {
         }
         var units: [[JournalStep]] = []
         for step in steps {
+            // Each metadata step is its own: two photos sharing a name are separate items there (A1-14).
+            if case .metadata = step {
+                units.append([step])
+                continue
+            }
             // A file's companions (its unit's members, edit files and metadata files, R-4206) follow it in the same folder.
             if let last = units.last, let media = source(last[0]), let path = source(step),
                (media as NSString).deletingLastPathComponent == (path as NSString).deletingLastPathComponent,
@@ -1085,8 +1103,9 @@ public actor OperationJournal {
                 : changed.count == 1 ? "1 file in \(target.lastPathComponent) changed or was added since, so it was kept"
                     : "\(changed.count) files in \(target.lastPathComponent) changed or were added since, so they were kept")
             return false
-        case let .metadata(path, before, _, made):
-            return rewrite(path, with: before, removing: made, entry: &entry, report: &report)
+        case let .metadata(path, before, after, made):
+            return rewrite(path, with: before, expecting: after, absent: after.fields.subtracting(before.fields), removing: made,
+                           entry: &entry, report: &report)
         case let .trash(original, trashed):
             let name = URL(fileURLWithPath: original).lastPathComponent
             // The item this change put in the Trash, not another one trashed later under that name (audit 9, B9-M2).

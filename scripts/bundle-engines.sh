@@ -61,6 +61,7 @@ lines = [
     f"yt-dlp {versions.get('yt_dlp')} (Unlicense): https://github.com/yt-dlp/yt-dlp and https://pypi.org/project/yt-dlp/",
     f"Python {versions.get('python')} (PSF): https://www.python.org/downloads/source/ (built by python-build-standalone)",
     f"ffmpeg {ffmpeg} (LGPL-2.1): https://ffmpeg.org/releases/ffmpeg-{ffmpeg}.tar.xz, configured by scripts/build-ffmpeg.sh",
+    "LAME 3.100 (LGPL-2.0), built into ffmpeg for MP3 output: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
 ]
 for name in ("requests", "urllib3", "idna", "charset_normalizer", "certifi"):
     lines.append(f"{name} {versions.get(name)}: https://pypi.org/project/{name.replace('_', '-')}/{versions.get(name)}/")

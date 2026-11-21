@@ -62,10 +62,20 @@ public enum MetadataWriter {
         return out
     }
 
-    /// The values a `.xmp` holds; only those it has are in `fields`, so they lie over the file's own (R-4502).
+    /// MediaPull's own record in a `.xmp` of the fields cleared there, so a removal lies over the file's own value (an
+    /// absent tag would let it show through).
+    static let clearedNamespace = "http://ns.mediapull.app/edits/1.0/"
+    static let clearedPrefix = "mediapulledit"
+    static let clearedPath = "mediapulledit:Cleared"
+
+    /// The values a `.xmp` holds; only those it has are in `fields`, so they lie over the file's own (R-4502). A field it
+    /// records as cleared is there with no value.
     public static func values(ofXMP data: Data) -> MetadataValues {
         var out = MetadataValues()
         guard let metadata = CGImageMetadataCreateFromXMPData(data as CFData) else { return out }
+        for name in (string(in: metadata, path: clearedPath) ?? "").split(separator: " ") {
+            if let field = MetadataField(rawValue: String(name)) { out.fields.insert(field) }
+        }
         if CGImageMetadataCopyTagWithPath(metadata, nil, "xmp:Rating" as CFString) != nil {
             out.fields.insert(.rating)
             out.rating = rating(in: metadata)
@@ -173,6 +183,17 @@ public enum MetadataWriter {
         if values.fields.contains(.location) {
             let lat = values.latitude, lon = values.longitude
             let has = lat != nil && lon != nil
+            // Removing a location removes every GPS value, not only the position (height, heading, speed, time).
+            if !has {
+                for key in [kCGImagePropertyGPSAltitude, kCGImagePropertyGPSAltitudeRef, kCGImagePropertyGPSImgDirection,
+                            kCGImagePropertyGPSImgDirectionRef, kCGImagePropertyGPSDestBearing, kCGImagePropertyGPSDestBearingRef,
+                            kCGImagePropertyGPSSpeed, kCGImagePropertyGPSSpeedRef, kCGImagePropertyGPSHPositioningError,
+                            kCGImagePropertyGPSDateStamp, kCGImagePropertyGPSTimeStamp, kCGImagePropertyGPSDestLatitude,
+                            kCGImagePropertyGPSDestLatitudeRef, kCGImagePropertyGPSDestLongitude, kCGImagePropertyGPSDestLongitudeRef]
+                {
+                    remove(metadata, kCGImagePropertyGPSDictionary, key)
+                }
+            }
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLatitude, has ? abs(lat!) as CFNumber : nil)
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLatitudeRef, has ? (lat! < 0 ? "S" : "N") as CFString : nil)
             set(kCGImagePropertyGPSDictionary, kCGImagePropertyGPSLongitude, has ? abs(lon!) as CFNumber : nil)
@@ -243,9 +264,39 @@ public enum MetadataWriter {
     // MARK: `.xmp` beside a file
 
     /// The `.xmp` with `values` set over `existing` (what else it holds is kept).
-    public static func xmpData(setting values: MetadataValues, over existing: Data?) throws -> Data {
+    /// `absent`: fields the `.xmp` is to hold nothing about (Undo of an edit that added them), so the file's own show.
+    public static func xmpData(setting values: MetadataValues, absent: Set<MetadataField> = [], over existing: Data?) throws -> Data {
         let metadata = existing.flatMap { CGImageMetadataCreateFromXMPData($0 as CFData) }.flatMap { CGImageMetadataCreateMutableCopy($0) }
             ?? CGImageMetadataCreateMutable()
+        // Fields removed here are recorded as cleared; fields given a value are not.
+        var cleared = Set((string(in: metadata, path: clearedPath) ?? "").split(separator: " ").map(String.init))
+        for field in values.fields {
+            let empty = switch field {
+            case .rating: values.rating == nil
+            case .keywords: values.keywords?.isEmpty ?? true
+            case .taken: values.taken?.isEmpty ?? true
+            case .location: values.latitude == nil || values.longitude == nil
+            }
+            if empty { cleared.insert(field.rawValue) } else { cleared.remove(field.rawValue) }
+        }
+        for field in absent {
+            cleared.remove(field.rawValue)
+        }
+        let paths: [MetadataField: [String]] = [
+            .rating: ["xmp:Rating"], .keywords: ["dc:subject"],
+            .taken: ["exif:DateTimeOriginal", "photoshop:DateCreated", "exif:DateTimeDigitized", "xmp:CreateDate"],
+            .location: ["exif:GPSLatitude", "exif:GPSLongitude", "exif:GPSLatitudeRef", "exif:GPSLongitudeRef"],
+        ]
+        for field in absent.subtracting(values.fields) {
+            for path in paths[field] ?? [] {
+                CGImageMetadataRemoveTagWithPath(metadata, nil, path as CFString)
+            }
+        }
+        CGImageMetadataRemoveTagWithPath(metadata, nil, clearedPath as CFString)
+        if !cleared.isEmpty {
+            CGImageMetadataRegisterNamespaceForPrefix(metadata, clearedNamespace as CFString, clearedPrefix as CFString, nil)
+            _ = CGImageMetadataSetValueWithPath(metadata, nil, clearedPath as CFString, cleared.sorted().joined(separator: " ") as CFString)
+        }
         func set(_ path: String, _ value: CFTypeRef?, removing aliases: [String] = []) {
             for alias in [path] + aliases {
                 CGImageMetadataRemoveTagWithPath(metadata, nil, alias as CFString)
@@ -281,7 +332,10 @@ public enum MetadataWriter {
         }
         guard let data = CGImageMetadataCreateXMPData(metadata, nil) as Data? else { throw Failure.notWritten }
         // Read back as MediaPull will read it.
-        guard self.values(ofXMP: data).agrees(with: values) else { throw Failure.valuesNotKept }
+        let back = self.values(ofXMP: data)
+        guard back.agrees(with: values), back.fields.isDisjoint(with: absent.subtracting(values.fields)) else {
+            throw Failure.valuesNotKept
+        }
         return data
     }
 

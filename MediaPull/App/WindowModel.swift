@@ -50,6 +50,7 @@ final class WindowModel: Identifiable, MediaGridOwner {
             if section == .organise { organise.updateAnalysisFolders() }
             if section == .devices { devices.shown() }
             if section == .edit { edit.shown() }
+            if oldValue == .edit, section != .edit { edit.leftSection() }
             // The hidden section stays in place (opacity, D-62): nothing in it may keep the keyboard, or Space, Return
             // and ⌘⌫ would act on a selection the person cannot see, and typing would go to a field they cannot see.
             if section != oldValue { hostWindow?.makeFirstResponder(nil) }

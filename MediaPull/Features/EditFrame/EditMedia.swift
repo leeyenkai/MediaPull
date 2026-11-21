@@ -127,8 +127,10 @@ extension EditModel {
                 return
             }
             let minutes = Int(at) / 60, rest = at - Double(minutes * 60)
-            let name = String(format: "%@_frame_%02dm%02d-%03ds.png", current.deletingPathExtension().lastPathComponent, minutes,
+            let stem = String(format: "%@_frame_%02dm%02d-%03ds", current.deletingPathExtension().lastPathComponent, minutes,
                               Int(rest), Int((rest - Double(Int(rest))) * 1000))
+            // Within the name budget, however long the video's name.
+            let name = FileNaming.fileName(stem: stem, ext: "png")
             do {
                 let fm = FileManager.default
                 let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
@@ -156,9 +158,9 @@ extension EditModel {
             let fm = FileManager.default
             let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
             defer { try? fm.removeItem(at: staging) }
-            let ext = recipe.export.videoContainer.rawValue
+            let ext = VideoComposer.container(for: url, recipe: recipe).rawValue
             let stem = url.deletingPathExtension().lastPathComponent
-            let staged = staging.appendingPathComponent("\(stem)-edited.\(ext)")
+            let staged = staging.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: ext))
             _ = try await VideoComposer.export(url, recipe: recipe, to: staged, progress: progress)
             let metadata = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
                 let values: [String: FileOps.MetadataValue] = ["edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: staged))]

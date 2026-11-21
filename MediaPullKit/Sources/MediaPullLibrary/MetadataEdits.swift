@@ -6,6 +6,9 @@ import MediaPullNet
 /// A file a metadata edit wrote again in place: its new content, so analysis can follow it (R-4506).
 public struct RewrittenFile: Sendable, Equatable {
     public var path: String
+    /// The content before, read just before it was replaced, so analysis follows the right content even when another
+    /// change to the same file was under way (R-4506).
+    public var previous: String?
     public var sha256: String
     public var size: Int64
     public var modified: Date
@@ -91,6 +94,15 @@ public extension OperationJournal {
                 result.skipped.append("“\(lead.lastPathComponent)” keeps the date of its post.")
                 continue
             }
+            if let locked = (place.files + [place.xmp].compactMap(\.self)).first(where: Self.isLocked) {
+                result.skipped.append("“\(locked.lastPathComponent)” is locked in the Finder; unlock it to change its details.")
+                continue
+            }
+            if place.xmp != nil, let other = Self.sharesXMP(lead, names: names) {
+                result.skipped.append("“\(lead.lastPathComponent)” has the same name as “\(other)”, so a .xmp beside it would belong "
+                    + "to both. Rename one of them first.")
+                continue
+            }
             let current = Self.currentValues(of: lead, place: place)
             guard edit.apply(to: current) != nil else { continue }
             do {
@@ -98,19 +110,50 @@ public extension OperationJournal {
                     result.changed += 1
                     continue
                 }
+                // Not written in place (the format, or the picture could not be proven the same): a `.xmp`, unless
+                // another photo of this name would share it.
+                if place.xmp == nil, let other = Self.sharesXMP(lead, names: names) {
+                    result.skipped.append("“\(lead.lastPathComponent)” has the same name as “\(other)”, so a .xmp beside it would "
+                        + "belong to both. Rename one of them first.")
+                    continue
+                }
                 let xmp = place.xmp ?? MetadataWriter.xmpURL(for: lead, existing: names)
                 if try writeXMP(xmp, values: edit.apply(to: current), entry: &entry, result: &result) { result.changed += 1 }
+            } catch let partial as PartlyChanged {
+                result.changed += 1
+                result.skipped.append("Only part of “\(lead.lastPathComponent)” was changed (\(partial.reason)); ⌘Z takes it back.")
             } catch {
                 result.skipped.append("“\(lead.lastPathComponent)” was left as it was: \(error.localizedDescription)")
             }
         }
         progress(items.count, items.count)
         entry.finished = true
-        entry.swaps = nil
+        // Hidden names still there (a swap that could not finish) stay recorded, so they are settled at the next launch.
+        entry.swaps = entry.swaps?.filter { fm.fileExists(atPath: $0.key) }
+        if entry.swaps?.isEmpty == true { entry.swaps = nil }
+        saveRemade()
         guard !entry.steps.isEmpty else { return result }
         if !save(entry) { result.skipped.append(Self.unsavedNote) }
         result.entry = entry
         return result
+    }
+
+    /// A file the Finder locks cannot be replaced.
+    static func isLocked(_ url: URL) -> Bool {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.immutable] as? Bool) == true
+    }
+
+    /// Another media file in the folder with the item's name but not of its unit: a `<name>.xmp` would be read for both.
+    static func sharesXMP(_ lead: URL, names: [String]) -> String? {
+        let stem = lead.deletingPathExtension().lastPathComponent.lowercased()
+        let members = Set(([lead.lastPathComponent] + MediaUnits.companions(ofLead: lead.lastPathComponent, in: names)).map {
+            $0.lowercased()
+        })
+        return names.first { name in
+            let lowered = name.lowercased()
+            return (name as NSString).deletingPathExtension.lowercased() == stem && !members.contains(lowered)
+                && MediaFormat.fromExtension((name as NSString).pathExtension) != nil
+        }
     }
 
     /// The folder holding all of these.
@@ -152,9 +195,10 @@ extension OperationJournal {
                                                                                             after: item.after, made: false), entry: &entry)
                 result.rewritten.append(written)
             } catch {
-                // The ones already in place stay, recorded; the rest are not written.
+                // The ones already in place stay, recorded (⌘Z takes them back); the rest are not written.
                 for rest in staged[(index + 1)...] { try? fm.removeItem(at: rest.copy) }
                 try? fm.removeItem(at: item.copy)
+                if index > 0 { throw PartlyChanged(reason: error.localizedDescription) }
                 throw error
             }
         }
@@ -167,8 +211,8 @@ extension OperationJournal {
         let existing = try? Data(contentsOf: xmp)
         let before = existing.map { MetadataWriter.values(ofXMP: $0) } ?? MetadataValues()
         let data = try MetadataWriter.xmpData(setting: values, over: existing)
-        let step = JournalStep.metadata(path: xmp.path, before: before.withFields(values.fields), after: values,
-                                        made: existing == nil)
+        // Only the fields the `.xmp` held: Undo makes the others absent again, so the file's own values show.
+        let step = JournalStep.metadata(path: xmp.path, before: before.only(values.fields), after: values, made: existing == nil)
         try writeXMPData(data, to: xmp, exists: existing != nil, step: step, entry: &entry)
         result.xmpWritten.append(xmp.path)
         return true
@@ -208,21 +252,31 @@ extension OperationJournal {
     func putInPlace(_ copy: URL, over file: URL, step: JournalStep?, entry: inout JournalEntry) throws -> RewrittenFile {
         let identity = AccountFolderRecord.number(of: file)
         try Self.carryAttributes(from: file, to: copy)
-        // Hashed before the swap: the copy is complete and checked.
+        // Hashed before the swap: the copy is complete and checked; the file's own content just before it is replaced.
         let sha = try FileHasher.sha256(of: copy)
+        let previous = try? FileHasher.sha256(of: file)
         let was = Self.hiddenName(beside: file, was: true)
         if entry.swaps == nil { entry.swaps = [:] }
         entry.swaps![copy.path] = file.path
         entry.swaps![was.path] = file.path
         if let step { entry.steps.append(step) }
-        guard save(entry) else {
-            if step != nil { entry.steps.removeLast() }
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "The undo record could not be saved."])
+        // A swap of names is one step: the record is saved now and then, not before every photo (a batch of thousands
+        // would rewrite the whole record each time).
+        if Date().timeIntervalSince(lastEditSave) >= 0.5 || entry.steps.count <= 1 {
+            guard save(entry) else {
+                if step != nil { entry.steps.removeLast() }
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "The undo record could not be saved."])
+            }
+            lastEditSave = Date()
         }
         if renamex_np(copy.path, file.path, UInt32(RENAME_SWAP)) != 0 {
             let code = errno
             guard code == ENOTSUP || code == EINVAL else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
-            // exFAT, FAT: the file steps aside under a hidden name, the copy takes its name.
+            // exFAT, FAT: the file steps aside under a hidden name, so the record is saved first, always.
+            guard save(entry) else {
+                if step != nil { entry.steps.removeLast() }
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "The undo record could not be saved."])
+            }
             try FileOps.renameExclusive(file, to: was)
             do {
                 try FileOps.renameExclusive(copy, to: file)
@@ -237,11 +291,10 @@ extension OperationJournal {
         entry.swaps?[copy.path] = nil
         entry.swaps?[was.path] = nil
         noteReplaced(file.path, was: identity, in: &entry)
-        save(entry)
         Self.updateMetadataChecksum(of: file, to: sha)
         // Read afresh (a URL keeps values it read before): what a scan will compare against.
         let attributes = try? fm.attributesOfItem(atPath: file.path)
-        return RewrittenFile(path: file.path, sha256: sha, size: (attributes?[.size] as? NSNumber)?.int64Value ?? 0,
+        return RewrittenFile(path: file.path, previous: previous, sha256: sha, size: (attributes?[.size] as? NSNumber)?.int64Value ?? 0,
                              modified: attributes?[.modificationDate] as? Date ?? Date())
     }
 
@@ -303,8 +356,11 @@ extension OperationJournal {
 
     /// Undo and Redo of a metadata step: writes `values` back by the same writer and check, on the same file only
     /// (R-4505). `removing`: Undo of a `.xmp` the edit made sends it to the Trash. `again`: Redo records the step anew.
-    func rewrite(_ path: String, with values: MetadataValues, removing made: Bool = false,
-                 again: (before: MetadataValues, made: Bool)? = nil, entry: inout JournalEntry, report: inout UndoReport) -> Bool
+    /// `expecting`: the values the file must still have (the step's after for Undo, its before for Redo); a file a later
+    /// change gave other values is left as it is (D-93). `absent`: `.xmp` fields to leave empty again.
+    func rewrite(_ path: String, with values: MetadataValues, expecting: MetadataValues, absent: Set<MetadataField> = [],
+                 removing made: Bool = false, again: (before: MetadataValues, made: Bool)? = nil, entry: inout JournalEntry,
+                 report: inout UndoReport) -> Bool
     {
         let url = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
@@ -323,19 +379,28 @@ extension OperationJournal {
                 return false
             }
         }
-        guard isSame(path, in: entry) else {
+        let now = isXMP ? (MetadataWriter.values(ofXMPAt: url) ?? MetadataValues()) : MetadataWriter.values(of: url)
+        guard isSame(path, in: entry), now.agrees(with: expecting) else {
             report.skipped.append(fm.fileExists(atPath: path) ? "“\(name)” was changed since, so it was left as it is."
                 : "“\(name)” is no longer there.")
             return false
         }
         do {
             if isXMP {
-                let data = try MetadataWriter.xmpData(setting: values, over: try? Data(contentsOf: url))
+                let data = try MetadataWriter.xmpData(setting: values, absent: absent, over: try? Data(contentsOf: url))
+                var trashed = false
                 if made, again == nil, MetadataWriter.values(ofXMP: data).fields.isEmpty {
-                    // A `.xmp` the edit made that holds nothing else now goes to the Trash, never deleted.
-                    var trashed: NSURL?
-                    try fm.trashItem(at: url, resultingItemURL: &trashed)
-                } else {
+                    // A `.xmp` the edit made that holds nothing else now goes to the Trash, never deleted; on a drive
+                    // without a Trash it stays, emptied.
+                    var inTrash: NSURL?
+                    do {
+                        try fm.trashItem(at: url, resultingItemURL: &inTrash)
+                        trashed = true
+                    } catch CocoaError.featureUnsupported {
+                        trashed = false
+                    }
+                }
+                if !trashed {
                     let step = again.map { JournalStep.metadata(path: path, before: $0.before, after: values, made: $0.made) }
                     try writeXMPData(data, to: url, exists: true, step: step, entry: &entry)
                 }
@@ -358,6 +423,11 @@ extension OperationJournal {
         report.restored += 1
         return true
     }
+}
+
+/// A unit whose first members were written in place before a later one failed.
+struct PartlyChanged: Error {
+    var reason: String
 }
 
 extension MetadataValues {

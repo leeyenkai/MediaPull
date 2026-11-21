@@ -78,6 +78,39 @@ final class AudioEditTests: XCTestCase {
         XCTAssertEqual(AudioEdit.peaks([], buckets: 3), [])
     }
 
+    func testWholeFilesTagsDepthAndEnds() {
+        // Nothing cut: the file itself, no trimming to a length that may be off (audit C1-M1, C1-m6).
+        var whole = AudioEditPlan(source: URL(fileURLWithPath: "/m/a.mp3"), output: URL(fileURLWithPath: "/m/o.mp3"),
+                                  recipe: EditRecipe(source: EditSource(path: "/m/a.mp3", kind: .audio)),
+                                  format: AudioSourceFormat(duration: 60, codec: "mp3"))
+        whole.tags.title = "T"
+        XCTAssertTrue(whole.kept.isEmpty)
+        let copy = AudioEdit.arguments(whole, list: nil)
+        XCTAssertFalse(copy.contains("concat"))
+        XCTAssertEqual(copy.firstIndex(of: "-c:a").map { copy[$0 + 1] }, "copy")
+        XCTAssertFalse(copy.contains("-map_chapters"), "chapters kept when nothing is cut")
+        whole.fadeIn = 1
+        XCTAssertFalse(AudioEdit.filterGraph(whole).contains("atrim"))
+        // A part reaching the end runs to the true end.
+        var tail = plan("a.mp3", .mp3, kept: [TimeRange(start: 5, end: 60)])
+        tail.sourceFormat = AudioSourceFormat(duration: 60)
+        XCTAssertFalse(AudioEdit.concatList(tail).contains("outpoint"))
+        XCTAssertFalse(AudioEdit.filterGraph(tail).contains(":end="))
+        XCTAssertTrue(AudioEdit.arguments(tail, list: URL(fileURLWithPath: "/tmp/l")).contains("-map_chapters"))
+        // Ogg keeps its tags on the stream; AIFF writes ID3 for all of them; 24-bit stays 24-bit; ALAC stays lossless.
+        XCTAssertTrue(AudioEdit.arguments(plan("a.opus", .aac), list: nil).contains("-map_metadata:g"))
+        XCTAssertTrue(AudioEdit.arguments(plan("a.wav", .aiff), list: nil).contains("-write_id3v2"))
+        var deep = plan("a.wav", .wav)
+        deep.sourceFormat = AudioSourceFormat(duration: 10, bits: 24)
+        XCTAssertEqual(AudioEdit.arguments(deep, list: nil).firstIndex(of: "-c:a").map { AudioEdit.arguments(deep, list: nil)[$0 + 1] },
+                       "pcm_s24le")
+        XCTAssertEqual(AudioOutput.like("m4a", codec: "alac"), .alac)
+        var lossless = plan("a.m4a", .aac)
+        lossless.sourceFormat = AudioSourceFormat(duration: 10, codec: "alac")
+        XCTAssertFalse(lossless.copiesStreams, "Apple Lossless is not copied as AAC")
+        XCTAssertTrue(AudioEdit.filterGraph(plan("a.wav", .aac)).contains("aformat=sample_rates=48000"))
+    }
+
     /// The real engine: a tone cut losslessly, faded, normalised and converted (skipped when ffmpeg is not built).
     func testTheBundledEngineEditsAudio() async throws {
         let ffmpeg = FFmpeg(ffmpeg: TestEngines.ffmpegFolder.appendingPathComponent("ffmpeg"),

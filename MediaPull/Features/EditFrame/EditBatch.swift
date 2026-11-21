@@ -65,14 +65,14 @@ extension EditModel {
                 await AppModel.shared.recipes.save(recipe)
             }
             guard let self else { return }
-            registerBatchUndo(before)
+            registerBatchUndo(before, name: "Paste Settings")
             reloadCurrentRecipe()
             message = "Settings pasted onto \(files.count) file\(files.count == 1 ? "" : "s")."
         }
     }
 
     /// ⌘Z puts back each file's recipe as it was before a paste; ⇧⌘Z pastes again.
-    private func registerBatchUndo(_ before: [(path: String, recipe: EditRecipe?)]) {
+    func registerBatchUndo(_ before: [(path: String, recipe: EditRecipe?)], name: String) {
         guard let manager = undoManager else { return }
         Task { [weak self] in
             var after: [(path: String, recipe: EditRecipe?)] = []
@@ -83,7 +83,7 @@ extension EditModel {
             manager.registerUndo(withTarget: self) { model in
                 MainActor.assumeIsolated { model.restoreRecipes(before, redo: after) }
             }
-            manager.setActionName("Paste Settings")
+            manager.setActionName(name)
         }
     }
 

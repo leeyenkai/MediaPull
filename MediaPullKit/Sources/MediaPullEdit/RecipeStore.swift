@@ -22,13 +22,33 @@ public actor RecipeStore {
         guard !loaded else { return }
         loaded = true
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        let fm = FileManager.default
         for file in files where file.pathExtension == "json" {
             guard let data = try? Data(contentsOf: file), let recipe = EditRecipe.decode(data) else { continue }
             let path = Self.key(recipe.source.path)
+            // A file deleted from a folder that is still there (not a drive that is away, not a folder moved elsewhere)
+            // is gone for good: its recipe goes too, unless its reference finds it elsewhere.
+            if !fm.fileExists(atPath: path), fm.fileExists(atPath: (path as NSString).deletingLastPathComponent),
+               recipe.source.reference.flatMap(Self.resolve) == nil
+            {
+                try? fm.removeItem(at: file)
+                continue
+            }
             // Two recipes for one path (a crash between writes): the newer one is kept.
             if let other = byPath[path], other.modified > recipe.modified { continue }
             byPath[path] = recipe
         }
+    }
+
+    /// The file's creation date, which tells it apart from another file later given its name.
+    static func created(_ path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: path))?[.creationDate] as? Date
+    }
+
+    /// Whether `recipe` was made for the file now at `path` (R-4602): a recipe without a date is taken as it is.
+    static func belongs(_ recipe: EditRecipe, to path: String) -> Bool {
+        guard let made = recipe.source.created, let now = created(path) else { return true }
+        return abs(made.timeIntervalSince(now)) < 1
     }
 
     static func key(_ path: String) -> String {
@@ -40,7 +60,14 @@ public actor RecipeStore {
     public func recipe(for url: URL) -> EditRecipe? {
         load()
         let path = Self.key(url.path)
-        if let recipe = byPath[path] { return recipe }
+        if let recipe = byPath[path] {
+            // Another file with this name: the old recipe goes with the file it was made for.
+            guard Self.belongs(recipe, to: path) else {
+                remove(path)
+                return nil
+            }
+            return recipe
+        }
         for (oldPath, recipe) in byPath where !FileManager.default.fileExists(atPath: oldPath) {
             guard let reference = recipe.source.reference, Self.resolve(reference) == path else { continue }
             var moved = recipe
@@ -59,20 +86,31 @@ public actor RecipeStore {
         return Set(byPath.keys)
     }
 
-    /// Keeps an edited recipe; a recipe with nothing edited is removed (Revert).
-    public func save(_ recipe: EditRecipe) {
+    /// Keeps an edited recipe; a recipe with nothing edited is removed (Revert). False when it could not be written.
+    @discardableResult
+    public func save(_ recipe: EditRecipe) -> Bool {
         load()
         var recipe = recipe
         let path = Self.key(recipe.source.path)
         recipe.source.path = path
         if recipe.source.reference == nil { recipe.source.reference = Self.reference(path) }
+        if recipe.source.created == nil { recipe.source.created = Self.created(path) }
         guard recipe.isEdited else {
             remove(path)
-            return
+            return true
         }
         recipe.modified = Date()
         byPath[path] = recipe
-        write(recipe)
+        return write(recipe)
+    }
+
+    /// At quit: writes a recipe at once, outside the actor (the app is about to end).
+    public nonisolated func saveNow(_ recipe: EditRecipe) {
+        guard recipe.isEdited else { return }
+        var recipe = recipe
+        recipe.modified = Date()
+        if recipe.source.created == nil { recipe.source.created = Self.created(recipe.source.path) }
+        _ = Self.write(recipe, to: folder.appendingPathComponent("\(recipe.id.uuidString).json"), folder: folder)
     }
 
     public func remove(_ path: String) {
@@ -86,28 +124,53 @@ public actor RecipeStore {
     public func movePaths(_ moves: [(from: String, to: String)]) {
         load()
         guard !moves.isEmpty else { return }
-        let remap = PathMoves(moves)
+        let remap = PathMoves(moves.map { (Self.key($0.from), Self.key($0.to)) })
+        // Built anew, so a recipe moving onto another's old path never pushes that one out.
+        var next: [String: EditRecipe] = [:]
         for (path, recipe) in byPath {
-            guard let destination = remap.destination(of: path) else { continue }
             var moved = recipe
-            moved.source.path = Self.key(destination)
-            byPath[path] = nil
-            byPath[moved.source.path] = moved
-            write(moved)
+            var changed = false
+            // As stored, or with links resolved (the journal records /private/var where a pane may show /var).
+            if let destination = remap.destination(of: path)
+                ?? remap.destination(of: URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+            {
+                moved.source.path = Self.key(destination)
+                changed = true
+            }
+            // Picture layers follow their files too.
+            for index in moved.layers.indices {
+                if case let .image(picture) = moved.layers[index].kind, let destination = remap.destination(of: Self.key(picture)) {
+                    moved.layers[index].kind = .image(path: destination)
+                    changed = true
+                }
+            }
+            next[moved.source.path] = moved
+            if changed { write(moved) }
         }
+        byPath = next
     }
 
     private func url(for id: UUID) -> URL {
         folder.appendingPathComponent("\(id.uuidString).json")
     }
 
-    private func write(_ recipe: EditRecipe) {
+    @discardableResult
+    private func write(_ recipe: EditRecipe) -> Bool {
+        Self.write(recipe, to: url(for: recipe.id), folder: folder)
+    }
+
+    /// False when it could not be written (a full disk): the caller says so.
+    static func write(_ recipe: EditRecipe, to url: URL, folder: URL) -> Bool {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(recipe) else { return }
-        // lint:allow silent-write a recipe is MediaPull's own data; the original file is never touched
-        try? data.write(to: url(for: recipe.id), options: .atomic)
+        guard let data = try? encoder.encode(recipe) else { return false }
+        do {
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// A reference to the file at `path` that keeps naming it through renames and moves on its disk.

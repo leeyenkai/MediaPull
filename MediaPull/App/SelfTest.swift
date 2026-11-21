@@ -1669,6 +1669,37 @@ final class SelfTestRunner {
         }
         let added = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).subtracting(exportedBefore)
         check(added.count == 2 && added.contains("second-edited.jpg"), "Export Selected wrote both (\(added.sorted()))")
+
+        // Renamed by MediaPull while open: the recipe follows, and later edits are saved under the new name (audit B1-2).
+        edit.load(photo)
+        await waitUntil(timeout: 20) { edit.current == photo && edit.recipe?.layers.count == 5 }
+        if let open = edit.current {
+            let renamed = open.deletingLastPathComponent().appendingPathComponent("renamed.jpg")
+            _ = await AppModel.shared.applyChange(FolderOperations.rename(open, to: "renamed.jpg"))
+            check(edit.current?.lastPathComponent == "renamed.jpg", "the open photo follows its new name")
+            edit.change { $0.adjust.exposure = 0.9 }
+            edit.flushSave()
+            try? await Task.sleep(for: .milliseconds(500))
+            let followed = await AppModel.shared.recipes.recipe(for: renamed)
+            check(followed?.adjust.exposure == 0.9 && followed?.layers.count == 5, "later edits are kept under the new name")
+
+            // Revert Edits of two files is one change ⌘Z takes back (audit B1-3).
+            let manager = UndoManager()
+            manager.groupsByEvent = false
+            edit.testUndoManager = manager
+            manager.beginUndoGrouping()
+            edit.revert([renamed, second])
+            await waitUntil(timeout: 10) { edit.recipe?.isEdited == false }
+            try? await Task.sleep(for: .milliseconds(300))
+            manager.endUndoGrouping()
+            let gone = await AppModel.shared.recipes.recipe(for: second)
+            check(gone == nil && edit.recipe?.isEdited == false, "Revert Edits of two files removes both recipes")
+            manager.undo()
+            try? await Task.sleep(for: .milliseconds(800))
+            let back = await AppModel.shared.recipes.recipe(for: second)
+            check(back?.layers.count == 5 && edit.recipe?.layers.count == 5, "⌘Z brings both back")
+            edit.testUndoManager = nil
+        }
         model.section = .collect
         note("edit-photo: \(failures.isEmpty ? "PASS" : "FAIL \(failures)")")
     }

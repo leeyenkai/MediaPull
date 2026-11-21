@@ -12,6 +12,7 @@ final class EditPlayer {
     private(set) var time: Double = 0
     private(set) var playing = false
     @ObservationIgnored private var observer: Any?
+    @ObservationIgnored private var boundary: Any?
 
     init() {
         view.player = player
@@ -29,6 +30,7 @@ final class EditPlayer {
 
     isolated deinit {
         if let observer { player.removeTimeObserver(observer) }
+        if let boundary { player.removeTimeObserver(boundary) }
     }
 
     func load(_ url: URL) {
@@ -44,6 +46,17 @@ final class EditPlayer {
     func seek(_ seconds: Double) {
         time = max(0, seconds)
         player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// Plays from `start` and stops at `end`.
+    func play(from start: Double, to end: Double) {
+        if let boundary { player.removeTimeObserver(boundary) }
+        boundary = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: end, preferredTimescale: 600))],
+                                                  queue: .main) { [weak self] in
+            MainActor.assumeIsolated { self?.player.pause() }
+        }
+        seek(start)
+        player.play()
     }
 
     func togglePlay() {

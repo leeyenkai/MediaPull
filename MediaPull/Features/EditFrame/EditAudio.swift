@@ -9,17 +9,35 @@ import SwiftUI
 extension EditModel {
     /// The waveform's peaks and the file's own tags, read with the bundled ffmpeg off the main actor.
     func loadWaveform() {
-        guard let current, kind == .audio, let ffmpeg = AppModel.shared.ffmpeg else { return }
+        waveformTask?.cancel()
         waveform = []
+        waveformFailed = false
         currentTags = nil
-        Task { [weak self] in
-            let peaks = (try? await ffmpeg.waveform(current, buckets: 1200)) ?? []
-            let read = await ffmpeg.audioTags(current)
-            guard let self, self.current == current else { return }
-            waveform = peaks
-            currentTags = read?.tags
-            if mediaDuration == 0, let length = read?.duration { mediaDuration = length }
+        audioSource = nil
+        guard let current, kind == .audio else { return }
+        guard let ffmpeg = AppModel.shared.ffmpeg else {
+            waveformFailed = true
+            return
         }
+        // One at a time: moving through files stops the decode of the one left (cancelling ends its ffmpeg).
+        waveformTask = Task { [weak self] in
+            let source = await ffmpeg.audioFormat(current)
+            let read = await ffmpeg.audioTags(current)
+            let peaks = try? await ffmpeg.waveform(current, buckets: 1200)
+            guard let self, !Task.isCancelled, self.current == current else { return }
+            waveform = peaks ?? []
+            waveformFailed = peaks?.isEmpty ?? true
+            currentTags = read?.tags
+            audioSource = source
+            // ffprobe's length, not the system's guess, which can be short or long (VBR MP3, ADTS AAC, Opus).
+            if let length = source?.duration, length > 0 { mediaDuration = length }
+        }
+    }
+
+    /// Plays only the selected part (R-4610).
+    func playSelection() {
+        guard let selection = audioSelection else { return }
+        player.play(from: selection.start, to: selection.end)
     }
 
     /// Keeps only the selected part.
@@ -80,13 +98,14 @@ extension EditModel {
             let fm = FileManager.default
             let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: folder, create: true)
             defer { try? fm.removeItem(at: staging) }
-            var duration = await duration(of: url)
-            if duration == 0 { duration = await ffmpeg.audioTags(url)?.duration ?? 0 }
-            let format = recipe.export.audioFormat ?? .like(url.pathExtension)
+            // The true length and the codec and depth, read by ffprobe.
+            var source = await ffmpeg.audioFormat(url) ?? AudioSourceFormat(duration: 0)
+            if source.duration == 0 { source.duration = await duration(of: url) }
+            let format = recipe.export.audioFormat ?? .like(url.pathExtension, codec: source.codec)
             let stem = url.deletingPathExtension().lastPathComponent
-            let staged = staging.appendingPathComponent("\(stem)-edited.\(format.fileExtension)")
+            let staged = staging.appendingPathComponent(FileNaming.fileName(stem: "\(stem)-edited", ext: format.fileExtension))
             progress(0.05)
-            try await ffmpeg.editAudio(AudioEditPlan(source: url, output: staged, recipe: recipe, duration: duration))
+            try await ffmpeg.editAudio(AudioEditPlan(source: url, output: staged, recipe: recipe, format: source))
             progress(0.95)
             let metadata = try await Task.detached(priority: .userInitiated) { () throws -> Data? in
                 let values: [String: FileOps.MetadataValue] = ["edited": .bool(true), "sha256": .string(try FileHasher.sha256(of: staged))]
@@ -109,7 +128,12 @@ struct EditAudioCanvas: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if edit.waveform.isEmpty {
+            if edit.waveformFailed {
+                Text(AppModel.shared.ffmpeg == nil ? "The waveform needs ffmpeg, which is not in this copy of MediaPull."
+                    : "This file's sound could not be read, so its waveform cannot be shown or exported.")
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if edit.waveform.isEmpty {
                 ProgressView().controlSize(.small).frame(maxHeight: .infinity)
             } else {
                 waveform.frame(maxHeight: .infinity)
@@ -180,6 +204,7 @@ struct SoundTab: View {
             Text("Cut").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Text("Click the waveform to move the playhead; drag across it to select.").font(.caption).foregroundStyle(.secondary)
             HStack {
+                Button("Play Selection") { edit.playSelection() }
                 Button("Keep Selection") { edit.keepSelection() }
                 Button("Remove Selection") { edit.removeSelection() }
             }
@@ -227,7 +252,7 @@ struct SoundTab: View {
 struct AudioExportSettings: View {
     @Bindable var edit: EditModel
 
-    private var source: AudioOutput { .like(edit.current?.pathExtension ?? "m4a") }
+    private var source: AudioOutput { .like(edit.current?.pathExtension ?? "m4a", codec: edit.audioSource?.codec) }
 
     var body: some View {
         Picker("Format", selection: Binding(
@@ -238,7 +263,8 @@ struct AudioExportSettings: View {
             ForEach(AudioOutput.allCases, id: \.self) { Text($0.label).tag(Optional($0)) }
         }
         if let recipe = edit.recipe, let url = edit.current {
-            let plan = AudioEditPlan(source: url, output: url, recipe: recipe, duration: edit.mediaDuration)
+            let plan = AudioEditPlan(source: url, output: url, recipe: recipe,
+                                     format: edit.audioSource ?? AudioSourceFormat(duration: edit.mediaDuration))
             Text(plan.copiesStreams ? "Only cuts: the sound is copied, not encoded again."
                 : "Encoded as \(plan.format.label)\(plan.format == .mp3 ? " (about 190 kbps)" : "").")
                 .font(.caption).foregroundStyle(.secondary)

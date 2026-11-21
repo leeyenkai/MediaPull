@@ -236,7 +236,10 @@ enum AudioPreview {
         let name = ShortHash.of(url.path) + ".m4a"
         let folder = folder, output = folder.appendingPathComponent(name)
         return await Task.detached(priority: .userInitiated) { () -> URL? in
-            if FileManager.default.fileExists(atPath: output.path) { return output }
+            // A copy left empty by a failed run is never served.
+            if let size = (try? FileManager.default.attributesOfItem(atPath: output.path))?[.size] as? NSNumber, size.intValue > 0 {
+                return output
+            }
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             return (try? await ffmpeg.playableCopy(of: url, to: output)) != nil ? output : nil
         }.value

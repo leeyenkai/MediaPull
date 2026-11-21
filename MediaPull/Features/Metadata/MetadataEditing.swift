@@ -8,7 +8,13 @@ import SwiftUI
 extension WindowModel {
     /// Photos among `files` whose details can be changed now (R-4501): videos and audio wait for spike S1.
     static func editablePhotos(_ files: [URL]) -> [URL] {
-        files.filter { MediaFormat.fromExtension($0.pathExtension)?.kind == .image && !MediaFormat.isSequenceExtension($0.pathExtension) }
+        files.filter { url in
+            guard MediaFormat.fromExtension(url.pathExtension)?.kind == .image, !MediaFormat.isSequenceExtension(url.pathExtension) else {
+                return false
+            }
+            // A locked card is only read (R-4304).
+            return AppModel.shared.driveCenter.drive(containing: url)?.isReadOnly != true
+        }
     }
 
     /// Rating ▸ and Edit Details for a grid's menu (R-4508); none when no photo is chosen.
@@ -53,7 +59,9 @@ extension WindowModel {
             guard let self else { return }
             if let entry = result.entry { self.registerUndo(entry) }
             let photosChanged = "\(result.changed) photo\(result.changed == 1 ? "" : "s") changed"
-            var text = result.changed == 0 ? (result.stopped ? "Stopped before anything was changed." : "Nothing needed changing.")
+            var text = result.changed == 0
+                ? (result.stopped ? "Stopped before anything was changed."
+                    : problems.isEmpty ? "Nothing needed changing." : "Nothing could be changed.")
                 : "\(title): \(photosChanged)\(result.stopped ? " before it was stopped" : ""). ⌘Z undoes it."
             if let first = problems.first {
                 text += problems.count == 1 ? " \(first)" : " \(problems.count) were left as they were, such as: \(first)"

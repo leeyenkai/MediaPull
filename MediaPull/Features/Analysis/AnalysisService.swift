@@ -52,7 +52,9 @@ final class AnalysisService {
     @ObservationIgnored private var rescanRequested = false
     @ObservationIgnored private var job: Job?
     /// Files a metadata edit is writing: no scan reads them until their results have followed them (R-4506).
-    @ObservationIgnored private var editing: Set<String> = []
+    /// Counted per path: two edits of one photo under way at once each hold it until they are done.
+    @ObservationIgnored private var editingCounts: [String: Int] = [:]
+    private var editing: Set<String> { Set(editingCounts.keys) }
     /// `.xmp` values by the `.xmp`'s path, with its date then (R-4502).
     @ObservationIgnored private var xmpCache: [String: (modified: Date, values: MetadataValues)] = [:]
     @ObservationIgnored private lazy var watcher = FolderWatcher { [weak self] paths in self?.foldersChanged(paths) }
@@ -551,19 +553,38 @@ final class AnalysisService {
 
     /// A metadata edit is about to write these files: scans leave them alone until `followEdit` (R-4506).
     func beginEdit(_ paths: [String]) {
-        editing.formUnion(paths)
+        for path in paths {
+            editingCounts[path, default: 0] += 1
+        }
+    }
+
+    private func endEdit(_ paths: [String]) {
+        for path in paths {
+            let left = (editingCounts[path] ?? 1) - 1
+            editingCounts[path] = left > 0 ? left : nil
+        }
+    }
+
+    /// `.xmp` files just written are read again (a FAT card's dates are too coarse to tell two writes apart).
+    func forgetXMP(_ paths: [String]) {
+        for path in paths {
+            xmpCache[path] = nil
+        }
     }
 
     /// After a metadata edit, Undo or Redo: each file written in place keeps its results, faces, people and corrections
     /// at its new content (copied from `previous`, its content before), and its facts are read again (R-4506, D-126).
     func followEdit(_ rewritten: [RewrittenFile], previous: [String: FileState], editing paths: [String]) async {
         defer {
-            editing.subtract(paths)
+            endEdit(paths)
             revision += 1
         }
         guard let store else { return }
+        // Vectors are copied only once their stores are loaded (an edit taken back at launch comes before that).
+        await loadTask?.value
         for file in rewritten {
-            if let old = previous[file.path]?.sha256, old != file.sha256 {
+            // The content just before it was replaced, as the journal read it; else what the store knew.
+            if let old = file.previous ?? previous[file.path]?.sha256, old != file.sha256 {
                 let pairs = await store.rekey(from: old, to: file.sha256)
                 if let faceVectors, !pairs.isEmpty {
                     var rows: [String: Int] = [:]

@@ -32,26 +32,35 @@ public enum VideoComposer {
     public static func isLossless(_ recipe: EditRecipe) -> Bool {
         let time = recipe.timeline ?? EditTimeline()
         return time.cutsOnly && recipe.adjust == Adjustments() && recipe.look == nil && recipe.frame == nil
-            && recipe.layers.isEmpty && recipe.geometry.crop == nil && recipe.geometry.straighten == 0 && recipe.export.size == .original
+            && recipe.layers.allSatisfy(\.hidden) && recipe.geometry.crop == nil && recipe.geometry.straighten == 0
+            && recipe.export.size == .original
+    }
+
+    /// The container an export is written in: the one chosen, else like the original (a MOV stays MOV).
+    public static func container(for source: URL, recipe: EditRecipe) -> ExportSettings.VideoContainer {
+        recipe.export.videoContainer ?? (source.pathExtension.lowercased() == "mov" ? .mov : .mp4)
     }
 
     static func seconds(_ value: Double) -> CMTime { CMTime(seconds: value, preferredTimescale: 600) }
 
     /// A turn and flip of a picture shown at `size`, in AVFoundation's coordinates (origin top left).
+    /// Turned first, then flipped in the turned size, as the photo renderer does, so a lossless export matches the canvas.
     public static func turn(_ geometry: EditGeometry, size: CGSize) -> CGAffineTransform {
-        var transform = geometry.flipped ? CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: size.width, ty: 0) : .identity
         let (w, h) = (size.width, size.height)
-        let rotation: CGAffineTransform = switch ((geometry.quarterTurns % 4) + 4) % 4 {
+        let quarters = ((geometry.quarterTurns % 4) + 4) % 4
+        let rotation: CGAffineTransform = switch quarters {
         case 1: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: h, ty: 0)
         case 2: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: w, ty: h)
         case 3: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: w)
         default: .identity
         }
-        transform = transform.concatenating(rotation)
-        return transform
+        guard geometry.flipped else { return rotation }
+        let turnedWidth = quarters % 2 == 0 ? w : h
+        return rotation.concatenating(CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: turnedWidth, ty: 0))
     }
 
-    /// The composition, picture handler and sound for `recipe`.
+    /// The composition, picture handler and sound for `recipe`. Off the main actor: it loads tracks and draws the layers.
+    @concurrent
     public static func build(_ asset: AVURLAsset, recipe: EditRecipe) async throws -> Built {
         guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw Failure.noVideo }
         let audio = try await asset.loadTracks(withMediaType: .audio).first
@@ -163,6 +172,7 @@ public enum VideoComposer {
     }
 
     /// Writes the edited video to `output` (`.mp4` or `.mov`), reporting progress; cancelling the task stops it.
+    @concurrent
     public static func export(_ source: URL, recipe: EditRecipe, to output: URL,
                               progress: @escaping @Sendable (Double) -> Void) async throws -> Built
     {
@@ -178,6 +188,10 @@ public enum VideoComposer {
         session.audioMix = built.audioMix
         if built.speed != 1 { session.audioTimePitchAlgorithm = .spectral }
         let type: AVFileType = output.pathExtension.lowercased() == "mov" ? .mov : .mp4
+        // A video MP4 cannot hold (ProRes, say) is refused with the reason rather than failing part way.
+        if await !session.compatibleFileTypes.contains(type) {
+            throw Failure.notWritten("this video cannot be kept as \(type == .mp4 ? "MP4" : "MOV"); choose the other file type")
+        }
         // The session only reports its state here; it is not otherwise touched from this task.
         nonisolated(unsafe) let watched = session
         let watcher = Task {

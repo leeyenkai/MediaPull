@@ -164,7 +164,8 @@ public enum PhotoRenderer {
             let filter = CIFilter.sharpenLuminance()
             filter.inputImage = image
             filter.sharpness = Float(a.sharpen / 100)
-            filter.radius = 1.5
+            // In proportion to the picture, so the canvas (a smaller copy) and the export look alike (D-128).
+            filter.radius = Float(1.5 * Self.detailScale(extent))
             image = filter.outputImage ?? image
         }
         if a.vignette > 0 {
@@ -177,7 +178,8 @@ public enum PhotoRenderer {
         if a.grain > 0, let noise = CIFilter.randomGenerator().outputImage {
             // The same grain every time (the generator is fixed), grey, scaled to the picture's size.
             let mono = CIFilter.colorControls()
-            mono.inputImage = noise.transformed(by: CGAffineTransform(scaleX: 1.5, y: 1.5))
+            let grainSize = 1.5 * Self.detailScale(extent)
+            mono.inputImage = noise.transformed(by: CGAffineTransform(scaleX: grainSize, y: grainSize))
             mono.saturation = 0
             mono.brightness = -0.5
             mono.contrast = 1
@@ -190,6 +192,11 @@ public enum PhotoRenderer {
             image = blend.outputImage ?? image
         }
         return image.cropped(to: extent)
+    }
+
+    /// Fine detail (grain, sharpening) is sized for a 2400 px picture and scaled with the picture's long edge.
+    static func detailScale(_ extent: CGRect) -> Double {
+        max(0.25, Double(max(extent.width, extent.height)) / 2400)
     }
 
     /// A tone curve that lifts or lowers the darkest and brightest quarter.
@@ -245,7 +252,8 @@ public enum FrameRenderer {
     public static func layout(picture: CGSize, frame: Frame) -> (canvas: CGSize, photo: CGRect) {
         let insets = (top: clamp(frame.top), left: clamp(frame.left), right: clamp(frame.right), bottom: clamp(frame.bottom))
         guard picture.width > 0, picture.height > 0 else { return (picture, .zero) }
-        if let ratio = frame.shape.ratio {
+        let ratio = frame.shape == .photoShape ? picture.width / picture.height : frame.shape.ratio
+        if let ratio {
             // The canvas keeps the picture's long edge; insets are shares of its shorter side.
             let long = max(picture.width, picture.height)
             let canvas = ratio >= 1 ? CGSize(width: long, height: (long / ratio).rounded())
