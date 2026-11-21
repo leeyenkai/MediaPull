@@ -147,6 +147,14 @@ public enum LayerRenderer {
         }
     }
 
+    /// Whether the picture at `path` is there and can be drawn (an SVG opens but draws nothing, round 14, B14-m2).
+    public static func canDraw(_ path: String) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return false }
+        return CGImageSourceCreateThumbnailAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), [
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 16,
+        ] as CFDictionary) != nil
+    }
+
     static func drawPicture(_ path: String, in rect: CGRect, context: CGContext) {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               let picture = CGImageSourceCreateThumbnailAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), [

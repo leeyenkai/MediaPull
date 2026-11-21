@@ -224,8 +224,7 @@ public enum FolderOperations {
             ?? []).filter { $0.pathExtension.lowercased() != "json" || !hasMedia(forSidecar: $0) }
         // A unit's members and every file's edit files go with it (R-4206); an edit file never leads (round 13, A13-2).
         let names = items.map(\.lastPathComponent)
-        let leads = names.filter { !MediaUnits.sideExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
-        let carried = Set(leads.flatMap { MediaUnits.companions(ofLead: $0, in: names) })
+        let carried = MediaUnits.carried(in: names)
         return items.filter { !carried.contains($0.lastPathComponent) }
     }
 

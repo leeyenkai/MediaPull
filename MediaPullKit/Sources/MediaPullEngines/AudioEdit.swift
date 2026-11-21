@@ -218,8 +218,9 @@ public enum AudioEdit {
             switch plan.format {
             case .mp3: args += ["-c:a", "libmp3lame", "-q:a", "2"]
             case .aac: args += ["-c:a", "aac_at", "-b:a", "256k"]
-            case .alac: args += ["-c:a", "alac"]
-            case .flac: args += ["-c:a", "flac"]
+            // A 16-bit source stays 16-bit, never widened to 24 (round 14, C14 minor 3).
+            case .alac: args += ["-c:a", "alac"] + (sixteenBit(plan) ? ["-sample_fmt", "s16p"] : [])
+            case .flac: args += ["-c:a", "flac"] + (sixteenBit(plan) ? ["-sample_fmt", "s16"] : [])
             // The source's depth is kept (16, 24 or 32-bit), and floating point stays floating point at its own width
             // (values over full scale are kept, not clipped).
             case .wav: args += ["-c:a", pcm(plan, endian: "le")]
@@ -238,6 +239,10 @@ public enum AudioEdit {
     }
 
     /// The PCM encoder that keeps the source's depth (audit 2026-11-21-3, C3-7).
+    static func sixteenBit(_ plan: AudioEditPlan) -> Bool {
+        !plan.isFloat && (plan.sourceFormat?.bits ?? 16) <= 16
+    }
+
     static func pcm(_ plan: AudioEditPlan, endian: String) -> String {
         let bits = plan.sourceFormat?.bits ?? 16
         if plan.isFloat { return "pcm_f\(bits > 32 ? 64 : 32)\(endian)" }
@@ -267,8 +272,8 @@ public enum AudioEdit {
 public extension FFmpeg {
     /// The audio's waveform as `buckets` peaks (R-4610). Every channel is kept, so the peak is the loudest channel's (a
     /// mono mix would draw channels out of phase as silence, round 12, C12-3), at 24 kHz, so sounds up to about 11 kHz
-    /// are drawn at their level (round 13, C13 minors 1 and 2). The samples stream through a pipe into peaks of 1,024
-    /// samples as they come, so memory stays small whatever the length. Off the main actor.
+    /// are drawn at their level (round 13, C13 minors 1 and 2). The samples stream through a pipe into peaks of 64
+    /// samples as they come (fine enough for a clip of a second, round 14), so memory stays small whatever the length. Off the main actor.
     @concurrent
     func waveform(_ url: URL, buckets: Int) async throws -> [Float] {
         let folder = PeakFolder()
@@ -310,10 +315,10 @@ public extension FFmpeg {
     }
 }
 
-/// Folds a stream of little-endian float samples into the peak of each 1,024 of them; given pieces in order, one at a
+/// Folds a stream of little-endian float samples into the peak of each 64 of them; given pieces in order, one at a
 /// time (the pipe's reader).
 final class PeakFolder: @unchecked Sendable {
-    static let block = 1024
+    static let block = 64
     private var fine: [Float] = []
     private var current: Float = 0
     private var count = 0

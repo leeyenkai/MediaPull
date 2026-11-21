@@ -296,8 +296,9 @@ public enum VideoComposer {
     {
         // Never written without a picture layer the person sees missing, as for photos (B10-4, round 11, B11-5).
         for layer in recipe.layers where !layer.hidden {
-            if case let .image(path) = layer.kind, !FileManager.default.fileExists(atPath: path) {
-                throw Failure.notWritten("the picture “\((path as NSString).lastPathComponent)” of a layer is no longer there")
+            if case let .image(path) = layer.kind, !LayerRenderer.canDraw(path) {
+                throw Failure.notWritten("the picture “\((path as NSString).lastPathComponent)” of a layer is no longer there or "
+                    + "cannot be drawn")
             }
         }
         let asset = AVURLAsset(url: source)

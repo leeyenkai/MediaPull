@@ -63,9 +63,7 @@ public enum MediaUnits {
                 guard !members.isEmpty else { continue }
                 out.append(Unit(lead: lead, members: members, kind: clips.isEmpty ? .rawPair : .live))
             } else if let lead = photos.first, !clips.isEmpty {
-                // A photo leads its clip only; another photo of the name is an item of its own, as everywhere else
-                // (D-120, audit 2026-11-21-13, A13-1).
-                out.append(Unit(lead: lead, members: clips, kind: .live))
+                out.append(Unit(lead: lead, members: Array(photos.dropFirst()) + clips, kind: .live))
             }
         }
         return out.sorted { $0.lead < $1.lead }
@@ -91,11 +89,26 @@ public enum MediaUnits {
             if name != lead { out.append(name) }
             if present.contains(name + ".json") { out.append(name + ".json") }
         }
-        // Edit files of the same shot, whatever the case of their names.
-        for name in names.sorted() where sideExtensions.contains(ext(name)) && stem(name) == leadStem && name != lead {
-            out.append(name)
+        // Edit files of the same shot, whatever the case of their names, only while no other shot of the stem stays: an
+        // edit file two shots could own stays where it is (R-4502, audit 2026-11-21-14, A14-2).
+        let own = Set([lead] + members)
+        let otherShot = names.contains { name in
+            !own.contains(name) && stem(name) == leadStem && takesPartInUnits(name) && !sideExtensions.contains(ext(name))
+        }
+        if !otherShot {
+            for name in names.sorted() where sideExtensions.contains(ext(name)) && stem(name) == leadStem && name != lead {
+                out.append(name)
+            }
         }
         return out
+    }
+
+    /// The names among `names` that travel with another of them (members, edit files, metadata files of media): what a
+    /// plan or a drop leaves out because its lead carries it. Every file that is not an edit file leads its own (A13-2,
+    /// round 14, A14-4).
+    public static func carried(in names: [String]) -> Set<String> {
+        let leads = names.filter { !sideExtensions.contains(ext($0)) && !$0.lowercased().hasSuffix(".json") }
+        return Set(leads.flatMap { companions(ofLead: $0, in: names) })
     }
 
     /// Whether `name` is a companion of `lead` by its name alone (Undo, where the folder may have changed since).
@@ -109,8 +122,7 @@ public enum MediaUnits {
         guard let memberExt = parts.first, parts.count <= 2, parts.count == 1 || parts[1] == "json" else { return false }
         let leadsMembers = MediaFormat.rawExtensions.contains(leadExt)
             ? photoExtensions.union(clipExtensions).union(MediaFormat.rawExtensions)
-            // A photo leads clips only: two photos of one name are two items, never one (audit 2026-11-21-12, A12-m3).
-            : photoExtensions.contains(leadExt) ? clipExtensions : []
+            : photoExtensions.contains(leadExt) ? clipExtensions.union(photoExtensions) : []
         return leadsMembers.contains(memberExt) && memberExt != leadExt
     }
 

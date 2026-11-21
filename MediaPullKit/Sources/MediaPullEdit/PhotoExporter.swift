@@ -16,7 +16,7 @@ public enum PhotoExporter {
             case .unreadable: "The photo could not be read."
             case .notWritten: "The edited photo could not be written."
             case .tooLargeForLayers: "This picture is too large to draw text and shapes on. Choose a smaller export size."
-            case let .missingPicture(name): "The picture “\(name)” of a layer is no longer there."
+            case let .missingPicture(name): "The picture “\(name)” of a layer is no longer there or cannot be drawn."
             }
         }
     }
@@ -26,7 +26,7 @@ public enum PhotoExporter {
         guard let input = PhotoRenderer.source(source) else { throw Failure.unreadable }
         // Never written without a picture layer the person sees missing (audit 2026-11-21-10, B10-4).
         for layer in recipe.layers where !layer.hidden {
-            if case let .image(path) = layer.kind, !FileManager.default.fileExists(atPath: path) {
+            if case let .image(path) = layer.kind, !LayerRenderer.canDraw(path) {
                 throw Failure.missingPicture((path as NSString).lastPathComponent)
             }
         }

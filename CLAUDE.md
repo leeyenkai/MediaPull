@@ -11,7 +11,9 @@ The full product specification is the source of truth:
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
 Status: version 1.8 implemented, plus formats, units and posts (section 42, D-119 to D-122), drives (section 43, D-123), the Map &
-Timeline pane (section 44, D-124) and photo metadata edits (section 45, D-125, D-126); and the Devices section (section 41, D-115 to D-118: phones and cameras over USB, read-only)
+Timeline pane (section 44, D-124), photo metadata edits (section 45, D-125, D-126) and the Edit/Frame section (section 46,
+D-127 to D-131: photo adjustments, frames, text and shapes, video and audio editing, export; audited in 14 rounds,
+`docs/audits/2026-11-21-*.md`); and the Devices section (section 41, D-115 to D-118: phones and cameras over USB, read-only)
 and Organise parity (D-114: duplicates, analysis progress and a Details tab in Organise); version 1.8 itself (account folder updates, conformance ledger, invariant lints and audit protocol; then FileOps,
 Save As, notes, file details with a map, post details kept and Profile views, D-107 to D-113; on top of 1.7: on-device analysis, Library search and filters, the Organise section, people, Icon, List and Column views). Personal tool, not a public release. See "Implementation status" at the top of the spec for what is verified and what still needs a person (drag and drop, Quick Look, a signed-in Instagram pull and update).
 
@@ -39,7 +41,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     App/                          MediaPullApp (scenes, commands), AppModel, WindowModel (tabs), BrowsingStore (bookmarks, history),
                                   Preferences, Theme, PaneMenu, Jobs, SelfTest
     Features/                     Browser (pane, TabStrip, BrowsingPanel), Extracted, Preview (pane, details, inline editor host), Library, Instagram (EngineService, PullSheet),
-                                  Editor (image and video editors), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView),
+                                  Editor (image and video editors), EditFrame (the Edit/Frame section: Media, Canvas and Inspector panes,
+                                  batch, audio), Video (Save Video sheet), Jobs, Converter, Settings, Onboarding (WalkthroughView),
                                   Analysis (AnalysisService, MediaListing, QueryBar, ViewModePicker, PaneMediaView, FolderChildren), Organise (OrganiseModel, OrganiseView: Source, Organise, Target panes),
                                   People, Downloads (DownloadsPane: Instagram, video and gallery forms), Notes (NotesView),
                                   Profile (ProfilePane, ProfileLayouts, ProfileOverlays: Profile, Channel, Timeline, Board),
@@ -58,6 +61,8 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
     Sources/MediaPullBrowser/     web view setup, extract.js, guard.js, cookie bridge
     Sources/MediaPullAnalysis/    Vision and Core ML: Analyzer, image–text and face encoders, SCRFD detector, CLIP tokenizer, vector store,
                                   face grouping, similar sets, subjects, offline geocoder
+    Sources/MediaPullEdit/        Edit/Frame rendering (Core Image, Core Text): RecipeStore, PhotoRenderer, PhotoExporter, LayerRenderer,
+                                  FontCatalog, VideoComposer, SoundAtSpeed
     Sources/MediaPullDevices/     read-only MTP codec and allow-list, MTPSession, device sources (ImageCaptureCore, MTP through its
                                   PTP pass-through), routing, ImportPlan, ImportedIndex, DeviceImporter, stand-ins for tests
     Tests/MediaPullKitTests/

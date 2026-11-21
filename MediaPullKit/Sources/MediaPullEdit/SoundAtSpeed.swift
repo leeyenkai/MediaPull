@@ -105,12 +105,26 @@ public enum SoundAtSpeed {
         if channels <= 2 {
             return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: channels, interleaved: true)
         }
-        // Read by labels into the encoder's order only when the sound has labels; discrete, unknown or ambisonic channels
-        // keep their own layout, as there is nothing to place them by (round 13, C13-1).
+        // Read by labels into the encoder's order only when every channel is a speaker of its own (D-130, rounds 13 and
+        // 14, C13-1, C14-1): a sound with an LFE the encoder's layout of that count has no place for goes into the
+        // smallest AAC layout that has one. Anything else (discrete, unknown, ambisonic, a narration or a mix channel,
+        // a label twice) keeps every channel by its number, as the system's own exporter does.
         let own = input.channelLayout.flatMap { $0.channelCount == channels ? $0 : nil }
-        let layout = (own.map(isPositional) == true ? encoderLayouts[channels].flatMap { AVAudioChannelLayout(layoutTag: $0) } : nil)
-            ?? own
-            ?? AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | channels)
+        let layout: AVAudioChannelLayout?
+        if let own, let labels = speakers(of: own) {
+            let lfe = labels.contains(kAudioChannelLabel_LFEScreen) || labels.contains(kAudioChannelLabel_LFE2)
+            let tag: AudioChannelLayoutTag? = if lfe, channels == 3 || channels == 5 {
+                labels.contains(kAudioChannelLabel_CenterSurround) ? kAudioChannelLayoutTag_AAC_6_1 : kAudioChannelLayoutTag_AAC_5_1
+            } else {
+                encoderLayouts[channels]
+            }
+            layout = tag.flatMap { AVAudioChannelLayout(layoutTag: $0) } ?? own
+        } else if let own, let labels = labels(of: own), Set(labels).count == labels.count {
+            layout = own
+        } else {
+            // A label twice (four Mono channels): read by number, never summed.
+            layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | channels)
+        }
         return layout.map { AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, interleaved: true, channelLayout: $0) }
     }
 
@@ -128,25 +142,61 @@ public enum SoundAtSpeed {
         }
     }
 
-    /// Whether every channel of `layout` has a place (left, centre, a surround) rather than only a number, an unknown
-    /// label or an ambisonic component.
-    static func isPositional(_ layout: AVAudioChannelLayout) -> Bool {
-        let tag = layout.layout.pointee.mChannelLayoutTag
-        if tag == kAudioChannelLayoutTag_UseChannelBitmap { return true }
-        if tag != kAudioChannelLayoutTag_UseChannelDescriptions {
-            let family = tag & 0xFFFF_0000
-            let unplaced = [kAudioChannelLayoutTag_DiscreteInOrder, kAudioChannelLayoutTag_Unknown,
-                            kAudioChannelLayoutTag_HOA_ACN_SN3D, kAudioChannelLayoutTag_HOA_ACN_N3D,
-                            kAudioChannelLayoutTag_Ambisonic_B_Format]
-            return !unplaced.contains { $0 & 0xFFFF_0000 == family }
+    /// The speaker of each channel of `layout`, or nil when any channel is not a speaker of its own: discrete, unknown,
+    /// ambisonic, a mix or narration channel (Lt, Rt, mono, hearing impaired), or a speaker named twice.
+    static func speakers(of layout: AVAudioChannelLayout) -> [AudioChannelLabel]? {
+        guard let labels = labels(of: layout) else { return nil }
+        // A named layout the system cannot describe is a layout of speakers: its channels are placed by the mix.
+        if labels.isEmpty { return unplaced(layout.layout.pointee.mChannelLayoutTag) ? nil : [] }
+        // Speakers are labels 1 to 18 (fronts, centre, LFE, surrounds, centres, heights), 33 to 37 (rear surrounds, wides,
+        // a second LFE), 44 (centre surround direct) and 49 to 66 (the tops, sides and bottoms of immersive layouts); the
+        // rest are mixes, narration, haptics, coordinates, ambisonics, discrete and unknown channels.
+        let speaker = { (label: AudioChannelLabel) in
+            (1 ... 18).contains(label) || (33 ... 37).contains(label) || label == 44 || (49 ... 66).contains(label)
         }
-        let count = Int(layout.layout.pointee.mNumberChannelDescriptions)
-        guard count > 0 else { return false }
-        guard let offset = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions) else { return false }
-        let descriptions = (UnsafeRawPointer(layout.layout) + offset).assumingMemoryBound(to: AudioChannelDescription.self)
-        // Positional labels are 1 to 99 (left, right, centre, LFE, surrounds, heights); 100 and up are coordinates,
-        // ambisonics, headphones, discrete and unknown channels.
-        return (0 ..< count).allSatisfy { (1 ..< 100).contains(descriptions[$0].mChannelLabel) }
+        guard labels.count == Int(layout.channelCount), labels.allSatisfy(speaker), Set(labels).count == labels.count else {
+            return nil
+        }
+        return labels
+    }
+
+    /// The label of each channel of `layout` as the system describes it; empty when it cannot, nil when it is not read.
+    static func labels(of layout: AVAudioChannelLayout) -> [AudioChannelLabel]? {
+        var tag = layout.layout.pointee.mChannelLayoutTag
+        var labels: [AudioChannelLabel] = []
+        func read(_ described: UnsafePointer<AudioChannelLayout>) {
+            let count = Int(described.pointee.mNumberChannelDescriptions)
+            guard count > 0, let offset = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions) else { return }
+            let descriptions = (UnsafeRawPointer(described) + offset).assumingMemoryBound(to: AudioChannelDescription.self)
+            labels = (0 ..< count).map { descriptions[$0].mChannelLabel }
+        }
+        if tag == kAudioChannelLayoutTag_UseChannelDescriptions {
+            read(layout.layout)
+        } else {
+            // A named layout or a bitmap is turned into its channel descriptions by the system.
+            var bitmap = layout.layout.pointee.mChannelBitmap.rawValue
+            let byBitmap = tag == kAudioChannelLayoutTag_UseChannelBitmap
+            let property = byBitmap ? kAudioFormatProperty_ChannelLayoutForBitmap : kAudioFormatProperty_ChannelLayoutForTag
+            var size: UInt32 = 0
+            let specifierSize = UInt32(MemoryLayout<UInt32>.size)
+            let info = byBitmap ? AudioFormatGetPropertyInfo(property, specifierSize, &bitmap, &size)
+                : AudioFormatGetPropertyInfo(property, specifierSize, &tag, &size)
+            guard info == noErr, size > 0 else { return [] }
+            let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioChannelLayout>.alignment)
+            defer { raw.deallocate() }
+            let got = byBitmap ? AudioFormatGetProperty(property, specifierSize, &bitmap, &size, raw)
+                : AudioFormatGetProperty(property, specifierSize, &tag, &size, raw)
+            guard got == noErr else { return [] }
+            read(raw.assumingMemoryBound(to: AudioChannelLayout.self))
+        }
+        return labels
+    }
+
+    /// Layout families whose channels are numbers or components, never speakers.
+    static func unplaced(_ tag: AudioChannelLayoutTag) -> Bool {
+        let family = tag & 0xFFFF_0000
+        return [kAudioChannelLayoutTag_DiscreteInOrder, kAudioChannelLayoutTag_Unknown, kAudioChannelLayoutTag_HOA_ACN_SN3D,
+                kAudioChannelLayoutTag_HOA_ACN_N3D, kAudioChannelLayoutTag_Ambisonic_B_Format].contains { $0 & 0xFFFF_0000 == family }
     }
 
     /// A channel layout as the reader's settings take it, with all its channel descriptions.

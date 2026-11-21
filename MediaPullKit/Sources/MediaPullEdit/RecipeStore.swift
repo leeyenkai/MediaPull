@@ -184,10 +184,21 @@ public actor RecipeStore {
             }
             // Else a newcomer has its name: kept apart under its own creation date, never shown for the newcomer.
         }
-        if !movedPictures.isEmpty {
-            let moves = PathMoves(movedPictures)
-            _ = Self.picturesFollow(&recipe) { path in
-                FileManager.default.fileExists(atPath: path) ? nil : moves.destination(of: Self.key(path))
+        // Where a held recipe's pictures are is the store's to say: a layer brought back with a name its picture was moved
+        // away from (an Undo, a stale window) keeps the name the store followed it to (D-128, round 13, B13-1; round 14,
+        // B14-2, B14-3).
+        if let stored = byID[recipe.id] {
+            for index in recipe.layers.indices {
+                guard case let .image(path) = recipe.layers[index].kind,
+                      movedAway[recipe.layers[index].id]?.contains(Self.key(path)) == true,
+                      let same = stored.layers.first(where: { $0.id == recipe.layers[index].id }),
+                      case let .image(kept) = same.kind else { continue }
+                recipe.layers[index].kind = .image(path: kept)
+            }
+            if let artwork = recipe.tags?.artworkPath, artworkMovedAway[recipe.id]?.contains(Self.key(artwork)) == true,
+               let kept = stored.tags?.artworkPath
+            {
+                recipe.tags?.artworkPath = kept
             }
         }
         recipe.modified = Date()
@@ -196,9 +207,10 @@ public actor RecipeStore {
         return write(recipe) ? recipe : nil
     }
 
-    /// The pictures MediaPull moved (logos, artwork) while recipes named them: a recipe kept later with a moved picture's
-    /// old name (an Undo, a stale window, a save racing the move) is kept with its new name (audit 2026-11-21-13, B13-1).
-    private var movedPictures: [(from: String, to: String)] = []
+    /// The names each picture layer's file (by layer id) and each recipe's artwork (by recipe id) were moved away from:
+    /// never written back by a recipe kept later.
+    private var movedAway: [UUID: Set<String>] = [:]
+    private var artworkMovedAway: [UUID: Set<String>] = [:]
 
     /// Ids of recipes merged into another (two windows, one file), for an Undo that still names the first.
     private var merged: [UUID: UUID] = [:]
@@ -216,6 +228,13 @@ public actor RecipeStore {
         recipe.modified = Date()
         if let data = try? Data(contentsOf: url), let stored = EditRecipe.decode(data) {
             recipe.source = stored.source
+            // A picture no longer at the name the window has is where the store last kept it (round 14, B14-m3).
+            for index in recipe.layers.indices {
+                guard case let .image(path) = recipe.layers[index].kind, !FileManager.default.fileExists(atPath: path),
+                      let same = stored.layers.first(where: { $0.id == recipe.layers[index].id }),
+                      case let .image(kept) = same.kind, FileManager.default.fileExists(atPath: kept) else { continue }
+                recipe.layers[index].kind = .image(path: kept)
+            }
         } else if FileManager.default.fileExists(atPath: recipe.source.path), Self.belongs(recipe, to: recipe.source.path) {
             // First kept at quit: the file as it is now (B7-1), only if it is still the one it was made for (B8-1).
             recipe.source.created = Self.created(recipe.source.path) ?? recipe.source.created
@@ -256,9 +275,6 @@ public actor RecipeStore {
         guard !moves.isEmpty else { return }
         resolved = [:]
         let remap = PathMoves(moves.map { (Self.key($0.from), Self.key($0.to)) })
-        // Remembered for recipes kept later with a picture's old name; the newest moves, in order.
-        movedPictures += remap.moves
-        if movedPictures.count > 20000 { movedPictures.removeFirst(movedPictures.count - 20000) }
         for (id, recipe) in byID {
             var moved = recipe
             var changed = false
@@ -277,11 +293,28 @@ public actor RecipeStore {
                 moved.source.reference = Self.reference(destination) ?? moved.source.reference
                 changed = true
             }
-            // Picture layers and artwork follow their files too.
-            if Self.picturesFollow(&moved, { remap.destination(of: Self.key($0)) }) { changed = true }
+            // Picture layers and artwork follow their files too, never into a hidden name (a Replace's edit, a rename's
+            // temporary name, round 14, B14-1); the names they left are remembered.
+            for index in moved.layers.indices {
+                guard case let .image(picture) = moved.layers[index].kind,
+                      let destination = Self.visible(remap.destination(of: Self.key(picture))) else { continue }
+                moved.layers[index].kind = .image(path: destination)
+                movedAway[moved.layers[index].id, default: []].insert(Self.key(picture))
+                changed = true
+            }
+            if let artwork = moved.tags?.artworkPath, let destination = Self.visible(remap.destination(of: Self.key(artwork))) {
+                moved.tags?.artworkPath = destination
+                artworkMovedAway[id, default: []].insert(Self.key(artwork))
+                changed = true
+            }
             byID[id] = moved
             if changed { write(moved) }
         }
+    }
+
+    /// A destination a picture may follow to: none under a hidden name.
+    public static func visible(_ destination: String?) -> String? {
+        destination.flatMap { (($0 as NSString).lastPathComponent).hasPrefix(".") ? nil : $0 }
     }
 
     /// The pictures a recipe draws from other files (picture layers, audio artwork) follow them where they went; one rule

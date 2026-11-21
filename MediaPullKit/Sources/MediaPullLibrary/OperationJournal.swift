@@ -54,6 +54,10 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     public var swaps: [String: String]?
     /// A metadata edit: the photos it changed (a unit is one), for the history list.
     public var photos: Int?
+    /// The steps that went with the item before them (members, edit files, metadata files), by the path they came from, as
+    /// `run` did them: Undo and Redo take each item back whole as it was moved, never working its files out again from
+    /// their names (audit 2026-11-21-14). Nil for older journals: grouped by name.
+    public var companions: Set<String>?
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
@@ -64,7 +68,7 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
         // A metadata edit counts the photos it changed, as the edit counted them: a unit is one, two photos that only share
         // a name are two (audit A3-7, A4-3, A5-7). Older records count each file.
         let edited = photos ?? all.filter { if case .metadata = $0 { true } else { false } }.count
-        return OperationJournal.units(all).filter {
+        return OperationJournal.units(all, companions: companions).filter {
             switch $0[0] {
             // A rename through a temporary name is one file, not two (audit 12, B12-m2).
             case let .move(from, to, _, _): !from.hasSuffix(".json") && !OperationJournal.isTemporary(to)
@@ -195,6 +199,7 @@ public actor OperationJournal {
     public func run(_ plan: OrganisePlan, progress: @Sendable (Int, Int) -> Void = { _, _ in }) -> JournalEntry {
         var entry = JournalEntry(id: UUID(), title: plan.title, root: plan.root.path, date: Date(), steps: [], failures: [],
                                  undone: false, finished: false)
+        entry.companions = []
         // A folder the plan relies on that went away since its preview is never made again (audit 4, B4-M1). Every plan
         // works inside its root, so a root renamed, moved or trashed since (in the Finder or in another pane) stops it
         // too: making the missing folders would recreate it at its old path (audit 5, B5-M1, B5-M2).
@@ -258,6 +263,7 @@ public actor OperationJournal {
                     try moveItem(move.source, to: move.destination, entry: &entry)
                     for companion in companions {
                         try moveItem(companion.from, to: companion.to, entry: &entry)
+                        entry.companions?.insert(companion.from.standardizedFileURL.path)
                     }
                     units.forget(move.source.deletingLastPathComponent())
                 case .clone:
@@ -269,6 +275,7 @@ public actor OperationJournal {
                         } else {
                             try cloneItem(companion.from, to: companion.to, entry: &entry)
                         }
+                        entry.companions?.insert(companion.from.standardizedFileURL.path)
                     }
                 }
                 units.forget(move.destination.deletingLastPathComponent())
@@ -292,6 +299,7 @@ public actor OperationJournal {
                 try trashItem(item, entry: &entry)
                 for companion in companions {
                     try trashItem(companion, entry: &entry)
+                    entry.companions?.insert(companion.standardizedFileURL.path)
                 }
                 units.forget(item.deletingLastPathComponent())
                 carried.formUnion(companions.map(\.standardizedFileURL.path))
@@ -557,30 +565,25 @@ public actor OperationJournal {
         return noted == now
     }
 
-    /// Whether the file put at `path` would join a unit with another shot there (a clip of its stem beside a photo, a photo
-    /// or RAW beside a RAW, any case), not counting the item itself where it is now (`current`), files of its own unit
-    /// beside it, or files this Undo or Redo put back: then it is left where it is, as for a taken name (D-93, D-120,
-    /// audit 2026-11-21-10, A10-4; round 13, A13-1).
+    /// Whether another shot now holds the name `path` would take (a photo, clip or RAW of that stem, any case), not
+    /// counting the item itself where it is now (`current`), files of its own unit beside it, or files this Undo or Redo
+    /// has put back: then Undo, Redo or putting back from the Trash leaves the item where it is, as for a taken name
+    /// (D-93, D-120, audit 2026-11-21-10, A10-4). A name is taken by a stem, so a unit's clip, a file's `.xmp` and a
+    /// photo of the name can never be put beside another shot (round 14, A14-1, A14-3).
     func anotherShot(at path: String, current: String?) -> Bool {
         let target = URL(fileURLWithPath: path)
         guard MediaUnits.takesPartInUnits(target.lastPathComponent), !Self.isTemporary(path) else { return false }
         let folder = target.deletingLastPathComponent()
-        let name = target.lastPathComponent
-        var leaving: Set<String> = [name.lowercased()]
+        let stem = target.deletingPathExtension().lastPathComponent.lowercased()
+        var leaving: [String] = []
         if let current, URL(fileURLWithPath: current).deletingLastPathComponent().path == folder.path {
             let own = URL(fileURLWithPath: current).deletingPathExtension().lastPathComponent.lowercased()
-            for other in listing(of: folder) where (other as NSString).deletingPathExtension.lowercased() == own {
-                leaving.insert(other.lowercased())
-            }
+            leaving = listing(of: folder).filter { ($0 as NSString).deletingPathExtension.lowercased() == own }
         }
         let standardFolder = folder.standardizedFileURL.path
-        for path in restored where (path as NSString).deletingLastPathComponent == standardFolder {
-            leaving.insert((path as NSString).lastPathComponent.lowercased())
-        }
-        // Taken only where the file would join a unit with another shot: a clip beside a photo, a photo or RAW beside a
-        // RAW; two photos of one name are two items and never pair (D-120, audit 2026-11-21-13, A13-1).
-        let names = listing(of: folder).filter { !leaving.contains($0.lowercased()) } + [name]
-        return MediaUnits.units(in: names).contains { $0.lead == name || $0.members.contains(name) }
+        leaving += restored.filter { ($0 as NSString).deletingLastPathComponent == standardFolder }
+            .map { ($0 as NSString).lastPathComponent }
+        return FolderOperations.shotStems(in: folder, leaving: leaving, isFile: true, editFiles: false).contains(stem)
     }
 
     /// Whether the file at `path` is the one the change noted there only through MediaPull's own rewrites of it.
@@ -911,7 +914,7 @@ public actor OperationJournal {
         fallbacks = [:]
         restored = []
         let unchanged = entry
-        let units = Self.units(entry.steps)
+        let units = Self.units(entry.steps, companions: entry.companions)
         var visited = 0
         var keptFolders: [[JournalStep]] = []
         var checkpoint = Date()
@@ -1022,7 +1025,7 @@ public actor OperationJournal {
         guard unparkEdits(&entry, report: &report) else { return report }
         let unchanged = entry
         let before = entry.steps.count
-        let units = Self.units(steps)
+        let units = Self.units(steps, companions: entry.companions)
         var visited = 0
         // The first item is saved at once, so a crash right away still leaves a change that is found at launch (C18-m2).
         var checkpoint = Date.distantPast
@@ -1223,7 +1226,7 @@ public actor OperationJournal {
             && MediaUnits.isCompanionName((path as NSString).lastPathComponent, ofLead: (lead as NSString).lastPathComponent)
     }
 
-    static func units(_ steps: [JournalStep]) -> [[JournalStep]] {
+    static func units(_ steps: [JournalStep], companions: Set<String>? = nil) -> [[JournalStep]] {
         func source(_ step: JournalStep) -> String? {
             switch step {
             case let .move(from, _, _, _), let .clone(from, _, _): from
@@ -1239,10 +1242,17 @@ public actor OperationJournal {
                 units.append([step])
                 continue
             }
-            // A file's companions (its unit's members, edit files and metadata files, R-4206) follow it in the same folder.
+            // A file's companions (its unit's members, edit files and metadata files, R-4206) follow it in the same folder:
+            // the ones `run` recorded, or for older journals by name. A media file's own metadata file is always its.
+            func companion(_ path: String, of media: String) -> Bool {
+                let name = (path as NSString).lastPathComponent, lead = (media as NSString).lastPathComponent
+                if name.lowercased() == lead.lowercased() + ".json" { return true }
+                guard let companions else { return MediaUnits.isCompanionName(name, ofLead: lead) }
+                return companions.contains(URL(fileURLWithPath: path).standardizedFileURL.path)
+            }
             if let last = units.last, let media = source(last[0]), let path = source(step),
                (media as NSString).deletingLastPathComponent == (path as NSString).deletingLastPathComponent,
-               MediaUnits.isCompanionName((path as NSString).lastPathComponent, ofLead: (media as NSString).lastPathComponent)
+               companion(path, of: media)
             {
                 units[units.count - 1].append(step)
             } else {

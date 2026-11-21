@@ -143,11 +143,9 @@ public struct Sidecar: Encodable, Equatable, Sendable {
         let paths = Set(urls.map(\.standardizedFileURL.path))
         var carried = Set<String>()
         for (folder, items) in Dictionary(grouping: urls, by: { $0.standardizedFileURL.deletingLastPathComponent().path }) {
-            let names = items.map(\.lastPathComponent)
-            for unit in MediaUnits.units(in: names) {
-                for name in MediaUnits.companions(ofLead: unit.lead, in: names) {
-                    carried.insert((folder as NSString).appendingPathComponent(name))
-                }
+            // The rule plans use (A13-2): a lone file's edit files go with it too (round 14, A14-4).
+            for name in MediaUnits.carried(in: items.map(\.lastPathComponent)) {
+                carried.insert((folder as NSString).appendingPathComponent(name))
             }
         }
         return urls.filter { url in

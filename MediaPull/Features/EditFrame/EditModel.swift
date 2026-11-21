@@ -398,7 +398,9 @@ final class EditModel: MediaGridOwner {
         selection = Set(selection.map { remap.destination(of: $0) ?? $0 })
         // Pictures the open recipe and copied settings draw from follow their files, so the canvas, Export and the next
         // save never name a moved logo (B10-4, round 12, B12-1).
-        let pictureMoved = { (path: String) in remap.destination(of: URL(fileURLWithPath: path).standardizedFileURL.path) }
+        let pictureMoved = { (path: String) in
+            RecipeStore.visible(remap.destination(of: URL(fileURLWithPath: path).standardizedFileURL.path))
+        }
         if var open = recipe, RecipeStore.picturesFollow(&open, pictureMoved) {
             recipe = open
             missingPictures = missingPictures.filter { name in
@@ -425,18 +427,21 @@ final class EditModel: MediaGridOwner {
         // The store knows where the file is now (a Finder rename it followed): the window follows it too, so Export, the
         // title and notices name the file as it is (audit 2026-11-21-10, B10-2).
         recipe?.source = kept.source
-        // Pictures the store found moved (an Undo restoring a logo's old name) are shown where they are (B13-1).
+        // Pictures the store kept elsewhere than the window sent them (an Undo restoring a logo's old name) are shown where
+        // they are, unless the window has chosen another picture since (B13-1, B14-2, B14-3).
         if var open = recipe {
             var corrected = false
             for index in open.layers.indices {
-                guard case let .image(path) = open.layers[index].kind, !FileManager.default.fileExists(atPath: path),
-                      let same = kept.layers.first(where: { $0.id == open.layers[index].id }),
-                      case let .image(moved) = same.kind, moved != path else { continue }
+                let id = open.layers[index].id
+                guard case let .image(path) = open.layers[index].kind,
+                      let sent = saved.layers.first(where: { $0.id == id }), case let .image(sentPath) = sent.kind, sentPath == path,
+                      let same = kept.layers.first(where: { $0.id == id }), case let .image(moved) = same.kind, moved != path
+                else { continue }
                 open.layers[index].kind = .image(path: moved)
                 corrected = true
             }
-            if let old = open.tags?.artworkPath, let artwork = kept.tags?.artworkPath, artwork != old,
-               !FileManager.default.fileExists(atPath: old)
+            if let artwork = kept.tags?.artworkPath, let sent = saved.tags?.artworkPath, sent != artwork,
+               open.tags?.artworkPath == sent
             {
                 open.tags?.artworkPath = artwork
                 corrected = true
@@ -774,10 +779,10 @@ enum FontLookup {
         return out
     }
 
-    /// Picture layers whose file is no longer there.
+    /// Picture layers whose file is no longer there or cannot be drawn (an SVG).
     nonisolated static func missingPictures(in layers: [Layer]) -> [String] {
         layers.compactMap { layer in
-            guard !layer.hidden, case let .image(path) = layer.kind, !FileManager.default.fileExists(atPath: path) else { return nil }
+            guard !layer.hidden, case let .image(path) = layer.kind, !LayerRenderer.canDraw(path) else { return nil }
             return (path as NSString).lastPathComponent
         }
     }

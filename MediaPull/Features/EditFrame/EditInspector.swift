@@ -1,7 +1,9 @@
 import AppKit
+import ImageIO
 import MediaPullCore
 import MediaPullEdit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Inspector pane (R-4601): the tools for the open file, in tabs.
 struct EditInspectorPane: View {
@@ -318,7 +320,9 @@ private struct LayersTab: View {
 
     private func addPicture() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
+        // Only pictures the Mac can draw (an SVG opens but draws nothing, B14-m2).
+        panel.allowedContentTypes = ((CGImageSourceCopyTypeIdentifiers() as? [String]) ?? [])
+            .compactMap { UTType($0) }.filter { $0.conforms(to: .image) && $0 != .svg }
         panel.prompt = "Add"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var layer = Layer(kind: .image(path: url.path))

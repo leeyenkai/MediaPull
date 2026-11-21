@@ -64,15 +64,12 @@ final class Audit2026Round13MetadataTests: XCTestCase {
         MetadataEditTests.photo(x.appendingPathComponent("IMG_1.HEIC"), type: .heic)
         MetadataEditTests.photo(x.appendingPathComponent("IMG_1.JPG"), type: .jpeg)
         try clip(x.appendingPathComponent("IMG_1.MOV"))
-        // Since A13-1 the HEIC leads its clip and the JPEG is an item of its own (two tiles); both are moved.
-        XCTAssertEqual(MediaUnits.units(in: all(x)).map(\.members), [["IMG_1.MOV"]], "the still leads its clip only")
+        XCTAssertEqual(MediaUnits.units(in: all(x)).count, 1, "one unit as listed")
         let journal = journal()
-        let entry = await journal.run(FolderOperations.move([x.appendingPathComponent("IMG_1.HEIC"),
-                                                             x.appendingPathComponent("IMG_1.JPG")], to: y))
+        let entry = await journal.run(FolderOperations.move([x.appendingPathComponent("IMG_1.HEIC")], to: y))
         XCTAssertTrue(entry.failures.isEmpty, "\(entry.failures)")
-        // Placing keeps shots of one name apart, so the second photo is numbered in Y; Undo puts both back as they were.
-        XCTAssertEqual(all(y), ["IMG_1 2.JPG", "IMG_1.HEIC", "IMG_1.MOV"], "moved whole")
-        XCTAssertEqual(entry.fileCount, 2, "two items moved, as the grid showed two tiles")
+        XCTAssertEqual(all(y), ["IMG_1.HEIC", "IMG_1.JPG", "IMG_1.MOV"], "moved whole")
+        XCTAssertEqual(entry.fileCount, 1, "one item moved, as the grid showed one tile")
         let undo = await journal.undo(entry.id)
         XCTAssertEqual(all(x), ["IMG_1.HEIC", "IMG_1.JPG", "IMG_1.MOV"], "all back: X \(all(x)), Y \(all(y)), \(undo.skipped)")
     }
@@ -85,8 +82,7 @@ final class Audit2026Round13MetadataTests: XCTestCase {
         MetadataEditTests.photo(x.appendingPathComponent("IMG_1.JPG"), type: .jpeg)
         try clip(x.appendingPathComponent("IMG_1.MOV"))
         let journal = journal()
-        let entry = await journal.run(FolderOperations.trash([x.appendingPathComponent("IMG_1.HEIC"),
-                                                              x.appendingPathComponent("IMG_1.JPG")]))
+        let entry = await journal.run(FolderOperations.trash([x.appendingPathComponent("IMG_1.HEIC")]))
         XCTAssertTrue(entry.failures.isEmpty, "\(entry.failures)")
         XCTAssertEqual(all(x), [])
         let undo = await journal.undo(entry.id)

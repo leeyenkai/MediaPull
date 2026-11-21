@@ -127,7 +127,8 @@ struct EditCanvasPane: View {
             if let message = edit.message
                 ?? edit.missingFonts.first
                 ?? edit.missingPictures.first.map({
-                    "The picture “\($0)” is no longer there. Export waits until it is back or the layer is removed."
+                    "The picture “\($0)” is no longer there or cannot be drawn. Export waits until it is back or the layer is "
+                        + "removed."
                 })
             {
                 Divider()
