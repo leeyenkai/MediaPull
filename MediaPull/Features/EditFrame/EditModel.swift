@@ -362,8 +362,8 @@ final class EditModel: MediaGridOwner {
     }
 
     /// Files MediaPull moved or renamed: the open file, its recipe and the Media folder follow (R-4602).
-    func followMoves(_ moves: [(from: String, to: String)]) {
-        guard !moves.isEmpty else { return }
+    func followMoves(_ moves: [(from: String, to: String)], replaced: Set<String> = []) {
+        guard !moves.isEmpty || !replaced.isEmpty else { return }
         // Standardized (a doubled slash, a "."), as the model's own paths are.
         let remap = PathMoves(moves.map {
             (URL(fileURLWithPath: $0.from).standardizedFileURL.path, URL(fileURLWithPath: $0.to).standardizedFileURL.path)
@@ -376,11 +376,17 @@ final class EditModel: MediaGridOwner {
             self.folder = URL(fileURLWithPath: moved, isDirectory: true)
             app.preferences.editFolder = moved
         }
-        if let current, let moved = destination(current), moved == current.standardizedFileURL.path {
-            // Replaced at its own name (the quick editor's Replace): another picture now. The recipe stays with the original
-            // (D-127), and the new file opens as itself (audit 2026-11-21-10, B10-3).
+        if let current, replaced.contains(current.standardizedFileURL.path)
+            || destination(current) == current.standardizedFileURL.path
+        {
+            // Another picture at its name, or the name it went to (a Replace, its Undo or its Redo): the recipe stays with
+            // the picture it was made for (D-127), and the file there now opens as itself, never followed into hiding
+            // (audit 2026-11-21-10, B10-3; round 11, B11-3).
+            let moved = destination(current).flatMap {
+                URL(fileURLWithPath: $0).lastPathComponent.hasPrefix(OperationJournal.editPrefix) ? nil : $0
+            } ?? current.standardizedFileURL.path
             self.current = nil
-            load(current)
+            load(URL(fileURLWithPath: moved))
         } else if let current, let moved = destination(current) {
             self.current = URL(fileURLWithPath: moved)
             recipe?.source.path = moved
@@ -418,8 +424,13 @@ final class EditModel: MediaGridOwner {
         // The store knows where the file is now (a Finder rename it followed): the window follows it too, so Export, the
         // title and notices name the file as it is (audit 2026-11-21-10, B10-2).
         recipe?.source = kept.source
-        if current?.standardizedFileURL.path != kept.source.path, FileManager.default.fileExists(atPath: kept.source.path) {
+        if let old = current?.standardizedFileURL.path, old != kept.source.path,
+           FileManager.default.fileExists(atPath: kept.source.path)
+        {
             current = URL(fileURLWithPath: kept.source.path)
+            // The Media pane and its selection follow too (round 11, B11-6).
+            if selection.remove(old) != nil { selection.insert(kept.source.path) }
+            filesChanged()
         }
     }
 
@@ -435,9 +446,10 @@ final class EditModel: MediaGridOwner {
 
     /// Files rewritten in place (a metadata edit): an open recipe not yet kept takes the file's new reference, so a later
     /// rename in the Finder is followed (audit 2026-11-21-10, B10-1).
+    /// Only when the file there is still the one the recipe was made for, never a newcomer at its name (round 11, B11-1).
     func filesRewritten(_ paths: Set<String>) {
-        guard let path = recipe?.source.path, paths.contains(path) else { return }
-        recipe?.source.reference = RecipeStore.reference(path) ?? recipe?.source.reference
+        guard let recipe, paths.contains(recipe.source.path), RecipeStore.belongs(recipe, to: recipe.source.path) else { return }
+        self.recipe?.source.reference = RecipeStore.reference(recipe.source.path) ?? recipe.source.reference
     }
 
     /// At quit: the last change is written at once.
@@ -697,7 +709,7 @@ final class EditModel: MediaGridOwner {
             guard let self else { return }
             registerBatchUndo(before, name: "Revert Edits")
             reloadCurrentRecipe()
-            Self.recipesChanged(Set(files.map(\.path)), by: self)
+            Self.recipesChanged(Set(files.map(\.path)), ids: Set(before.compactMap(\.recipe?.id)), by: self)
         }
     }
 

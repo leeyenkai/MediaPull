@@ -126,7 +126,9 @@ struct EditCanvasPane: View {
             }
             if let message = edit.message
                 ?? edit.missingFonts.first
-                ?? edit.missingPictures.first.map({ "The picture “\($0)” is no longer there, so it is left out." })
+                ?? edit.missingPictures.first.map({
+                    "The picture “\($0)” is no longer there. Export waits until it is back or the layer is removed."
+                })
             {
                 Divider()
                 Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 5)

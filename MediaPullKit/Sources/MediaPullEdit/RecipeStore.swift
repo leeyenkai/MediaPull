@@ -41,7 +41,7 @@ public actor RecipeStore {
     }
 
     /// Whether `recipe` was made for the file now at `path` (R-4602): a recipe without a date is taken as it is.
-    static func belongs(_ recipe: EditRecipe, to path: String) -> Bool {
+    public static func belongs(_ recipe: EditRecipe, to path: String) -> Bool {
         guard let made = recipe.source.created, let now = created(path) else { return true }
         return abs(made.timeIntervalSince(now)) < 1
     }

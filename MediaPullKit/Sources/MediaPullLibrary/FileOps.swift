@@ -50,13 +50,15 @@ public enum FileOps {
                                                leaving: replacing.map { [$0.lastPathComponent] } ?? [], isFile: isFile,
                                                editFiles: replacing == nil)
         let own = wanted.deletingPathExtension().lastPathComponent.lowercased()
+        // A Replace takes the original's place in its shot (a Live Photo's still beside its clip, A11-1).
+        let replaced = replacing?.deletingPathExtension().lastPathComponent.lowercased()
         func ours(_ candidate: URL, _ own: URL?) -> Bool { own.map { sameName(candidate, $0) } ?? false }
         func free(_ candidate: URL) -> Bool {
             let sidecar = Sidecar.sidecarURL(for: candidate)
             let stem = candidate.deletingPathExtension().lastPathComponent.lowercased()
             return (!fm.fileExists(atPath: candidate.path) || ours(candidate, replacing))
                 && (!fm.fileExists(atPath: sidecar.path) || ours(sidecar, replacing.map(Sidecar.sidecarURL(for:))))
-                && (!shots.contains(stem) || joining && stem == own)
+                && (!shots.contains(stem) || joining && stem == own || stem == replaced)
         }
         for candidate in candidates(for: wanted) where free(candidate) {
             return candidate

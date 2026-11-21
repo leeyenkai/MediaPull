@@ -491,11 +491,13 @@ public enum FolderOperations {
         var chosen = keeping
         let units = UnitFiles()
         // Shots in each folder not being renamed here: their names are taken (A9-3).
-        let renaming = Set(files.flatMap { [$0.lastPathComponent] + units.companions(of: $0).map(\.lastPathComponent) })
+        // By folder: a name renamed in one folder never hides a shot of that name in another (A11-5).
+        let renaming = Dictionary(grouping: files.flatMap { [$0] + units.companions(of: $0) }, by: { $0.deletingLastPathComponent().path })
+            .mapValues { $0.map(\.lastPathComponent) }
         var others: [String: Set<String>] = [:]
         func otherShots(_ folder: URL) -> Set<String> {
             if let known = others[folder.path] { return known }
-            let found = shotStems(in: folder, leaving: Array(renaming), isFile: true)
+            let found = shotStems(in: folder, leaving: renaming[folder.path] ?? [], isFile: true)
             others[folder.path] = found
             return found
         }

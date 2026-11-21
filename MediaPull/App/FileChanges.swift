@@ -34,7 +34,8 @@ extension AppModel {
         let away = await recipes.awayIDs()
         let entry = try await journal.replace(original, identity: identity, with: edit, named: wanted, metadata: metadata, title: title)
         let placed = entry.moves.last { !$0.to.hasSuffix(".json") }?.to ?? wanted.path
-        await followMoves([(from: original.path, to: placed)], changedBy: entry.id, recipesAway: away)
+        await followMoves([(from: original.path, to: placed)], changedBy: entry.id, recipesAway: away,
+                          replaced: Self.replacedPaths(entry))
         fileChangeRevision += 1
         return (entry, URL(fileURLWithPath: placed))
     }
@@ -77,6 +78,19 @@ extension AppModel {
     }
 
     /// The files metadata steps write, so analysis waits for them and follows them (R-4506).
+    /// The names a Replace entry puts another picture at: the original's, and the one the edit was placed at.
+    private static func replacedPaths(_ entry: JournalEntry?) -> Set<String> {
+        guard let entry, entry.edits != nil else { return [] }
+        return Set((entry.steps + (entry.undoneSteps ?? [])).compactMap { step -> String? in
+            switch step {
+            case let .trash(original, _): original
+            case let .move(_, to, _, _) where !to.hasSuffix(".json")
+                && !URL(fileURLWithPath: to).lastPathComponent.hasPrefix(OperationJournal.editPrefix): to
+            default: nil
+            }
+        }.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+    }
+
     private static func editedPaths(_ steps: [JournalStep]) -> [String] {
         steps.compactMap { step in
             if case let .metadata(path, _, _, _) = step, !path.lowercased().hasSuffix(".xmp") { path } else { nil }
@@ -159,7 +173,7 @@ extension AppModel {
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await recipes.refreshReferences(report.rewritten.map(\.path))
         for window in windows { window.edit.filesRewritten(Set(report.rewritten.map(\.path))) }
-        await followMoves(report.moves, changedBy: id, recipesAway: away)
+        await followMoves(report.moves, changedBy: id, recipesAway: away, replaced: Self.replacedPaths(entry))
         foldersGone(foldersRemoved(by: entry.steps))
         await refreshAfterTrash(entry.steps, moved: report.moves)
         fileChangeRevision += 1
@@ -181,7 +195,7 @@ extension AppModel {
         await analysis.followEdit(report.rewritten, previous: previous, editing: edited)
         await recipes.refreshReferences(report.rewritten.map(\.path))
         for window in windows { window.edit.filesRewritten(Set(report.rewritten.map(\.path))) }
-        await followMoves(report.moves, changedBy: id, recipesAway: away)
+        await followMoves(report.moves, changedBy: id, recipesAway: away, replaced: Self.replacedPaths(before))
         if let entry = await journal.entry(id) {
             foldersGone(foldersRemoved(by: entry.steps))
             await refreshAfterTrash(entry.steps, moved: report.moves)
@@ -215,8 +229,14 @@ extension AppModel {
 
     /// `recipesAway`: the recipes whose files were not where they say before the change, so a move to another disk never
     /// takes them along (audit 2026-11-21-4, B4-1).
-    private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID, recipesAway: Set<UUID> = []) async {
-        guard !moves.isEmpty else { return }
+    /// `replaced`: the names a Replace, its Undo or its Redo put another picture at (round 11, B11-3).
+    private func followMoves(_ moves: [(from: String, to: String)], changedBy _: UUID, recipesAway: Set<UUID> = [],
+                             replaced: Set<String> = []) async
+    {
+        guard !moves.isEmpty else {
+            for window in windows where !replaced.isEmpty { window.edit.followMoves([], replaced: replaced) }
+            return
+        }
         await analysis.noteMoves(moves)
         await recipes.movePaths(moves, awayBefore: recipesAway)
         await store?.moveArchivePaths(moves)
@@ -233,7 +253,7 @@ extension AppModel {
             }
             // Organise's folders follow too, so its panes and its target stay on the folders they showed (audit 4, B4-m2).
             window.organise.foldersMoved(moves)
-            window.edit.followMoves(moves)
+            window.edit.followMoves(moves, replaced: replaced)
         }
     }
 }

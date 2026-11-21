@@ -57,6 +57,7 @@ extension EditModel {
         Task { [weak self] in
             var before: [(path: String, recipe: EditRecipe?)] = []
             var failed: [String] = []
+            var written = Set<UUID>()
             for file in files {
                 let kind = MediaFormat.fromExtension(file.pathExtension)?.kind ?? .image
                 // A look, frame or layers mean nothing to audio.
@@ -68,16 +69,18 @@ extension EditModel {
                 }
                 // A file no longer there (renamed or deleted in the Finder) or a full disk is said, never counted
                 // (audit 2026-11-21-8, B8-3, B8-10).
-                guard await AppModel.shared.recipes.save(recipe) else {
+                guard let kept = await AppModel.shared.recipes.store(recipe) else {
                     failed.append(file.lastPathComponent)
                     continue
                 }
+                written.insert(kept.id)
                 before.append((file.standardizedFileURL.path, stored))
             }
             guard let self else { return }
             registerBatchUndo(before, name: "Paste Settings")
             reloadCurrentRecipe()
-            Self.recipesChanged(Set(before.map(\.path)), by: self)
+            // By id too: a window still naming a file's old name after a Finder rename is told (round 11, B11-2).
+            Self.recipesChanged(Set(before.map(\.path)), ids: written, by: self)
             if let first = failed.first {
                 let total = before.count + failed.count
                 message = "Settings pasted onto \(before.count) of \(total) file\(total == 1 ? "" : "s"); “\(first)” "
@@ -114,15 +117,17 @@ extension EditModel {
         Task { [weak self] in
             // By id: the store knows where each file is now (B5-1). A file with no recipe before gets the recipe the
             // change made kept blank.
+            var written = Set<UUID>()
             for (item, other) in zip(recipes, redo) {
                 if let recipe = item.recipe {
-                    await AppModel.shared.recipes.save(recipe)
+                    if let kept = await AppModel.shared.recipes.store(recipe) { written.insert(kept.id) }
                 } else if let id = other.recipe?.id {
                     await AppModel.shared.recipes.revert(id: id)
+                    written.insert(id)
                 }
             }
             self?.reloadCurrentRecipe()
-            Self.recipesChanged(Set(recipes.map(\.path)), by: self)
+            Self.recipesChanged(Set(recipes.map(\.path)), ids: written, by: self)
         }
     }
 

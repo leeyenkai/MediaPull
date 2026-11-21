@@ -140,8 +140,13 @@ public enum VideoComposer {
                let fresh = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
             {
                 let length = min(try await file.load(.duration), CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
-                try fresh.insertTimeRange(CMTimeRange(start: .zero, duration: length), of: rendered, at: .zero)
-                audioTrack = fresh
+                if length > .zero {
+                    try fresh.insertTimeRange(CMTimeRange(start: .zero, duration: length), of: rendered, at: .zero)
+                    audioTrack = fresh
+                } else {
+                    // Shorter than one tick at the speed: no sound track rather than an empty one (C6-2, round 11, C11-6).
+                    composition.removeTrack(fresh)
+                }
             }
         }
         let (pictureStart, pictureEnd) = (picture.start.seconds / speed, picture.end.seconds / speed)
@@ -289,11 +294,21 @@ public enum VideoComposer {
     public static func export(_ source: URL, recipe: EditRecipe, to output: URL,
                               progress: @escaping @Sendable (Double) -> Void) async throws -> Built
     {
+        // Never written without a picture layer the person sees missing, as for photos (B10-4, round 11, B11-5).
+        for layer in recipe.layers where !layer.hidden {
+            if case let .image(path) = layer.kind, !FileManager.default.fileExists(atPath: path) {
+                throw Failure.notWritten("the picture “\((path as NSString).lastPathComponent)” of a layer is no longer there")
+            }
+        }
         let asset = AVURLAsset(url: source)
         let timeline = recipe.timeline ?? EditTimeline()
         let speed = min(max(timeline.speed, 0.25), 4)
         // At another speed the sound is rendered first, its pitch kept and exactly as long as the picture (C10-1).
-        let sound = speed != 1 && timeline.volume > 0 ? try await SoundAtSpeed.render(asset, recipe: recipe, speed: speed) : nil
+        let sound = speed != 1 && timeline.volume > 0
+            ? try await SoundAtSpeed.render(asset, recipe: recipe) { progress($0 / 2) } : nil
+        // With the sound rendered first, the export is the second half of the progress.
+        let half = sound != nil
+        let share: @Sendable (Double) -> Double = { half ? 0.5 + $0 / 2 : $0 }
         defer { if let sound { try? FileManager.default.removeItem(at: sound) } }
         let built = try await build(asset, recipe: recipe, soundAtSpeed: sound)
         let preset = built.lossless ? AVAssetExportPresetPassthrough
@@ -310,7 +325,7 @@ public enum VideoComposer {
         }
         session.videoComposition = built.videoComposition
         session.audioMix = built.audioMix
-        if built.speed != 1, sound == nil { session.audioTimePitchAlgorithm = .varispeed }
+        if built.speed != 1 { session.audioTimePitchAlgorithm = .spectral }
         let type: AVFileType = output.pathExtension.lowercased() == "mov" ? .mov : .mp4
         // A video MP4 cannot hold (ProRes, say) is refused with the reason rather than failing part way.
         if await !session.compatibleFileTypes.contains(type) {
@@ -320,7 +335,7 @@ public enum VideoComposer {
         nonisolated(unsafe) let watched = session
         let watcher = Task {
             for await state in watched.states(updateInterval: 0.25) {
-                if case let .exporting(progress: current) = state { progress(current.fractionCompleted) }
+                if case let .exporting(progress: current) = state { progress(share(current.fractionCompleted)) }
             }
         }
         defer { watcher.cancel() }

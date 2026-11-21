@@ -515,11 +515,15 @@ public final class SavePipeline: Sendable {
         try manager.moveItem(at: file, to: staged)
         let ext = (name as NSString).pathExtension
         let stem = (name as NSString).deletingPathExtension
+        // A name another shot in the folder holds is taken too (D-120, audit 2026-11-21-11, A11-4).
+        let shots = FolderOperations.shotStems(in: folder, leaving: [], isFile: MediaUnits.takesPartInUnits(name))
         for attempt in 1 ... 500 {
             let candidateName = attempt == 1 ? name : Self.numbered(stem: stem, ext: ext, attempt: attempt)
             let candidate = folder.appendingPathComponent(candidateName)
             // A metadata file left behind by a deleted file is never overwritten either (R-1402).
-            if manager.fileExists(atPath: candidate.path) || manager.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path) {
+            if manager.fileExists(atPath: candidate.path) || manager.fileExists(atPath: Sidecar.sidecarURL(for: candidate).path)
+                || shots.contains((candidateName as NSString).deletingPathExtension.lowercased())
+            {
                 if conflict == .skip { return nil }
                 continue
             }

@@ -510,7 +510,7 @@ public actor OperationJournal {
     }
 
     /// The hidden name an edit waits under beside the file it replaces (D-107).
-    static let editPrefix = ".mediapull-edit-"
+    public static let editPrefix = ".mediapull-edit-"
 
     /// Hidden names of a change that hold an item now: a swap of names part way, or a Replace part way.
     static func hiddenPresent(_ entry: JournalEntry) -> Bool {
@@ -1131,6 +1131,11 @@ public actor OperationJournal {
                     report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) could not be copied again")
                     return false
                 }
+                // As for a move: never beside another shot of its name (A11-3).
+                if !companion, anotherShot(at: to, current: nil) {
+                    report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent): another photo now has that name")
+                    return false
+                }
                 if !fm.fileExists(atPath: folder.path) { try makeMissingFolders(folder, allowed: allowed, entry: &entry) }
                 try cloneItem(URL(fileURLWithPath: from), to: URL(fileURLWithPath: to), entry: &entry)
                 if !companion { report.restored += 1 }
@@ -1361,7 +1366,9 @@ public actor OperationJournal {
                 report.skipped.append("\(name) exists again")
                 return false
             }
-            if !companion, anotherShot(at: original, current: nil) {
+            // The original of a Replace goes back to its own place in its shot: whether its name is free is settled by
+            // `replaceUndoRefusal` (A11-2).
+            if !companion, entry.edits == nil, anotherShot(at: original, current: nil) {
                 report.skipped.append("\(name) was left in the Trash: another photo now has its name")
                 return false
             }

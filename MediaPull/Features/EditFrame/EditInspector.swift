@@ -184,9 +184,12 @@ private struct FrameTab: View {
                     set: { value in
                         edit.change { recipe in
                             guard var frame = recipe.frame else { return }
+                            // The extra at the bottom is kept whole: the border stops where the bottom would pass 40 %
+                            // (round 11, B11-7).
                             let extra = frame.bottom - frame.left
-                            (frame.top, frame.left, frame.right) = (value / 100, value / 100, value / 100)
-                            frame.bottom = min(0.4, value / 100 + extra)
+                            let border = max(0, min(value / 100, 0.4 - extra))
+                            (frame.top, frame.left, frame.right) = (border, border, border)
+                            frame.bottom = border + extra
                             recipe.frame = frame
                         }
                     }
