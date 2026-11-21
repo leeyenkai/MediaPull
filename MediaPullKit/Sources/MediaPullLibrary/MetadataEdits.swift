@@ -156,6 +156,7 @@ public extension OperationJournal {
             }
         }
         progress(items.count, items.count)
+        entry.photos = result.changed
         entry.finished = true
         // Hidden names still there (a swap that could not finish) stay recorded, so they are settled at the next launch.
         entry.swaps = entry.swaps?.filter { fm.fileExists(atPath: $0.key) }
@@ -431,8 +432,28 @@ extension OperationJournal {
         let url = URL(fileURLWithPath: path)
         let name = url.lastPathComponent
         let isXMP = url.pathExtension.lowercased() == "xmp"
-        // Redo of a step whose `.xmp` Undo sent to the Trash, emptied: made again.
+        // The photo a `.xmp` belongs to, by the same rule as the edit: the unit's lead among the folder's names, listed
+        // once per Undo or Redo (audit 2026-11-21-5, A5-5).
+        let lead: URL? = isXMP ? {
+            let folder = url.deletingLastPathComponent()
+            let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+            let photos = listing(of: folder).filter { name in
+                (name as NSString).deletingPathExtension.lowercased() == stem
+                    && MediaFormat.fromExtension((name as NSString).pathExtension)?.kind == .image
+            }
+            return (MediaUnits.units(in: photos).first?.lead ?? photos.sorted().first).map { folder.appendingPathComponent($0) }
+        }() : nil
+        // Refused, as on the edit, when the photo or its `.xmp` is locked; checked before anything is made (A4-9, A5-4).
+        if let locked = ([url] + [lead].compactMap(\.self)).first(where: Self.isLocked) {
+            report.skipped.append("“\(locked.lastPathComponent)” is locked in the Finder, so it was left as it is.")
+            return false
+        }
+        // Redo of a step whose `.xmp` Undo sent to the Trash, emptied: made again, only beside its photo (A5-3).
         if let again, again.made || again.before.isBlank, isXMP, !fm.fileExists(atPath: path) {
+            guard lead != nil else {
+                report.skipped.append("The photo of “\(name)” is no longer there.")
+                return false
+            }
             do {
                 let data = try MetadataWriter.xmpData(setting: values, over: nil)
                 try writeXMPData(data, to: url, exists: false, step: .metadata(path: path, before: again.before, after: values, made: true),
@@ -444,14 +465,6 @@ extension OperationJournal {
                 report.skipped.append("“\(name)” was not written again: \(error.localizedDescription)")
                 return false
             }
-        }
-        // A `.xmp` is refused, as on the edit, when the photo it belongs to is locked (audit 2026-11-21-4, A4-9).
-        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
-        let photos = isXMP ? ((try? fm.contentsOfDirectory(at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.deletingPathExtension().lastPathComponent.lowercased() == stem && $0.pathExtension.lowercased() != "xmp" } : []
-        if let locked = ([url] + photos).first(where: Self.isLocked) {
-            report.skipped.append("“\(locked.lastPathComponent)” is locked in the Finder, so it was left as it is.")
-            return false
         }
         let now = isXMP ? (MetadataWriter.values(ofXMPAt: url) ?? MetadataValues()) : MetadataWriter.values(of: url)
         guard isSame(path, in: entry), now.agrees(with: expecting) else {

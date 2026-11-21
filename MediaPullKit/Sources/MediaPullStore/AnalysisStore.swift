@@ -379,8 +379,12 @@ public actor AnalysisStore {
     /// its new one, so no model runs again; the copy's facts are marked to be read again. Copied, not moved: another file
     /// with the old content keeps its own, and pruning removes what no file holds. Returns the face keys copied, old to
     /// new, so their vectors can be copied too (`setFaceRows`).
-    public func rekey(from old: String, to new: String) -> [(old: String, new: String)] {
+    /// `path`: the file edited. Faces already held for `new` take this file's corrections only when no other file holds
+    /// that content: a copy elsewhere keeps its own (R-4506, audit 2026-11-21-5, A5-2).
+    public func rekey(from old: String, to new: String, path: String? = nil) -> [(old: String, new: String)] {
         guard old != new, var record = record(sha256: old) else { return [] }
+        let holders = #Predicate<FilePathModel> { $0.sha256 == new }
+        let heldElsewhere = ((try? modelContext.fetch(FetchDescriptor(predicate: holders))) ?? []).contains { $0.path != path }
         record.sha256 = new
         record.factsVersion = 0
         if self.record(sha256: new) == nil { save(record) }
@@ -391,6 +395,7 @@ public actor AnalysisStore {
             let key = "\(new)|\(suffix)"
             let existing = #Predicate<FaceModel> { $0.key == key }
             if let stale = try? modelContext.fetch(FetchDescriptor(predicate: existing)).first {
+                if heldElsewhere { continue }
                 // The content is held already (an edit, Undo or Redo writes the same bytes again; those records go only
                 // when a scan prunes them): the people and corrections made since are what count (audit 2026-11-21-4,
                 // A4-2).

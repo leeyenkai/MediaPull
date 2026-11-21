@@ -172,11 +172,14 @@ public struct FFmpeg: Sendable {
     @concurrent
     public func audioFormat(_ url: URL) async -> AudioSourceFormat? {
         guard let output = try? await Self.run(ffprobe, [
-            "-v", "error", "-print_format", "json", "-show_streams", "-show_format", "-select_streams", "a:0", url.path,
+            "-v", "error", "-print_format", "json", "-show_streams", "-show_format", url.path,
         ]), let data = output.stdout.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        let stream = (json["streams"] as? [[String: Any]])?.first
+        let streams = json["streams"] as? [[String: Any]] ?? []
+        let stream = streams.first { $0["codec_type"] as? String == "audio" }
+        // The cover art's codec, so a cover the output cannot hold as it is (BMP, GIF) is turned into PNG (C5-1).
+        let cover = streams.first { ($0["disposition"] as? [String: Any])?["attached_pic"] as? Int == 1 }?["codec_name"] as? String
         let format = json["format"] as? [String: Any]
         let guessed = (stream?["duration"] as? String).flatMap(Double.init) ?? (format?["duration"] as? String).flatMap(Double.init)
         // A VBR MP3 without a Xing header, or ADTS AAC, has no stated length: ffprobe guesses from the bit rate. The
@@ -184,7 +187,7 @@ public struct FFmpeg: Sendable {
         let measured = await measuredLength(url)
         let bits = (stream?["bits_per_raw_sample"] as? String).flatMap(Int.init) ?? (stream?["bits_per_sample"] as? Int)
         return AudioSourceFormat(duration: measured ?? guessed ?? 0, sampleRate: (stream?["sample_rate"] as? String).flatMap(Int.init),
-                                 bits: bits, codec: stream?["codec_name"] as? String)
+                                 bits: bits, codec: stream?["codec_name"] as? String, artworkCodec: cover)
     }
 
     /// Copies streams into an MP4 container without re-encoding.

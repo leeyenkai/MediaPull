@@ -87,4 +87,29 @@ final class Audit2026Round4Tests: XCTestCase {
         XCTAssertEqual(MetadataWriter.string(in: metadata, path: "exif:DateTimeOriginal"), "2020-01-02T03:05:05.25+01:00")
         XCTAssertEqual(MetadataWriter.string(in: metadata, path: "photoshop:DateCreated"), "2020-01-02T03:05:05.25+01:00")
     }
+
+    func testAnEditNeverOverwritesTheCorrectionsOfACopyWithTheSameContent() async throws {
+        // P and Q are duplicates; Q was rated and its face named, then P is rated the same: same bytes (A5-2).
+        let store = try AnalysisStore.make(folder: nil)
+        await store.save(AnalysisRecord(sha256: "P0", facts: MediaFacts()))
+        await store.save(AnalysisRecord(sha256: "R", facts: MediaFacts()))
+        await store.addFaces([NewFace(key: "f1", vectorRow: 0, quality: 1, pixelSize: 100)], sha256: "P0")
+        await store.addFaces([NewFace(key: "f1", vectorRow: 1, quality: 1, pixelSize: 100)], sha256: "R")
+        await store.setPath("/lib/P.jpg", sha256: "P0", size: 1, modified: Date())
+        await store.setPath("/lib/Q.jpg", sha256: "R", size: 1, modified: Date())
+        let alice = UUID()
+        _ = await store.applyAssignments(["R|f1": alice])
+        _ = await store.rekey(from: "P0", to: "R", path: "/lib/P.jpg")
+        let face = await store.faces().first { $0.key == "R|f1" }
+        XCTAssertEqual(face?.personID, alice, "the copy keeps its own correction")
+    }
+
+    func testAnXMPImageIOCannotReadIsNeverWrittenOverFromEmpty() throws {
+        // An old Camera Raw root element (A5-1).
+        let old = #"<x:xapmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">"#
+            + #"<rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure="+0.50"/>"#
+            + #"</rdf:RDF></x:xapmeta>"#
+        XCTAssertThrowsError(try MetadataWriter.xmpData(setting: MetadataValues(fields: [.rating], rating: 3), over: Data(old.utf8)))
+        XCTAssertNoThrow(try MetadataWriter.xmpData(setting: MetadataValues(fields: [.rating], rating: 3), over: nil))
+    }
 }

@@ -284,14 +284,14 @@ final class EditFrameTests: XCTestCase {
         try FileManager.default.moveItem(at: renamed, to: later)
         let followed = await outside.recipe(for: later)
         XCTAssertEqual(followed?.adjust.contrast, 5)
-        // Revert: a blank recipe is removed.
+        // Revert: the recipe is kept blank (for ⌘Z), and shown and marked no more.
         var blank = try XCTUnwrap(followed)
         blank.adjust = Adjustments()
         await outside.save(blank)
         let gone = await outside.recipe(for: later)
         XCTAssertNil(gone)
-        let left = try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("Edits2").path)
-        XCTAssertTrue(left.isEmpty)
+        let marked = await outside.editedPaths()
+        XCTAssertTrue(marked.isEmpty)
     }
 
     // MARK: Audit round 1
@@ -421,7 +421,7 @@ final class EditFrameTests: XCTestCase {
         XCTAssertNil(onB)
         let marked = await store.editedPaths()
         XCTAssertFalse(marked.contains(path.standardizedFileURL.path))
-        await store.remove(path.path)
+        await store.revert(path.path)
         await store.save(edited(path, contrast: 70))
         let editedB = await store.recipe(for: path)
         XCTAssertEqual(editedB?.adjust.contrast, 70)
@@ -536,21 +536,54 @@ final class EditFrameTests: XCTestCase {
         await store.save(edited(original, contrast: 15))
         let stored = await store.recipe(for: original)
         let before = try XCTUnwrap(stored)
-        // Reverted (the recipe goes), then the file moves to another disk and gets a new creation date.
-        var blank = before
-        blank.adjust = Adjustments()
-        await store.save(blank)
+        // Reverted (kept blank), then the file moves to another disk and gets a new creation date.
+        await store.revert(original.path)
         let destination = folder.appendingPathComponent("moved.jpg")
         try FileManager.default.moveItem(at: original, to: destination)
         try FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: destination.path)
         await store.movePaths([(original.path, destination.path)])
-        // ⇧⌘Z brings the edits back with the file as it is now (B4-2).
-        var restored = before
-        restored.source.path = destination.standardizedFileURL.path
-        restored.source.created = nil
-        restored.source.reference = nil
-        await store.save(restored)
+        // ⌘Z saves the recipe as it was when reverted, old path and date and all: the store knows the file now (B4-2, B5-1).
+        await store.save(before)
         let found = await store.recipe(for: destination)
         XCTAssertEqual(found?.adjust.contrast, 15)
+    }
+
+    // MARK: Audit round 5
+
+    func testUndoAfterAFinderRenameFollowsTheFileAndGivesANewcomerNothing() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let original = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        // Paste Settings onto a.jpg: no recipe before, one after.
+        await store.save(edited(original, contrast: 15))
+        let pasted = await store.recipe(for: original)
+        let after = try XCTUnwrap(pasted)
+        // ⌘Z of the paste: kept blank by id.
+        await store.revert(id: after.id)
+        // Renamed in the Finder; a newcomer takes the old name.
+        let renamed = folder.appendingPathComponent("b.jpg")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        _ = try dated("a.jpg", created: Date())
+        // ⇧⌘Z: the recipe as it was, with its old path (B5-1).
+        await store.save(after)
+        let followed = await store.recipe(for: renamed)
+        XCTAssertEqual(followed?.adjust.contrast, 15)
+        let newcomer = await store.recipe(for: original)
+        XCTAssertNil(newcomer, "a newcomer at the old name is given nothing")
+    }
+
+    func testAFinderRenameIsFollowedAtOnceAfterALookup() async throws {
+        let store = RecipeStore(folder: folder.appendingPathComponent("Edits"))
+        let original = try dated("a.jpg", created: Date().addingTimeInterval(-86400))
+        await store.save(edited(original, contrast: 15))
+        // Any lookup or listing first (B5-2).
+        let plain = try dated("other.jpg", created: Date())
+        _ = await store.recipe(for: plain)
+        _ = await store.editedPaths()
+        let renamed = folder.appendingPathComponent("b.jpg")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        let found = await store.recipe(for: renamed)
+        XCTAssertEqual(found?.adjust.contrast, 15)
+        let marked = await store.editedPaths()
+        XCTAssertEqual(marked, [renamed.standardizedFileURL.path])
     }
 }

@@ -91,7 +91,11 @@ public struct MetadataValues: Codable, Sendable, Hashable {
     public func agrees(with wanted: MetadataValues) -> Bool {
         for field in wanted.fields {
             switch field {
-            case .rating: if (rating ?? 0) != (wanted.rating ?? 0) { return false }
+            case .rating:
+                if (rating ?? 0) != (wanted.rating ?? 0) { return false }
+                // No stars on either side: a rejected mark (-1) is not the same as none (audit 2026-11-21-5, A5-6).
+                func mark(_ text: String?) -> Int { text.flatMap(Double.init).map { Int($0.rounded()) } ?? 0 }
+                if rating == nil, mark(ratingText) != mark(wanted.ratingText) { return false }
             case .keywords: if (keywords ?? []) != (wanted.keywords ?? []) { return false }
             case .taken:
                 let a = taken ?? TakenDate(), b = wanted.taken ?? TakenDate()

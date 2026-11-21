@@ -303,19 +303,19 @@ final class EditModel: MediaGridOwner {
             manager.setActionName("Edit")
         }
         // The same recipe, wherever its file is now (it may have been renamed since).
-        // Only the edits come back: the file is known as it is now (it may have moved to another disk since, with a new
-        // creation date), never as when the change was made (audit 2026-11-21-4, B4-2).
-        if recipe.id == self.recipe?.id || recipe.source.path == self.recipe?.source.path {
+        // Only the edits come back: which file the recipe belongs to is the store's to say (it may have moved or been
+        // renamed since), never the one when the change was made (audit 2026-11-21-5, B5-1, B5-3).
+        if recipe.id == self.recipe?.id {
             var restored = recipe
             if let source = self.recipe?.source { restored.source = source }
             self.recipe = restored
             scheduleSave()
             render()
         } else {
-            var restored = recipe
-            restored.source.created = nil
-            restored.source.reference = nil
-            Task { await AppModel.shared.recipes.save(restored); filesChanged() }
+            Task {
+                await AppModel.shared.recipes.save(recipe)
+                reloadCurrentRecipe()
+            }
         }
     }
 
@@ -631,7 +631,7 @@ final class EditModel: MediaGridOwner {
             var before: [(path: String, recipe: EditRecipe?)] = []
             for file in files {
                 before.append((file.standardizedFileURL.path, await AppModel.shared.recipes.recipe(for: file)))
-                await AppModel.shared.recipes.remove(file.path)
+                await AppModel.shared.recipes.revert(file.path)
             }
             guard let self else { return }
             registerBatchUndo(before, name: "Revert Edits")

@@ -98,14 +98,13 @@ extension EditModel {
             MainActor.assumeIsolated { model.restoreRecipes(redo, redo: recipes) }
         }
         Task { [weak self] in
-            for item in recipes {
-                if var recipe = item.recipe {
-                    // Known by its file as it is now, not as when the change was made (B4-2).
-                    recipe.source.created = nil
-                    recipe.source.reference = nil
+            // By id: the store knows where each file is now (B5-1). A file with no recipe before gets the recipe the
+            // change made kept blank.
+            for (item, other) in zip(recipes, redo) {
+                if let recipe = item.recipe {
                     await AppModel.shared.recipes.save(recipe)
-                } else {
-                    await AppModel.shared.recipes.remove(item.path)
+                } else if let id = other.recipe?.id {
+                    await AppModel.shared.recipes.revert(id: id)
                 }
             }
             self?.reloadCurrentRecipe()
@@ -135,7 +134,7 @@ extension EditModel {
         // The open file's export settings go to files of its kind; others keep their own (a photo's size is not a video's).
         let settingsKind = kind
         let destination = exportFolder
-        let job = Job(kind: .export, title: "Export \(files.count) Files")
+        let job = Job(kind: .export, title: files.count == 1 ? "Export “\(files[0].lastPathComponent)”" : "Export \(files.count) Files")
         job.state = .running
         AppModel.shared.jobs.add(job)
         exporting = true
@@ -167,7 +166,9 @@ extension EditModel {
             }
             let stopped = Task.isCancelled
             AppModel.shared.jobs.finish(job, stopped ? .cancelled : problems.isEmpty ? .completed : .failed(problems[0]), notify: false)
-            self?.message = "Exported \(done) of \(files.count) files." + (problems.first.map { " \($0)" } ?? "")
+            let summary = files.count == 1 ? (done == 1 ? "Exported “\(files[0].lastPathComponent)”." : "Nothing was exported.")
+                : "Exported \(done) of \(files.count) files."
+            self?.message = summary + (problems.first.map { " \($0)" } ?? "")
             self?.exporting = false
             AppModel.shared.fileChangeRevision += 1
         }

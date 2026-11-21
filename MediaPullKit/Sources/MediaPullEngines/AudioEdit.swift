@@ -7,12 +7,15 @@ public struct AudioSourceFormat: Sendable, Equatable {
     public var sampleRate: Int?
     public var bits: Int?
     public var codec: String?
+    /// The codec of the file's cover art, when it has one.
+    public var artworkCodec: String?
 
-    public init(duration: Double, sampleRate: Int? = nil, bits: Int? = nil, codec: String? = nil) {
+    public init(duration: Double, sampleRate: Int? = nil, bits: Int? = nil, codec: String? = nil, artworkCodec: String? = nil) {
         self.duration = duration
         self.sampleRate = sampleRate
         self.bits = bits
         self.codec = codec
+        self.artworkCodec = artworkCodec
     }
 }
 
@@ -164,7 +167,11 @@ public enum AudioEdit {
             } else {
                 // Cover art only: a picture track that is not one (chapter pictures in a podcast) cannot go into the
                 // output (audit 2026-11-21-4, C4-3).
-                args += ["-map", "\(original):v:disp:attached_pic?", "-c:v", "copy"]
+                // A cover only JPEG or PNG can be kept as it is in every format; another (BMP, GIF) is turned into PNG,
+                // without loss (audit 2026-11-21-5, C5-1).
+                let keepsAsIs = ["mjpeg", "png"].contains(plan.sourceFormat?.artworkCodec ?? "mjpeg")
+                args += ["-map", "\(original):v:disp:attached_pic?", "-c:v", keepsAsIs ? "copy" : "png"]
+                if !keepsAsIs { args += ["-disposition:v:0", "attached_pic"] }
             }
         }
         args += ["-map_metadata", "\(original)"]

@@ -45,8 +45,12 @@ extension EditModel {
         flushSave()
         let at = player.time
         Task { [weak self] in
-            guard let item = try? await VideoComposer.playerItem(AVURLAsset(url: current), recipe: recipe) else {
-                self?.message = "The edited video could not be played."
+            let item: AVPlayerItem
+            do {
+                item = try await VideoComposer.playerItem(AVURLAsset(url: current), recipe: recipe)
+            } catch {
+                // With the reason, as R-4609 asks (C5-4).
+                self?.message = error.localizedDescription
                 return
             }
             // Still this file, still in view: never sound with no control on screen.

@@ -283,4 +283,47 @@ final class VideoEditTests: XCTestCase {
         // A QuickTime .qt stays QuickTime (C4-8).
         XCTAssertEqual(VideoComposer.container(for: URL(fileURLWithPath: "/x/a.qt"), recipe: turned), .mov)
     }
+
+    func testRoundFiveSoundFadeAndLastFrame() async throws {
+        // The sound ends 1.5 s before the picture: its fade-out ends with the sound (C5-2).
+        let short = try await clip(soundLonger: -1.5)
+        var edit = recipe(short)
+        edit.adjust.exposure = 0.2
+        var time = EditTimeline()
+        time.fadeOut = 1
+        edit.timeline = time
+        let output = folder.appendingPathComponent("faded.mov")
+        _ = try await VideoComposer.export(short, recipe: edit, to: output) { _ in }
+        let tail = try await loudestSample(output, from: 2.35)
+        let source = try await loudestSample(short, from: 2.35)
+        XCTAssertLessThan(tail, source * 0.5, "faded out at the sound's end (\(tail) of \(source))")
+        // Save Frame past the picture's end gives the last picture (C5-3).
+        let longer = try await clip(soundLonger: 0.6)
+        let last = await VideoComposer.frame(longer, at: 4.5)
+        XCTAssertNotNil(last)
+    }
+}
+
+/// The loudest sample from `start` seconds to the end of the file's sound.
+private func loudestSample(_ url: URL, from start: Double) async throws -> Float {
+    let asset = AVURLAsset(url: url)
+    let track = try await asset.loadTracks(withMediaType: .audio)[0]
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+        AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
+        AVLinearPCMIsNonInterleaved: false,
+    ])
+    reader.add(output)
+    reader.startReading()
+    var loudest: Float = 0
+    while let buffer = output.copyNextSampleBuffer() {
+        guard buffer.presentationTimeStamp.seconds >= start, let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+        let length = CMBlockBufferGetDataLength(block)
+        var samples = [Float](repeating: 0, count: length / 4)
+        _ = samples.withUnsafeMutableBytes { bytes in
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length / 4 * 4, destination: bytes.baseAddress!)
+        }
+        loudest = max(loudest, samples.map(abs).max() ?? 0)
+    }
+    return loudest
 }

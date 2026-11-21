@@ -52,6 +52,8 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
     /// A metadata edit part way (R-4503): each hidden name beside a photo, by the photo's path. Settled before anything
     /// else is done with the change, so a stop part way never leaves a photo missing.
     public var swaps: [String: String]?
+    /// A metadata edit: the photos it changed (a unit is one), for the history list.
+    public var photos: Int?
 
     /// Media files moved or copied, for the history list.
     public var fileCount: Int {
@@ -59,12 +61,9 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
         // A partly undone change counts both parts (audit 15, B15-m6).
         // A unit (a file with its metadata file, or a RAW+JPEG pair) is one (R-4206).
         let all = undone ? undoneSteps ?? steps : steps + (undoneSteps ?? [])
-        // A metadata edit of a unit (a Live Photo written in place, a photo and its .xmp) is one photo (audit A3-7): by the
-        // name without its last extension, so dated names with dots stay apart (A4-3).
-        let edited = Set(all.compactMap { step -> String? in
-            guard case let .metadata(path, _, _, _) = step else { return nil }
-            return URL(fileURLWithPath: path).deletingPathExtension().path.lowercased()
-        })
+        // A metadata edit counts the photos it changed, as the edit counted them: a unit is one, two photos that only share
+        // a name are two (audit A3-7, A4-3, A5-7). Older records count each file.
+        let edited = photos ?? all.filter { if case .metadata = $0 { true } else { false } }.count
         return OperationJournal.units(all).filter {
             switch $0[0] {
             // A rename through a temporary name is one file, not two (audit 12, B12-m2).
@@ -72,7 +71,7 @@ public struct JournalEntry: Codable, Sendable, Identifiable, Hashable {
             case let .clone(from, _, _): !from.hasSuffix(".json")
             default: false
             }
-        }.count + edited.count
+        }.count + edited
     }
 
     /// Paths that moved, so records keyed by path can follow them.
@@ -526,6 +525,15 @@ public actor OperationJournal {
     private var fallbacks: [String: String] = [:]
     /// Told of each file an Undo or Redo of a metadata edit replaces, as it is replaced (D-126).
     var onReplaced: (@Sendable (RewrittenFile) -> Void)?
+    /// Folder listings during one Undo or Redo, so a step does not list its folder again (A5-5).
+    var listings: [String: [String]] = [:]
+
+    func listing(of folder: URL) -> [String] {
+        if let names = listings[folder.path] { return names }
+        let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+        listings[folder.path] = names
+        return names
+    }
 
     /// Whether the file or folder at `path` is the one the change noted there. A path with nothing noted (older journals,
     /// volumes without a UUID) is taken as it is.
@@ -687,7 +695,11 @@ public actor OperationJournal {
                      replaced: (@Sendable (RewrittenFile) -> Void)? = nil) -> UndoReport
     {
         onReplaced = replaced
-        defer { onReplaced = nil }
+        listings = [:]
+        defer {
+            onReplaced = nil
+            listings = [:]
+        }
         return undo(id, park: true, progress: progress)
     }
 
@@ -788,7 +800,11 @@ public actor OperationJournal {
                      replaced: (@Sendable (RewrittenFile) -> Void)? = nil) -> UndoReport
     {
         onReplaced = replaced
-        defer { onReplaced = nil }
+        listings = [:]
+        defer {
+            onReplaced = nil
+            listings = [:]
+        }
         var report = UndoReport(restored: 0, skipped: [], moves: [])
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
         settleSwaps(&entry)

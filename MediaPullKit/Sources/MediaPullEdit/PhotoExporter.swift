@@ -78,7 +78,10 @@ public enum PhotoExporter {
         // Without camera details, the camera goes but the photographer's copyright, artist and caption stay (R-4608,
         // audit 2026-11-21-4, B4-m4).
         if var tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            // Orientation and tiling are the source's, not the export's (B5-m3).
             tiff[kCGImagePropertyTIFFOrientation] = nil
+            tiff[kCGImagePropertyTIFFTileWidth] = nil
+            tiff[kCGImagePropertyTIFFTileLength] = nil
             if !settings.keepCamera {
                 for key in [kCGImagePropertyTIFFMake, kCGImagePropertyTIFFModel, kCGImagePropertyTIFFSoftware,
                             kCGImagePropertyTIFFHostComputer]

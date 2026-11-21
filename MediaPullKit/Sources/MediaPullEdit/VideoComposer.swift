@@ -98,10 +98,16 @@ public enum VideoComposer {
         var cursor = CMTime.zero
         // The picture's own end: where the sound outlasts it, the last picture stays (R-4609), and its fade ends there.
         var pictureEnd: CMTime?
+        // The sound's own end likewise, so its fade-out ends where the sound does (audit 2026-11-21-5, C5-2).
+        var soundEnd: CMTime?
         for range in timeline.keptRanges(duration: duration) {
             let part = CMTimeRange(start: seconds(range.start), end: seconds(range.end))
             if let end = try insert(part, of: video, within: videoRange, into: videoTrack, at: cursor) { pictureEnd = end }
-            if let audio, let audioTrack, let audioRange { try insert(part, of: audio, within: audioRange, into: audioTrack, at: cursor) }
+            if let audio, let audioTrack, let audioRange,
+               let end = try insert(part, of: audio, within: audioRange, into: audioTrack, at: cursor)
+            {
+                soundEnd = end
+            }
             // CMTime has no +=.
             cursor = cursor + part.duration // swiftlint:disable:this shorthand_operator
         }
@@ -110,11 +116,9 @@ public enum VideoComposer {
             composition.scaleTimeRange(CMTimeRange(start: .zero, duration: cursor),
                                        toDuration: CMTime(seconds: cursor.seconds / speed, preferredTimescale: 600))
         }
-        let total = cursor.seconds / speed
-        guard let pictureEnd else {
-            throw Failure.notWritten("the parts kept have no picture, only sound past the picture's end")
-        }
+        guard let pictureEnd else { throw Failure.notWritten("the parts kept have no picture") }
         let pictureTotal = pictureEnd.seconds / speed
+        let soundTotal = (soundEnd?.seconds ?? cursor.seconds) / speed
 
         let audioMix: AVAudioMix? = {
             guard let audioTrack, timeline.volume != 1 || timeline.fadeIn > 0 || timeline.fadeOut > 0 else { return nil }
@@ -123,12 +127,12 @@ public enum VideoComposer {
             parameters.setVolume(level, at: .zero)
             if timeline.fadeIn > 0 {
                 parameters.setVolumeRamp(fromStartVolume: 0, toEndVolume: level,
-                                         timeRange: CMTimeRange(start: .zero, duration: seconds(min(timeline.fadeIn, total))))
+                                         timeRange: CMTimeRange(start: .zero, duration: seconds(min(timeline.fadeIn, soundTotal))))
             }
             if timeline.fadeOut > 0 {
-                let length = min(timeline.fadeOut, total)
+                let length = min(timeline.fadeOut, soundTotal)
                 parameters.setVolumeRamp(fromStartVolume: level, toEndVolume: 0,
-                                         timeRange: CMTimeRange(start: seconds(total - length), duration: seconds(length)))
+                                         timeRange: CMTimeRange(start: seconds(soundTotal - length), duration: seconds(length)))
             }
             let mix = AVMutableAudioMix()
             mix.inputParameters = [parameters]
@@ -295,10 +299,17 @@ public enum VideoComposer {
 
     /// A frame of the original at `seconds`, upright, for the canvas.
     public static func frame(_ url: URL, at seconds: Double) async -> CGImage? {
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
-        return try? await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        // Past the picture's end (the sound goes on), the last picture is the one shown, so it is the one saved (C5-3).
+        var time = seconds
+        if let track = try? await asset.loadTracks(withMediaType: .video).first, let range = try? await track.load(.timeRange) {
+            let rate = Double((try? await track.load(.nominalFrameRate)) ?? 30)
+            time = min(time, range.end.seconds - 1 / max(rate, 1))
+        }
+        return try? await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image
     }
 }

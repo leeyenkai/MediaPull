@@ -306,8 +306,11 @@ public enum MetadataWriter {
     /// The `.xmp` with `values` set over `existing` (what else it holds is kept).
     /// `absent`: fields the `.xmp` is to hold nothing about (Undo of an edit that added them), so the file's own show.
     public static func xmpData(setting values: MetadataValues, absent: Set<MetadataField> = [], over existing: Data?) throws -> Data {
-        let metadata = existing.flatMap { CGImageMetadataCreateFromXMPData($0 as CFData) }.flatMap { CGImageMetadataCreateMutableCopy($0) }
-            ?? CGImageMetadataCreateMutable()
+        let read = existing.flatMap { CGImageMetadataCreateFromXMPData($0 as CFData) }
+        // A `.xmp` ImageIO cannot read (an old root element, UTF-16) holding anything is never written over from empty:
+        // its other settings would be lost for good (audit 2026-11-21-5, A5-1).
+        if read == nil, let existing, !existing.isEmpty, !holdsNothing(existing) { throw Failure.unreadable }
+        let metadata = read.flatMap { CGImageMetadataCreateMutableCopy($0) } ?? CGImageMetadataCreateMutable()
         // Fields removed here are recorded as cleared; fields given a value are not.
         var cleared = Set((string(in: metadata, path: clearedPath) ?? "").split(separator: " ").map(String.init))
         for field in values.fields {

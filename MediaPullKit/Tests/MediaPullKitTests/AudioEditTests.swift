@@ -149,6 +149,14 @@ final class AudioEditTests: XCTestCase {
         // Only cover art goes with the sound, never another picture track (C4-3).
         let kept = AudioEdit.arguments(plan("a.m4a", .aac), list: nil)
         XCTAssertTrue(kept.contains("0:v:disp:attached_pic?"), "\(kept)")
+        // A BMP or GIF cover is turned into PNG; a JPEG one is copied as it is (C5-1).
+        var bitmap = plan("a.mp3", .aac)
+        bitmap.sourceFormat = AudioSourceFormat(duration: 10, codec: "mp3", artworkCodec: "bmp")
+        let turned = AudioEdit.arguments(bitmap, list: nil)
+        XCTAssertEqual(turned.firstIndex(of: "-c:v").map { turned[$0 + 1] }, "png")
+        bitmap.sourceFormat?.artworkCodec = "mjpeg"
+        let copied = AudioEdit.arguments(bitmap, list: nil)
+        XCTAssertEqual(copied.firstIndex(of: "-c:v").map { copied[$0 + 1] }, "copy")
     }
 
     /// The real engine: a tone cut losslessly, faded, normalised and converted (skipped when ffmpeg is not built).
