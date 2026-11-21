@@ -549,7 +549,7 @@ extension MetadataEditTests {
         XCTAssertNil(refused.entry)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("locked.xmp").path))
 
-        // A Live Photo unit written in place: a member without the value gets it though the lead has it (A3-7, A4-4).
+        // A Live Photo with a JPEG of its name: the JPEG is a photo of its own, never written with the still (D-120, A13-m1).
         let pair = folder.appendingPathComponent("pair")
         try FileManager.default.createDirectory(at: pair, withIntermediateDirectories: true)
         let heic = pair.appendingPathComponent("IMG_5.HEIC"), jpeg = pair.appendingPathComponent("IMG_5.JPG")
@@ -559,18 +559,12 @@ extension MetadataEditTests {
         let names = try FileManager.default.contentsOfDirectory(atPath: pair.path)
         let place = OperationJournal.place(of: heic, names: names)
         XCTAssertNil(place.xmp)
-        XCTAssertEqual(place.files.count, 2, "\(place.files)")
-        _ = await journal.editMetadata([heic], .rating(3), title: "Rate")
-        XCTAssertEqual(MetadataWriter.values(of: jpeg).rating, 3)
-        // The member alone loses its rating (as another app might leave it).
-        let unrated = pair.appendingPathComponent("unrated.jpg")
-        try MetadataWriter.writeCopy(of: jpeg, setting: MetadataValues(fields: [.rating]), to: unrated)
-        _ = try FileManager.default.replaceItemAt(jpeg, withItemAt: unrated)
+        XCTAssertEqual(place.files, [heic], "\(place.files)")
+        let rated = await journal.editMetadata([heic], .rating(3), title: "Rate")
+        XCTAssertEqual(rated.changed, 1, "\(rated.skipped)")
+        XCTAssertEqual(MetadataWriter.values(of: heic).rating, 3)
         XCTAssertNil(MetadataWriter.values(of: jpeg).rating)
-        let again = await journal.editMetadata([heic], .rating(3), title: "Rate")
-        XCTAssertEqual(again.changed, 1, "\(again.skipped)")
-        XCTAssertEqual(MetadataWriter.values(of: jpeg).rating, 3)
-        XCTAssertEqual(again.entry?.fileCount, 1)
+        XCTAssertEqual(rated.entry?.fileCount, 1)
         // Dated names with dots are photos of their own in History (A4-3).
         let dotted = pair.appendingPathComponent("2024.05.01 beach.jpg"), other = pair.appendingPathComponent("2024.05.02 beach.jpg")
         Self.photo(dotted, type: .jpeg)

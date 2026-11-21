@@ -244,7 +244,10 @@ public struct FFmpeg: Sendable {
         var stderr: String
     }
 
-    static func run(_ executable: URL, _ arguments: [String]) async throws -> Output {
+    /// `stdout`: given each piece of standard output as it comes, in order, instead of keeping it (a waveform's samples).
+    static func run(_ executable: URL, _ arguments: [String], stdout consume: (@Sendable (Data) -> Void)? = nil) async throws
+        -> Output
+    {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw FFmpegError.missing }
         #if os(macOS)
         let box = ProcessBox()
@@ -267,7 +270,18 @@ public struct FFmpeg: Sendable {
             let outHandle = out.fileHandleForReading, errHandle = err.fileHandleForReading
             readers.enter()
             DispatchQueue.global(qos: .userInitiated).async {
-                buffers.appendOut(outHandle.readDataToEndOfFile())
+                if let consume {
+                    // Each piece is let go as soon as it is read, so memory stays at one piece.
+                    var more = true
+                    while more {
+                        autoreleasepool {
+                            let piece = outHandle.availableData
+                            if piece.isEmpty { more = false } else { consume(piece) }
+                        }
+                    }
+                } else {
+                    buffers.appendOut(outHandle.readDataToEndOfFile())
+                }
                 readers.leave()
             }
             readers.enter()

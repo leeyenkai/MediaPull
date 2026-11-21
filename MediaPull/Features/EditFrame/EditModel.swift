@@ -425,6 +425,27 @@ final class EditModel: MediaGridOwner {
         // The store knows where the file is now (a Finder rename it followed): the window follows it too, so Export, the
         // title and notices name the file as it is (audit 2026-11-21-10, B10-2).
         recipe?.source = kept.source
+        // Pictures the store found moved (an Undo restoring a logo's old name) are shown where they are (B13-1).
+        if var open = recipe {
+            var corrected = false
+            for index in open.layers.indices {
+                guard case let .image(path) = open.layers[index].kind, !FileManager.default.fileExists(atPath: path),
+                      let same = kept.layers.first(where: { $0.id == open.layers[index].id }),
+                      case let .image(moved) = same.kind, moved != path else { continue }
+                open.layers[index].kind = .image(path: moved)
+                corrected = true
+            }
+            if let old = open.tags?.artworkPath, let artwork = kept.tags?.artworkPath, artwork != old,
+               !FileManager.default.fileExists(atPath: old)
+            {
+                open.tags?.artworkPath = artwork
+                corrected = true
+            }
+            if corrected {
+                recipe = open
+                render()
+            }
+        }
         if let old = current?.standardizedFileURL.path, old != kept.source.path,
            FileManager.default.fileExists(atPath: kept.source.path)
         {

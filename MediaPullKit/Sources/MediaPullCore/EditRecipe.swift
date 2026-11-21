@@ -620,23 +620,24 @@ public struct ExportSettings: Codable, Sendable, Hashable {
             }
         }
 
+        /// The box a result is fitted inside; nil for its own size.
+        public var box: CGSize? {
+            switch self {
+            case .original: nil
+            case .long1080, .square: CGSize(width: 1080, height: 1080)
+            case .long2048: CGSize(width: 2048, height: 2048)
+            case .long4096: CGSize(width: 4096, height: 4096)
+            case .post45: CGSize(width: 1080, height: 1350)
+            case .story: CGSize(width: 1080, height: 1920)
+            }
+        }
+
         /// The pixel size of a result of `size`: fitted inside the social sizes (never padded), scaled to a long edge, or
         /// as it is. Never larger than the result itself.
         public func pixels(for size: CGSize) -> CGSize {
-            func fit(_ box: CGSize) -> CGSize {
-                let scale = min(1, min(box.width / size.width, box.height / size.height))
-                return CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
-            }
-            guard size.width > 0, size.height > 0 else { return size }
-            switch self {
-            case .original: return size
-            case .long1080: return fit(CGSize(width: 1080, height: 1080))
-            case .long2048: return fit(CGSize(width: 2048, height: 2048))
-            case .long4096: return fit(CGSize(width: 4096, height: 4096))
-            case .post45: return fit(CGSize(width: 1080, height: 1350))
-            case .square: return fit(CGSize(width: 1080, height: 1080))
-            case .story: return fit(CGSize(width: 1080, height: 1920))
-            }
+            guard size.width > 0, size.height > 0, let box else { return size }
+            let scale = min(1, min(box.width / size.width, box.height / size.height))
+            return CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
         }
     }
 

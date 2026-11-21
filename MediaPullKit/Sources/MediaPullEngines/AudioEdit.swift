@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import MediaPullCore
 
@@ -264,18 +265,16 @@ public enum AudioEdit {
 }
 
 public extension FFmpeg {
-    /// The audio's waveform as `buckets` peaks (R-4610): decoded to 2 kHz floats in a temporary file, every channel kept,
-    /// so the peak is the loudest channel's (a mono mix would draw channels out of phase as silence, round 12, C12-3).
-    /// Off the main actor: it reads the file and goes through every sample.
+    /// The audio's waveform as `buckets` peaks (R-4610). Every channel is kept, so the peak is the loudest channel's (a
+    /// mono mix would draw channels out of phase as silence, round 12, C12-3), at 24 kHz, so sounds up to about 11 kHz
+    /// are drawn at their level (round 13, C13 minors 1 and 2). The samples stream through a pipe into peaks of 1,024
+    /// samples as they come, so memory stays small whatever the length. Off the main actor.
     @concurrent
     func waveform(_ url: URL, buckets: Int) async throws -> [Float] {
-        let raw = FileManager.default.temporaryDirectory.appendingPathComponent("MediaPull-wave-\(UUID().uuidString).f32")
-        defer { try? FileManager.default.removeItem(at: raw) }
-        _ = try await Self.run(ffmpeg, ["-hide_banner", "-nostdin", "-v", "error", "-y", "-i", url.path, "-map", "0:a:0",
-                                        "-ar", "2000", "-f", "f32le", raw.path])
-        let data = try Data(contentsOf: raw)
-        let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-        return AudioEdit.peaks(samples, buckets: buckets)
+        let folder = PeakFolder()
+        _ = try await Self.run(ffmpeg, ["-hide_banner", "-nostdin", "-v", "error", "-i", url.path, "-map", "0:a:0",
+                                        "-ar", "24000", "-f", "f32le", "pipe:1"]) { folder.add($0) }
+        return AudioEdit.peaks(folder.finish(), buckets: buckets)
     }
 
     /// Writes `plan` (R-4610); the output is removed when it fails or is cancelled.
@@ -308,5 +307,47 @@ public extension FFmpeg {
             try? FileManager.default.removeItem(at: plan.output)
             throw error
         }
+    }
+}
+
+/// Folds a stream of little-endian float samples into the peak of each 1,024 of them; given pieces in order, one at a
+/// time (the pipe's reader).
+final class PeakFolder: @unchecked Sendable {
+    static let block = 1024
+    private var fine: [Float] = []
+    private var current: Float = 0
+    private var count = 0
+    private var leftover = Data()
+
+    func add(_ piece: Data) {
+        let bytes = leftover.isEmpty ? piece : leftover + piece
+        let whole = bytes.count / 4 * 4
+        bytes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            // Pipe pieces start on a sample whenever no part sample was left over, so they are read as floats.
+            let floats = UnsafeRawPointer(base).bindMemory(to: Float.self, capacity: whole / 4)
+            var index = 0
+            let total = whole / 4
+            while index < total {
+                let run = min(Self.block - count, total - index)
+                var peak: Float = 0
+                vDSP_maxmgv(floats + index, 1, &peak, vDSP_Length(run))
+                if peak > current { current = peak }
+                count += run
+                index += run
+                if count == Self.block {
+                    fine.append(current)
+                    current = 0
+                    count = 0
+                }
+            }
+        }
+        leftover = whole == bytes.count ? Data() : bytes.subdata(in: whole ..< bytes.count)
+    }
+
+    func finish() -> [Float] {
+        if count > 0 { fine.append(current) }
+        count = 0
+        return fine
     }
 }

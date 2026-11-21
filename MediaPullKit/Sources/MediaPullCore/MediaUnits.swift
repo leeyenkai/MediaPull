@@ -30,7 +30,7 @@ public enum MediaUnits {
         return MediaFormat.fromExtension(e)?.kind == .image || MediaFormat.rawExtensions.contains(e) || clipExtensions.contains(e)
             || ["xmp", "aae"].contains(e)
     }
-    static let sideExtensions: Set<String> = ["xmp", "aae"]
+    public static let sideExtensions: Set<String> = ["xmp", "aae"]
 
     static func stem(_ name: String) -> String { (name as NSString).deletingPathExtension.lowercased() }
     static func ext(_ name: String) -> String { (name as NSString).pathExtension.lowercased() }
@@ -63,7 +63,9 @@ public enum MediaUnits {
                 guard !members.isEmpty else { continue }
                 out.append(Unit(lead: lead, members: members, kind: clips.isEmpty ? .rawPair : .live))
             } else if let lead = photos.first, !clips.isEmpty {
-                out.append(Unit(lead: lead, members: Array(photos.dropFirst()) + clips, kind: .live))
+                // A photo leads its clip only; another photo of the name is an item of its own, as everywhere else
+                // (D-120, audit 2026-11-21-13, A13-1).
+                out.append(Unit(lead: lead, members: clips, kind: .live))
             }
         }
         return out.sorted { $0.lead < $1.lead }
@@ -90,7 +92,7 @@ public enum MediaUnits {
             if present.contains(name + ".json") { out.append(name + ".json") }
         }
         // Edit files of the same shot, whatever the case of their names.
-        for name in names.sorted() where sideExtensions.contains(ext(name)) && stem(name) == leadStem {
+        for name in names.sorted() where sideExtensions.contains(ext(name)) && stem(name) == leadStem && name != lead {
             out.append(name)
         }
         return out

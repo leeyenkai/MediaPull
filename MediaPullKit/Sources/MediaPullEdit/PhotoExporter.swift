@@ -33,7 +33,9 @@ public enum PhotoExporter {
         let full = PhotoRenderer.render(input, recipe: recipe)
         let target = recipe.export.size.pixels(for: full.extent.size)
         var layersDrawn = true
-        let canvas = PhotoRenderer.render(input, recipe: recipe, fit: target) { size in
+        // Fitted to the setting's own box, so the scale is the one `pixels(for:)` worked out and no side is rounded down
+        // twice (Long Edge 1080 is 1080, audit 2026-11-21-13, B13-m1).
+        let canvas = PhotoRenderer.render(input, recipe: recipe, fit: recipe.export.size.box ?? target) { size in
             let overlay = LayerRenderer.image(recipe.layers, canvas: size)
             layersDrawn = overlay != nil
             return overlay

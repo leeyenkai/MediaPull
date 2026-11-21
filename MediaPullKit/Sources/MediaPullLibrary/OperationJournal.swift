@@ -527,6 +527,9 @@ public actor OperationJournal {
 
     /// During one Undo: items put back under another name because theirs was taken, by the path they came from.
     private var fallbacks: [String: String] = [:]
+    /// The files this Undo or Redo has put in place so far: a change is never refused for a shot it puts back itself
+    /// (two photos of one name, a still and its clip, audit 2026-11-21-13, A13-1).
+    private var restored: Set<String> = []
     /// Told of each file an Undo or Redo of a metadata edit replaces, as it is replaced (D-126).
     var onReplaced: (@Sendable (RewrittenFile) -> Void)?
     /// Folder listings during one Undo or Redo, so a step does not list its folder again (A5-5).
@@ -554,21 +557,30 @@ public actor OperationJournal {
         return noted == now
     }
 
-    /// Whether another shot now holds the name `path` would take (a photo, clip or edit file of that stem, any case), not
-    /// counting the item itself where it is now (`current`) or files of its own unit beside it: then Undo, Redo or
-    /// putting back from the Trash leaves the item where it is, as for a taken name (D-93, D-120, audit 2026-11-21-10,
-    /// A10-4).
+    /// Whether the file put at `path` would join a unit with another shot there (a clip of its stem beside a photo, a photo
+    /// or RAW beside a RAW, any case), not counting the item itself where it is now (`current`), files of its own unit
+    /// beside it, or files this Undo or Redo put back: then it is left where it is, as for a taken name (D-93, D-120,
+    /// audit 2026-11-21-10, A10-4; round 13, A13-1).
     func anotherShot(at path: String, current: String?) -> Bool {
         let target = URL(fileURLWithPath: path)
         guard MediaUnits.takesPartInUnits(target.lastPathComponent), !Self.isTemporary(path) else { return false }
         let folder = target.deletingLastPathComponent()
-        let stem = target.deletingPathExtension().lastPathComponent.lowercased()
-        var leaving: [String] = []
+        let name = target.lastPathComponent
+        var leaving: Set<String> = [name.lowercased()]
         if let current, URL(fileURLWithPath: current).deletingLastPathComponent().path == folder.path {
             let own = URL(fileURLWithPath: current).deletingPathExtension().lastPathComponent.lowercased()
-            leaving = listing(of: folder).filter { ($0 as NSString).deletingPathExtension.lowercased() == own }
+            for other in listing(of: folder) where (other as NSString).deletingPathExtension.lowercased() == own {
+                leaving.insert(other.lowercased())
+            }
         }
-        return FolderOperations.shotStems(in: folder, leaving: leaving, isFile: true, editFiles: false).contains(stem)
+        let standardFolder = folder.standardizedFileURL.path
+        for path in restored where (path as NSString).deletingLastPathComponent == standardFolder {
+            leaving.insert((path as NSString).lastPathComponent.lowercased())
+        }
+        // Taken only where the file would join a unit with another shot: a clip beside a photo, a photo or RAW beside a
+        // RAW; two photos of one name are two items and never pair (D-120, audit 2026-11-21-13, A13-1).
+        let names = listing(of: folder).filter { !leaving.contains($0.lowercased()) } + [name]
+        return MediaUnits.units(in: names).contains { $0.lead == name || $0.members.contains(name) }
     }
 
     /// Whether the file at `path` is the one the change noted there only through MediaPull's own rewrites of it.
@@ -897,6 +909,7 @@ public actor OperationJournal {
         var left: [[JournalStep]] = []
         var undoneUnits: [[JournalStep]] = []
         fallbacks = [:]
+        restored = []
         let unchanged = entry
         let units = Self.units(entry.steps)
         var visited = 0
@@ -922,6 +935,12 @@ public actor OperationJournal {
             // A copied folder is still taken back file by file (only what changed stays).
             if case let .clone(_, to, _) = unit[0], !Self.isFolder(URL(fileURLWithPath: to)), let changed = changedMember(of: unit) {
                 report.skipped.append("\(URL(fileURLWithPath: to).lastPathComponent) was kept with its unit: \(changed) changed since")
+                continue
+            }
+            // A unit with a file the Finder locks is left whole, as when it first ran (A12-4, round 13, A13-3).
+            if let locked = Self.lockedFile(in: unit, undoing: true) {
+                report.skipped.append("“\(locked)” is locked in the Finder, so it and the files that go with it were left as they are.")
+                left.append(unit)
                 continue
             }
             if undo(unit[0], entry: &entry, report: &report) {
@@ -982,6 +1001,7 @@ public actor OperationJournal {
         guard var entry = entry(id), let steps = entry.undoneSteps, !steps.isEmpty else { return report }
         settleSwaps(&entry)
         fallbacks = [:]
+        restored = []
         // As when it first ran: a folder it worked in that went away since is never made again (audit 6, B6-M1).
         // Folders the change made itself (its root among them) are made again; no others (audit 7, B7-m1).
         let allowed = Set(steps.compactMap { step -> String? in
@@ -990,6 +1010,12 @@ public actor OperationJournal {
         let root = URL(fileURLWithPath: entry.root).standardizedFileURL
         guard Self.isFolder(root) || (allowed.contains(root.path) && Self.isFolder(root.deletingLastPathComponent())) else {
             report.skipped.append("“\(URL(fileURLWithPath: entry.root).lastPathComponent)” is no longer there, so nothing was done again.")
+            return report
+        }
+        // A Replace is done again only on its original where it was: moved away since, the edit is never put at its name
+        // (audit 2026-11-21-13, A13-4).
+        if entry.edits != nil, let refusal = replaceRedoRefusal(entry) {
+            report.skipped.append(refusal)
             return report
         }
         // A Replace's edit comes back from the Trash first; without it the original is never trashed again.
@@ -1015,6 +1041,10 @@ public actor OperationJournal {
             visited += 1
             if visited % 50 == 0 { progress?(Double(visited) / Double(units.count)) }
             defer { if hidden != nil { Self.update(&hidden, after: unit) } }
+            if let locked = Self.lockedFile(in: unit, undoing: false) {
+                report.skipped.append("“\(locked)” is locked in the Finder, so it and the files that go with it were left as they are.")
+                continue
+            }
             if redo(unit[0], allowed: allowed, entry: &entry, report: &report) {
                 for step in unit.dropFirst() {
                     redo(step, companion: true, allowed: allowed, entry: &entry, report: &report)
@@ -1126,6 +1156,7 @@ public actor OperationJournal {
                 if !companion, !Self.isTemporary(target.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((from, target.path))
+                restored.insert(target.standardizedFileURL.path)
                 return true
             case let .clone(from, to, _):
                 let folder = URL(fileURLWithPath: to).deletingLastPathComponent()
@@ -1300,6 +1331,7 @@ public actor OperationJournal {
                 if !companion, !Self.isTemporary(back.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((to, back.path))
+                restored.insert(back.standardizedFileURL.path)
                 // For Redo: what is back at its old place (or under the free name it got), and the folder it left (B11-m1).
                 note(from, at: back.path == from ? nil : back.path, in: &entry)
                 note(dest.deletingLastPathComponent().path, in: &entry)
@@ -1377,6 +1409,7 @@ public actor OperationJournal {
             }
             do {
                 try fm.moveItem(at: URL(fileURLWithPath: trashed), to: URL(fileURLWithPath: original))
+                restored.insert(URL(fileURLWithPath: original).standardizedFileURL.path)
                 if !companion { report.restored += 1 }
                 report.done += 1
                 note(original, in: &entry)
@@ -1523,6 +1556,20 @@ public actor OperationJournal {
         throw CocoaError(.fileWriteNoPermission, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    /// The name of a file the Finder locks among a unit's files where they are now (the destinations to undo, the sources
+    /// to redo); nil for a single file, whose own step reports its lock.
+    static func lockedFile(in unit: [JournalStep], undoing: Bool) -> String? {
+        guard unit.count > 1 else { return nil }
+        let paths = unit.compactMap { step -> String? in
+            switch step {
+            case let .move(from, to, _, _): undoing ? to : from
+            case let .trash(original, trashed): undoing ? trashed : original
+            default: nil
+            }
+        }
+        return paths.first { !$0.isEmpty && isLocked(URL(fileURLWithPath: $0)) }.map { ($0 as NSString).lastPathComponent }
+    }
+
     /// Whether a Replace kept its original's name stem (D-127): only then does the original's own shot (its clip, its
     /// RAW) pass the shot rule on Undo and Redo; a Replace under another name went from a file in no unit, so any shot
     /// of the original's name there later is another photo (audit 2026-11-21-12, A12-1, A12-3).
@@ -1538,6 +1585,17 @@ public actor OperationJournal {
         guard let original, let placed else { return false }
         func stem(_ path: String) -> String { URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent.lowercased() }
         return stem(original) == stem(placed)
+    }
+
+    /// Whether Redo of a Replace could put the edit in its original's place; the reason not, when the original is no longer
+    /// there to go to the Trash (A13-4).
+    func replaceRedoRefusal(_ entry: JournalEntry) -> String? {
+        let original = (entry.undoneSteps ?? []).lazy.compactMap { step -> String? in
+            if case let .trash(original, _) = step, !original.hasSuffix(".json") { return original }
+            return nil
+        }.first
+        guard let original, !fm.fileExists(atPath: original) || !isSame(original, in: entry) else { return nil }
+        return "“\(URL(fileURLWithPath: original).lastPathComponent)” is no longer where it was, so the edit was not put back."
     }
 
     /// Whether Undo of a Replace could put the original back; the reason not, when it could not (R1-M1).

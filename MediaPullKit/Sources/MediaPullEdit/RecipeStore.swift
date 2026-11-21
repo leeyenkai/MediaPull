@@ -184,11 +184,21 @@ public actor RecipeStore {
             }
             // Else a newcomer has its name: kept apart under its own creation date, never shown for the newcomer.
         }
+        if !movedPictures.isEmpty {
+            let moves = PathMoves(movedPictures)
+            _ = Self.picturesFollow(&recipe) { path in
+                FileManager.default.fileExists(atPath: path) ? nil : moves.destination(of: Self.key(path))
+            }
+        }
         recipe.modified = Date()
         byID[recipe.id] = recipe
         resolved[recipe.id] = nil
         return write(recipe) ? recipe : nil
     }
+
+    /// The pictures MediaPull moved (logos, artwork) while recipes named them: a recipe kept later with a moved picture's
+    /// old name (an Undo, a stale window, a save racing the move) is kept with its new name (audit 2026-11-21-13, B13-1).
+    private var movedPictures: [(from: String, to: String)] = []
 
     /// Ids of recipes merged into another (two windows, one file), for an Undo that still names the first.
     private var merged: [UUID: UUID] = [:]
@@ -246,6 +256,9 @@ public actor RecipeStore {
         guard !moves.isEmpty else { return }
         resolved = [:]
         let remap = PathMoves(moves.map { (Self.key($0.from), Self.key($0.to)) })
+        // Remembered for recipes kept later with a picture's old name; the newest moves, in order.
+        movedPictures += remap.moves
+        if movedPictures.count > 20000 { movedPictures.removeFirst(movedPictures.count - 20000) }
         for (id, recipe) in byID {
             var moved = recipe
             var changed = false

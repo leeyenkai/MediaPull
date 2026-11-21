@@ -105,8 +105,11 @@ public enum SoundAtSpeed {
         if channels <= 2 {
             return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: channels, interleaved: true)
         }
-        let layout = encoderLayouts[channels].flatMap { AVAudioChannelLayout(layoutTag: $0) }
-            ?? input.channelLayout.flatMap { $0.channelCount == channels ? $0 : nil }
+        // Read by labels into the encoder's order only when the sound has labels; discrete, unknown or ambisonic channels
+        // keep their own layout, as there is nothing to place them by (round 13, C13-1).
+        let own = input.channelLayout.flatMap { $0.channelCount == channels ? $0 : nil }
+        let layout = (own.map(isPositional) == true ? encoderLayouts[channels].flatMap { AVAudioChannelLayout(layoutTag: $0) } : nil)
+            ?? own
             ?? AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | channels)
         return layout.map { AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, interleaved: true, channelLayout: $0) }
     }
@@ -115,9 +118,35 @@ public enum SoundAtSpeed {
     public static func removeLeftovers() {
         let folder = FileManager.default.temporaryDirectory
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        // Only files a day old: a second MediaPull running (a self-test) never takes a running export's files.
+        let dayAgo = Date(timeIntervalSinceNow: -86400)
         for name in names where ["MediaPull-sound-", "MediaPull-wave-", "MediaPull-cut-"].contains(where: name.hasPrefix) {
-            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) // lint:allow app-data own temporary files
+            let url = folder.appendingPathComponent(name)
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            guard (modified ?? .distantPast) < dayAgo else { continue }
+            try? FileManager.default.removeItem(at: url) // lint:allow app-data own temporary files
         }
+    }
+
+    /// Whether every channel of `layout` has a place (left, centre, a surround) rather than only a number, an unknown
+    /// label or an ambisonic component.
+    static func isPositional(_ layout: AVAudioChannelLayout) -> Bool {
+        let tag = layout.layout.pointee.mChannelLayoutTag
+        if tag == kAudioChannelLayoutTag_UseChannelBitmap { return true }
+        if tag != kAudioChannelLayoutTag_UseChannelDescriptions {
+            let family = tag & 0xFFFF_0000
+            let unplaced = [kAudioChannelLayoutTag_DiscreteInOrder, kAudioChannelLayoutTag_Unknown,
+                            kAudioChannelLayoutTag_HOA_ACN_SN3D, kAudioChannelLayoutTag_HOA_ACN_N3D,
+                            kAudioChannelLayoutTag_Ambisonic_B_Format]
+            return !unplaced.contains { $0 & 0xFFFF_0000 == family }
+        }
+        let count = Int(layout.layout.pointee.mNumberChannelDescriptions)
+        guard count > 0 else { return false }
+        guard let offset = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions) else { return false }
+        let descriptions = (UnsafeRawPointer(layout.layout) + offset).assumingMemoryBound(to: AudioChannelDescription.self)
+        // Positional labels are 1 to 99 (left, right, centre, LFE, surrounds, heights); 100 and up are coordinates,
+        // ambisonics, headphones, discrete and unknown channels.
+        return (0 ..< count).allSatisfy { (1 ..< 100).contains(descriptions[$0].mChannelLabel) }
     }
 
     /// A channel layout as the reader's settings take it, with all its channel descriptions.
