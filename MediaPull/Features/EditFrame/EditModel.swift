@@ -245,7 +245,8 @@ final class EditModel: MediaGridOwner {
             loadingFile = false
             guard let kind = format?.kind else { return }
             mediaDuration = duration
-            recipe = stored ?? Self.newRecipe(for: url, kind: kind)
+            // A recipe another window wrote while this one opened (reloaded meanwhile) is kept (B8-8).
+            recipe = recipe ?? stored ?? Self.newRecipe(for: url, kind: kind)
             // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
             if previousKind != kind || !tabs.contains(tab), let first = tabs.first { tab = first }
             // Audio's player waits for its true length (`loadWaveform`): a file the system measures short plays from a copy.
@@ -280,6 +281,11 @@ final class EditModel: MediaGridOwner {
 
     func beginGesture() {
         if gestureStart == nil { gestureStart = recipe }
+    }
+
+    /// A reload during a drag: the drag's ⌘Z goes back to what was reloaded.
+    func restartGesture() {
+        if gestureStart != nil { gestureStart = recipe }
     }
 
     func endGesture() {
@@ -343,7 +349,7 @@ final class EditModel: MediaGridOwner {
                 self?.adopt(kept, for: recipe)
                 Self.recipesChanged([kept.source.path], by: self)
             } else {
-                self?.message = "The edits could not be saved. Check that the disk has space."
+                self?.message = "The edits could not be saved: the file is no longer there, or the disk is full."
             }
             // The look thumbnails show the photo as it is now.
             if self?.tab == .adjust { self?.renderLooks() }
@@ -423,7 +429,7 @@ final class EditModel: MediaGridOwner {
                 self.adopt(kept, for: recipe)
                 Self.recipesChanged([kept.source.path], by: self)
             } else {
-                self.message = "The edits could not be saved. Check that the disk has space."
+                self.message = "The edits could not be saved: the file is no longer there, or the disk is full."
             }
             let edited = await AppModel.shared.recipes.editedPaths()
             self.editedPaths = edited
@@ -681,7 +687,9 @@ final class EditModel: MediaGridOwner {
     nonisolated static func editable(_ files: [URL]) -> [URL] {
         files.filter { url in
             guard let kind = MediaFormat.fromExtension(url.pathExtension)?.kind else { return false }
+            // MKV and WebM: the system cannot read them, so they are not offered (audit 2026-11-21-8, C8-5).
             return [.image, .video, .audio].contains(kind) && !MediaFormat.isSequenceExtension(url.pathExtension)
+                && !["mkv", "webm"].contains(url.pathExtension.lowercased())
         }
     }
 }

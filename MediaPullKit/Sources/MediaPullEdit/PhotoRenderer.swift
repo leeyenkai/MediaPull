@@ -57,13 +57,17 @@ public enum PhotoRenderer {
         guard extent.width > 0, extent.height > 0 else { return image }
         let scale = min(1, min(size.width / extent.width, size.height / extent.height))
         guard scale < 1 else { return image }
+        // Scaled from the picture with its edges carried outward, so the border pixels are never mixed with nothing (which
+        // left PNG and HEIC exports see-through at their edges, audit 2026-11-21-8, B8-6).
         let filter = CIFilter.lanczosScaleTransform()
-        filter.inputImage = image
+        filter.inputImage = image.clampedToExtent()
         filter.scale = Float(scale)
         filter.aspectRatio = 1
         guard let out = filter.outputImage else { return image }
-        return out.transformed(by: CGAffineTransform(translationX: -out.extent.minX, y: -out.extent.minY))
-            .cropped(to: CGRect(x: 0, y: 0, width: (extent.width * scale).rounded(), height: (extent.height * scale).rounded()))
+        let size = CGSize(width: (extent.width * scale).rounded(), height: (extent.height * scale).rounded())
+        return out.cropped(to: CGRect(origin: CGPoint(x: extent.minX * scale, y: extent.minY * scale), size: size))
+            .transformed(by: CGAffineTransform(translationX: -extent.minX * scale, y: -extent.minY * scale))
+            .cropped(to: CGRect(origin: .zero, size: size))
     }
 
     /// Renders to a bitmap in sRGB (or Display P3), 8 bits per channel.

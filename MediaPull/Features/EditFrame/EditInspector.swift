@@ -136,7 +136,14 @@ private struct CropTab: View {
             .controlSize(.small)
             HStack {
                 Button {
-                    edit.change { $0.geometry.flipped.toggle() }
+                    // The crop mirrors with the picture, so the same part stays cropped (audit 2026-11-21-8, B8-5).
+                    edit.change { recipe in
+                        recipe.geometry.flipped.toggle()
+                        if var crop = recipe.geometry.crop {
+                            crop.x = 1 - crop.x - crop.width
+                            recipe.geometry.crop = crop
+                        }
+                    }
                 } label: { Label("Flip", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right") }
                 Button("Reset Crop") { edit.change { $0.geometry = EditGeometry() } }
                     .disabled(edit.recipe?.geometry == EditGeometry())
@@ -384,7 +391,10 @@ private struct TextEditorFields: View {
             }
         }
         if !faces.isEmpty {
-            Picker("Style", selection: Binding(get: { style.face ?? faces.first ?? "" }, set: { style.face = $0 })) {
+            // With no face chosen, the face that is drawn (B8-7).
+            let drawn = LayerRenderer.drawnFace(style)
+            Picker("Style", selection: Binding(get: { style.face ?? drawn.flatMap { faces.contains($0) ? $0 : nil } ?? faces.first ?? "" },
+                                               set: { style.face = $0 })) {
                 ForEach(faces, id: \.self) { Text($0).tag($0) }
             }
         }

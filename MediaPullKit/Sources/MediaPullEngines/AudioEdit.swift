@@ -72,10 +72,11 @@ public struct AudioEditPlan: Sendable, Equatable {
         kept.isEmpty ? (sourceFormat?.duration ?? 0) : kept.reduce(0) { $0 + $1.end - $1.start }
     }
 
-    /// Whether a part ends at the file's end (within a frame), so it is cut without an end and runs to the true end.
+    /// Whether a part is the last and ends at the file's measured end, so it is cut without an end and runs to the true
+    /// end. Cuts use the measured length, so a part ending even 40 ms before it is cut there (audit 2026-11-21-8, C8-4).
     func reachesEnd(_ part: TimeRange) -> Bool {
-        guard let total = sourceFormat?.duration, total > 0 else { return false }
-        return part.end >= total - 0.05
+        guard let total = sourceFormat?.duration, total > 0, part == kept.last else { return false }
+        return part.end >= total - 0.002
     }
 
     var codec: String { sourceFormat?.codec?.lowercased() ?? "" }

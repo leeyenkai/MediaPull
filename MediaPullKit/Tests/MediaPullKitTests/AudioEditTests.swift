@@ -126,6 +126,17 @@ final class AudioEditTests: XCTestCase {
         XCTAssertEqual(AudioOutput.like("oga", codec: "flac"), .flac)
     }
 
+    func testTheLastFortyMillisecondsCanBeCut() {
+        // Only the last part ending at the measured end runs open; 40 ms before it is cut there (C8-4).
+        var cut = plan("a.flac", .flac, kept: [TimeRange(start: 0, end: 9.96)])
+        cut.sourceFormat = AudioSourceFormat(duration: 10, codec: "flac")
+        XCTAssertTrue(AudioEdit.filterGraph(cut).contains("end=9.960000"), AudioEdit.filterGraph(cut))
+        var two = plan("a.mp3", .mp3, kept: [TimeRange(start: 0, end: 9.97), TimeRange(start: 9.98, end: 10)])
+        two.sourceFormat = AudioSourceFormat(duration: 10, codec: "mp3")
+        XCTAssertTrue(AudioEdit.concatList(two).contains("outpoint 9.970000"))
+        XCTAssertFalse(AudioEdit.concatList(two).contains("outpoint 10.000000"))
+    }
+
     func testRoundThreeArguments() {
         func encoder(_ ext: String, _ format: AudioOutput, bits: Int, codec: String) -> String? {
             var made = plan(ext, format)

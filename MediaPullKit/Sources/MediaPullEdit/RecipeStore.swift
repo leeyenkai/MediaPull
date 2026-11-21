@@ -157,18 +157,27 @@ public actor RecipeStore {
     public func store(_ recipe: EditRecipe) -> EditRecipe? {
         load()
         var recipe = recipe
+        // A recipe merged into its file's one recipe is known by that one's id from then on (B8-2).
+        if let merged = merged[recipe.id] { recipe.id = merged }
         if let stored = byID[recipe.id] {
             recipe.source = stored.source
         } else {
             let path = Self.key(recipe.source.path)
             if let existing = belonging(at: path) {
+                merged[recipe.id] = existing.id
                 recipe.id = existing.id
                 recipe.source = existing.source
             } else {
+                // Only for a file that is there (a stale entry is refused, B8-3), and only the file it was made for: a
+                // newcomer at its name after a Finder rename never takes it (B8-1); its own reference then follows it.
+                guard FileManager.default.fileExists(atPath: path) else { return nil }
                 recipe.source.path = path
-                if FileManager.default.fileExists(atPath: path) {
+                if Self.belongs(recipe, to: path) {
                     recipe.source.reference = Self.reference(path) ?? recipe.source.reference
                     recipe.source.created = Self.created(path) ?? recipe.source.created
+                } else if let moved = relocated(recipe) {
+                    // Its file was renamed in the Finder since it was opened: kept where that file is now.
+                    recipe.source.path = moved
                 }
             }
         }
@@ -176,6 +185,14 @@ public actor RecipeStore {
         byID[recipe.id] = recipe
         resolved[recipe.id] = nil
         return write(recipe) ? recipe : nil
+    }
+
+    /// Ids of recipes merged into another (two windows, one file), for an Undo that still names the first.
+    private var merged: [UUID: UUID] = [:]
+
+    /// Where a new recipe's own reference leads now, when its file has moved on.
+    private func relocated(_ recipe: EditRecipe) -> String? {
+        recipe.source.reference.flatMap(Self.resolve)
     }
 
     /// At quit: writes a recipe's edits at once, outside the actor (the app is about to end), under the file identity
@@ -186,8 +203,8 @@ public actor RecipeStore {
         recipe.modified = Date()
         if let data = try? Data(contentsOf: url), let stored = EditRecipe.decode(data) {
             recipe.source = stored.source
-        } else if FileManager.default.fileExists(atPath: recipe.source.path) {
-            // First kept at quit: the file as it is now (B7-1).
+        } else if FileManager.default.fileExists(atPath: recipe.source.path), Self.belongs(recipe, to: recipe.source.path) {
+            // First kept at quit: the file as it is now (B7-1), only if it is still the one it was made for (B8-1).
             recipe.source.created = Self.created(recipe.source.path) ?? recipe.source.created
             recipe.source.reference = Self.reference(recipe.source.path) ?? recipe.source.reference
         }

@@ -334,6 +334,8 @@ public actor OperationJournal {
 
     func moveItem(_ from: URL, to: URL, entry: inout JournalEntry) throws {
         try fm.moveItem(at: from, to: to)
+        // A folder listed during this Undo or Redo has a new name in it now (audit 2026-11-21-8, A8-1).
+        listings[to.deletingLastPathComponent().path] = nil
         let values = try? to.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey])
         let isFolder = values?.isDirectory == true
         entry.steps.append(.move(from: from.path, to: to.path, size: isFolder ? nil : values?.fileSize.map(Int64.init),
@@ -656,6 +658,13 @@ public actor OperationJournal {
         let photo = URL(fileURLWithPath: lead), folder = photo.deletingLastPathComponent()
         let stem = photo.deletingPathExtension().lastPathComponent.lowercased()
         let near = listing(of: folder).filter { $0.lowercased().hasPrefix(stem) }
+        // Another photo of that name beside the copy owns the edit file: it is not the copy's (A8-5).
+        let another = near.contains { name in
+            name.lowercased() != photo.lastPathComponent.lowercased() && !Self.isEditFile(name) && !name.lowercased().hasSuffix(".json")
+                && (name as NSString).deletingPathExtension.lowercased() == stem
+                && !copied.contains(folder.appendingPathComponent(name).path)
+        }
+        guard !another else { return nil }
         // The photo's own name once: a name listed twice is taken as two files and the unit is not found.
         let names = Array(Set(near + [photo.lastPathComponent]))
         return MediaUnits.companions(ofLead: photo.lastPathComponent, in: names).first { name in
@@ -668,16 +677,23 @@ public actor OperationJournal {
     /// since, whoever saved them, and whether or not this change moved them itself; never while another photo of that
     /// name stays where they are (D-120 as amended, audit 2026-11-21-7, A7-1 to A7-3). Run once the photo's whole unit
     /// has moved. `moved` is where the photo was, `back` where it is now.
-    func carryEditFiles(of moved: URL, to back: URL, report: inout UndoReport) {
+    func carryEditFiles(of moved: URL, to back: URL, members: Set<String> = [], report: inout UndoReport) {
         let folder = moved.deletingLastPathComponent()
         let stem = moved.deletingPathExtension().lastPathComponent.lowercased()
         // Only names that start like the photo's, still there: one listing per folder for the whole Undo or Redo (A7-7).
         let near = listing(of: folder).filter { name in
             name.lowercased().hasPrefix(stem) && fm.fileExists(atPath: folder.appendingPathComponent(name).path)
         }
-        let companions = MediaUnits.companions(ofLead: moved.lastPathComponent, in: Array(Set(near + [moved.lastPathComponent])))
+        // The photo's own name once, in any case (a case-only rename leaves the other spelling listed, A8-6).
+        let named = near.contains { $0.lowercased() == moved.lastPathComponent.lowercased() } ? near : near + [moved.lastPathComponent]
+        let companions = MediaUnits.companions(ofLead: moved.lastPathComponent, in: named.map {
+            $0.lowercased() == moved.lastPathComponent.lowercased() ? moved.lastPathComponent : $0
+        })
+        // The unit's own members, moved with it (in another case, in a case-only rename), are not another photo.
         let staying = near.contains { name in
-            name.lowercased() != moved.lastPathComponent.lowercased() && !Self.isEditFile(name) && !name.lowercased().hasSuffix(".json")
+            !members.contains(folder.appendingPathComponent(name).path.lowercased())
+                && name.lowercased() != moved.lastPathComponent.lowercased() && !Self.isEditFile(name)
+                && !name.lowercased().hasSuffix(".json")
                 && (name as NSString).deletingPathExtension.lowercased() == stem
         }
         guard !staying else { return }
@@ -689,7 +705,8 @@ public actor OperationJournal {
             // name's case is put back, and a failure there loses nothing.
             if Self.sameFile(source.path, target.path) {
                 if source.lastPathComponent != target.lastPathComponent {
-                    try? fm.moveItem(at: source, to: target) // lint:allow silent-write the file is in place either way
+                    // rename(2) changes only the case where FileManager would find the name taken.
+                    _ = rename(source.path, target.path) // lint:allow silent-write the file is in place either way
                 }
                 continue
             }
@@ -699,6 +716,7 @@ public actor OperationJournal {
             }
             do {
                 try fm.moveItem(at: source, to: target)
+                listings[target.deletingLastPathComponent().path] = nil
                 report.moves.append((source.path, target.path))
             } catch {
                 report.skipped.append("\(name) was left where it is: \(error.localizedDescription)")
@@ -711,7 +729,28 @@ public actor OperationJournal {
         guard case let .move(from, to, _, _) = unit[0] else { return }
         let was = undoing ? to : from
         guard let now = report.moves.last(where: { $0.from == was })?.to else { return }
-        carryEditFiles(of: URL(fileURLWithPath: was), to: URL(fileURLWithPath: now), report: &report)
+        let sources = Set(unit.compactMap { step -> String? in
+            if case let .move(from, to, _, _) = step { undoing ? to : from } else { nil }
+        })
+        let members = Set(report.moves.filter { sources.contains($0.from) }.map { $0.to.lowercased() })
+        carryEditFiles(of: URL(fileURLWithPath: was), to: URL(fileURLWithPath: now), members: members, report: &report)
+    }
+
+    /// The files of a copied folder to keep: each changed or added file with its whole unit (its photo, members, edit
+    /// and metadata files), so Undo never splits one (R-4206, D-120, audit 2026-11-21-8, A8-2). Relative paths.
+    static func wholeUnits(of changed: [String], in folder: URL) -> Set<String> {
+        var keep = Set(changed)
+        let byFolder = Dictionary(grouping: changed.filter { !$0.isEmpty }, by: { ($0 as NSString).deletingLastPathComponent })
+        for (sub, paths) in byFolder {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent(sub).path)) ?? []
+            let wanted = Set(paths.map { ($0 as NSString).lastPathComponent })
+            for lead in names {
+                let unit = [lead] + MediaUnits.companions(ofLead: lead, in: names)
+                guard !wanted.isDisjoint(with: unit) else { continue }
+                keep.formUnion(unit.map { sub.isEmpty ? $0 : (sub as NSString).appendingPathComponent($0) })
+            }
+        }
+        return keep
     }
 
     /// Why a metadata step could not be written now but may be later: its file or its photo locked, or its drive locked
@@ -1207,6 +1246,7 @@ public actor OperationJournal {
             }
             do {
                 try fm.moveItem(at: dest, to: back)
+                listings[back.deletingLastPathComponent().path] = nil
                 if !companion, !Self.isTemporary(back.path) { report.restored += 1 }
                 report.done += 1
                 report.moves.append((to, back.path))
@@ -1245,7 +1285,7 @@ public actor OperationJournal {
             }
             // A copied folder: unchanged files go to the Trash, the rest stay where they are.
             if (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                let changedSet = Set(changed)
+                let changedSet = Self.wholeUnits(of: changed, in: target)
                 for stamp in recorded where !stamp.path.isEmpty && !changedSet.contains(stamp.path) {
                     let file = target.appendingPathComponent(stamp.path)
                     if fm.fileExists(atPath: file.path), (try? fm.trashItem(at: file, resultingItemURL: nil)) != nil {

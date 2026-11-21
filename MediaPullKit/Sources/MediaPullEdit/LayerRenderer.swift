@@ -67,6 +67,11 @@ public enum LayerRenderer {
         return (CTFontCreateCopyWithAttributes(font, pointSize, nil, nil), !found)
     }
 
+    /// The name of the face a text layer is drawn in (its own, or the family's regular one when it names none).
+    public static func drawnFace(_ style: TextStyle) -> String? {
+        CTFontCopyName(font(style, canvasHeight: 100).font, kCTFontStyleNameKey) as String?
+    }
+
     public static func attributed(_ style: TextStyle, canvasHeight: CGFloat) -> NSAttributedString {
         let font = font(style, canvasHeight: canvasHeight).font
         let size = CTFontGetSize(font)

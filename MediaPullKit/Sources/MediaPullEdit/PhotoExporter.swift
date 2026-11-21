@@ -37,10 +37,29 @@ public enum PhotoExporter {
         return image
     }
 
+    static func hasAlpha(_ url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil)
+              as? [CFString: Any]
+        else { return false }
+        return properties[kCGImagePropertyHasAlpha] as? Bool ?? false
+    }
+
+    /// The image drawn without an alpha channel, in its own colour space.
+    static func opaqueCopy(_ image: CGImage) -> CGImage? {
+        guard let space = image.colorSpace,
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
+    }
+
     /// Writes the result to `output` (a new file the caller places), with the source's metadata as the export settings
     /// allow, upright.
     public static func export(_ source: URL, recipe: EditRecipe, to output: URL) throws -> CGSize {
-        let image = try rendered(source, recipe: recipe)
+        var image = try rendered(source, recipe: recipe)
+        // A photo with no transparency is written without an alpha channel, as it came (B8-6); a transparent PNG keeps it.
+        if !hasAlpha(source), let opaque = opaqueCopy(image) { image = opaque }
         let settings = recipe.export
         let type: UTType = switch settings.format {
         case .jpeg: .jpeg

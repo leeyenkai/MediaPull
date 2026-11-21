@@ -712,6 +712,12 @@ final class AnalysisService {
 
     /// Keeps results pointing at files that moved (R-3804).
     func noteMoves(_ moves: [(from: String, to: String)]) async {
+        // `.xmp` values are keyed by path and date: a file moved onto another's path (a swap rename, a FAT drive's
+        // two-second dates) must be read again (audit 2026-11-21-8).
+        for move in moves {
+            xmpCache[move.from] = nil
+            xmpCache[move.to] = nil
+        }
         guard let store else {
             waitingMoves += moves
             return

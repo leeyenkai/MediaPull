@@ -513,7 +513,7 @@ public struct TimeRange: Codable, Sendable, Hashable {
 
 // MARK: Audio (R-4610)
 
-/// Tag changes for an audio export: nil leaves a tag as it is, an empty text removes it.
+/// Tag changes for an audio export: nil, an empty text or only spaces leave a tag as it is; a text replaces it.
 public struct AudioTagEdit: Codable, Sendable, Hashable {
     public var title: String?
     public var artist: String?

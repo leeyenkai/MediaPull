@@ -69,9 +69,16 @@ public enum AnalysisSchemaV1: VersionedSchema {
         public var personID: UUID?
         public var pinned: Bool
         public var rejected: [UUID]
-        /// When its person, pin or rejections last changed: faces of one content shared by several files (a photo and its
-        /// copy, or an edit written back to bytes held before) take the newest (D-126, audit 2026-11-21-7, A7-5).
+        /// When the person last corrected it (merge, split, Not This Person): faces of one content shared by several files
+        /// (a photo and its copy, or an edit written back to bytes held before) take the newest correction. Regrouping
+        /// never sets it, so it never outranks a person (D-126, audit 2026-11-21-7, A7-5; round 8, A8-3).
         public var changed: Date?
+
+        /// How a face ranks when two files' faces meet: its correction's date; one corrected before dates were kept
+        /// (pinned or with rejections) above one never corrected (A8-4).
+        var correctionRank: Date {
+            changed ?? (pinned || !rejected.isEmpty ? Date.distantPast.addingTimeInterval(1) : .distantPast)
+        }
 
         public init(key: String, sha256: String, vectorRow: Int, quality: Float, pixelSize: Double) {
             self.key = key
@@ -399,7 +406,7 @@ public actor AnalysisStore {
                 // The content is held already (by a copy, or by bytes an edit, Undo or Redo writes again): one content has
                 // one set of faces, and the newest change to them wins, whichever file it was made in (A4-2, A5-2, A6-3,
                 // A7-5).
-                if (face.changed ?? .distantPast) > (held.changed ?? .distantPast) {
+                if face.correctionRank > held.correctionRank {
                     held.personID = face.personID
                     held.pinned = face.pinned
                     held.rejected = face.rejected
@@ -515,13 +522,11 @@ public actor AnalysisStore {
         var next = (((try? modelContext.fetch(FetchDescriptor<PersonModel>())) ?? []).map(\.number).max() ?? 0) + 1
         var newCounts: [UUID: Int] = [:]
         var successors: [UUID: Set<UUID>] = [:]
-        let now = Date()
         for face in faces {
             guard let assigned = assignments[face.key] else { continue }
             if let old = face.personID, let id = assigned {
                 successors[old, default: []].insert(id)
             }
-            if face.personID != assigned { face.changed = now }
             face.personID = assigned
             if let id = assigned, !known.contains(id) {
                 newCounts[id, default: 0] += 1

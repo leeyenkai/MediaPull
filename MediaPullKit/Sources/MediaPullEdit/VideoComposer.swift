@@ -83,8 +83,8 @@ public enum VideoComposer {
             ? composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) : nil
         // Each track only where it has media: the file's length is its longest track, and a picture that ends before the
         // sound (or starts after it) has no frames there (audit 2026-11-21-3, C3-1).
-        let videoRange = try await video.load(.timeRange)
-        let audioRange = try await audio?.load(.timeRange)
+        let videoRange = await mediaRange(of: video)
+        let audioRange: CMTimeRange? = if let audio { await mediaRange(of: audio) } else { nil }
         /// Where the inserted part lies on the composition's timeline, or nil when the track has nothing there.
         func insert(_ part: CMTimeRange, of source: AVAssetTrack, within range: CMTimeRange, into track: AVMutableCompositionTrack,
                     at cursor: CMTime) throws -> CMTimeRange?
@@ -236,6 +236,15 @@ public enum VideoComposer {
         return kept
     }
 
+    /// Where a track has media: its time range without the empty edits a file stores a late start as (a track's own
+    /// `timeRange` counts them; audit 2026-11-21-8, C8-1, C8-2).
+    static func mediaRange(of track: AVAssetTrack) async -> CMTimeRange {
+        let whole = (try? await track.load(.timeRange)) ?? .zero
+        let filled = ((try? await track.load(.segments)) ?? []).filter { !$0.isEmpty }.map(\.timeMapping.target)
+        guard let first = filled.first else { return whole }
+        return filled.dropFirst().reduce(first) { $0.union($1) }
+    }
+
     /// A player item for the canvas: the result as it will be exported.
     @MainActor
     public static func playerItem(_ asset: AVURLAsset, recipe: EditRecipe) async throws -> AVPlayerItem {
@@ -322,10 +331,12 @@ public enum VideoComposer {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
         // Past the picture's end (the sound goes on), the last picture is the one shown, so it is the one saved (C5-3).
+        // Before a picture that starts late, its first picture (C8-3).
         var time = seconds
-        if let track = try? await asset.loadTracks(withMediaType: .video).first, let range = try? await track.load(.timeRange) {
+        if let track = try? await asset.loadTracks(withMediaType: .video).first {
+            let range = await mediaRange(of: track)
             let rate = Double((try? await track.load(.nominalFrameRate)) ?? 30)
-            time = min(time, range.end.seconds - 1 / max(rate, 1))
+            time = max(range.start.seconds, min(time, range.end.seconds - 1 / max(rate, 1)))
         }
         return try? await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image
     }

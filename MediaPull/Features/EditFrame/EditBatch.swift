@@ -56,24 +56,36 @@ extension EditModel {
         flushSave()
         Task { [weak self] in
             var before: [(path: String, recipe: EditRecipe?)] = []
+            var failed: [String] = []
             for file in files {
                 let kind = MediaFormat.fromExtension(file.pathExtension)?.kind ?? .image
                 // A look, frame or layers mean nothing to audio.
                 guard kind != .audio else { continue }
                 let stored = await AppModel.shared.recipes.recipe(for: file)
-                before.append((file.standardizedFileURL.path, stored))
                 var recipe = stored ?? EditRecipe(source: EditSource(path: file.standardizedFileURL.path, kind: kind))
                 for group in SettingGroup.allCases where groups.contains(group) {
                     group.apply(from: source, to: &recipe)
                 }
-                await AppModel.shared.recipes.save(recipe)
+                // A file no longer there (renamed or deleted in the Finder) or a full disk is said, never counted
+                // (audit 2026-11-21-8, B8-3, B8-10).
+                guard await AppModel.shared.recipes.save(recipe) else {
+                    failed.append(file.lastPathComponent)
+                    continue
+                }
+                before.append((file.standardizedFileURL.path, stored))
             }
             guard let self else { return }
             registerBatchUndo(before, name: "Paste Settings")
             reloadCurrentRecipe()
             Self.recipesChanged(Set(before.map(\.path)), by: self)
-            message = before.isEmpty ? "These settings do not apply to audio."
-                : "Settings pasted onto \(before.count) file\(before.count == 1 ? "" : "s")."
+            if let first = failed.first {
+                message = "Settings pasted onto \(before.count) of \(before.count + failed.count) files; “\(first)” "
+                    + "is no longer there or the disk is full."
+                filesChanged()
+            } else {
+                message = before.isEmpty ? "These settings do not apply to audio."
+                    : "Settings pasted onto \(before.count) file\(before.count == 1 ? "" : "s")."
+            }
         }
     }
 
@@ -132,6 +144,8 @@ extension EditModel {
                 self.current = URL(fileURLWithPath: stored.source.path)
             }
             recipe = stored ?? Self.newRecipe(for: current, kind: kind)
+            // A drag under way counts from what is shown now, so its ⌘Z never takes back another window's change (B8-9).
+            restartGesture()
             editedPaths = edited
             revision += 1
             render()

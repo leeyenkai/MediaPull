@@ -351,6 +351,54 @@ final class VideoEditTests: XCTestCase {
         let encodedFacts = try await facts(encoded)
         XCTAssertFalse(encodedFacts.audio)
     }
+
+    // MARK: Audit round 8
+
+    /// The 4 s clip with its picture starting 1 s after its sound, stored as an empty edit as MP4 and MOV store it.
+    func latePicture() async throws -> URL {
+        let source = AVURLAsset(url: try await clip())
+        let composition = AVMutableComposition()
+        let range = CMTimeRange(start: .zero, duration: CMTime(seconds: 4, preferredTimescale: 600))
+        let video = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try video.insertTimeRange(range, of: try await source.loadTracks(withMediaType: .video)[0],
+                                  at: CMTime(seconds: 1, preferredTimescale: 600))
+        let audio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try audio.insertTimeRange(range, of: try await source.loadTracks(withMediaType: .audio)[0], at: .zero)
+        let output = folder.appendingPathComponent("late-\(UUID().uuidString).mov")
+        let session = try XCTUnwrap(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough))
+        try await session.export(to: output, as: .mov)
+        return output
+    }
+
+    func testALatePictureIsKnownByItsMedia() async throws {
+        let late = try await latePicture()
+        let track = try await AVURLAsset(url: late).loadTracks(withMediaType: .video)[0]
+        let media = await VideoComposer.mediaRange(of: track)
+        XCTAssertEqual(media.start.seconds, 1, accuracy: 0.05, "the empty edit is not media (C8-1)")
+        // It opens: a still before the picture starts is its first picture (C8-3).
+        let still = await VideoComposer.frame(late, at: 0.5)
+        XCTAssertNotNil(still)
+        // Parts kept only before the picture are refused with that reason (C8-2).
+        var edit = recipe(late)
+        var time = EditTimeline()
+        time.kept = [TimeRange(start: 0.2, end: 0.8)]
+        edit.timeline = time
+        do {
+            _ = try await VideoComposer.export(late, recipe: edit, to: folder.appendingPathComponent("none.mov")) { _ in }
+            XCTFail("written, though the part kept has no picture")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("no picture"), error.localizedDescription)
+        }
+        // A fade-in starts where the picture does (C8-1): dark just after it starts, bright later.
+        edit.timeline = { var fade = EditTimeline(); fade.fadeIn = 1; return fade }()
+        edit.adjust.exposure = 0.01
+        let faded = folder.appendingPathComponent("faded.mov")
+        _ = try await VideoComposer.export(late, recipe: edit, to: faded) { _ in }
+        let earlyFrame = await VideoComposer.frame(faded, at: 1.1)
+        let laterFrame = await VideoComposer.frame(faded, at: 2.5)
+        let early = try XCTUnwrap(earlyFrame), later = try XCTUnwrap(laterFrame)
+        XCTAssertLessThan(Double(pixel(early, 2, 2).b), Double(pixel(later, 2, 2).b) * 0.5)
+    }
 }
 
 /// The loudest sample from `start` seconds to the end of the file's sound.

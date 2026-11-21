@@ -67,9 +67,9 @@ final class Audit2026Round4Tests: XCTestCase {
         await store.save(AnalysisRecord(sha256: "B", facts: MediaFacts()))
         await store.addFaces([NewFace(key: "f1", vectorRow: 0, quality: 1, pixelSize: 100)], sha256: "A")
         await store.addFaces([NewFace(key: "f1", vectorRow: 1, quality: 1, pixelSize: 100)], sha256: "B")
-        let old = UUID(), named = UUID()
+        let old = UUID()
         _ = await store.applyAssignments(["B|f1": old])
-        _ = await store.applyAssignments(["A|f1": named])
+        let named = await store.split(faceKeys: ["A|f1"], from: old)
         _ = await store.rekey(from: "A", to: "B")
         let face = await store.faces().first { $0.key == "B|f1" }
         XCTAssertEqual(face?.personID, named)

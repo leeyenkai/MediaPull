@@ -91,8 +91,8 @@ final class Audit2026Round6Tests: XCTestCase {
         await store.setPath("/lib/Q.jpg", sha256: "S1", size: 1, modified: Date())
         _ = await store.rekey(from: "S1", to: "S2")
         await store.setPath("/lib/P.jpg", sha256: "S2", size: 2, modified: Date())
-        let alice = UUID()
-        _ = await store.applyAssignments(["S2|f1": alice])
+        // Named by the person (a correction, never regrouping).
+        let alice = await store.split(faceKeys: ["S2|f1"], from: UUID())
         _ = await store.rekey(from: "S2", to: "S1")
         await store.setPath("/lib/P.jpg", sha256: "S1", size: 1, modified: Date())
         _ = await store.rekey(from: "S1", to: "S2")
@@ -109,8 +109,8 @@ final class Audit2026Round6Tests: XCTestCase {
         _ = await store.rekey(from: "S1", to: "S2")
         await store.setPath("/lib/P.jpg", sha256: "S2", size: 2, modified: Date())
         await store.setPath("/lib/Q.jpg", sha256: "S2", size: 2, modified: Date())
-        let alice = UUID()
-        _ = await store.applyAssignments(["S2|f1": alice])
+        // Named by the person (a correction, never regrouping).
+        let alice = await store.split(faceKeys: ["S2|f1"], from: UUID())
         _ = await store.rekey(from: "S2", to: "S1")
         let face = await store.faces().first { $0.key == "S1|f1" }
         XCTAssertEqual(face?.personID, alice)

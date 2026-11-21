@@ -133,8 +133,8 @@ final class Audit2026Round7MetadataTests: XCTestCase {
         await store.setPath("/lib/P.jpg", sha256: "S2", size: 2, modified: Date())
         // Copied elsewhere (Organise copy, a backup drive): Q holds S2.
         await store.setPath("/backup/P.jpg", sha256: "S2", size: 2, modified: Date())
-        let alice = UUID()
-        _ = await store.applyAssignments(["S2|f1": alice])
+        // Named by the person (a correction, never regrouping).
+        let alice = await store.split(faceKeys: ["S2|f1"], from: UUID())
         // Undo of the rating on P: S2 -> S1, before a scan pruned S1.
         _ = await store.rekey(from: "S2", to: "S1")
         await store.setPath("/lib/P.jpg", sha256: "S1", size: 1, modified: Date())
