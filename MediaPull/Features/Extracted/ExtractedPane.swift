@@ -41,17 +41,23 @@ struct ExtractedHeader: View {
                 Spacer(minLength: 4)
                 // Wide panes show every action; narrow ones keep sort and filters and fold the rest into a menu.
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
+                    // Grouped (D-132): view | finding and order | page actions | clear.
+                    HStack(spacing: 4) {
                         ViewModePicker(model: model, pane: .extracted)
+                        groupDivider
                         extractionButton
                         sortMenu
+                        groupDivider
                         scrollButton
                         rescanButton
+                        videoButton
                         pdfMenu
+                        groupDivider
                         clearButton
                     }
-                    HStack(spacing: 8) {
+                    HStack(spacing: 4) {
                         ViewModePicker(model: model, pane: .extracted)
+                        groupDivider
                         extractionButton
                         sortMenu
                         overflowMenu
@@ -67,7 +73,7 @@ struct ExtractedHeader: View {
     }
 
     private var sortMenu: some View {
-        Menu {
+        QuietIconMenu(title: "Sort and Zoom", symbol: "arrow.up.arrow.down", help: "Sort and zoom") {
             Picker("Sort", selection: $model.filter.sort) {
                 ForEach(SortOrder.allCases, id: \.self) { order in
                     Text(order.label).tag(order)
@@ -78,36 +84,40 @@ struct ExtractedHeader: View {
             Divider()
             Button("Zoom In") { model.cellSize = min(WindowModel.zoomRange.upperBound, model.cellSize + 40) }
             Button("Zoom Out") { model.cellSize = max(WindowModel.zoomRange.lowerBound, model.cellSize - 40) }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Sort and zoom")
     }
 
     /// Finding media on pages can be paused, for example while signing in.
     private var extractionButton: some View {
-        Button { model.extractionEnabled.toggle() } label: {
-            Image(systemName: model.extractionEnabled ? "pause.circle" : "play.circle.fill")
+        // Paused is a state the person must notice, so its icon is drawn strongly.
+        QuietIconButton(title: model.extractionEnabled ? "Pause Finding Media" : "Find Media Again",
+                        symbol: model.extractionEnabled ? "pause.circle" : "play.circle.fill",
+                        help: model.extractionEnabled ? "Pause finding media on pages" : "Paused. Click to find media on pages again.",
+                        emphasised: !model.extractionEnabled) { model.extractionEnabled.toggle() }
+    }
+
+    private var groupDivider: some View {
+        Rectangle().fill(.separator).frame(width: 1, height: 14).padding(.horizontal, 2)
+    }
+
+    private var videoButton: some View {
+        QuietIconButton(title: "Save Video from This Page", symbol: "film", help: "Save the video on this page (opens Downloads)") {
+            model.showDownloads(video: true)
         }
-        .buttonStyle(.borderless)
-        .help(model.extractionEnabled ? "Pause finding media on pages" : "Paused. Click to find media on pages again.")
+        .disabled(model.browser.url == nil)
     }
 
     private var scrollButton: some View {
-        Button { model.toggleAutoScroll() } label: {
-            Image(systemName: model.autoScrolling ? "stop.circle" : "arrow.down.to.line.compact")
-        }
-        .buttonStyle(.borderless)
-        .help(model.autoScrolling ? "Stop scrolling" : "Scroll the page to the end so lazy-loaded media appears")
+        QuietIconButton(title: model.autoScrolling ? "Stop Scrolling" : "Scroll to End of Page",
+                        symbol: model.autoScrolling ? "stop.circle" : "arrow.down.to.line.compact",
+                        help: model.autoScrolling ? "Stop scrolling" : "Scroll the page to the end so lazy-loaded media appears",
+                        emphasised: model.autoScrolling) { model.toggleAutoScroll() }
     }
 
     private var rescanButton: some View {
-        Button { model.browser.rescan() } label: { Image(systemName: "arrow.triangle.2.circlepath") }
-            .accessibilityLabel("Look for Media Again")
-            .buttonStyle(.borderless)
-            .help("Look for media on the page again")
+        QuietIconButton(title: "Look for Media Again", symbol: "arrow.triangle.2.circlepath", help: "Look for media on the page again") {
+            model.browser.rescan()
+        }
     }
 
     @ViewBuilder
@@ -122,21 +132,19 @@ struct ExtractedHeader: View {
     }
 
     private var pdfMenu: some View {
-        Menu { pdfCommands } label: { Image(systemName: "doc.richtext") }.accessibilityLabel("Images in PDFs")
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Extract the images inside a PDF. You can also drop PDF files here.")
+        QuietIconMenu(title: "Images in PDFs", symbol: "doc.richtext",
+                      help: "Extract the images inside a PDF. You can also drop PDF files here.") {
+            pdfCommands
+        }
     }
 
     private var clearButton: some View {
-        Button { model.clear() } label: { Image(systemName: "trash") }.accessibilityLabel("Clear Extracted Media")
-            .buttonStyle(.borderless)
-            .help("Clear extracted media (⌘K)")
+        QuietIconButton(title: "Clear Extracted Media", symbol: "trash", help: "Clear extracted media (⌘K)") { model.clear() }
             .disabled(model.items.isEmpty)
     }
 
     private var overflowMenu: some View {
-        Menu {
+        QuietIconMenu(title: "More", symbol: "ellipsis.circle", help: "More actions") {
             Button(model.autoScrolling ? "Stop Scrolling" : "Scroll to End of Page") { model.toggleAutoScroll() }
             Button("Look for Media Again") { model.browser.rescan() }
             Button("Save Video from This Page…") { model.showDownloads(video: true) }
@@ -146,13 +154,7 @@ struct ExtractedHeader: View {
             Divider()
             Button("Clear Extracted Media") { model.clear() }
                 .disabled(model.items.isEmpty)
-        } label: {
-            Image(systemName: "ellipsis.circle")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("More actions")
     }
 
     static func downloadTitle(_ draft: PullDraft?, name: String) -> String {
@@ -318,55 +320,27 @@ struct QuickFilterBar: View {
     static let stops = [0, 100, 200, 300, 400, 500, 640, 800, 1000, 1200, 1500, 1920, 2400, 3000, 4000]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ChipToggle(title: "All", isOn: Binding(get: { model.filter.kinds.isEmpty }, set: { _ in model.filter.kinds = [] }))
-                        kindChip("Images", [.image])
-                        kindChip("Animated", [.animatedImage])
-                        kindChip("Videos", [.video, .stream])
-                        kindChip("Audio", [.audio])
-                        kindChip("SVG", [.vector])
-                        Divider().frame(height: 14)
-                        ChipToggle(title: "This Page", isOn: $model.filter.currentPageOnly)
-                            .help("Only media from the page in the current tab")
-                    }
-                }
-                .scrollClipDisabled(false)
-                Button {
-                    model.showFilters.toggle()
-                } label: {
-                    ViewThatFits(in: .horizontal) {
-                        Label(model.showFilters ? "Fewer Filters" : "More Filters", systemImage: "slider.horizontal.3")
-                            .fixedSize()
-                        Image(systemName: "slider.horizontal.3")
-                    }
-                }
-                .buttonStyle(.borderless)
-                .layoutPriority(1)
-                .help("All filters: format, file size, shape, source, domain and more (⌘F)")
-            }
+        // One row when the pane is wide enough for the chips and the size together (D-132), two rows otherwise.
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                Image(systemName: "photo").font(.caption).foregroundStyle(.secondary)
-                Slider(value: sliderIndex, in: 0 ... Double(Self.stops.count - 1), step: 1)
-                    .controlSize(.small)
-                    .frame(minWidth: 70)
-                    .help("Hides media smaller than this on its longest side")
-                Image(systemName: "photo").font(.body).foregroundStyle(.secondary)
-                Text(label)
-                    .font(.caption.monospacedDigit())
-                    .lineLimit(1)
-                    .fixedSize()
-                    .frame(minWidth: 64, alignment: .leading)
-                Spacer(minLength: 0)
-                // The count gives way first when the pane is narrow.
-                Text("\(model.visible.count) of \(model.items.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .layoutPriority(-1)
+                chips.fixedSize()
+                Spacer(minLength: 8)
+                sizeControl.frame(maxWidth: 260)
+                count.fixedSize()
+                filtersButton
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    ScrollView(.horizontal, showsIndicators: false) { chips }
+                        .scrollClipDisabled(false)
+                    filtersButton
+                }
+                HStack(spacing: 8) {
+                    sizeControl
+                    Spacer(minLength: 0)
+                    // The count gives way first when the pane is narrow.
+                    count.layoutPriority(-1)
+                }
             }
         }
         .font(.callout)
@@ -375,6 +349,60 @@ struct QuickFilterBar: View {
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipped()
+    }
+
+    private var chips: some View {
+        HStack(spacing: 5) {
+            ChipToggle(title: "All", isOn: Binding(get: { model.filter.kinds.isEmpty }, set: { _ in model.filter.kinds = [] }))
+            kindChip("Images", [.image])
+            kindChip("Animated", [.animatedImage])
+            kindChip("Videos", [.video, .stream])
+            kindChip("Audio", [.audio])
+            kindChip("SVG", [.vector])
+            Divider().frame(height: 14)
+            ChipToggle(title: "This Page", isOn: $model.filter.currentPageOnly)
+                .help("Only media from the page in the current tab")
+        }
+    }
+
+    private var filtersButton: some View {
+        Button {
+            model.showFilters.toggle()
+        } label: {
+            ViewThatFits(in: .horizontal) {
+                Label(model.showFilters ? "Fewer Filters" : "More Filters", systemImage: "slider.horizontal.3")
+                    .fixedSize()
+                Image(systemName: "slider.horizontal.3")
+            }
+        }
+        .buttonStyle(.borderless)
+        .layoutPriority(1)
+        .help("All filters: format, file size, shape, source, domain and more (⌘F)")
+    }
+
+    private var sizeControl: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "photo").font(.caption).foregroundStyle(.secondary)
+            Slider(value: sliderIndex, in: 0 ... Double(Self.stops.count - 1), step: 1)
+                .controlSize(.small)
+                .frame(minWidth: 70)
+                .help("Hides media smaller than this on its longest side")
+                .accessibilityLabel("Smallest size")
+            Image(systemName: "photo").font(.body).foregroundStyle(.secondary)
+            Text(label)
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: 64, alignment: .leading)
+        }
+    }
+
+    private var count: some View {
+        Text("\(model.visible.count) of \(model.items.count)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.head)
     }
 
     private func kindChip(_ title: String, _ kinds: Set<MediaKind>) -> some View {
@@ -412,21 +440,17 @@ struct ZoomSlider: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Button { size = max(WindowModel.zoomRange.lowerBound, size - 40) } label: {
-                Image(systemName: "square.grid.3x3").font(.system(size: 10))
+            QuietIconButton(title: "Zoom Out", symbol: "square.grid.3x3", help: "Zoom out: more items", size: 10) {
+                size = max(WindowModel.zoomRange.lowerBound, size - 40)
             }
-            .help("Zoom out: more items")
             Slider(value: $size, in: WindowModel.zoomRange)
                 .controlSize(.mini)
                 .frame(width: 96)
                 .help("Thumbnail size")
                 .accessibilityLabel("Zoom")
-            Button { size = min(WindowModel.zoomRange.upperBound, size + 40) } label: {
-                Image(systemName: "square.grid.2x2").font(.system(size: 13))
+            QuietIconButton(title: "Zoom In", symbol: "square.grid.2x2", help: "Zoom in: larger items", size: 13) {
+                size = min(WindowModel.zoomRange.upperBound, size + 40)
             }
-            .help("Zoom in: larger items")
         }
-        .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
     }
 }

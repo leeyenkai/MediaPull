@@ -67,13 +67,32 @@ public final class PhotoSession: @unchecked Sendable {
     }
 
     /// Small previews of each look, for the look picker.
-    public func lookPreview(_ recipe: EditRecipe, look: LookName, edge: CGFloat) -> CGImage? {
+    public func lookPreview(_ recipe: EditRecipe, look: LookName?, edge: CGFloat) -> CGImage? {
         var styled = recipe
-        styled.look = Look(name: look)
+        styled.look = look.map { Look(name: $0) }
         styled.frame = nil
         styled.layers = []
         let small = PhotoRenderer.scaled(proxy, toFit: CGSize(width: edge * 2, height: edge * 2))
         return PhotoRenderer.cgImage(PhotoRenderer.render(small, recipe: styled, fit: CGSize(width: edge, height: edge)))
+    }
+
+    /// The pixel size Export writes for `recipe` (shown on the canvas and the Export bar, D-132). Worked out from the
+    /// proxy's extent, which Core Image gives without drawing, scaled to the photo's own size.
+    public func outputSize(_ recipe: EditRecipe) -> CGSize {
+        guard proxy.extent.width > 0 else { return .zero }
+        var plain = recipe
+        plain.layers = []
+        let extent = PhotoRenderer.render(proxy, recipe: plain).extent.size
+        let scale = size.width / proxy.extent.width
+        let full = CGSize(width: (extent.width * scale).rounded(), height: (extent.height * scale).rounded())
+        return recipe.export.size.pixels(for: full)
+    }
+
+    /// The pixel size of the crop on the photo itself, before any frame (shown while cropping).
+    public func cropPixels(_ geometry: EditGeometry) -> CGSize {
+        let turned = geometry.turnedSize(size)
+        let crop = geometry.crop ?? .whole
+        return CGSize(width: (turned.width * crop.width).rounded(), height: (turned.height * crop.height).rounded())
     }
 
     /// Width over height of the picture once turned and straightened (what the crop's shape is measured against).

@@ -33,14 +33,8 @@ struct TabStrip: View {
                     }
                 }
             }
-            Button { model.newTab() } label: {
-                Image(systemName: "plus")
-                    .frame(width: 26, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.borderless)
-            .help("New Tab (⌘T)")
-            .padding(.trailing, 6)
+            QuietIconButton(title: "New Tab", symbol: "plus", help: "New Tab (⌘T)") { model.newTab() }
+                .padding(.trailing, 6)
         }
         .frame(height: 30)
         .background(.bar)

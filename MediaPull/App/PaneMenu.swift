@@ -61,16 +61,11 @@ struct PaneMenu: View {
     var window: WindowModel
 
     var body: some View {
-        Menu {
+        // Arranging panes is rare, so its icon stays faint until the pointer is on it (D-132).
+        QuietIconMenu(title: "Arrange \(pane.title)", symbol: "rectangle.3.group", help: "Move, stack or hide this pane", faint: true) {
             PaneMoveCommands(pane: pane, window: window)
             Divider()
             Menu("Layout") { LayoutPresetCommands(group: pane.group) }
-        } label: {
-            Image(systemName: "rectangle.3.group").foregroundStyle(.secondary)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Move, stack or hide this pane")
     }
 }

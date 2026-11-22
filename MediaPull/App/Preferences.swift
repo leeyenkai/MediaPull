@@ -43,6 +43,10 @@ final class Preferences {
     var editFolder: String? { didSet { set(editFolder, "editFolder") } }
     /// Apple's downloadable fonts may be fetched (R-4607, D-129); off until the person allows it.
     var allowFontDownloads: Bool { didSet { set(allowFontDownloads, "allowFontDownloads") } }
+    /// Inspector sections the person folded (D-132), by name.
+    var foldedSections: Set<String> { didSet { set(foldedSections.sorted(), "foldedSections") } }
+    /// What Paste Settings carries (R-4611), by `SettingGroup` raw value.
+    var pasteGroups: Set<String> { didSet { set(pasteGroups.sorted(), "pasteGroups") } }
     var includeLivePhotoClips: Bool { didSet { set(includeLivePhotoClips, "includeLivePhotoClips") } }
     /// Automatic sorts put a whole post in one folder unless this is on (R-4208).
     var sortPostImagesIndividually: Bool { didSet { set(sortPostImagesIndividually, "sortPostImagesIndividually") } }
@@ -138,6 +142,8 @@ final class Preferences {
         deviceImportFolder = d.string(forKey: "deviceImportFolder")
         editFolder = d.string(forKey: "editFolder")
         allowFontDownloads = d.bool(forKey: "allowFontDownloads")
+        foldedSections = Set(d.stringArray(forKey: "foldedSections") ?? [])
+        pasteGroups = Set(d.stringArray(forKey: "pasteGroups") ?? ["look", "adjustments", "frame", "layers"])
         includeLivePhotoClips = d.bool(forKey: "includeLivePhotoClips")
         sortPostImagesIndividually = d.bool(forKey: "sortPostImagesIndividually")
         rememberHistory = d.object(forKey: "rememberHistory") as? Bool ?? true

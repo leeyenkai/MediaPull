@@ -119,6 +119,35 @@ extension EditModel {
         setKept(kept)
     }
 
+    /// Drags one end of a kept part on the timeline (D-132): it stays between its neighbours and the file's ends. One
+    /// change per drag, through `beginGesture` and `endGesture`.
+    func setPartEdge(index: Int, start: Bool, to seconds: Double) {
+        let moved = EditTimeline.moving(keptRanges, index: index, start: start, to: seconds, duration: mediaDuration)
+        guard moved != keptRanges else { return }
+        change { recipe in
+            var time = recipe.timeline ?? EditTimeline()
+            let whole = moved.count == 1 && moved[0].start <= 0.001 && abs(moved[0].end - mediaDuration) <= 0.001
+            // Kept as separate parts, as Split leaves them, so a part dragged up to its neighbour is still its own.
+            time.kept = whole ? [] : moved
+            recipe.timeline = time == EditTimeline() ? nil : time
+        }
+    }
+
+    /// Shows another frame of the video on the canvas, to judge the look and the frame on (D-132). Export is not changed.
+    func showStill(at seconds: Double) {
+        guard let current, kind == .video, mediaDuration > 0 else { return }
+        let time = max(0, min(seconds, mediaDuration - 0.05))
+        stillTime = time
+        stillTask?.cancel()
+        stillTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let image = await VideoComposer.frame(current, at: time)
+            guard let self, !Task.isCancelled, self.current == current, let image else { return }
+            replaceSession(PhotoSession(image: image, url: current))
+        }
+    }
+
     func resetCuts() {
         change { recipe in
             recipe.timeline?.kept = []

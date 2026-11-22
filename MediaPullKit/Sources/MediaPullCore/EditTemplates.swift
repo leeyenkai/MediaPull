@@ -45,12 +45,13 @@ public enum EditTemplate: String, CaseIterable, Sendable {
             recipe.layers = [Self.text("A day to remember", family: "Bradley Hand", face: "Bold", size: 0.035, color: Self.ink,
                                        alignment: .center, x: 0.5, y: 0.9, width: 0.8, height: 0.07)]
         case .poster:
-            // A tall poster: big type over the top of the photo, the title over its lower edge, a date and credits below.
+            // A tall poster: big type over the top of the photo, set in from its edge, the title over its lower edge, a date
+            // and credits below.
             frame.shape = .portrait23
             frame.fill = true
             (frame.top, frame.left, frame.right, frame.bottom) = (0.05, 0.05, 0.05, 0.36)
             var top = Self.text("First Name\nSecond Name", family: "Helvetica Neue", face: "Bold", size: 0.055,
-                                color: EditColor(red: 1, green: 1, blue: 1, alpha: 0.85), x: 0.36, y: 0.12, width: 0.6, height: 0.16)
+                                color: EditColor(red: 1, green: 1, blue: 1, alpha: 0.85), x: 0.385, y: 0.135, width: 0.6, height: 0.16)
             if case var .text(style) = top.kind {
                 style.lineHeight = 1.05
                 style.tracking = -0.02

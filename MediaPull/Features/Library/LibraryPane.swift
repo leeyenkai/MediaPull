@@ -14,7 +14,7 @@ struct LibraryPane: View {
             HStack {
                 Text("Library").font(.headline)
                 Spacer()
-                Menu {
+                QuietIconMenu(title: "Add or Create a Folder", symbol: "plus", help: "Add a library folder or create a new folder") {
                     Button("Add Folder…") { library.promptForRoot() }
                     if let folder = library.selectedFolder {
                         Button("New Folder in “\(folder.lastPathComponent)”") { library.newFolder(in: folder) }
@@ -24,12 +24,7 @@ struct LibraryPane: View {
                     Button("Refresh") { library.refreshTree() }
                     Divider()
                     DuplicateCommands(library: library)
-                } label: {
-                    Image(systemName: "plus")
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Add a library folder or create a new folder")
                 ViewModePicker(model: model, pane: .library)
                 PaneMenu(pane: .library, window: model)
             }
@@ -344,12 +339,6 @@ struct FolderContents: View {
                         .disabled(library.isUpdating(match.folder, account: match.account))
                         .help("Add what @\(match.account) posted that “\(match.folder.lastPathComponent)” doesn't have yet. "
                             + "Files you deleted from it stay deleted.")
-                }
-                if let folder = library.selectedFolder, !model.selection.isEmpty {
-                    Button("Save \(model.selection.count) Here") { app.save(model.selectedItems, from: model, to: folder) }
-                        .controlSize(.small)
-                        .buttonStyle(.borderedProminent)
-                        .help("Save the selected extracted items into this folder (⌘S)")
                 }
             }
             .padding(.horizontal, 12)

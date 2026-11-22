@@ -37,7 +37,7 @@ struct MainWindow: View {
                     .source: AnyView(BrowserPane(model: model)),
                     .extracted: AnyView(ExtractedPane(model: model)),
                     .preview: AnyView(PreviewPane(model: model)),
-                    .library: AnyView(LibraryPane(model: model, library: model.library)),
+                    .library: AnyView(LibraryPane(model: model, library: model.library).background(PaneSurface.list.color)),
                     .downloads: AnyView(DownloadsPane(model: model, downloads: model.downloads)),
                 ]
             )
@@ -49,9 +49,11 @@ struct MainWindow: View {
                     arrangement: app.preferences.organiseArrangement,
                     visible: model.organiseVisiblePanes,
                     panes: [
-                        .organiseSource: AnyView(OrganiseFolderPane(model: model, organise: model.organise, pane: model.organise.source)),
+                        .organiseSource: AnyView(OrganiseFolderPane(model: model, organise: model.organise, pane: model.organise.source)
+                            .background(PaneSurface.list.color)),
                         .organiseWork: AnyView(OrganiseWorkPane(model: model, organise: model.organise)),
-                        .organiseTarget: AnyView(OrganiseFolderPane(model: model, organise: model.organise, pane: model.organise.target)),
+                        .organiseTarget: AnyView(OrganiseFolderPane(model: model, organise: model.organise, pane: model.organise.target)
+                            .background(PaneSurface.list.color)),
                         .organiseMap: AnyView(OrganiseMapPane(model: model, organise: model.organise)),
                     ]
                 )
@@ -71,8 +73,8 @@ struct MainWindow: View {
                     arrangement: app.preferences.devicesArrangement,
                     visible: model.devicesVisiblePanes,
                     panes: [
-                        .devicesList: AnyView(DevicesListPane(model: model, devices: model.devices)),
-                        .devicesMedia: AnyView(DeviceMediaPane(model: model, devices: model.devices)),
+                        .devicesList: AnyView(DevicesListPane(model: model, devices: model.devices).background(PaneSurface.list.color)),
+                        .devicesMedia: AnyView(DeviceMediaPane(model: model, devices: model.devices).background(PaneSurface.list.color)),
                         .devicesImport: AnyView(DeviceImportPane(model: model, devices: model.devices)),
                     ]
                 )
@@ -150,9 +152,27 @@ struct MainWindow: View {
         }
         .sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.flexible)
-        if model.section == .devices || model.section == .edit {
+        if model.section == .devices {
             ToolbarItem(placement: .automatic) { activityButton }
                 .sharedBackgroundVisibility(.hidden)
+        } else if model.section == .edit {
+            ToolbarItem(placement: .automatic) {
+                // Undo and Redo of the open file's edits, as ⌘Z and ⇧⌘Z (R-704, D-132).
+                HStack(spacing: 2) {
+                    TopBarButton(title: "Undo", symbol: "arrow.uturn.backward") { model.edit.undo() }
+                        .disabled(!model.edit.canUndo)
+                        .help("Undo the last edit (⌘Z)")
+                    TopBarButton(title: "Redo", symbol: "arrow.uturn.forward") { model.edit.redo() }
+                        .disabled(!model.edit.canRedo)
+                        .help("Redo (⇧⌘Z)")
+                    activityButton
+                }
+                // Any step added, undone or redone (⌘Z too, or a file operation elsewhere) changes what these can do.
+                .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidCloseUndoGroup)) { _ in model.edit.undoTick += 1 }
+                .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidUndoChange)) { _ in model.edit.undoTick += 1 }
+                .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerDidRedoChange)) { _ in model.edit.undoTick += 1 }
+            }
+            .sharedBackgroundVisibility(.hidden)
         } else if model.section == .organise {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 2) {

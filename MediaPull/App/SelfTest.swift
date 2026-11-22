@@ -1581,6 +1581,11 @@ final class SelfTestRunner {
         })
         check(fonts.count >= 2 && edit.missingFonts.isEmpty, "the Poster template's fonts are on this Mac (\(fonts.sorted()))")
         edit.tab = .text
+        // The title chosen, so the screenshot shows its outline, handles and settings (D-132).
+        edit.selectedLayer = edit.recipe?.layers.first { layer in
+            if case let .text(style) = layer.kind { return style.text == "The Post" }
+            return false
+        }?.id
         try? await Task.sleep(for: .seconds(1))
         snapshot(to: out.appendingPathComponent("edit-frame.png"))
 

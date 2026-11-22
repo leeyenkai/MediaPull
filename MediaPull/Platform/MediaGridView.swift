@@ -513,6 +513,11 @@ final class MediaCellView: NSView {
             badge.layer?.shadowOffset = .zero
         }
         kindBadge.contentTintColor = .white
+        // A state badge sits on a dark disc, so it reads over any picture (D-132).
+        stateBadge.symbolConfiguration = .init(pointSize: 10.5, weight: .semibold)
+        stateBadge.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.5).cgColor
+        stateBadge.layer?.cornerRadius = 10
+        stateBadge.layer?.shadowOpacity = 0
         progressLayer.fillColor = nil
         progressLayer.strokeColor = AppTheme.currentAccent.cgColor
         progressLayer.lineWidth = 3

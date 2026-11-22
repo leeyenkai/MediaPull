@@ -14,7 +14,7 @@
 - **Download from hundreds of sites.** Instagram, YouTube, Bluesky, Pinterest, ArtStation, Imgur and the other sites gallery-dl and yt-dlp support, each with its own options.
 - **Search your photos** by what they show, the text in them, places and people. Everything runs on your Mac.
 - **Organise any folder** by date, event, subject, person, place, artist or album, in place or into a new folder. Undo with ⌘Z. Duplicates and look-alikes are marked in Organise too.
-- **Edit and frame photos, videos and audio.** The Edit/Frame section (⌃⌘4) has simple adjustments, looks, crops for 1:1, 4:5 and 9:16, and frames with a border or a blurred background. Add text in any Mac font (Apple's extra fonts download when you allow it), shapes and logos, or start from a template such as Gallery Border, Polaroid or Poster. Videos can be cut, turned, sped up, faded and framed; audio gets a waveform, cuts, fades, volume and tags, and exports as MP3, M4A, FLAC, WAV or AIFF. Your originals are never changed: edits are kept as a recipe you can reopen, and Export writes a new file.
+- **Edit and frame photos, videos and audio.** The Edit/Frame section (⌃⌘4) shows its tools as tabs beside the canvas, where you drag, resize and turn text directly. It has simple adjustments, looks, crops for 1:1, 4:5 and 9:16, and frames with a border or a blurred background. Add text in any Mac font (Apple's extra fonts download when you allow it), shapes and logos, or start from a template such as Gallery Border, Polaroid or Poster. Videos can be cut, turned, sped up, faded and framed; audio gets a waveform, cuts, fades, volume and tags, and exports as MP3, M4A, FLAC, WAV or AIFF. Your originals are never changed: edits are kept as a recipe you can reopen, and Export writes a new file.
 - **Bring in from phones, cameras and drives.** The Devices section (⌃⌘3) shows an iPhone or Android phone like a drive and copies only what is new. Drives and camera cards appear in Organise by themselves, ready to sort, with Eject.
 - **Map & Timeline.** In Organise, see where and when a folder's photos were taken, and select by place or date.
 - **Every format, kept as it is.** HEIC (including Fujifilm .hif), camera RAW, Live Photos and audio (MP3, M4A, FLAC, WAV, AIFF, Ogg) are listed, previewed and searched. A RAW and its JPEG, or a Live Photo's photo and clip, are one item that always moves together; your own files are never converted.
@@ -34,7 +34,7 @@
 | **Profile view** | **Devices** |
 | ![Profile view: a saved account with its highlights, pinned post and Reels, shown from a test folder](docs/images/profile.jpg) | ![Devices: a phone's photos and clips, and Import New](docs/images/devices.jpg) |
 
-![Edit/Frame: a photo framed with the Poster template, its text layers listed beside it](docs/images/edit-frame.jpg)
+![Edit/Frame: a photo framed with the Poster template, its title chosen on the canvas with its text settings beside it](docs/images/edit-frame.jpg)
 
 ## Install
 

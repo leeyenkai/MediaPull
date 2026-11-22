@@ -12,23 +12,6 @@ struct EditMediaPane: View {
         VStack(spacing: 0) {
             PaneHeader(title: "Media", pane: .editMedia, model: model) {
                 Button("Choose Folder…", action: chooseFolder).controlSize(.small)
-                Menu {
-                    Button("Copy Settings") { edit.copySettings() }.disabled(edit.recipe == nil)
-                    Menu("Paste Settings to Selected") {
-                        Button("All") { edit.pasteSettings(Set(SettingGroup.allCases), to: edit.selectedFiles) }
-                        ForEach(SettingGroup.allCases) { group in
-                            Button(group.label) { edit.pasteSettings([group], to: edit.selectedFiles) }
-                        }
-                    }
-                    .disabled(edit.copiedSettings == nil || edit.selectedFiles.isEmpty)
-                    Button("Export Selected") { edit.exportSelected() }.disabled(edit.selectedFiles.isEmpty || edit.exporting)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityLabel("More")
-                .help("Copy settings, paste them onto the selected files, or export them all")
             }
             Divider()
             if let folder = edit.folder {
@@ -37,14 +20,9 @@ struct EditMediaPane: View {
                     Text(folder.lastPathComponent).font(.caption).lineLimit(1).truncationMode(.middle)
                     Spacer()
                     if folder.deletingLastPathComponent().path != folder.path {
-                        Button {
+                        QuietIconButton(title: "Enclosing Folder", symbol: "chevron.up", help: "Show the enclosing folder") {
                             edit.show(folder: folder.deletingLastPathComponent())
-                        } label: {
-                            Image(systemName: "chevron.up")
                         }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Enclosing folder")
-                        .help("Show the enclosing folder")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -63,7 +41,12 @@ struct EditMediaPane: View {
                 Text("Choose a folder, or drag photos here.").font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            if edit.selectedFiles.count >= 2 || (edit.copiedSettings != nil && !edit.selectedFiles.isEmpty) {
+                Divider()
+                EditSelectionBar(edit: edit)
+            }
         }
+        .background(PaneSurface.list.color)
     }
 
     private func chooseFolder() {
@@ -77,15 +60,93 @@ struct EditMediaPane: View {
     }
 }
 
-/// The Canvas pane (R-4601): the file as edited, Before/After, the crop while cropping and the layers' boxes while
-/// placing text and shapes.
+/// Under the Media pane while files are selected (R-4611, D-132): Paste Settings, with what it carries, and Export
+/// Selected, on screen instead of in a menu.
+struct EditSelectionBar: View {
+    @Bindable var edit: EditModel
+    private var preferences: Preferences { AppModel.shared.preferences }
+
+    private var groups: Set<SettingGroup> { Set(SettingGroup.allCases.filter { preferences.pasteGroups.contains($0.rawValue) }) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(edit.selectedFiles.count) selected").font(.callout.weight(.semibold))
+                Spacer()
+                Button("Export Selected") { edit.exportSelected() }
+                    .controlSize(.small)
+                    .disabled(edit.exporting)
+                    .help("Export every selected file with the open file's export settings, as one job")
+            }
+            if let copied = edit.copiedSettings {
+                FlowLayout(spacing: 4) {
+                    ForEach(SettingGroup.allCases) { group in
+                        Toggle(group.label, isOn: Binding(
+                            get: { preferences.pasteGroups.contains(group.rawValue) },
+                            set: { on in
+                                if on {
+                                    preferences.pasteGroups.insert(group.rawValue)
+                                } else {
+                                    preferences.pasteGroups.remove(group.rawValue)
+                                }
+                            }
+                        ))
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                    }
+                }
+                HStack {
+                    Text("From “\(URL(fileURLWithPath: copied.source.path).lastPathComponent)”")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Button("Paste Settings") { edit.pasteSettings(groups, to: edit.selectedFiles) }
+                        .controlSize(.small)
+                        .disabled(groups.isEmpty)
+                        .help("Put the copied settings on the selected files (⌘Z takes them back)")
+                }
+            } else {
+                Text("Copy Settings, at the foot of the Inspector, copies a file's edits to paste onto these.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+    }
+}
+
+/// The Canvas pane (R-4601): the file as edited, Before/After, the crop while cropping and the layers on top. The file's
+/// name is in the title bar, so the header shows the size written, the zoom and Before (D-132).
 struct EditCanvasPane: View {
     @Bindable var model: WindowModel
     @Bindable var edit: EditModel
+    @FocusState private var focused: Bool
+
+    /// The edited picture is on the canvas (not a video's player). Read from `preview`, which views follow; the session
+    /// itself is not observed.
+    private var showsPicture: Bool {
+        edit.preview != nil && edit.loadError == nil && !(edit.kind == .video && (edit.tab == .trim || edit.playingResult))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            PaneHeader(title: edit.current?.lastPathComponent ?? "Canvas", pane: .editCanvas, model: model) {
+            PaneHeader(title: "Canvas", pane: .editCanvas, model: model) {
+                if showsPicture, let pixels = edit.outputPixels, pixels.width > 0, edit.kind == .image {
+                    Text("\(Int(pixels.width)) × \(Int(pixels.height))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .help("The size Export writes, in pixels")
+                }
+                if showsPicture {
+                    HStack(spacing: 2) {
+                        ForEach([1.0, 2.0, 4.0], id: \.self) { zoom in
+                            ValueChip(title: zoom == 1 ? "Fit" : "\(Int(zoom))×", selected: edit.zoom == zoom) { edit.zoom = zoom }
+                        }
+                    }
+                    .help("Zoom the canvas")
+                    Toggle("Before", isOn: $edit.showingBefore)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                        .help("Show the photo as it was, without the edits (\\)")
+                }
                 if edit.kind == .video {
                     Button(edit.playingResult ? "Show Original" : "Play Result") {
                         if edit.playingResult { edit.loadPlayer() } else { edit.playResult() }
@@ -93,21 +154,24 @@ struct EditCanvasPane: View {
                     .controlSize(.small)
                     .help("Play the video as it will be exported, or go back to the original to cut it")
                 }
-                if edit.session != nil, edit.tab != .trim {
-                    Toggle("Before", isOn: $edit.showingBefore)
-                        .toggleStyle(.button)
-                        .controlSize(.small)
-                        .help("Show the photo as it was, without the edits")
-                }
             }
             Divider()
             GeometryReader { proxy in
                 ZStack {
-                    Color(nsColor: .underPageBackgroundColor)
+                    PaneSurface.stage.color
                     canvas(in: proxy.size)
                 }
                 .onAppear { edit.canvasSize = proxy.size }
                 .onChange(of: proxy.size) { _, size in edit.canvasSize = size }
+            }
+            .focusable(model.section == .edit)
+            .focusEffectDisabled()
+            .focused($focused)
+            // A key on the canvas, never a window shortcut that would fire while typing in a text layer (D-132).
+            .onKeyPress("\\") {
+                guard showsPicture else { return .ignored }
+                edit.showingBefore.toggle()
+                return .handled
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 Task {
@@ -123,6 +187,10 @@ struct EditCanvasPane: View {
                     await MainActor.run { model.openInEdit(urls) }
                 }
                 return true
+            }
+            if edit.kind == .video, showsPicture {
+                Divider()
+                StillStrip(edit: edit)
             }
             if let message = edit.message
                 ?? edit.missingFonts.first
@@ -165,29 +233,63 @@ struct EditCanvasPane: View {
             }
             .padding(.vertical, 12)
         } else if edit.tab == .crop, !edit.showingBefore, let image = edit.cropImage {
-            let frame = fittedRect(CGSize(width: image.width, height: image.height), in: bounds).offsetBy(dx: 16, dy: 16)
-            ZStack(alignment: .topLeading) {
-                Image(decorative: image, scale: 1).resizable().interpolation(.high)
-                    .frame(width: frame.width, height: frame.height)
-                    .position(x: frame.midX, y: frame.midY)
+            zoomed(image: image, bounds: bounds, size: size) { frame in
                 EditCropOverlay(model: edit, frame: frame)
             }
-            .frame(width: size.width, height: size.height)
         } else if let image = edit.preview {
-            let frame = fittedRect(CGSize(width: image.width, height: image.height), in: bounds).offsetBy(dx: 16, dy: 16)
-            ZStack(alignment: .topLeading) {
-                Image(decorative: image, scale: 1).resizable().interpolation(.high)
-                    .frame(width: frame.width, height: frame.height)
-                    .position(x: frame.midX, y: frame.midY)
-                    .shadow(color: .black.opacity(0.25), radius: 6)
-                    .accessibilityLabel("The edited photo")
-                if edit.tab == .text, !edit.showingBefore {
-                    EditLayerOverlay(model: edit, frame: frame)
+            zoomed(image: image, bounds: bounds, size: size) { frame in
+                if !edit.showingBefore, [.text, .adjust, .frame].contains(edit.tab), !(edit.recipe?.layers.isEmpty ?? true) {
+                    EditLayerOverlay(model: edit, frame: frame, editing: edit.tab == .text)
                 }
             }
-            .frame(width: size.width, height: size.height)
         } else {
             ProgressView().controlSize(.small)
         }
+    }
+
+    /// The picture at the zoom chosen, with its overlay: fitted when 1, in a scroll view centred when larger.
+    @ViewBuilder
+    private func zoomed(image: CGImage, bounds: CGSize, size: CGSize, @ViewBuilder overlay: (CGRect) -> some View) -> some View {
+        let fitted = fittedRect(CGSize(width: image.width, height: image.height), in: bounds)
+        let picture = CGSize(width: fitted.width * edit.zoom, height: fitted.height * edit.zoom)
+        let content = CGSize(width: max(size.width, picture.width + 32), height: max(size.height, picture.height + 32))
+        let frame = CGRect(x: (content.width - picture.width) / 2, y: (content.height - picture.height) / 2,
+                           width: picture.width, height: picture.height)
+        let stage = ZStack(alignment: .topLeading) {
+            Image(decorative: image, scale: 1).resizable().interpolation(.high)
+                .frame(width: frame.width, height: frame.height)
+                .position(x: frame.midX, y: frame.midY)
+                .shadow(color: .black.opacity(0.25), radius: 6)
+                .accessibilityLabel(edit.showingBefore ? "The photo as it was" : "The edited photo")
+            overlay(frame)
+        }
+        .frame(width: content.width, height: content.height)
+        if edit.zoom > 1 {
+            ScrollView([.horizontal, .vertical]) { stage }
+                .defaultScrollAnchor(.center)
+        } else {
+            stage
+        }
+    }
+}
+
+/// Under a video's still on the Adjust, Crop, Frame and Text tabs: which frame is shown, and that Play Result shows
+/// the edited video (D-132).
+private struct StillStrip: View {
+    @Bindable var edit: EditModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Still from \(EditTimelineView.clock(edit.stillTime))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .fixedSize()
+            Slider(value: Binding(get: { edit.stillTime }, set: { edit.showStill(at: $0) }), in: 0 ... max(edit.mediaDuration, 0.1))
+                .controlSize(.mini)
+                .accessibilityLabel("Frame shown")
+                .help("Choose which frame of the video to judge the look and the frame on; Export uses the whole video")
+            Text("Play Result shows the edited video.").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .layoutPriority(-1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
     }
 }

@@ -186,8 +186,9 @@ struct MetadataEditSection: View {
                     edit(.rating(targets.count == 1 && loaded.values.rating == star ? nil : star))
                 } label: {
                     Image(systemName: on ? "star.fill" : "star").foregroundStyle(on ? Color.orange : Color.secondary)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .accessibilityLabel("\(star) star\(star == 1 ? "" : "s")")
                 .help("\(star) star\(star == 1 ? "" : "s")")
             }
@@ -205,12 +206,9 @@ struct MetadataEditSection: View {
                     ForEach(words, id: \.self) { word in
                         HStack(spacing: 4) {
                             Text(word).font(.callout)
-                            Button { edit(.keywords(add: [], remove: [word])) } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            QuietIconButton(title: "Remove \(word)", symbol: "xmark.circle.fill", help: "Remove this keyword", size: 11) {
+                                edit(.keywords(add: [], remove: [word]))
                             }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Remove \(word)")
-                            .help("Remove this keyword")
                         }
                     }
                 }

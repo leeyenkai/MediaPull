@@ -48,6 +48,8 @@ final class BrowserController: NSObject, WKNavigationDelegate, WKUIDelegate, WKD
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
         webView.isInspectable = true
+        // Past a page's edges and while one loads, the window's own colour shows, never white in dark mode (D-132).
+        webView.underPageBackgroundColor = .windowBackgroundColor
         handler.onMessage = { [weak self] message in self?.onMessage?(message) }
         observations = [
             webView.observe(\.url, options: [.new]) { [weak self] view, _ in

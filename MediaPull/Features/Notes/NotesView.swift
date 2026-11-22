@@ -43,23 +43,9 @@ struct NotesView: View {
             HStack {
                 Text("Notes").font(.headline)
                 Spacer()
-                Button {
-                    selection = store.add().id
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("New Note")
-                .help("New Note")
-                Button {
-                    confirmingDelete = true
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .disabled(selection == nil)
-                .accessibilityLabel("Delete Note")
-                .help("Delete Note")
+                QuietIconButton(title: "New Note", symbol: "square.and.pencil") { selection = store.add().id }
+                QuietIconButton(title: "Delete Note", symbol: "trash") { confirmingDelete = true }
+                    .disabled(selection == nil)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)

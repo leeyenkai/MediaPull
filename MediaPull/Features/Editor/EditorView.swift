@@ -1,7 +1,7 @@
 import MediaPullCore
 import SwiftUI
 
-/// The editor inside the Preview pane (SPEC section 32): crop, rotate, flip and rename.
+/// Quick Edit, inside the Preview pane (SPEC section 32): crop, rotate, flip and rename.
 struct EditorView: View {
     @State private var model: EditorModel
     private var app: AppModel { .shared }
@@ -80,12 +80,14 @@ struct EditorView: View {
                 .fixedSize(horizontal: false, vertical: true)
             ViewThatFits(in: .horizontal) {
                 HStack {
+                    openInEdit
                     Spacer()
                     Button("Cancel") { dismiss() }
                     actions
                 }
                 VStack(alignment: .trailing) {
                     HStack {
+                        openInEdit
                         Spacer()
                         Button("Cancel") { dismiss() }
                     }
@@ -106,6 +108,18 @@ struct EditorView: View {
         switch model.request.subject {
         case .file: "Saving replaces the file; the original goes to the Trash. Edited images are saved at maximum quality."
         case .item: "Edits and the name are used when this item is saved."
+        }
+    }
+
+    /// The way on to Edit/Frame, which never changes the original (D-132).
+    @ViewBuilder
+    private var openInEdit: some View {
+        if case let .file(url) = model.request.subject, !EditModel.editable([url]).isEmpty {
+            Button("Open in Edit/Frame") {
+                model.window?.openInEdit([url])
+                dismiss()
+            }
+            .help("Adjust, frame and add text in Edit/Frame; the original is never changed there")
         }
     }
 

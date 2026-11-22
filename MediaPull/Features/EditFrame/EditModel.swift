@@ -9,19 +9,33 @@ import SwiftUI
 
 /// The tools of the Inspector (R-4601), by the kind of file open.
 enum EditTab: String, CaseIterable, Identifiable {
-    case trim, sound, adjust, crop, frame, text, export
+    case trim, sound, tags, adjust, crop, frame, text, export
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .trim: "Trim & Speed"
-        case .sound: "Edit"
+        case .trim: "Trim"
+        case .sound: "Sound"
+        case .tags: "Tags"
         case .adjust: "Adjust"
         case .crop: "Crop"
         case .frame: "Frame"
-        case .text: "Text & Shapes"
+        case .text: "Text"
         case .export: "Export"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .trim: "scissors"
+        case .sound: "waveform"
+        case .tags: "tag"
+        case .adjust: "slider.horizontal.3"
+        case .crop: "crop"
+        case .frame: "photo.artframe"
+        case .text: "textformat"
+        case .export: "square.and.arrow.up"
         }
     }
 }
@@ -68,8 +82,27 @@ final class EditModel: MediaGridOwner {
     var loadingFile = false
     var loadError: String?
     var lookPreviews: [LookName: CGImage] = [:]
+    /// The photo with no look, for the None tile.
+    var noLookPreview: CGImage?
     /// The layer chosen on the canvas or in the list.
-    var selectedLayer: UUID?
+    var selectedLayer: UUID? {
+        didSet { if selectedLayer != oldValue { choosingFont = false } }
+    }
+    /// The Inspector shows the font list for the selected text layer, in place of its settings (D-132).
+    var choosingFont = false
+    /// Asks the Inspector to put the cursor in the selected text layer (a double-click on it on the canvas); the text
+    /// field takes it as soon as it is shown, also when the double-click opened the Text tab.
+    var focusTextPending = false
+    /// The canvas's zoom: 1 fits it in the pane (D-132).
+    var zoom: CGFloat = 1 {
+        didSet { if zoom != oldValue { render() } }
+    }
+    /// The pixel size Export writes, worked out with each render.
+    var outputPixels: CGSize?
+    /// Where in a video the still edited on the canvas is taken from, in seconds.
+    var stillTime: Double = 0
+    /// Bumped with every change ⌘Z can take back or bring again, so Undo and Redo in the title bar follow.
+    var undoTick = 0
     /// Where Export puts files: nil beside the original.
     var exportFolder: URL?
     var exporting = false
@@ -107,6 +140,7 @@ final class EditModel: MediaGridOwner {
     var saveGenerationNow: Int { saveGeneration }
     @ObservationIgnored private var saveGeneration = 0
     @ObservationIgnored private var openTask: Task<Void, Never>?
+    @ObservationIgnored var stillTask: Task<Void, Never>?
     @ObservationIgnored private var gestureStart: EditRecipe?
     @ObservationIgnored private var renderGeneration = 0
 
@@ -116,7 +150,7 @@ final class EditModel: MediaGridOwner {
         switch kind {
         case .image: [.adjust, .crop, .frame, .text, .export]
         case .video: [.trim, .adjust, .crop, .frame, .text, .export]
-        case .audio: [.sound, .export]
+        case .audio: [.sound, .tags, .export]
         default: []
         }
     }
@@ -205,6 +239,7 @@ final class EditModel: MediaGridOwner {
         guard url.standardizedFileURL != current?.standardizedFileURL else { return }
         flushSave()
         openTask?.cancel()
+        stillTask?.cancel()
         current = url
         let format = MediaFormat.fromExtension(url.pathExtension)
         let previousKind = kind
@@ -213,6 +248,7 @@ final class EditModel: MediaGridOwner {
         preview = nil
         cropImage = nil
         lookPreviews = [:]
+        noLookPreview = nil
         loadError = nil
         session = nil
         missingFonts = []
@@ -245,6 +281,8 @@ final class EditModel: MediaGridOwner {
             loadingFile = false
             guard let kind = format?.kind else { return }
             mediaDuration = duration
+            stillTime = kind == .video ? min(1, duration / 2) : 0
+            outputPixels = nil
             // A recipe another window wrote while this one opened (reloaded meanwhile) is kept (B8-8).
             recipe = recipe ?? stored ?? Self.newRecipe(for: url, kind: kind)
             // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
@@ -301,6 +339,34 @@ final class EditModel: MediaGridOwner {
             MainActor.assumeIsolated { model.restore(previous, redo: now) }
         }
         manager.setActionName("Edit")
+        undoTick += 1
+    }
+
+    /// The names Edit/Frame gives its own steps. The window's undo manager also holds file operations from Organise
+    /// and the Library; the title bar's Undo and Redo here act only on Edit/Frame's own, never on those out of sight.
+    static let undoNames: Set<String> = ["Edit", "Paste Settings", "Revert Edits"]
+
+    var canUndo: Bool {
+        _ = undoTick
+        guard let manager = undoManager, manager.canUndo else { return false }
+        return Self.undoNames.contains(manager.undoActionName)
+    }
+
+    var canRedo: Bool {
+        _ = undoTick
+        guard let manager = undoManager, manager.canRedo else { return false }
+        return Self.undoNames.contains(manager.redoActionName)
+    }
+
+    /// Undo and Redo from the title bar, the same as ⌘Z and ⇧⌘Z for Edit/Frame's own steps.
+    func undo() {
+        if canUndo { undoManager?.undo() }
+        undoTick += 1
+    }
+
+    func redo() {
+        if canRedo { undoManager?.redo() }
+        undoTick += 1
     }
 
     private func restore(_ recipe: EditRecipe, redo: EditRecipe) {
@@ -310,6 +376,7 @@ final class EditModel: MediaGridOwner {
             }
             manager.setActionName("Edit")
         }
+        undoTick += 1
         // The same recipe, wherever its file is now (it may have been renamed since).
         // Only the edits come back: which file the recipe belongs to is the store's to say (it may have moved or been
         // renamed since), never the one when the change was made (audit 2026-11-21-5, B5-1, B5-3).
@@ -326,6 +393,55 @@ final class EditModel: MediaGridOwner {
                 if let kept { Self.recipesChanged([kept.source.path], ids: [kept.id], by: self) }
             }
         }
+    }
+
+    // MARK: Layers (R-4606)
+
+    // Layers are found by id when acted on, never by where they were when the list was drawn: another window can
+    // change the recipe meanwhile.
+
+    /// Moves a layer up (`by` 1) or down (-1) the order it is drawn in.
+    func moveLayer(_ id: UUID, by step: Int) {
+        change { recipe in
+            guard let index = recipe.layers.firstIndex(where: { $0.id == id }) else { return }
+            let target = index + step
+            guard recipe.layers.indices.contains(target) else { return }
+            recipe.layers.swapAt(index, target)
+        }
+    }
+
+    /// A copy of a layer just above it, a little down and to the right, selected.
+    func duplicateLayer(_ id: UUID) {
+        guard let recipe, let index = recipe.layers.firstIndex(where: { $0.id == id }) else { return }
+        var copy = recipe.layers[index]
+        copy.id = UUID()
+        copy.x = min(1, copy.x + 0.03)
+        copy.y = min(1, copy.y + 0.03)
+        change { $0.layers.insert(copy, at: min(index + 1, $0.layers.count)) }
+        selectedLayer = copy.id
+    }
+
+    func toggleLayerHidden(_ id: UUID) {
+        change { recipe in
+            if let index = recipe.layers.firstIndex(where: { $0.id == id }) { recipe.layers[index].hidden.toggle() }
+        }
+    }
+
+    func removeLayer(_ id: UUID) {
+        change { $0.layers.removeAll { $0.id == id } }
+        if selectedLayer == id { selectedLayer = nil }
+    }
+
+    /// Delete on the canvas or the layer list.
+    func removeSelectedLayer() {
+        guard let id = selectedLayer else { return }
+        removeLayer(id)
+    }
+
+    /// A drag whose view went away before it ended (Before shown, the zoom changed): its change is closed, so later
+    /// changes are undone one by one again.
+    func abandonGesture() {
+        endGesture()
     }
 
     /// Revert: the recipe goes and the photo is shown as it is (R-4602); ⌘Z brings it back.
@@ -515,8 +631,9 @@ final class EditModel: MediaGridOwner {
         renderGeneration += 1
         let generation = renderGeneration
         let scale = window?.hostWindow?.backingScaleFactor ?? 2
-        let fit = CGSize(width: min(canvasSize.width * scale, PhotoSession.proxyEdge),
-                         height: min(canvasSize.height * scale, PhotoSession.proxyEdge))
+        // A zoom asks for more pixels, up to the proxy's size; the full original is never rendered for the canvas.
+        let fit = CGSize(width: min(canvasSize.width * scale * zoom, PhotoSession.proxyEdge),
+                         height: min(canvasSize.height * scale * zoom, PhotoSession.proxyEdge))
         let before = showingBefore, cropping = tab == .crop
         // One render at a time: a slider drag asks for many; the newest waits for the one under way and the rest are
         // dropped, so renders never pile up.
@@ -524,34 +641,50 @@ final class EditModel: MediaGridOwner {
         renderTask = Task { [weak self] in
             await previous?.value
             guard let self, generation == renderGeneration else { return }
-            let (image, uncropped, fonts, pictures) = await Task.detached(priority: .userInitiated) {
-                () -> (CGImage?, CGImage?, [String], [String]) in
+            let (image, uncropped, fonts, pictures, pixels) = await Task.detached(priority: .userInitiated) {
+                () -> (CGImage?, CGImage?, [String], [String], CGSize) in
                 let image = session.preview(recipe, fit: fit, before: before)
                 let uncropped = cropping ? session.uncropped(recipe, fit: fit) : nil
-                return (image, uncropped, FontLookup.missing(in: recipe.layers), FontLookup.missingPictures(in: recipe.layers))
+                return (image, uncropped, FontLookup.missing(in: recipe.layers), FontLookup.missingPictures(in: recipe.layers),
+                        session.outputSize(recipe))
             }.value
             // Shown even when a newer render waits: the canvas follows a drag instead of standing still; never another
             // file's.
             guard self.session === session else { return }
             preview = image
             cropImage = uncropped
+            outputPixels = pixels
             missingFonts = fonts
             missingPictures = pictures
         }
     }
 
+    /// Another still of the same video: the canvas draws it from now on.
+    func replaceSession(_ new: PhotoSession) {
+        session = new
+        render()
+        renderLooks()
+    }
+
+    /// The crop's size on the photo itself, in pixels.
+    var cropPixels: CGSize? {
+        guard let session, let recipe else { return nil }
+        return session.cropPixels(recipe.geometry)
+    }
+
     func renderLooks() {
         guard let session, let recipe else { return }
         Task { [weak self] in
-            let previews = await Task.detached(priority: .utility) { () -> [LookName: CGImage] in
+            let (previews, plain) = await Task.detached(priority: .utility) { () -> ([LookName: CGImage], CGImage?) in
                 var out: [LookName: CGImage] = [:]
                 for look in LookName.allCases {
                     if let image = session.lookPreview(recipe, look: look, edge: 72) { out[look] = image }
                 }
-                return out
+                return (out, session.lookPreview(recipe, look: nil, edge: 72))
             }.value
             guard let self, self.session === session else { return }
             lookPreviews = previews
+            noLookPreview = plain
         }
     }
 
@@ -600,7 +733,7 @@ final class EditModel: MediaGridOwner {
         let progress: @Sendable (Double) -> Void = { fraction in
             Task { @MainActor in
                 job.fraction = fraction
-                job.summaryOverride = "\(Int((fraction * 100).rounded())) %"
+                job.summaryOverride = "\(Int((fraction * 100).rounded()))%"
             }
         }
         job.task = Task { [weak self] in
@@ -682,7 +815,7 @@ final class EditModel: MediaGridOwner {
         }
         if editedPaths.contains(URL(fileURLWithPath: id).standardizedFileURL.path) {
             info.stateSymbol = "slider.horizontal.3"
-            info.stateColor = .controlAccentColor
+            info.stateColor = .white
         }
         info.stamp = "\(entry.modified.timeIntervalSince1970)"
         return info

@@ -348,6 +348,14 @@ struct VideoEditorView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
+                if case let .file(url) = model.request.subject, !EditModel.editable([url]).isEmpty {
+                    // The way on to Edit/Frame, which never changes the original (D-132).
+                    Button("Open in Edit/Frame") {
+                        model.window?.openInEdit([url])
+                        close()
+                    }
+                    .help("Cut, speed up, frame and add text in Edit/Frame; the original is never changed there")
+                }
                 if model.isWorking { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Done") { close() }

@@ -16,13 +16,11 @@ struct PreviewPane: View {
         VStack(spacing: 0) {
             PaneTitleBar(title: title, pane: .preview, model: model) {
                 if model.canEditPreview {
-                    Button {
+                    QuietIconButton(title: "Quick Edit", symbol: "crop.rotate",
+                                    help: "Quick Edit: crop, rotate, flip or rename (⌘E). "
+                                        + "Edit/Frame does more, without changing the original.") {
                         model.editPreview()
-                    } label: {
-                        Image(systemName: "crop.rotate")
                     }
-                    .buttonStyle(.borderless)
-                    .help("Crop, rotate, flip or rename (⌘E)")
                 }
             }
             Divider()
@@ -31,7 +29,7 @@ struct PreviewPane: View {
     }
 
     private var title: String {
-        if model.editorRequest != nil { return "Edit" }
+        if model.editorRequest != nil { return "Quick Edit" }
         switch model.previewSubject {
         case let .file(url): return url.lastPathComponent
         case let .item(id): return model.itemsByID[id].flatMap { $0.best.flatMap { URLNormalizer.baseName(of: $0.url) } } ?? "Preview"

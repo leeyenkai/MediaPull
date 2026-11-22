@@ -172,6 +172,13 @@ struct DeviceImportPane: View {
     @Bindable var devices: DevicesModel
     private var app: AppModel { .shared }
 
+    /// How many files here were not imported before, when that is the whole of what Import New takes: a folder with
+    /// folders inside is walked when importing, so its count is not known yet (D-132).
+    private var newCount: Int? {
+        guard devices.source != nil, devices.folders.isEmpty, !devices.media.isEmpty else { return nil }
+        return devices.media.count { !devices.imported.contains($0.importKey) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             PaneHeader(title: "Import", pane: .devicesImport, model: model) {}
@@ -191,9 +198,9 @@ struct DeviceImportPane: View {
                             devices.importSelected()
                         }
                         .disabled(devices.selection.isEmpty || busy)
-                        Button("Import New") { devices.importNew() }
+                        Button(newCount.map { $0 == 0 ? "All Imported" : "Import \($0) New" } ?? "Import New") { devices.importNew() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(devices.source == nil || busy)
+                            .disabled(devices.source == nil || busy || newCount == 0)
                             .help("Everything in this folder and the folders inside it that was not imported before")
                     }
                     if let job = devices.importJob {

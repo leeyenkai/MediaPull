@@ -75,8 +75,10 @@ struct OrganiseFolderPane: View {
                 VStack(spacing: 0) {
                     // A compact tree: the media grid gets the room. Column view is its own tree (R-1710).
                     if !columns {
+                        // A folder with no folders inside needs one row, so the grid gets the rest (D-132).
+                        let alone = (pane.rootNode(root).children ?? []).isEmpty
                         OrganiseTree(organise: organise, pane: pane, root: root)
-                            .frame(minHeight: 60, idealHeight: 150, maxHeight: 190)
+                            .frame(minHeight: alone ? 44 : 60, idealHeight: alone ? 44 : 150, maxHeight: alone ? 44 : 190)
                         Divider()
                     }
                     VStack(spacing: 0) {
@@ -346,8 +348,7 @@ struct OrganiseWorkPane: View {
                 HStack(alignment: .top, spacing: 8) {
                     Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
-                    Button { organise.message = nil } label: { Image(systemName: "xmark") }
-                        .accessibilityLabel("Dismiss Message").buttonStyle(.borderless)
+                    QuietIconButton(title: "Dismiss Message", symbol: "xmark") { organise.message = nil }
                 }
                 .padding(12)
             }
@@ -376,9 +377,19 @@ struct OrganiseWorkPane: View {
                             .help(organise.mode.detail)
                         }
                     }
-                    Text(scope).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    if inProfileView {
+                        // A Profile view hides the files a sort works on (D-113), so it says so instead of counting none.
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Sorts work on the files in Icons, List or Columns.").font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button("Show as Icons") { model.setViewMode(.icon, for: .organiseSource) }.controlSize(.small)
+                        }
+                    } else {
+                        Text(scope).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                        ForEach(AutoSort.allCases) { kind in
+                        ForEach(sorts) { kind in
                             Button { organise.autoSort(kind) } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Image(systemName: kind.symbol).font(.title3).foregroundStyle(Color.accentColor)
@@ -391,7 +402,7 @@ struct OrganiseWorkPane: View {
                                 .contentShape(RoundedRectangle(cornerRadius: 10))
                             }
                             .buttonStyle(.plain)
-                            .disabled(organise.working != nil || organise.destination == nil)
+                            .disabled(organise.working != nil || organise.destination == nil || inProfileView)
                         }
                     }
                     Toggle("Sort images individually", isOn: Binding(
@@ -424,6 +435,16 @@ struct OrganiseWorkPane: View {
                 .padding(12)
             }
         }
+    }
+
+    private var inProfileView: Bool {
+        model.viewMode(for: .organiseSource) == .profile && organise.source.profileSource != nil
+    }
+
+    /// Artist and Album only when there is audio to sort by them.
+    private var sorts: [AutoSort] {
+        let audio = organise.source.shown.contains { $0.kind == .audio }
+        return AutoSort.allCases.filter { audio || ($0 != .artist && $0 != .album) }
     }
 
     private var scope: String {
@@ -593,10 +614,24 @@ struct PreviewThumb: View {
     let url: URL
     @State private var image: CGImage?
 
+    private var symbol: String {
+        switch MediaFormat.fromExtension(url.pathExtension)?.kind {
+        case .video, .stream: "video"
+        case .audio: "waveform"
+        case .image, .animatedImage, .vector: "photo"
+        default: "doc"
+        }
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 4).fill(.quaternary)
-            if let image { Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill) }
+            if let image {
+                Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                // A file with no picture (audio, an unreadable one) shows its kind, not an empty square.
+                Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.tertiary)
+            }
         }
         .frame(width: 34, height: 34)
         .clipShape(RoundedRectangle(cornerRadius: 4))

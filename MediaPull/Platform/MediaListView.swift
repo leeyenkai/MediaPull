@@ -123,16 +123,30 @@ struct MediaList: NSViewRepresentable {
             applySelection(selection)
         }
 
+        /// Wide enough for the longest date the list writes, at its font, so a date is never cut off (D-132).
+        static let dateWidth: CGFloat = {
+            let font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small))
+            var parts = DateComponents(year: 2026, month: 9, day: 28, hour: 22, minute: 58)
+            parts.calendar = Calendar(identifier: .gregorian)
+            let sample = (parts.date ?? Date()).formatted(date: .abbreviated, time: .shortened)
+            let width = (sample as NSString).size(withAttributes: [.font: font]).width
+            return ceil(width) + 24
+        }()
+
         private func buildColumns(_ columns: [ListColumn]) {
             guard let outline, let owner else { return }
             columnsBuilt = true
             for column in columns {
                 let table = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.rawValue))
                 table.title = column.title
-                table.minWidth = column == .name ? 160 : 50
+                table.minWidth = switch column {
+                case .name: 160
+                case .date: Self.dateWidth
+                default: 50
+                }
                 table.width = switch column {
                 case .name: 280
-                case .date: 150
+                case .date: Self.dateWidth
                 case .size, .duration, .found: 70
                 case .dimensions: 100
                 case .kind: 110

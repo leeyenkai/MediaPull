@@ -1158,7 +1158,7 @@ final class OrganiseModel {
                 for f in files {
                     if let (subject, confidence) = subjects[f.path], confidence >= threshold { assignment[f.path] = [[subject]] }
                 }
-                note = "Files whose best subject is below \(Int(threshold * 100)) % confidence go to Unsorted."
+                note = "Files whose best subject is below \(Int(threshold * 100))% confidence go to Unsorted."
             case .person:
                 let byPath = await app.analysis.peopleByPath(files)
                 let names = Dictionary(uniqueKeysWithValues: app.analysis.people.map { ($0.id, $0) })

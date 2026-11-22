@@ -114,36 +114,35 @@ struct BrowserBar: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Button { model.browser.goBack() } label: { Image(systemName: "chevron.backward").frame(width: 24, height: 24) }
-                .accessibilityLabel("Back")
+            QuietIconButton(title: "Back", symbol: "chevron.backward", help: "Back (⌘[)", size: 13, emphasised: true) {
+                model.browser.goBack()
+            }
                 .disabled(!model.browser.canGoBack)
-                .help("Back (⌘[)")
-            Button { model.browser.goForward() } label: { Image(systemName: "chevron.forward").frame(width: 24, height: 24) }
-                .accessibilityLabel("Forward")
-                .disabled(!model.browser.canGoForward)
-                .help("Forward (⌘])")
-            Button { model.browser.reloadOrStop() } label: {
-                Image(systemName: model.browser.isLoading ? "xmark" : "arrow.clockwise").frame(width: 24, height: 24)
+            QuietIconButton(title: "Forward", symbol: "chevron.forward", help: "Forward (⌘])", size: 13, emphasised: true) {
+                model.browser.goForward()
+            }
+            .disabled(!model.browser.canGoForward)
+            QuietIconButton(title: model.browser.isLoading ? "Stop" : "Reload",
+                            symbol: model.browser.isLoading ? "xmark" : "arrow.clockwise",
+                            help: model.browser.isLoading ? "Stop loading" : "Reload this page (⌘R)", size: 13, emphasised: true) {
+                model.browser.reloadOrStop()
             }
             .disabled(model.browser.url == nil)
-            .help(model.browser.isLoading ? "Stop loading" : "Reload this page (⌘R)")
             AddressField(model: model)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 4)
             if VideoPage.isLikely(model.browser.url) {
-                Button { model.showDownloads(video: true) } label: { Image(systemName: "film.stack").frame(width: 24, height: 24) }
-                    .accessibilityLabel("Save Video")
-                    .help("Save the video on this page, choosing its format and resolution")
+                QuietIconButton(title: "Save Video", symbol: "film.stack",
+                                help: "Save the video on this page, choosing its format and resolution",
+                                size: 13) { model.showDownloads(video: true) }
             }
-            Button { model.showBrowsingPanel.toggle() } label: { Image(systemName: "bookmark").frame(width: 24, height: 24) }
-                .accessibilityLabel("Bookmarks and History")
-                .help("Bookmarks and History (⌥⌘B, ⌘Y)")
+            QuietIconButton(title: "Bookmarks and History", symbol: "bookmark", help: "Bookmarks and History (⌥⌘B, ⌘Y)", size: 13,
+                            emphasised: model.showBrowsingPanel) { model.showBrowsingPanel.toggle() }
                 .popover(isPresented: $model.showBrowsingPanel, arrowEdge: .bottom) {
                     BrowsingPanel(model: model)
                 }
             PaneMenu(pane: .source, window: model)
         }
-        .buttonStyle(.borderless)
         .imageScale(.medium)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -185,7 +184,8 @@ struct BrowserPane: View {
             }
             ZStack {
                 WebViewHost(webView: model.browser.webView)
-                if model.browser.url == nil {
+                // A blank page is the start page too, so it is never a white square in dark mode (D-132).
+                if model.browser.url == nil || model.browser.url?.absoluteString == "about:blank" {
                     StartPage(model: model)
                 }
             }

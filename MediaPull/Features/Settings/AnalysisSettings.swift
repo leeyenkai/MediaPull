@@ -47,10 +47,10 @@ struct AnalysisSettings: View {
             } header: { Text("Analysis") }
             Section {
                 Picker("Confidence needed", selection: $preferences.subjectThreshold) {
-                    ForEach([0.3, 0.4, 0.5, 0.6, 0.7, 0.8], id: \.self) { Text("\(Int($0 * 100)) %").tag($0) }
+                    ForEach([0.3, 0.4, 0.5, 0.6, 0.7, 0.8], id: \.self) { Text("\(Int($0 * 100))%").tag($0) }
                 }
-                Text("Below this, files go to Unsorted instead of a guess. In tests at 50 %, 95 % of photos were filed and 95 % of those "
-                    + "correctly; at 70 %, 88 % were filed and 96 % correctly.")
+                Text("Below this, files go to Unsorted instead of a guess. In tests at 50%, 95% of photos were filed and 95% of those "
+                    + "correctly; at 70%, 88% were filed and 96% correctly.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     TextField("Add a subject, such as “cars” or “sunsets”", text: $newSubject)
@@ -61,9 +61,9 @@ struct AnalysisSettings: View {
                     HStack {
                         Text(subject)
                         Spacer()
-                        Button { preferences.customSubjects.removeAll { $0 == subject } } label: { Image(systemName: "minus.circle") }
-                            .accessibilityLabel("Remove Subject")
-                            .buttonStyle(.borderless)
+                        QuietIconButton(title: "Remove Subject", symbol: "minus.circle") {
+                            preferences.customSubjects.removeAll { $0 == subject }
+                        }
                     }
                 }
             } header: { Text("Sort by Subject") }
