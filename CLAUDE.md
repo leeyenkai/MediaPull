@@ -10,7 +10,7 @@ The full product specification is the source of truth:
 
 Read the relevant section of the spec before writing or refactoring code. If a request conflicts with the spec, surface the conflict rather than silently deviating, and update the spec (with a D-nn decision entry where needed) before the code.
 
-Status: version 1.8 implemented, plus formats, units and posts (section 42, D-119 to D-122), drives (section 43, D-123), the Map &
+Status: version 1.9 implemented: version 1.8, plus formats, units and posts (section 42, D-119 to D-122), drives (section 43, D-123), the Map &
 Timeline pane (section 44, D-124), photo metadata edits (section 45, D-125, D-126) and the Edit/Frame section (section 46,
 D-127 to D-131: photo adjustments, frames, text and shapes, video and audio editing, export; audited in 14 rounds,
 `docs/audits/2026-11-21-*.md`); and the Devices section (section 41, D-115 to D-118: phones and cameras over USB, read-only)
@@ -93,6 +93,9 @@ MediaPull/                        (project root, inside an iCloud-synced Desktop
   `--selftest-edits` (offline: a rating written into a HEIC losslessly with its analysis kept, a RAW pair's `.xmp`, a
   date shift, the Rating filter and Undo), `--selftest-drives <mount>` (an exFAT image check.sh attaches: a camera card imported, a pair moved and undone, Eject))
   (theme and layout are restored afterwards).
+- README screenshots: run a self-test with `MEDIAPULL_SAMPLE_PHOTOS=<folder of public-domain JPEGs>` and the generated test
+  pictures become those photos, in name order (checks may fail then; never set it in `check.sh`). The current images use
+  NASA photos and NASA's Image of the Day page.
 
 ## Rules
 

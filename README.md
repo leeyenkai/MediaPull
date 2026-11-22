@@ -28,13 +28,15 @@
 
 | Organise | Downloads |
 |---|---|
-| ![Organise: sort a folder by subject](docs/images/organise.jpg) | ![Downloads: choose a video's format and resolution, then Download or Save As](docs/images/downloads.jpg) |
+| ![Organise: a folder of NASA photos about to be sorted by what they show](docs/images/organise.jpg) | ![Downloads: choose a video's format and resolution, then Download or Save As](docs/images/downloads.jpg) |
 | **List view** | **Column view** |
 | ![List view: sortable columns and folders that open in place](docs/images/list-view.jpg) | ![Column view: folders in columns with a preview of the chosen file](docs/images/column-view.jpg) |
 | **Profile view** | **Devices** |
-| ![Profile view: a saved account with its highlights, pinned post and Reels, shown from a test folder](docs/images/profile.jpg) | ![Devices: a phone's photos and clips, and Import New](docs/images/devices.jpg) |
+| ![Profile view: a saved account with its highlights, pinned post and Reels, shown from a test folder of NASA photos](docs/images/profile.jpg) | ![Devices: a phone's photos and clips, with Import 4 New](docs/images/devices.jpg) |
 
-![Edit/Frame: a photo framed with the Poster template, its title chosen on the canvas with its text settings beside it](docs/images/edit-frame.jpg)
+![Edit/Frame: an Apollo 11 photo in the Poster template, its title chosen on the canvas with its text settings beside it](docs/images/edit-frame.jpg)
+
+The screenshots show NASA images, which are in the public domain, NASA's Image of the Day page, and a Blender open movie.
 
 ## Install
 

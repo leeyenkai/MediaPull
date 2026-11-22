@@ -1555,6 +1555,7 @@ final class SelfTestRunner {
                 CGImageDestinationFinalize(destination)
             }
         }
+        if let sample = Self.samplePhotos.first { try? sample.write(to: photo) }
         let original = (try? FileHasher.sha256(of: photo)) ?? ""
         let edit = model.edit
         model.openInEdit([photo])
@@ -2600,7 +2601,19 @@ final class SelfTestRunner {
     }
 
     /// A small JPEG in a colour of its own, so no two fixtures are the same picture.
+    /// For README screenshots only, never in check.sh: `MEDIAPULL_SAMPLE_PHOTOS` names a folder of public-domain photos
+    /// that take the place of the generated test pictures, in name order. Their checks may then fail; the captures are
+    /// what such a run is for.
+    static let samplePhotos: [Data] = {
+        guard let path = ProcessInfo.processInfo.environment["MEDIAPULL_SAMPLE_PHOTOS"],
+              let names = try? FileManager.default.contentsOfDirectory(atPath: path) else { return [] }
+        return names.filter { $0.lowercased().hasSuffix(".jpg") }.sorted().compactMap { name in
+            try? Data(contentsOf: URL(fileURLWithPath: path).appendingPathComponent(name))
+        }
+    }()
+
     static func jpeg(_ index: Int) -> Data {
+        if !samplePhotos.isEmpty { return samplePhotos[index % samplePhotos.count] }
         let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 48, bitsPerSample: 8, samplesPerPixel: 3,
                                    hasAlpha: false,
                                    isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!

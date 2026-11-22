@@ -1,6 +1,6 @@
 # MediaPull Specification
 
-Version 1.8 (implemented: account folder updates, the audit decisions D-77 to D-106, and D-107 to D-113: safe file changes, Save As, notes, file details with a map, post details and profile views), 2026-11-18
+Version 1.9 (implemented: Devices, D-114 to D-118; formats, units and posts, drives, Map & Timeline and photo metadata edits, D-119 to D-126; Edit/Frame, D-127 to D-132), 2026-11-22. Version 1.8: account folder updates, the audit decisions D-77 to D-106, and D-107 to D-113: safe file changes, Save As, notes, file details with a map, post details and profile views
 
 This document is the source of truth for MediaPull. Code follows the spec; when a request or an implementation detail conflicts with it, the conflict is raised and the spec is updated first.
 
@@ -10,7 +10,7 @@ Conventions:
 - **D-nn** is a recorded decision (section 27). Decisions can be changed, but only by editing this spec.
 - "Verify in M0" marks a detail that depends on third-party behaviour and must be confirmed by the engine spike before it is built on.
 
-## Implementation status (version 1.8)
+## Implementation status (version 1.9)
 
 MediaPull is a personal tool for archiving and collecting media, not a public release. The app, its engines and the read-only contract are implemented. Some supporting pieces described here were deliberately not built for personal use: the `mediapull-test://` fixture pages and the extraction tests that would use them (section 25), CI enforcement of the performance budgets (section 22: `scripts/perf-budgets.json` records budgets measured by hand), `docs/PRIVACY.md`, `scripts/sign-helpers.sh`, Developer ID signing and notarization (section 26; the app is signed for this Mac only).
 

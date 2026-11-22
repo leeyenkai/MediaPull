@@ -220,7 +220,7 @@ private struct CropTab: View {
                 edit.setAspect($0)
             }
             if let pixels = edit.cropPixels, pixels.width > 0 {
-                Text("\(Int(pixels.width)) × \(Int(pixels.height)) px of the photo")
+                Text(verbatim: "\(Int(pixels.width)) × \(Int(pixels.height)) px of the photo")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             EditSlider(label: "Straighten", value: Binding(
@@ -984,7 +984,8 @@ private struct ExportTab: View {
             ForEach(ExportSettings.Size.allCases, id: \.self) { Text($0.label).tag($0) }
         }
         if let pixels = edit.outputPixels, pixels.width > 0 {
-            Text("Written at \(Int(pixels.width)) × \(Int(pixels.height)) px.").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Text(verbatim: "Written at \(Int(pixels.width)) × \(Int(pixels.height)) px.")
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
         if edit.recipe?.export.format != .png {
             EditSlider(label: "Quality", value: Binding(

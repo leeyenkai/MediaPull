@@ -130,7 +130,7 @@ struct EditCanvasPane: View {
         VStack(spacing: 0) {
             PaneHeader(title: "Canvas", pane: .editCanvas, model: model) {
                 if showsPicture, let pixels = edit.outputPixels, pixels.width > 0, edit.kind == .image {
-                    Text("\(Int(pixels.width)) × \(Int(pixels.height))")
+                    Text(verbatim: "\(Int(pixels.width)) × \(Int(pixels.height))")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .help("The size Export writes, in pixels")

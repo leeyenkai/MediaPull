@@ -130,7 +130,7 @@ struct EditCropOverlay: View {
                     .position(x: rect.midX, y: rect.midY)
                     .allowsHitTesting(false)
                 if let pixels = model.cropPixels {
-                    Text("\(Int(pixels.width)) × \(Int(pixels.height)) px")
+                    Text(verbatim: "\(Int(pixels.width)) × \(Int(pixels.height)) px")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6)
