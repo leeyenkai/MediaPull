@@ -130,6 +130,11 @@ public actor RecipeStore {
 
     /// Paths whose file has a recipe made for it, so the Media pane can mark them.
     public func editedPaths() -> Set<String> {
+        Set(editStamps().keys)
+    }
+
+    /// Each edited file's path with when its recipe last changed, so its thumbnail is drawn again when it does (D-134).
+    public func editStamps() -> [String: Date] {
         load()
         relocate()
         // Marked as shown: by the newest recipe made for the file there (B7-3).
@@ -138,7 +143,7 @@ public actor RecipeStore {
             if let other = newest[recipe.source.path], other.modified >= recipe.modified { continue }
             newest[recipe.source.path] = recipe
         }
-        return Set(newest.filter(\.value.isEdited).keys)
+        return newest.filter(\.value.isEdited).mapValues(\.modified)
     }
 
     /// Keeps a recipe's edits; one with nothing edited is kept blank (Revert). False when it could not be written.

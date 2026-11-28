@@ -54,8 +54,9 @@ final class EditModel: MediaGridOwner {
     var cellSize: CGFloat = 96
     var revision = 0
     var loadingFolder = false
-    /// Files with a recipe, marked in the Media pane.
-    var editedPaths: Set<String> = []
+    /// Files with a recipe, marked in the Media pane, with when each recipe last changed (D-134).
+    var editStamps: [String: Date] = [:]
+    var editedPaths: Set<String> { Set(editStamps.keys) }
 
     // MARK: The open file
 
@@ -65,9 +66,22 @@ final class EditModel: MediaGridOwner {
     var preview: CGImage?
     /// The picture turned and straightened but not cropped, shown while cropping.
     var cropImage: CGImage?
+    /// The photo as it was, shown only while Before/After is held (D-134).
     var showingBefore = false {
-        didSet { if showingBefore != oldValue { render() } }
+        didSet {
+            guard showingBefore != oldValue else { return }
+            // Released: the edit is back at once, not after a render.
+            if showingBefore {
+                heldEdit = preview
+            } else if let heldEdit {
+                preview = heldEdit
+            }
+            if !showingBefore { heldEdit = nil }
+            render()
+        }
     }
+
+    @ObservationIgnored private var heldEdit: CGImage?
 
     var tab: EditTab = .adjust {
         didSet {
@@ -99,6 +113,8 @@ final class EditModel: MediaGridOwner {
     }
     /// The pixel size Export writes, worked out with each render.
     var outputPixels: CGSize?
+    /// Where the photo sits in its frame, in units of the canvas (D-133); nil without a frame.
+    var framePlacement: FramePlacement?
     /// Where in a video the still edited on the canvas is taken from, in seconds.
     var stillTime: Double = 0
     /// Bumped with every change ⌘Z can take back or bring again, so Undo and Redo in the title bar follow.
@@ -165,7 +181,7 @@ final class EditModel: MediaGridOwner {
     /// manager never closes its groups.
     @ObservationIgnored var testUndoManager: UndoManager?
     var undoManager: UndoManager? { testUndoManager ?? window?.hostWindow?.undoManager }
-    /// Settings copied for Paste Settings (R-4611).
+    /// Settings copied to apply to files selected later (R-4611, D-134).
     var copiedSettings: EditRecipe?
     /// The audio's waveform, 0 to 1 per slice.
     var waveform: [Float] = []
@@ -218,11 +234,11 @@ final class EditModel: MediaGridOwner {
         loadingFolder = true
         Task { [weak self] in
             let listed = await MediaListing.load(folder, recursive: false).entries
-            let edited = await AppModel.shared.recipes.editedPaths()
+            let edited = await AppModel.shared.recipes.editStamps()
             guard let self, self.folder == folder else { return }
             entries = listed.filter { !Self.editable([$0.url]).isEmpty }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            editedPaths = edited
+            editStamps = edited
             loadingFolder = false
             revision += 1
         }
@@ -283,6 +299,7 @@ final class EditModel: MediaGridOwner {
             mediaDuration = duration
             stillTime = kind == .video ? min(1, duration / 2) : 0
             outputPixels = nil
+            framePlacement = nil
             // A recipe another window wrote while this one opened (reloaded meanwhile) is kept (B8-8).
             recipe = recipe ?? stored ?? Self.newRecipe(for: url, kind: kind)
             // Another kind of file starts on its first tool (Trim for a video, Adjust for a photo).
@@ -344,7 +361,7 @@ final class EditModel: MediaGridOwner {
 
     /// The names Edit/Frame gives its own steps. The window's undo manager also holds file operations from Organise
     /// and the Library; the title bar's Undo and Redo here act only on Edit/Frame's own, never on those out of sight.
-    static let undoNames: Set<String> = ["Edit", "Paste Settings", "Revert Edits"]
+    static let undoNames: Set<String> = ["Edit", "Apply Edits", "Revert Edits"]
 
     var canUndo: Bool {
         _ = undoTick
@@ -470,9 +487,9 @@ final class EditModel: MediaGridOwner {
             }
             // The look thumbnails show the photo as it is now.
             if self?.tab == .adjust { self?.renderLooks() }
-            let edited = await AppModel.shared.recipes.editedPaths()
-            guard let self, edited != editedPaths else { return }
-            editedPaths = edited
+            let edited = await AppModel.shared.recipes.editStamps()
+            guard let self, edited != editStamps else { return }
+            editStamps = edited
             revision += 1
         }
     }
@@ -617,8 +634,8 @@ final class EditModel: MediaGridOwner {
                 if self.recipe?.id == recipe.id { self.unsaved = true }
                 self.message = "The edits could not be saved: the file is no longer there, or the disk is full."
             }
-            let edited = await AppModel.shared.recipes.editedPaths()
-            self.editedPaths = edited
+            let edited = await AppModel.shared.recipes.editStamps()
+            self.editStamps = edited
             self.revision += 1
         }
     }
@@ -641,12 +658,12 @@ final class EditModel: MediaGridOwner {
         renderTask = Task { [weak self] in
             await previous?.value
             guard let self, generation == renderGeneration else { return }
-            let (image, uncropped, fonts, pictures, pixels) = await Task.detached(priority: .userInitiated) {
-                () -> (CGImage?, CGImage?, [String], [String], CGSize) in
+            let (image, uncropped, fonts, pictures, pixels, placement) = await Task.detached(priority: .userInitiated) {
+                () -> (CGImage?, CGImage?, [String], [String], CGSize, FramePlacement?) in
                 let image = session.preview(recipe, fit: fit, before: before)
                 let uncropped = cropping ? session.uncropped(recipe, fit: fit) : nil
                 return (image, uncropped, FontLookup.missing(in: recipe.layers), FontLookup.missingPictures(in: recipe.layers),
-                        session.outputSize(recipe))
+                        session.outputSize(recipe), session.framePlacement(recipe))
             }.value
             // Shown even when a newer render waits: the canvas follows a drag instead of standing still; never another
             // file's.
@@ -654,6 +671,7 @@ final class EditModel: MediaGridOwner {
             preview = image
             cropImage = uncropped
             outputPixels = pixels
+            framePlacement = placement
             missingFonts = fonts
             missingPictures = pictures
         }
@@ -665,6 +683,9 @@ final class EditModel: MediaGridOwner {
         render()
         renderLooks()
     }
+
+    /// The photo's own size upright, before any edit (what Before shows).
+    var originalPixels: CGSize? { session?.size }
 
     /// The crop's size on the photo itself, in pixels.
     var cropPixels: CGSize? {
@@ -813,16 +834,26 @@ final class EditModel: MediaGridOwner {
             info.kindSymbol = "waveform"
             info.placeholderSymbol = "waveform"
         }
-        if editedPaths.contains(URL(fileURLWithPath: id).standardizedFileURL.path) {
+        let edited = editStamps[URL(fileURLWithPath: id).standardizedFileURL.path]
+        if edited != nil {
             info.stateSymbol = "slider.horizontal.3"
             info.stateColor = .white
         }
-        info.stamp = "\(entry.modified.timeIntervalSince1970)"
+        // The recipe's date too, so a thumbnail is drawn again when its edits change (D-134).
+        info.stamp = "\(entry.modified.timeIntervalSince1970)#\(edited?.timeIntervalSince1970 ?? 0)"
         return info
     }
 
+    /// The file as edited, so a batch can be checked at a glance (D-134); audio and unedited files as they are.
     func gridThumbnail(_ id: String, maxPixel: Int) async -> CGImage? {
-        await app.thumbnails.localThumbnail(for: URL(fileURLWithPath: id), maxPixel: maxPixel)?.image
+        let url = URL(fileURLWithPath: id)
+        guard let image = await app.thumbnails.localThumbnail(for: url, maxPixel: maxPixel)?.image else { return nil }
+        guard editStamps[url.standardizedFileURL.path] != nil, entry(id)?.kind != .audio,
+              let recipe = await AppModel.shared.recipes.recipe(for: url), recipe.isEdited else { return image }
+        let fit = CGSize(width: maxPixel, height: maxPixel)
+        return await Task.detached(priority: .utility) {
+            PhotoSession(image: image, url: url).preview(recipe, fit: fit) ?? image
+        }.value
     }
 
     func gridSelectionChanged(_ ids: Set<String>) {
@@ -869,6 +900,7 @@ final class EditModel: MediaGridOwner {
             guard let self else { return }
             registerBatchUndo(before, name: "Revert Edits")
             reloadCurrentRecipe()
+            await refreshEdited()
             Self.recipesChanged(Set(files.map(\.path)), ids: Set(before.compactMap(\.recipe?.id)), by: self)
         }
     }

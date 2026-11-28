@@ -264,13 +264,42 @@ public enum PhotoRenderer {
     }
 }
 
+/// Where the photo is in its frame, in units of the canvas (0 to 1, origin top left), for moving it there (D-133).
+public struct FramePlacement: Sendable, Equatable {
+    /// The space inside the insets.
+    public var box: CGRect
+    /// The whole picture where it is drawn; larger than the box when it fills it.
+    public var picture: CGRect
+    /// The part of the canvas the photo covers.
+    public var photo: CGRect
+
+    public init(box: CGRect, picture: CGRect, photo: CGRect) {
+        self.box = box
+        self.picture = picture
+        self.photo = photo
+    }
+
+    /// The photo can be moved: it leaves space in the box, or fills it and is trimmed.
+    public var canMove: Bool {
+        abs(box.width - picture.width) > 0.002 || abs(box.height - picture.height) > 0.002
+    }
+}
+
 /// Puts the edited picture on its frame (R-4605).
 public enum FrameRenderer {
     /// The canvas size for a picture of `picture` size: its own shape grown by the insets, or the frame's shape with the
-    /// picture fitted inside the insets.
+    /// picture fitted inside the insets. `photo` is the part of the canvas the photo covers.
     public static func layout(picture: CGSize, frame: Frame) -> (canvas: CGSize, photo: CGRect) {
+        let placed = placement(picture: picture, frame: frame)
+        return (placed.canvas, placed.photo)
+    }
+
+    /// The canvas, the space inside the insets (`box`), the whole picture where it is drawn (`picture`, larger than the
+    /// box when it fills it) and the part of the canvas it covers (`photo`). Rects have their origin top left.
+    public static func placement(picture: CGSize, frame: Frame) -> (canvas: CGSize, box: CGRect, picture: CGRect, photo: CGRect) {
         let insets = (top: clamp(frame.top), left: clamp(frame.left), right: clamp(frame.right), bottom: clamp(frame.bottom))
-        guard picture.width > 0, picture.height > 0 else { return (picture, .zero) }
+        guard picture.width > 0, picture.height > 0 else { return (picture, .zero, .zero, .zero) }
+        let along = (x: min(max(frame.photoX, 0), 1), y: min(max(frame.photoY, 0), 1))
         let ratio = frame.shape == .photoShape ? picture.width / picture.height : frame.shape.ratio
         if let ratio {
             // The canvas keeps the picture's long edge; insets are shares of its shorter side.
@@ -281,25 +310,41 @@ public enum FrameRenderer {
             let box = CGRect(x: insets.left * short, y: insets.top * short,
                              width: canvas.width - (insets.left + insets.right) * short,
                              height: canvas.height - (insets.top + insets.bottom) * short)
-            if frame.fill { return (canvas, box.integral) }
+            if frame.fill {
+                // The picture covers the box; where it sits chooses the part shown.
+                let photo = box.integral
+                let scale = max(photo.width / picture.width, photo.height / picture.height)
+                let size = CGSize(width: picture.width * scale, height: picture.height * scale)
+                let whole = CGRect(x: photo.minX + (photo.width - size.width) * along.x,
+                                   y: photo.minY + (photo.height - size.height) * along.y, width: size.width, height: size.height)
+                return (canvas, box, whole, photo)
+            }
             let scale = min(box.width / picture.width, box.height / picture.height)
             let size = CGSize(width: (picture.width * scale).rounded(), height: (picture.height * scale).rounded())
-            let photo = CGRect(x: (box.midX - size.width / 2).rounded(), y: (box.midY - size.height / 2).rounded(),
-                               width: size.width, height: size.height)
-            return (canvas, photo)
+            let photo = CGRect(x: (box.minX + (box.width - size.width) * along.x).rounded(),
+                               y: (box.minY + (box.height - size.height) * along.y).rounded(), width: size.width, height: size.height)
+            return (canvas, box, photo, photo)
         }
         let short = min(picture.width, picture.height)
         let photo = CGRect(x: (insets.left * short).rounded(), y: (insets.top * short).rounded(), width: picture.width,
                            height: picture.height)
         let canvas = CGSize(width: photo.maxX + (insets.right * short).rounded(), height: photo.maxY + (insets.bottom * short).rounded())
-        return (canvas, photo)
+        return (canvas, photo, photo, photo)
+    }
+
+    /// Where along the free space (0 to 1) a picture of `size` whose left or top edge is at `edge` sits in a box from
+    /// `low` of `length`: the inverse of `placement`, for dragging. Nil when it cannot move along that axis.
+    public static func position(edge: Double, size: Double, low: Double, length: Double) -> Double? {
+        let free = length - size
+        guard abs(free) >= 0.5 else { return nil }
+        return min(max((edge - low) / free, 0), 1)
     }
 
     static func clamp(_ value: Double) -> Double { min(max(value, 0), 0.4) }
 
     /// The framed canvas, extent at the origin. Rects from `layout` have their origin top left; Core Image's is bottom left.
     public static func compose(_ picture: CIImage, frame: Frame) -> CIImage {
-        let (canvas, photoRect) = layout(picture: picture.extent.size, frame: frame)
+        let (canvas, _, wholeRect, photoRect) = placement(picture: picture.extent.size, frame: frame)
         let bounds = CGRect(origin: .zero, size: canvas)
         let background: CIImage = switch frame.background {
         case let .color(color):
@@ -329,13 +374,12 @@ public enum FrameRenderer {
                 return (dim.outputImage ?? centred).cropped(to: bounds)
             }()
         }
-        let flippedY = canvas.height - photoRect.maxY
-        let placed = CGRect(x: photoRect.minX, y: flippedY, width: photoRect.width, height: photoRect.height)
-        // Fitted, the picture is scaled to the rect; filling, it covers the rect and is cropped about its centre.
-        let sx = photoRect.width / picture.extent.width, sy = photoRect.height / picture.extent.height
-        let scale = frame.fill ? max(sx, sy) : 1
-        var photo = picture.transformed(by: frame.fill ? CGAffineTransform(scaleX: scale, y: scale) : CGAffineTransform(scaleX: sx, y: sy))
-        photo = photo.transformed(by: CGAffineTransform(translationX: placed.midX - photo.extent.midX, y: placed.midY - photo.extent.midY))
+        let placed = CGRect(x: photoRect.minX, y: canvas.height - photoRect.maxY, width: photoRect.width, height: photoRect.height)
+        let whole = CGRect(x: wholeRect.minX, y: canvas.height - wholeRect.maxY, width: wholeRect.width, height: wholeRect.height)
+        // Fitted, the picture is scaled to the rect; filling, it covers the rect where it was placed and is cropped to it.
+        var photo = picture.transformed(by: CGAffineTransform(scaleX: whole.width / picture.extent.width,
+                                                              y: whole.height / picture.extent.height))
+        photo = photo.transformed(by: CGAffineTransform(translationX: whole.minX - photo.extent.minX, y: whole.minY - photo.extent.minY))
         if frame.cornerRadius > 0 {
             let radius = min(placed.width, placed.height) * min(frame.cornerRadius, 0.5)
             let mask = CIFilter.roundedRectangleGenerator()

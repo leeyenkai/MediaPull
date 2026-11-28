@@ -88,6 +88,19 @@ public final class PhotoSession: @unchecked Sendable {
         return recipe.export.size.pixels(for: full)
     }
 
+    /// Where the photo is in `recipe`'s frame, in units of the canvas; nil without a frame. Worked out from extents.
+    public func framePlacement(_ recipe: EditRecipe) -> FramePlacement? {
+        guard let frame = recipe.frame else { return nil }
+        let placed = FrameRenderer.placement(picture: PhotoRenderer.picture(proxy, recipe: recipe).extent.size, frame: frame)
+        let canvas = placed.canvas
+        guard canvas.width > 0, canvas.height > 0 else { return nil }
+        func unit(_ rect: CGRect) -> CGRect {
+            CGRect(x: rect.minX / canvas.width, y: rect.minY / canvas.height, width: rect.width / canvas.width,
+                   height: rect.height / canvas.height)
+        }
+        return FramePlacement(box: unit(placed.box), picture: unit(placed.picture), photo: unit(placed.photo))
+    }
+
     /// The pixel size of the crop on the photo itself, before any frame (shown while cropping).
     public func cropPixels(_ geometry: EditGeometry) -> CGSize {
         let turned = geometry.turnedSize(size)

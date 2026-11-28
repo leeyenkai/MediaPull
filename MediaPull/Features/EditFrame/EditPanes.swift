@@ -43,7 +43,7 @@ struct EditMediaPane: View {
             }
             if edit.selectedFiles.count >= 2 || (edit.copiedSettings != nil && !edit.selectedFiles.isEmpty) {
                 Divider()
-                EditSelectionBar(edit: edit)
+                EditSelectionBar(edit: edit, preferences: AppModel.shared.preferences)
             }
         }
         .background(PaneSurface.list.color)
@@ -60,15 +60,16 @@ struct EditMediaPane: View {
     }
 }
 
-/// Under the Media pane while files are selected (R-4611, D-132): Paste Settings, with what it carries, and Export
-/// Selected, on screen instead of in a menu.
+/// Under the Media pane while files are selected (R-4611, D-132, D-134): the open file's edits (or settings copied
+/// earlier) applied to the other selected files, choosing what goes, and Export Selected.
 struct EditSelectionBar: View {
     @Bindable var edit: EditModel
-    private var preferences: Preferences { AppModel.shared.preferences }
+    @Bindable var preferences: Preferences
 
     private var groups: Set<SettingGroup> { Set(SettingGroup.allCases.filter { preferences.pasteGroups.contains($0.rawValue) }) }
 
     var body: some View {
+        let targets = edit.batchTargets
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("\(edit.selectedFiles.count) selected").font(.callout.weight(.semibold))
@@ -76,40 +77,65 @@ struct EditSelectionBar: View {
                 Button("Export Selected") { edit.exportSelected() }
                     .controlSize(.small)
                     .disabled(edit.exporting)
-                    .help("Export every selected file with the open file's export settings, as one job")
+                    .help("Export every selected file with its own edits and the open file's export settings, as one job")
             }
-            if let copied = edit.copiedSettings {
+            if let source = edit.batchSource {
+                HStack(spacing: 4) {
+                    Text("Edits of “\(URL(fileURLWithPath: source.source.path).lastPathComponent)”")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    if edit.copiedSettings != nil {
+                        Text("copied").font(.caption).foregroundStyle(.tertiary)
+                        Spacer(minLength: 4)
+                        Button("Use Open File") { edit.copiedSettings = nil }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help("Forget the copied settings and apply the open file's edits instead")
+                    }
+                }
                 FlowLayout(spacing: 4) {
                     ForEach(SettingGroup.allCases) { group in
-                        Toggle(group.label, isOn: Binding(
-                            get: { preferences.pasteGroups.contains(group.rawValue) },
-                            set: { on in
-                                if on {
-                                    preferences.pasteGroups.insert(group.rawValue)
-                                } else {
-                                    preferences.pasteGroups.remove(group.rawValue)
-                                }
-                            }
-                        ))
-                        .toggleStyle(.button)
-                        .controlSize(.small)
+                        ValueChip(title: group.label, selected: groups.contains(group)) { toggle(group) }
+                            .help(help(group, in: source))
                     }
                 }
                 HStack {
-                    Text("From “\(URL(fileURLWithPath: copied.source.path).lastPathComponent)”")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Text("Crops stay each file's own.")
+                        .font(.caption).foregroundStyle(.tertiary).lineLimit(1).layoutPriority(-1)
                     Spacer(minLength: 4)
-                    Button("Paste Settings") { edit.pasteSettings(groups, to: edit.selectedFiles) }
-                        .controlSize(.small)
-                        .disabled(groups.isEmpty)
-                        .help("Put the copied settings on the selected files (⌘Z takes them back)")
+                    Button(targets.count == 1 ? "Apply to 1 File" : "Apply to \(targets.count) Files") {
+                        edit.applyToSelection(groups)
+                    }
+                    .controlSize(.small)
+                    .disabled(groups.isEmpty || targets.isEmpty)
+                    .help("Give the other selected files these edits (⌘Z takes them back)")
                 }
             } else {
-                Text("Copy Settings, at the foot of the Inspector, copies a file's edits to paste onto these.")
+                Text("Edit the open file, then apply its frame, look, adjustments or text to the other selected files here.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)
+    }
+
+    private func toggle(_ group: SettingGroup) {
+        if preferences.pasteGroups.contains(group.rawValue) {
+            preferences.pasteGroups.remove(group.rawValue)
+        } else {
+            preferences.pasteGroups.insert(group.rawValue)
+        }
+    }
+
+    /// Says when applying a part the source does not have takes it away from the others.
+    private func help(_ group: SettingGroup, in source: EditRecipe) -> String {
+        let empty = switch group {
+        case .look: source.look == nil
+        case .adjustments: source.adjust == Adjustments()
+        case .frame: source.frame == nil
+        case .layers: source.layers.isEmpty
+        }
+        return empty ? "\(group.label): the source has none, so applying it removes the others' \(group.label.lowercased())"
+            : "Apply the source's \(group.label.lowercased())"
     }
 }
 
@@ -119,6 +145,9 @@ struct EditCanvasPane: View {
     @Bindable var model: WindowModel
     @Bindable var edit: EditModel
     @FocusState private var focused: Bool
+    /// How far a zoomed canvas is scrolled, so the rulers follow it.
+    @State private var scroll: CGPoint = .zero
+    private var preferences: Preferences { AppModel.shared.preferences }
 
     /// The edited picture is on the canvas (not a video's player). Read from `preview`, which views follow; the session
     /// itself is not observed.
@@ -142,10 +171,8 @@ struct EditCanvasPane: View {
                         }
                     }
                     .help("Zoom the canvas")
-                    Toggle("Before", isOn: $edit.showingBefore)
-                        .toggleStyle(.button)
-                        .controlSize(.small)
-                        .help("Show the photo as it was, without the edits (\\)")
+                    HoldChip(title: "Before/After", held: $edit.showingBefore)
+                        .help("Hold to see the photo as it was, without the edits; release to see them again (or hold \\)")
                 }
                 if edit.kind == .video {
                     Button(edit.playingResult ? "Show Original" : "Play Result") {
@@ -156,23 +183,48 @@ struct EditCanvasPane: View {
                 }
             }
             Divider()
-            GeometryReader { proxy in
-                ZStack {
-                    PaneSurface.stage.color
-                    canvas(in: proxy.size)
+            VStack(spacing: 0) {
+                if showsRulers {
+                    HStack(spacing: 0) {
+                        PaneSurface.tools.color.frame(width: CanvasRuler.thickness, height: CanvasRuler.thickness)
+                        ruler(.horizontal)
+                    }
                 }
-                .onAppear { edit.canvasSize = proxy.size }
-                .onChange(of: proxy.size) { _, size in edit.canvasSize = size }
+                HStack(spacing: 0) {
+                    if showsRulers { ruler(.vertical) }
+                    GeometryReader { proxy in
+                        ZStack {
+                            PaneSurface.stage.color
+                            canvas(in: proxy.size)
+                            if edit.showingBefore, showsPicture {
+                                Text("Before")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(.black.opacity(0.55), in: Capsule())
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .onAppear { edit.canvasSize = proxy.size }
+                        .onChange(of: proxy.size) { _, size in edit.canvasSize = size }
+                    }
+                }
             }
             .focusable(model.section == .edit)
             .focusEffectDisabled()
             .focused($focused)
             // A key on the canvas, never a window shortcut that would fire while typing in a text layer (D-132).
-            .onKeyPress("\\") {
-                guard showsPicture else { return .ignored }
-                edit.showingBefore.toggle()
+            // Held to compare, like the button (D-134); a repeat keeps it shown.
+            .onKeyPress("\\", phases: [.down, .repeat, .up]) { press in
+                guard showsPicture || press.phase == .up else { return .ignored }
+                edit.showingBefore = press.phase != .up
                 return .handled
             }
+            // A key let go elsewhere never leaves the original showing.
+            .onChange(of: focused) { _, now in if !now { edit.showingBefore = false } }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 Task {
                     var urls: [URL] = []
@@ -187,6 +239,10 @@ struct EditCanvasPane: View {
                     await MainActor.run { model.openInEdit(urls) }
                 }
                 return true
+            }
+            if showsPicture {
+                Divider()
+                EditGuideBar(edit: edit, preferences: preferences)
             }
             if edit.kind == .video, showsPicture {
                 Divider()
@@ -208,7 +264,6 @@ struct EditCanvasPane: View {
 
     @ViewBuilder
     private func canvas(in size: CGSize) -> some View {
-        let bounds = CGSize(width: max(size.width - 32, 10), height: max(size.height - 32, 10))
         if edit.current == nil {
             Text("Choose a photo in Media, or drag one here.").font(.callout).foregroundStyle(.secondary)
         } else if let error = edit.loadError {
@@ -233,13 +288,19 @@ struct EditCanvasPane: View {
             }
             .padding(.vertical, 12)
         } else if edit.tab == .crop, !edit.showingBefore, let image = edit.cropImage {
-            zoomed(image: image, bounds: bounds, size: size) { frame in
+            zoomed(image: image, size: size) { frame in
+                GuideGrid(grid: preferences.editGrid, frame: frame)
                 EditCropOverlay(model: edit, frame: frame)
             }
         } else if let image = edit.preview {
-            zoomed(image: image, bounds: bounds, size: size) { frame in
-                if !edit.showingBefore, [.text, .adjust, .frame].contains(edit.tab), !(edit.recipe?.layers.isEmpty ?? true) {
-                    EditLayerOverlay(model: edit, frame: frame, editing: edit.tab == .text)
+            zoomed(image: image, size: size) { frame in
+                if !edit.showingBefore {
+                    GuideGrid(grid: preferences.editGrid, frame: frame)
+                    if [.text, .adjust, .frame].contains(edit.tab),
+                       !(edit.recipe?.layers.isEmpty ?? true) || (edit.tab == .frame && edit.framePlacement?.canMove == true)
+                    {
+                        EditLayerOverlay(model: edit, frame: frame, editing: edit.tab == .text)
+                    }
                 }
             }
         } else {
@@ -247,14 +308,20 @@ struct EditCanvasPane: View {
         }
     }
 
-    /// The picture at the zoom chosen, with its overlay: fitted when 1, in a scroll view centred when larger.
-    @ViewBuilder
-    private func zoomed(image: CGImage, bounds: CGSize, size: CGSize, @ViewBuilder overlay: (CGRect) -> some View) -> some View {
+    /// Where the picture is on the stage of `size` at the zoom chosen, and the size of what scrolls when zoomed.
+    private func stage(image: CGImage, size: CGSize) -> (frame: CGRect, content: CGSize) {
+        let bounds = CGSize(width: max(size.width - 32, 10), height: max(size.height - 32, 10))
         let fitted = fittedRect(CGSize(width: image.width, height: image.height), in: bounds)
         let picture = CGSize(width: fitted.width * edit.zoom, height: fitted.height * edit.zoom)
         let content = CGSize(width: max(size.width, picture.width + 32), height: max(size.height, picture.height + 32))
-        let frame = CGRect(x: (content.width - picture.width) / 2, y: (content.height - picture.height) / 2,
-                           width: picture.width, height: picture.height)
+        return (CGRect(x: (content.width - picture.width) / 2, y: (content.height - picture.height) / 2,
+                       width: picture.width, height: picture.height), content)
+    }
+
+    /// The picture at the zoom chosen, with its overlay: fitted when 1, in a scroll view centred when larger.
+    @ViewBuilder
+    private func zoomed(image: CGImage, size: CGSize, @ViewBuilder overlay: (CGRect) -> some View) -> some View {
+        let (frame, content) = stage(image: image, size: size)
         let stage = ZStack(alignment: .topLeading) {
             Image(decorative: image, scale: 1).resizable().interpolation(.high)
                 .frame(width: frame.width, height: frame.height)
@@ -267,8 +334,75 @@ struct EditCanvasPane: View {
         if edit.zoom > 1 {
             ScrollView([.horizontal, .vertical]) { stage }
                 .defaultScrollAnchor(.center)
+                .onScrollGeometryChange(for: CGPoint.self, of: { $0.contentOffset }, action: { _, offset in scroll = offset })
         } else {
             stage
+        }
+    }
+
+    // MARK: Rulers (R-4613)
+
+    /// The picture the stage shows: the uncropped one while cropping.
+    private var stageImage: CGImage? {
+        edit.tab == .crop && !edit.showingBefore ? edit.cropImage : edit.preview
+    }
+
+    private var showsRulers: Bool { showsPicture && preferences.editRulers && stageImage != nil }
+
+    /// The canvas's size in the pixels the rulers count: what Export writes, the picture's own while cropping, the
+    /// original's for Before.
+    private var rulerPixels: CGSize? {
+        if edit.showingBefore { return edit.originalPixels }
+        if edit.tab == .crop, let crop = edit.cropPixels {
+            let unit = edit.recipe?.geometry.crop ?? .whole
+            return CGSize(width: crop.width / max(unit.width, 0.0001), height: crop.height / max(unit.height, 0.0001))
+        }
+        return edit.outputPixels
+    }
+
+    /// The selected layer's, the photo's or the crop's span, in units of the canvas.
+    private var highlighted: CGRect? {
+        guard !edit.showingBefore else { return nil }
+        switch edit.tab {
+        case .crop:
+            let crop = edit.recipe?.geometry.crop ?? .whole
+            return CGRect(x: crop.x, y: crop.y, width: crop.width, height: crop.height)
+        case .frame:
+            return edit.framePlacement?.photo
+        case .text:
+            guard let layer = edit.recipe?.layers.first(where: { $0.id == edit.selectedLayer && !$0.hidden }) else { return nil }
+            return turnedBounds(layer)
+        default:
+            return nil
+        }
+    }
+
+    /// A turned layer's upright box in units: turned in points, as it is drawn, since the canvas is rarely square.
+    private func turnedBounds(_ layer: Layer) -> CGRect {
+        guard layer.rotation != 0, let image = stageImage else {
+            return CGRect(x: layer.x - layer.width / 2, y: layer.y - layer.height / 2, width: layer.width, height: layer.height)
+        }
+        let size = CGSize(width: image.width, height: image.height)
+        let box = CanvasSnap.bounds(centre: CGPoint(x: layer.x * size.width, y: layer.y * size.height),
+                                    size: CGSize(width: layer.width * size.width, height: layer.height * size.height),
+                                    degrees: layer.rotation)
+        return CGRect(x: box.minX / size.width, y: box.minY / size.height, width: box.width / size.width, height: box.height / size.height)
+    }
+
+    @ViewBuilder
+    private func ruler(_ axis: CanvasRuler.Axis) -> some View {
+        if let image = stageImage {
+            let frame = stage(image: image, size: edit.canvasSize).frame
+            let offset = edit.zoom > 1 ? scroll : .zero
+            let horizontal = axis == .horizontal
+            let start = horizontal ? frame.minX - offset.x : frame.minY - offset.y
+            let length = horizontal ? frame.width : frame.height
+            let pixels = rulerPixels ?? CGSize(width: image.width, height: image.height)
+            let span = highlighted.map { unit -> ClosedRange<CGFloat> in
+                let low = start + (horizontal ? unit.minX : unit.minY) * length
+                return low ... max(low, start + (horizontal ? unit.maxX : unit.maxY) * length)
+            }
+            CanvasRuler(axis: axis, start: start, length: length, pixels: horizontal ? pixels.width : pixels.height, highlight: span)
         }
     }
 }

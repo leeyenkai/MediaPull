@@ -1679,6 +1679,41 @@ final class SelfTestRunner {
         let pasted = await AppModel.shared.recipes.recipe(for: second)
         check(pasted?.layers.count == 5 && pasted?.look?.name == .film && pasted?.frame?.shape == .portrait23,
               "Paste Settings carries the look, frame and text to another photo")
+
+        // With no copy: the open photo's edits applied straight to the other selected file, and its thumbnail as edited
+        // (D-134).
+        let third = folder.appendingPathComponent("third.jpg")
+        try? fm.copyItem(at: photo, to: third)
+        edit.reloadFolder()
+        await waitUntil(timeout: 20) { edit.entries.contains { $0.name == "third.jpg" } }
+        edit.copiedSettings = nil
+        edit.selection = Set(edit.entries.filter { ["street.jpg", "third.jpg"].contains($0.name) }.map(\.path))
+        check(edit.batchTargets.map(\.lastPathComponent) == ["third.jpg"], "a batch goes to the selected files but the open one")
+        edit.applyToSelection([.frame, .look])
+        await waitUntil(timeout: 20) { edit.editedPaths.contains(third.standardizedFileURL.path) }
+        let applied = await AppModel.shared.recipes.recipe(for: third)
+        check(applied?.frame?.shape == .portrait23 && applied?.look?.name == .film && applied?.layers.isEmpty == true,
+              "the open photo's frame and look go to the other selected file, its text does not")
+        if let path = edit.entries.first(where: { $0.name == "third.jpg" })?.path,
+           let plain = await AppModel.shared.thumbnails.localThumbnail(for: third, maxPixel: 256)?.image,
+           let shown = await edit.gridThumbnail(path, maxPixel: 256)
+        {
+            let ratio = { (image: CGImage) in Double(image.width) / Double(image.height) }
+            check(abs(ratio(shown) - 2.0 / 3.0) < 0.02 && abs(ratio(plain) - 2.0 / 3.0) > 0.05,
+                  "Media's thumbnail shows the frame (\(shown.width) × \(shown.height), plain \(plain.width) × \(plain.height))")
+        } else {
+            check(false, "Media's thumbnail of an edited photo is drawn")
+        }
+
+        try? await Task.sleep(for: .seconds(1))
+        snapshot(to: out.appendingPathComponent("edit-batch.png"))
+
+        // Before/After shows the original only while held, and the edit is back at once when let go.
+        await waitUntil(timeout: 20) { edit.preview != nil }
+        let edited = edit.preview
+        edit.showingBefore = true
+        edit.showingBefore = false
+        check(edit.preview === edited, "letting go of Before/After shows the edit again at once")
         let exportedBefore = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
         // As the Media pane lists them (a temporary folder is under /var, which is /private/var), as a click selects them.
         edit.selection = Set(edit.entries.filter { ["street.jpg", "second.jpg"].contains($0.name) }.map(\.path))

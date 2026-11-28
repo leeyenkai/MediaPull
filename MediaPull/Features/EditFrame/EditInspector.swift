@@ -102,7 +102,7 @@ struct ExportBar: View {
                         .buttonStyle(.plain)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .help("Copy this file's look, adjustments, frame and text, to paste onto files selected in Media")
+                        .help("Copy this file's look, adjustments, frame and text, for files selected later or in another folder")
                 }
                 Spacer(minLength: 4)
                 Button {
@@ -353,6 +353,23 @@ private struct FrameTab: View {
         if edit.recipe?.frame?.shape != .photo {
             Toggle("Fill the space", isOn: edit.frameValue(\.fill, fallback: false))
                 .help("The photo fills the space inside the border, trimmed at its edges, as on a poster")
+        }
+        if edit.framePlacement?.canMove == true {
+            HStack {
+                Text("Drag the photo on the canvas to move it in the frame.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                if let frame = edit.recipe?.frame, frame.photoX != 0.5 || frame.photoY != 0.5 {
+                    Button("Centre") {
+                        edit.change {
+                            $0.frame?.photoX = 0.5
+                            $0.frame?.photoY = 0.5
+                        }
+                    }
+                    .controlSize(.small)
+                    .help("Put the photo back in the middle of the frame")
+                }
+            }
         }
         background
         let extra = max(0, (edit.recipe?.frame?.bottom ?? 0) - (edit.recipe?.frame?.left ?? 0))

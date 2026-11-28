@@ -3,7 +3,7 @@ import Foundation
 import MediaPullCore
 import MediaPullEdit
 
-/// What Paste Settings carries (R-4611).
+/// What applying one file's edits to others carries (R-4611, D-134).
 enum SettingGroup: String, CaseIterable, Identifiable {
     case look, adjustments, frame, layers
 
@@ -37,7 +37,7 @@ enum SettingGroup: String, CaseIterable, Identifiable {
     }
 }
 
-/// Copy Settings, Paste Settings and Export Selected (R-4611).
+/// Copy Settings, applying edits to a selection, and Export Selected (R-4611, D-134).
 extension EditModel {
     func copySettings() {
         guard let recipe else { return }
@@ -50,9 +50,29 @@ extension EditModel {
         entries.filter { selection.contains($0.path) }.map(\.url)
     }
 
-    /// Pastes the copied settings (only `groups`) onto `files`, as one change ⌘Z takes back.
-    func pasteSettings(_ groups: Set<SettingGroup>, to files: [URL]) {
-        guard let source = copiedSettings, !files.isEmpty else { return }
+    /// Where a batch's edits come from (D-134): settings copied earlier, else the open file when it has edits.
+    var batchSource: EditRecipe? {
+        if let copiedSettings { return copiedSettings }
+        guard kind != .audio, let recipe, recipe.isEdited else { return nil }
+        return recipe
+    }
+
+    /// The selected files the batch's edits go to: every one but the file they come from.
+    var batchTargets: [URL] {
+        guard let source = batchSource else { return [] }
+        let from = URL(fileURLWithPath: source.source.path).resolvingSymlinksInPath().path
+        return selectedFiles.filter { $0.resolvingSymlinksInPath().path != from }
+    }
+
+    /// Applies the batch's edits (only `groups`) to the selected files but their source, as one change ⌘Z takes back.
+    func applyToSelection(_ groups: Set<SettingGroup>) {
+        guard let source = batchSource else { return }
+        pasteSettings(groups, to: batchTargets, from: source)
+    }
+
+    /// Pastes `source` (the copied settings unless given; only `groups`) onto `files`, as one change ⌘Z takes back.
+    func pasteSettings(_ groups: Set<SettingGroup>, to files: [URL], from source: EditRecipe? = nil) {
+        guard let source = source ?? copiedSettings, !files.isEmpty else { return }
         flushSave()
         Task { [weak self] in
             var before: [(path: String, recipe: EditRecipe?)] = []
@@ -77,18 +97,20 @@ extension EditModel {
                 before.append((file.standardizedFileURL.path, stored))
             }
             guard let self else { return }
-            registerBatchUndo(before, name: "Paste Settings")
+            registerBatchUndo(before, name: "Apply Edits")
             reloadCurrentRecipe()
+            await refreshEdited()
             // By id too: a window still naming a file's old name after a Finder rename is told (round 11, B11-2).
             Self.recipesChanged(Set(before.map(\.path)), ids: written, by: self)
+            let name = URL(fileURLWithPath: source.source.path).lastPathComponent
             if let first = failed.first {
                 let total = before.count + failed.count
-                message = "Settings pasted onto \(before.count) of \(total) file\(total == 1 ? "" : "s"); “\(first)” "
+                message = "Edits of “\(name)” applied to \(before.count) of \(total) file\(total == 1 ? "" : "s"); “\(first)” "
                     + "is no longer there or the disk is full."
                 filesChanged()
             } else {
-                message = before.isEmpty ? "These settings do not apply to audio."
-                    : "Settings pasted onto \(before.count) file\(before.count == 1 ? "" : "s")."
+                message = before.isEmpty ? "These edits do not apply to audio."
+                    : "Edits of “\(name)” applied to \(before.count) file\(before.count == 1 ? "" : "s")."
             }
         }
     }
@@ -127,8 +149,17 @@ extension EditModel {
                 }
             }
             self?.reloadCurrentRecipe()
+            await self?.refreshEdited()
             Self.recipesChanged(Set(recipes.map(\.path)), ids: written, by: self)
         }
+    }
+
+    /// Marks and thumbnails follow recipes written for files other than the open one.
+    func refreshEdited() async {
+        let edited = await AppModel.shared.recipes.editStamps()
+        guard edited != editStamps else { return }
+        editStamps = edited
+        revision += 1
     }
 
     /// The open file's recipe as stored now (after a paste or its undo).
@@ -141,7 +172,7 @@ extension EditModel {
             // B6-m4).
             let byID: EditRecipe? = if let id { await AppModel.shared.recipes.recipe(id: id) } else { nil }
             let stored: EditRecipe? = if let byID { byID } else { await AppModel.shared.recipes.recipe(for: current) }
-            let edited = await AppModel.shared.recipes.editedPaths()
+            let edited = await AppModel.shared.recipes.editStamps()
             // A change made meanwhile is kept, never replaced by what was stored before it (B7-m1).
             guard let self, self.current == current, let kind, saveGenerationNow == generation else { return }
             if let stored, stored.source.path != current.standardizedFileURL.path,
@@ -152,7 +183,7 @@ extension EditModel {
             recipe = stored ?? Self.newRecipe(for: current, kind: kind)
             // A drag under way counts from what is shown now, so its ⌘Z never takes back another window's change (B8-9).
             restartGesture()
-            editedPaths = edited
+            editStamps = edited
             revision += 1
             render()
         }
@@ -223,21 +254,29 @@ extension EditModel {
         }
     }
 
-    /// Copy, Paste and Export Selected for the Media pane's menus.
+    /// Copy, Apply Edits and Export Selected for the Media pane's menus.
     func batchMenuItems(for files: [URL]) -> [NSMenuItem] {
         var items: [NSMenuItem] = []
         if files.count == 1, files[0].standardizedFileURL == current?.standardizedFileURL {
             items.append(ActionMenuItem("Copy Settings") { [weak self] in self?.copySettings() })
         }
-        if copiedSettings != nil {
-            let paste = NSMenuItem(title: "Paste Settings", action: nil, keyEquivalent: "")
-            let menu = NSMenu(title: "Paste Settings")
-            menu.addItem(ActionMenuItem("All") { [weak self] in self?.pasteSettings(Set(SettingGroup.allCases), to: files) })
-            for group in SettingGroup.allCases {
-                menu.addItem(ActionMenuItem(group.label) { [weak self] in self?.pasteSettings([group], to: files) })
+        // As the bar under Media offers it: the source's edits to the chosen files but the source itself (D-134).
+        if let source = batchSource {
+            let from = URL(fileURLWithPath: source.source.path).resolvingSymlinksInPath().path
+            let targets = files.filter { $0.resolvingSymlinksInPath().path != from }
+            if !targets.isEmpty {
+                let title = "Apply Edits of “\(URL(fileURLWithPath: source.source.path).lastPathComponent)”"
+                let apply = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                let menu = NSMenu(title: title)
+                menu.addItem(ActionMenuItem("All") { [weak self] in
+                    self?.pasteSettings(Set(SettingGroup.allCases), to: targets, from: source)
+                })
+                for group in SettingGroup.allCases {
+                    menu.addItem(ActionMenuItem(group.label) { [weak self] in self?.pasteSettings([group], to: targets, from: source) })
+                }
+                apply.submenu = menu
+                items.append(apply)
             }
-            paste.submenu = menu
-            items.append(paste)
         }
         items.append(ActionMenuItem(files.count == 1 ? "Export" : "Export \(files.count) Files") { [weak self] in
             self?.selection = Set(files.map(\.path))

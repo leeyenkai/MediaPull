@@ -379,6 +379,10 @@ public struct Frame: Codable, Sendable, Hashable {
     public var shadow = false
     /// For a fixed shape: the photo fills the space inside the insets, its centre kept (a poster), instead of fitting in it.
     public var fill = false
+    /// Where the photo sits (R-4605, D-133), 0 to 1 across and down, centred by default: fitted, within the space it
+    /// leaves; filling, which part of the photo shows.
+    public var photoX = 0.5
+    public var photoY = 0.5
 
     public init() {}
 }

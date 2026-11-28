@@ -43,6 +43,10 @@ final class Preferences {
     var editFolder: String? { didSet { set(editFolder, "editFolder") } }
     /// Apple's downloadable fonts may be fetched (R-4607, D-129); off until the person allows it.
     var allowFontDownloads: Bool { didSet { set(allowFontDownloads, "allowFontDownloads") } }
+    /// Edit/Frame's canvas guides (R-4613, D-133): snapping (on by default), rulers (shown by default) and the grid.
+    var editSnap: Bool { didSet { set(editSnap, "editSnap") } }
+    var editRulers: Bool { didSet { set(editRulers, "editRulers") } }
+    var editGrid: CanvasGrid { didSet { set(editGrid.rawValue, "editGrid") } }
     /// Inspector sections the person folded (D-132), by name.
     var foldedSections: Set<String> { didSet { set(foldedSections.sorted(), "foldedSections") } }
     /// What Paste Settings carries (R-4611), by `SettingGroup` raw value.
@@ -142,6 +146,9 @@ final class Preferences {
         deviceImportFolder = d.string(forKey: "deviceImportFolder")
         editFolder = d.string(forKey: "editFolder")
         allowFontDownloads = d.bool(forKey: "allowFontDownloads")
+        editSnap = d.object(forKey: "editSnap") as? Bool ?? true
+        editRulers = d.object(forKey: "editRulers") as? Bool ?? true
+        editGrid = d.string(forKey: "editGrid").flatMap(CanvasGrid.init(rawValue:)) ?? .none
         foldedSections = Set(d.stringArray(forKey: "foldedSections") ?? [])
         pasteGroups = Set(d.stringArray(forKey: "pasteGroups") ?? ["look", "adjustments", "frame", "layers"])
         includeLivePhotoClips = d.bool(forKey: "includeLivePhotoClips")

@@ -118,6 +118,13 @@ struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Edit/Frame") {
+                Toggle("Snap to guides while placing text, shapes, the photo and the crop", isOn: $preferences.editSnap)
+                Text("Edges and centres snap to the canvas's edges and centre, the photo, other layers and the grid shown. Hold ⌘ "
+                    + "while dragging to place freely. The grid and rulers are chosen under the Canvas.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Browser") {
                 Toggle("Remember browsing history", isOn: $preferences.rememberHistory)
                 HStack {

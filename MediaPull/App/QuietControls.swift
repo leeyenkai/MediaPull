@@ -138,6 +138,36 @@ struct ValueChip: View {
     }
 }
 
+/// A chip that is on only while it is held down (Before/After, D-134); VoiceOver turns it on and off instead.
+struct HoldChip: View {
+    let title: String
+    @Binding var held: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(held ? .semibold : .regular))
+            .foregroundStyle(held ? .primary : .secondary)
+            .padding(.horizontal, 8)
+            .frame(height: 22)
+            .background {
+                RoundedRectangle(cornerRadius: TopBarStyle.radius - 1, style: .continuous)
+                    .fill(held ? Color.accentColor.opacity(0.22) : Color.primary.opacity(hovering ? 0.07 : 0.04))
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in if !held { held = true } }
+                .onEnded { _ in held = false })
+            .onHover { hovering = $0 }
+            .onDisappear { held = false }
+            .accessibilityElement()
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(held ? .isSelected : [])
+            .accessibilityAction { held.toggle() }
+    }
+}
+
 /// A group of tools in an inspector (D-132): a title that folds the group, a dot and Reset while it has changes.
 /// Folds are remembered by `key`.
 struct InspectorSection<Content: View>: View {
